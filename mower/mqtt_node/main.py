@@ -28,6 +28,10 @@ from sensor_aggregator import SensorAggregator
 from http_client import HttpClient
 from ota_client import OtaClient
 
+import asyncio as _asyncio_for_discovery
+
+from discovery_loop import DiscoveryLoop, ResolveResult
+
 log = logging.getLogger('mqtt_node.main')
 
 
@@ -150,6 +154,40 @@ def _read_wifi_rssi() -> int:
     except Exception:
         pass
     return 0
+
+
+async def _zeroconf_resolve(hostnames: tuple) -> ResolveResult:
+    """Best-effort A-record resolution. Tries Python's stdlib resolver
+    first (fast on systems with libnss-mdns), then falls back to a
+    `zeroconf` browser query if the package is available. Returns
+    ResolveResult(host=None, ip=None) when nothing resolves."""
+    import socket as _socket
+    for h in hostnames:
+        try:
+            ip = await _asyncio_for_discovery.get_event_loop().run_in_executor(
+                None, _socket.gethostbyname, h)
+            if ip and not ip.startswith('127.'):
+                return ResolveResult(host=h, ip=ip)
+        except Exception:
+            continue
+    try:
+        from zeroconf import Zeroconf, ServiceInfo  # noqa: F401
+        from zeroconf import IPVersion
+        zc = Zeroconf()
+        try:
+            for h in hostnames:
+                info = await _asyncio_for_discovery.get_event_loop().run_in_executor(
+                    None,
+                    lambda host=h: zc.get_service_info(  # noqa: E501
+                        '_workstation._tcp.local.', host, timeout=2000),
+                )
+                if info and info.parsed_addresses(IPVersion.V4Only):
+                    return ResolveResult(host=h, ip=info.parsed_addresses(IPVersion.V4Only)[0])
+        finally:
+            zc.close()
+    except Exception:
+        pass
+    return ResolveResult(host=None, ip=None)
 
 
 def main():
@@ -350,6 +388,23 @@ def main():
     mqtt.on_message(on_inbound)
     mqtt.connect()
     mqtt.loop_start()
+
+    # ── Discovery loop (Phase 2 of zero-touch MQTT redirect) ─────────────
+    discovery = DiscoveryLoop(
+        config=cfg,
+        json_path=Path('/userdata/lfi/json_config.json'),
+        http_addr_path=Path('/userdata/lfi/http_address.txt'),
+        resolver=_zeroconf_resolve,
+        on_switch=lambda new_host, new_port: mqtt.swap_broker(new_host, new_port),
+    )
+
+    discovery_loop_thread = threading.Thread(
+        target=lambda: _asyncio_for_discovery.run(discovery.run()),
+        name='discovery-loop',
+        daemon=True,
+    )
+    discovery_loop_thread.start()
+    log.info('discovery loop started')
 
     # ── Info-read commands (file/cache reads, no ROS calls) ─────────
     from info_commands import InfoSources, register_with_dispatcher as register_info_commands
