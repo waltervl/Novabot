@@ -56,7 +56,8 @@ function isMowing(msg: string): boolean {
       || msg.includes('Work:COVERING')
       || msg.includes('Work:NAVIGATING')
       || msg.includes('Work:BOUNDARY_COVERING')
-      || msg.includes('Work:AVOIDING');
+      || msg.includes('Work:AVOIDING')
+      || msg.includes('Work:MOVING');     // active path-following between zones
 }
 
 function isFinished(msg: string): boolean {
@@ -109,24 +110,32 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
   }
 
   // ── Mowing started / finished ───────────────────────────────
-  const wasMowing = isMowing(prev.msg);
-  const nowMowing = isMowing(next.msg);
-  if (!wasMowing && nowMowing) {
-    dispatchEvent(makeEvent(
-      sn,
-      'mowing_started',
-      'Mowing started',
-      next.msg,
-      { msg: next.msg },
-    ));
-  } else if (wasMowing && !nowMowing && isFinished(next.msg) && next.errorStatus === '0') {
-    dispatchEvent(makeEvent(
-      sn,
-      'mowing_finished',
-      'Mowing finished',
-      next.msg,
-      { msg: next.msg },
-    ));
+  // Only act when BOTH sides have a non-empty msg — an empty prev/next
+  // msg means the cache was just re-populated after a reconnect and we
+  // can't trust the transition. Without this guard every mower
+  // disconnect/reconnect cycle (which is frequent — mqtt_node
+  // makes short-lived connections) would emit a bogus
+  // mowing_started → mowing_finished pair.
+  if (prev.msg && next.msg) {
+    const wasMowing = isMowing(prev.msg);
+    const nowMowing = isMowing(next.msg);
+    if (!wasMowing && nowMowing) {
+      dispatchEvent(makeEvent(
+        sn,
+        'mowing_started',
+        'Mowing started',
+        next.msg,
+        { msg: next.msg },
+      ));
+    } else if (wasMowing && !nowMowing && isFinished(next.msg) && next.errorStatus === '0') {
+      dispatchEvent(makeEvent(
+        sn,
+        'mowing_finished',
+        'Mowing finished',
+        next.msg,
+        { msg: next.msg },
+      ));
+    }
   }
 
   // ── Docked ──────────────────────────────────────────────────

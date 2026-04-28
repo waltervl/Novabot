@@ -8,7 +8,7 @@
 
 import { db } from '../db/database.js';
 import { equipmentRepo } from '../db/repositories/equipment.js';
-import { detectAndDispatch } from '../notifications/eventDetector.js';
+import { detectAndDispatch, resetEventState } from '../notifications/eventDetector.js';
 
 // ── Sensor definities ────────────────────────────────────────────
 
@@ -347,6 +347,11 @@ export function clearLocalTrail(sn: string): void {
 export function clearDeviceData(sn: string): void {
   deviceCache.delete(sn);
   pinVerifiedSns.delete(sn);
+  // Drop the notifications detector's cached "previous frame" too —
+  // otherwise the next reconnect's first sensor frame compares an
+  // empty msg ('') against a stale prev=Work:COVERING and emits a
+  // bogus mowing_started → mowing_finished pair on every disconnect.
+  resetEventState(sn);
 }
 
 // ── Signal history sampling ──────────────────────────────────────

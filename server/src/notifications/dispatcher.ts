@@ -38,12 +38,28 @@ export function getRecentEvents(sn: string, limit = 50): MowerEvent[] {
   return list.slice(-limit).reverse();   // newest first
 }
 
+// HTTP headers are ByteString-only — any UTF-8 codepoint > 255 (em-dashes,
+// curly quotes, accented chars in mower SNs) crashes fetch with
+// "Cannot convert argument to a ByteString". Strip non-ASCII before
+// putting strings into headers; the body stays UTF-8.
+function asciiHeader(s: string): string {
+  return s.replace(/[^\x20-\x7e]/g, ch => {
+    // Common typographic punctuation → safe ASCII counterparts.
+    if (ch === '—' || ch === '–') return '-';
+    if (ch === '‘' || ch === '’') return "'";
+    if (ch === '“' || ch === '”') return '"';
+    if (ch === '•') return '*';
+    if (ch === ' ') return ' ';
+    return '?';
+  });
+}
+
 async function sendNtfy(ev: MowerEvent): Promise<void> {
   if (!NTFY_TOPIC) return;
   const url = `${NTFY_URL.replace(/\/$/, '')}/${NTFY_TOPIC}`;
   const headers: Record<string, string> = {
-    'Title': `${ev.title} — ${ev.sn}`,
-    'Tags': `mower,${ev.type}`,
+    'Title': asciiHeader(`${ev.title} - ${ev.sn}`),
+    'Tags': asciiHeader(`mower,${ev.type}`),
   };
   if (NTFY_PRIORITY) headers['Priority'] = NTFY_PRIORITY;
   try {
