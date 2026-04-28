@@ -68,6 +68,7 @@ nav:
     - DNS Setup: guide/dns-setup.md
     - Bootstrap Tool: guide/bootstrap.md
     - ESP32 OTA Tool: guide/esp32-tool.md
+    - Notifications & Push: guide/notifications.md
   - Architecture:
     - Overview: architecture/overview.md
     - Hardware: architecture/hardware.md

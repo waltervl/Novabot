@@ -167,9 +167,41 @@ environment:
   HA_MQTT_PORT: 1883
   HA_MQTT_USER: "mqtt"
   HA_MQTT_PASS: "mqtt"
+  RENDER_BASE_URL: "http://192.168.0.222"   # publieke URL van OpenNova; vereist voor live map-tile in HA
 ```
 
-Entities auto-appear in Home Assistant under the mower/charger serial number.
+Entities auto-appear in Home Assistant under the mower/charger serial number — sensors (battery, GPS, error, msg, …) plus a live `image` entity that shows a server-rendered PNG of the mower map.
+
+### Optional: ntfy Push Notifications (free, no account)
+
+Get a push on your phone whenever the mower starts/finishes mowing, docks, runs into an error, or hits low battery.
+
+1. Pick a unique topic name (long + random — anyone subscribed can read your events). Example: `novabot-ramon-x7k9q`.
+2. Add to `docker-compose.yml`:
+   ```yaml
+   environment:
+     NTFY_TOPIC: "novabot-ramon-x7k9q"
+     NTFY_URL: "https://ntfy.sh"          # default; change for self-hosted
+     NTFY_PRIORITY: "4"                   # optional, 1..5
+   ```
+3. Restart: `docker compose up -d`.
+4. Install the **ntfy** app from the App Store / Play Store (free, no account).
+5. Subscribe to your topic in the app.
+
+You'll receive notifications for every detected event — start/stop/dock/error/safety/PIN-locked/low battery/GPS issue/etc. Each push has a category tag (e.g. `mower,stuck`) so you can filter inside ntfy.
+
+#### Tuning what triggers a push
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `LOW_BATTERY_THRESHOLD` | `20` | Battery % crossing point for `low_battery` event (one-shot per dip) |
+| `EVENTS_MQTT_TOPIC_PREFIX` | `novabot/events` | Topic prefix for the local MQTT event publishes (HA picks these up) |
+
+Events also flow to:
+- **Local MQTT** at `novabot/events/<SN>` and `novabot/events/<SN>/<event_type>` — Home Assistant's MQTT integration auto-discovers; use as automation trigger.
+- **HA webhook** if `HA_WEBHOOK_URL` is set — full event JSON POSTed to your HA webhook trigger.
+- **HTTP polling** at `GET /api/events/<SN>?limit=50` — last 200 events per mower, JSON.
+- **Stock Novabot app inbox** — events also land in the app's Settings → Messages tab on the next poll, with the same English text the Novabot cloud would have shown.
 
 ### iOS Setup (Novabot iOS App)
 
