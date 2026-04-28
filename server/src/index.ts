@@ -63,6 +63,7 @@ startRainMonitor();
 // Houdt equipment.discovered_ip vers zodat camera/info en push-to-mower
 // werken zonder dat de gebruiker handmatig een IP hoeft in te stellen.
 import { startMowerIpDiscovery } from './services/mowerIpDiscovery.js';
+import { startMdnsAdvertiser } from './services/mdnsAdvertiser.js';
 startMowerIpDiscovery();
 
 // ── LoRa auto-sync — detect addr/channel drift on charger (lc→hc scan) ────
@@ -245,6 +246,7 @@ initDashboardSocket(server);
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] HTTP + WebSocket listening on port ${PORT}`);
   console.log(`[SERVER] Verwacht nginx proxy manager voor TLS termination op app.lfibot.com`);
+  startMdnsAdvertiser();
 });
 
 // ── Port 80 listener ────────────────────────────────────────────────────────
