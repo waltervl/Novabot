@@ -450,6 +450,36 @@ export function adminPageHtml(): string {
       </div>
     </div>
 
+    <div class="card" style="border:1px solid rgba(245,158,11,.3);background:linear-gradient(135deg,rgba(245,158,11,.06),rgba(124,58,237,.04))">
+      <h2 style="color:#f59e0b;display:flex;align-items:center;gap:8px">💚 Support OpenNova</h2>
+      <p style="font-size:13px;color:#ccc;margin-bottom:14px;line-height:1.6">
+        OpenNova is free and open-source. If it saved your mower from a dead Novabot cloud or helped you skip a subscription, a small tip keeps the lights on.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+        <a href="https://buymeacoffee.com/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:8px;text-decoration:none;color:#fbbf24;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
+          <span style="font-size:20px">☕</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">Buy Me a Coffee</div>
+            <div style="font-size:11px;color:#999;margin-top:2px">One-off tip</div>
+          </div>
+        </a>
+        <a href="https://paypal.me/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(0,112,186,.12);border:1px solid rgba(0,112,186,.3);border-radius:8px;text-decoration:none;color:#60a5fa;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
+          <span style="font-size:20px">💳</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">PayPal</div>
+            <div style="font-size:11px;color:#999;margin-top:2px">Any amount</div>
+          </div>
+        </a>
+        <a href="https://github.com/sponsors/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.3);border-radius:8px;text-decoration:none;color:#c4b5fd;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
+          <span style="font-size:20px">⭐</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">GitHub Sponsors</div>
+            <div style="font-size:11px;color:#999;margin-top:2px">Recurring monthly</div>
+          </div>
+        </a>
+      </div>
+    </div>
+
     <div class="card" style="border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.04)">
       <h2 style="color:#ef4444">Danger Zone</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">Permanently delete all data and start fresh. This removes your account, all devices, maps, and settings. This action cannot be undone.</p>

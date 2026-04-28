@@ -24,6 +24,7 @@ import {
   clearPersistedActiveMowerSn,
 } from './src/context/ActiveMowerContext';
 import { MowQueueProvider } from './src/context/MowQueueContext';
+import { PushRegistrar } from './src/components/PushRegistrar';
 import { I18nProvider, useI18n } from './src/i18n';
 import type {
   AuthStackParams,
@@ -320,6 +321,7 @@ function ThemedApp({
       {isAuthenticated ? (
         <ActiveMowerProvider>
           <MowQueueProvider>
+            <PushRegistrar />
             <AuthenticatedApp onLogout={handleLogout} onGoToProvision={handleGoToProvision} />
           </MowQueueProvider>
         </ActiveMowerProvider>

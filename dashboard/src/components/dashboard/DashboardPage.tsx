@@ -103,7 +103,16 @@ function DeviceChip({ device, expanded, onToggle, onDelete, otaProgress }: {
           <TreePine className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
         )}
         <span className="text-gray-300 font-medium truncate max-w-[60px] sm:max-w-[80px] md:max-w-none">
-          {device.nickname ?? (isCharger ? t('sidebar.charger') : t('sidebar.mower'))}
+          {/* Nicknames are stored against equipment rows that pair a mower
+              with a charger, so both devices share the same string. The
+              user nickname only describes the mower (e.g. "Botty"); using
+              it for the charger row produces the duplicate label issue
+              reported in #10. Always show the localised type for
+              chargers, and only fall back to the type label for mowers
+              when no nickname is set. */}
+          {isCharger
+            ? t('sidebar.charger')
+            : (device.nickname ?? t('sidebar.mower'))}
         </span>
         <Circle className={`w-2.5 h-2.5 fill-current ${device.online ? 'text-green-500' : 'text-gray-600'}`} />
 

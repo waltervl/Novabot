@@ -334,6 +334,24 @@ export class ApiClient {
   }
 
   /**
+   * Register an Expo push token for a bound mower. Idempotent on the
+   * server side — re-registering with the same (token, sn) is a no-op
+   * upsert. Auth required; uses the same JWT as other authenticated
+   * routes.
+   */
+  async registerPushToken(args: {
+    token: string;
+    sn: string;
+    platform: 'ios' | 'android';
+  }): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>(
+      'POST',
+      '/api/push/register',
+      { body: args },
+    );
+  }
+
+  /**
    * Fetch map data for a given serial number.
    */
   async fetchMaps(sn: string): Promise<{ maps: MapData[]; chargerGps: ChargerGps | null; chargerOrientation: number }> {

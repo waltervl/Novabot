@@ -12,6 +12,7 @@ import {
   Switch,
   Modal,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -325,6 +326,37 @@ export default function AppSettingsScreen({
           </View>
         </Section>
 
+        {/* Support / donate — three external links. OpenNova is free + open
+            source; tips keep the lights on. Each row opens its respective
+            payment platform in the browser via Linking.openURL. */}
+        <Section title="Support OpenNova">
+          <Text style={styles.donateBlurb}>
+            OpenNova is free and open-source. If it saved you a Novabot
+            subscription or a binned mower, a small tip is appreciated 🌱
+          </Text>
+          <DonateRow
+            icon="cafe-outline"
+            label="Buy Me a Coffee"
+            sub="One-off tip"
+            color={colors.amber}
+            url="https://buymeacoffee.com/rvbcrs"
+          />
+          <DonateRow
+            icon="logo-paypal"
+            label="PayPal"
+            sub="Any amount, any currency"
+            color="#0070ba"
+            url="https://paypal.me/rvbcrs"
+          />
+          <DonateRow
+            icon="logo-github"
+            label="GitHub Sponsors"
+            sub="Recurring monthly support"
+            color={colors.white}
+            url="https://github.com/sponsors/rvbcrs"
+          />
+        </Section>
+
         {/* Logout */}
         <TouchableOpacity
           style={styles.logoutButton}
@@ -358,6 +390,39 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <Text style={styles.sectionTitle}>{title}</Text>
       <View style={styles.card}>{children}</View>
     </View>
+  );
+}
+
+function DonateRow({
+  icon,
+  label,
+  sub,
+  color,
+  url,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  sub: string;
+  color: string;
+  url: string;
+}) {
+  const styles = useStyles(makeStyles);
+  const { colors } = useTheme();
+  return (
+    <TouchableOpacity
+      style={styles.donateRow}
+      onPress={() => Linking.openURL(url).catch(() => {})}
+      activeOpacity={0.7}
+    >
+      <View style={[styles.donateIcon, { backgroundColor: `${color}25` }]}>
+        <Ionicons name={icon} size={20} color={color} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.donateLabel}>{label}</Text>
+        <Text style={styles.donateSub}>{sub}</Text>
+      </View>
+      <Ionicons name="open-outline" size={16} color={colors.textMuted} />
+    </TouchableOpacity>
   );
 }
 
@@ -460,6 +525,22 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   },
   rowLabel: { fontSize: 15, color: c.textDim },
   rowValue: { flex: 1, fontSize: 15, color: c.text, textAlign: 'right' },
+
+  // Donate section
+  donateBlurb: {
+    fontSize: 13, color: c.textMuted, lineHeight: 18,
+    paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6,
+  },
+  donateRow: {
+    flexDirection: 'row', alignItems: 'center', padding: 14, gap: 12,
+    borderTopWidth: 1, borderTopColor: c.cardBorder,
+  },
+  donateIcon: {
+    width: 36, height: 36, borderRadius: 8,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  donateLabel: { fontSize: 15, fontWeight: '600', color: c.text },
+  donateSub: { fontSize: 12, color: c.textMuted, marginTop: 2 },
 
   // Appearance segment
   appearanceSection: {
