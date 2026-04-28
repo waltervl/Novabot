@@ -1220,20 +1220,28 @@ function devRow(dev) {
   if (!isCharger && dev.is_active) {
     activeBadge = '<span style="font-size:9px;background:rgba(124,58,237,.2);color:#a78bfa;padding:1px 6px;border-radius:3px;font-weight:600;margin-left:4px">Active</span>';
   }
-  // Activate = groen (positive action), Deactivate = rood (undo/warning).
-  // Inline buttons — passen binnen de bestaande .dev-row grid kolom zonder
-  // extra wrappers. min-width=82 houdt de knoppen visueel uniform tussen
-  // rijen zodat Unbind onder elkaar uitlijnt.
+  // Layout: één primaire actieknop (Activate/Deactivate voor mowers, niets
+  // voor chargers) + kebab-menu (⋯) met destructieve / minder-gebruikte
+  // opties (Unbind, Delete + Banish). Houdt rijen compact en visueel rustig.
   const btnBase = 'font-size:11px;padding:4px 12px;border-radius:6px;font-weight:600;margin-left:6px';
   let actions = '';
   if (bound) {
     if (!isCharger) {
       actions += dev.is_active
-        ? '<button class="btn btn-sm" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.4);min-width:82px;' + btnBase + '" title="Click to deactivate this mower" onclick="deactivateDevice(\\'' + dev.sn + '\\')">Deactivate</button>'
-        : '<button class="btn btn-sm" style="background:rgba(34,197,94,.15);color:#22c55e;border:1px solid rgba(34,197,94,.4);min-width:82px;' + btnBase + '" title="Set this mower as the active one" onclick="setActiveDevice(\\'' + dev.sn + '\\')">Activate</button>';
+        ? '<button class="btn btn-sm" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.4);min-width:90px;' + btnBase + '" title="Click to deactivate this mower" onclick="deactivateDevice(\\'' + dev.sn + '\\')">Deactivate</button>'
+        : '<button class="btn btn-sm" style="background:rgba(34,197,94,.15);color:#22c55e;border:1px solid rgba(34,197,94,.4);min-width:90px;' + btnBase + '" title="Set this mower as the active one" onclick="setActiveDevice(\\'' + dev.sn + '\\')">Activate</button>';
     }
-    actions += '<button class="btn btn-sm" style="background:rgba(255,255,255,.04);color:#aaa;border:1px solid rgba(255,255,255,.1);min-width:64px;' + btnBase + '" onclick="unbindDevice(\\'' + dev.sn + '\\')">Unbind</button>';
-    actions += '<button class="btn btn-sm" style="background:rgba(239,68,68,.08);color:#ef4444;border:1px solid rgba(239,68,68,.3);min-width:88px;' + btnBase + '" title="Delete device + block MQTT reconnect for 30min — for re-provisioning via Novabot app" onclick="banishDevice(\\'' + dev.sn + '\\')">Delete + Banish</button>';
+    // Kebab menu — popover met Unbind + Delete + Banish. Inline HTML zonder
+    // extra deps, JS toggle in onclick. Click-outside-to-close zit in
+    // closeAllDeviceMenus(), aangeroepen door document-level listener
+    // (hieronder, eenmalig).
+    actions += '<span class="dev-menu" style="position:relative;display:inline-block;margin-left:6px;vertical-align:middle">'
+      + '<button class="btn btn-sm dev-menu-btn" style="background:rgba(255,255,255,.04);color:#aaa;border:1px solid rgba(255,255,255,.1);min-width:32px;font-size:14px;padding:3px 10px;border-radius:6px;font-weight:700" onclick="event.stopPropagation();toggleDeviceMenu(this)" title="More actions">⋯</button>'
+      + '<div class="dev-menu-pop" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#161628;border:1px solid rgba(255,255,255,.12);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:50;min-width:180px;overflow:hidden">'
+      +   '<button class="dev-menu-item" style="display:block;width:100%;text-align:left;padding:10px 14px;background:transparent;border:0;color:#ddd;font-size:12px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05)" onclick="closeAllDeviceMenus();unbindDevice(\\'' + dev.sn + '\\')" onmouseover="this.style.background=\\'rgba(255,255,255,.05)\\'" onmouseout="this.style.background=\\'transparent\\'">Unbind</button>'
+      +   '<button class="dev-menu-item" style="display:block;width:100%;text-align:left;padding:10px 14px;background:transparent;border:0;color:#ef4444;font-size:12px;cursor:pointer" onclick="closeAllDeviceMenus();banishDevice(\\'' + dev.sn + '\\')" onmouseover="this.style.background=\\'rgba(239,68,68,.08)\\'" onmouseout="this.style.background=\\'transparent\\'" title="Delete + block MQTT reconnect for 30min (for re-provisioning via Novabot app)">Delete + Banish</button>'
+      + '</div>'
+      + '</span>';
   } else {
     actions += '<button class="btn btn-sm btn-green" style="min-width:64px;' + btnBase + '" onclick="bindDevice(\\'' + dev.sn + '\\')">Bind</button>' +
       '<button class="btn btn-sm btn-red" style="min-width:64px;' + btnBase + '" onclick="removeDevice(\\'' + dev.sn + '\\')">Remove</button>';
@@ -1501,6 +1509,27 @@ async function cancelPending(pendingSn) {
     });
     loadMyDevices();
   } catch(e) { modalAlert('Cancel Failed', e.message || String(e)); }
+}
+
+// ── Device kebab menu ──────────────────────────────────────────────────
+// Click-outside-to-close: één document-level listener gestart bij eerste
+// open, niet per device. Idempotent — meerdere registraties zijn een no-op.
+function closeAllDeviceMenus() {
+  document.querySelectorAll('.dev-menu-pop').forEach(function(p) {
+    p.style.display = 'none';
+  });
+}
+function toggleDeviceMenu(btn) {
+  var pop = btn.parentElement.querySelector('.dev-menu-pop');
+  var isOpen = pop.style.display === 'block';
+  closeAllDeviceMenus();
+  if (!isOpen) pop.style.display = 'block';
+}
+if (!window.__devMenuOutsideClick) {
+  window.__devMenuOutsideClick = true;
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('.dev-menu')) closeAllDeviceMenus();
+  });
 }
 
 async function setActiveDevice(sn) {
