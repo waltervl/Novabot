@@ -16,6 +16,10 @@ services:
       - "80:80"       # HTTP (API + admin panel + mower connectivity check)
       - "443:443"     # HTTPS (required for Novabot app)
       - "1883:1883"   # MQTT broker
+      # mDNS — used by custom-firmware mowers to auto-discover this server
+      # on the LAN. Without this, mowers fall back to DNS rewrite of
+      # mqtt.lfibot.com. See docs/guide/auto-discovery.md.
+      - "5353:5353/udp"
       # - "53:53/udp" # DNS (optional — requires ENABLE_DNS + TARGET_IP)
     environment:
       # Timezone — must match the timezone used by the app when creating schedules
