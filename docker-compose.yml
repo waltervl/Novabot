@@ -53,5 +53,17 @@ services:
       # Min interval (ms) between map image republishes. Default 15s
       # keeps HA responsive without spamming the broker.
       HA_MAP_THROTTLE_MS: ${HA_MAP_THROTTLE_MS:-15000}
+
+      # ntfy.sh push notifications — set NTFY_TOPIC in .env to enable.
+      # Topics are unauthenticated; pick something long and random.
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      NTFY_PRIORITY: ${NTFY_PRIORITY:-}
+
+      # Optional: HA webhook trigger URL (full event JSON POSTed)
+      HA_WEBHOOK_URL: ${HA_WEBHOOK_URL:-}
+
+      # Battery % crossing point for the low_battery event
+      LOW_BATTERY_THRESHOLD: ${LOW_BATTERY_THRESHOLD:-20}
     volumes:
       - ./data:/data
