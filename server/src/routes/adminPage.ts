@@ -2456,6 +2456,7 @@ async function cloudImport() {
       };
     }
     var totalMaps = 0;
+    var totalRecords = 0;
     var failed = 0;
     for (var pk in pairs) {
       var p = pairs[pk];
@@ -2467,16 +2468,24 @@ async function cloudImport() {
           deviceName: p.deviceName,
           charger: p.charger || undefined,
           mower: p.mower || undefined,
+          // Settings re-import: keep locally edited maps and dedup
+          // historic work records by recordId. The first-time wizard
+          // (firstTimeCloudImport) leaves merge unset for fresh start.
+          merge: true,
         })
       });
       const rj = await r.json();
-      if (rj.ok) { if (rj.mapsImported) totalMaps += rj.mapsImported; }
+      if (rj.ok) {
+        if (rj.mapsImported) totalMaps += rj.mapsImported;
+        if (rj.workRecordsImported) totalRecords += rj.workRecordsImported;
+      }
       else { failed++; result.innerHTML += '<div style="color:#ef4444;font-size:12px">Failed: ' + (rj.error || 'unknown') + '</div>'; }
     }
 
     var pairCount = Object.keys(pairs).length - failed;
     var msg = 'Imported ' + pairCount + ' device set(s)!';
-    if (totalMaps > 0) msg += ' (' + totalMaps + ' map(s))';
+    if (totalMaps > 0) msg += ' (' + totalMaps + ' new map(s))';
+    if (totalRecords > 0) msg += ' (' + totalRecords + ' new record(s))';
     result.innerHTML += '<div style="color:#00d4aa;font-size:13px;margin-top:8px;font-weight:600">' + msg + '</div>';
     result.innerHTML += '<div style="margin-top:8px;padding:8px 12px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.2);border-radius:6px;font-size:12px;color:#f59e0b">If the Novabot app is open, log out and log back in to see your devices.</div>';
     loadMyDevices();
