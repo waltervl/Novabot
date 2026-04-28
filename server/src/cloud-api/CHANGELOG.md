@@ -2,6 +2,15 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-04-28 — Stock-app FCM token observation
+
+- `routes/appUser.ts`: `POST /api/nova-user/appUser/updateAppUserMachineToken`
+  now logs the FCM token prefix + IMEI tail at INFO when the stock
+  Novabot v2.4.0 app uploads its registration. End-to-end delivery to
+  the stock app still requires Novabot's APNS/FCM credentials we don't
+  have — this is observation-only. Existing JWT auth + DB write
+  unchanged.
+
 ## 2026-04-27 — Work records: parse mower multipart body
 
 - `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
