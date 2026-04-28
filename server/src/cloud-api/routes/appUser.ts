@@ -233,8 +233,23 @@ appUserRouter.post('/deleteAccount', authMiddleware, (req: AuthRequest, res: Res
 });
 
 // POST /api/nova-user/appUser/updateAppUserMachineToken
+//
+// Stock Novabot v2.4.0 app uploads its FCM registration token here on
+// every app launch (HomePageLogic._sendMsgTokenToServer, blutter line
+// 3176-3177). Body: { appUserId, machineToken, imei }. Auth: Bearer JWT.
+//
+// We log the prefix so the operator can confirm tokens are flowing
+// without spamming the full FCM token (>150 chars) into logs. Actual
+// dispatch to FCM/APNS would require Novabot's developer credentials,
+// which we don't have — so this endpoint is observation-only for the
+// stock app. The OpenNova app uses /api/push/register + Expo Push.
 appUserRouter.post('/updateAppUserMachineToken', authMiddleware, (req: AuthRequest, res: Response) => {
-  const { machineToken } = req.body as { machineToken?: string };
+  const { machineToken, imei } = req.body as { machineToken?: string; imei?: string };
   userRepo.updateMachineToken(req.userId!, machineToken ?? '');
+  if (machineToken) {
+    const prefix = machineToken.slice(0, 24);
+    const imeiTail = imei ? imei.slice(-6) : '?';
+    console.log(`[STOCK-PUSH] user=${req.userId} fcm=${prefix}… imei=…${imeiTail}`);
+  }
   res.json(ok());
 });

@@ -233,6 +233,25 @@ export function initDb(): void {
       updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (sn, key)
     );
+
+    -- Expo push tokens: per-user device tokens for the OpenNova mobile app.
+    -- Tokens are upserted on app launch (via /api/push/register) and looked
+    -- up by the notifications dispatcher to fan events out to Apple/Google
+    -- via Expo's free push relay.
+    --
+    -- (token, sn) is the natural key: a single device may run with
+    -- multiple bound mowers, and a single mower may notify multiple
+    -- household phones. Stale tokens are GC'd on push delivery failure
+    -- (DeviceNotRegistered → row delete).
+    CREATE TABLE IF NOT EXISTS push_tokens (
+      token       TEXT    NOT NULL,
+      sn          TEXT    NOT NULL,
+      user_id     TEXT    NOT NULL,
+      platform    TEXT    NOT NULL,    -- 'ios' | 'android'
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (token, sn)
+    );
   `);
 
   // Voeg mac_address kolom toe aan equipment (migratie – veilig om te herhalen)

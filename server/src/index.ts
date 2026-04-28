@@ -22,6 +22,7 @@ import { adminPageHtml } from './routes/adminPage.js';
 import { authMiddleware, adminMiddleware, dashboardMiddleware } from './middleware/auth.js';
 import { dashboardRouter, initFirmwareSync } from './routes/dashboard.js';
 import { eventsRouter } from './notifications/route.js';
+import { pushRegisterRouter } from './notifications/registerRoute.js';
 import { renderRouter } from './render/route.js';
 
 const PROXY_MODE = process.env.PROXY_MODE ?? 'local';
@@ -191,6 +192,9 @@ if (PROXY_MODE === 'cloud') {
 
   // Notification event ring (HTTP polling for HA / scripts)
   app.use('/api/events', eventsRouter);
+
+  // Expo push token registration (OpenNova mobile app uploads on launch)
+  app.use('/api/push', pushRegisterRouter);
 
   // Rendered mower map SVG (used by HA's MQTT image entity + manual viewers)
   app.use('/api/render', renderRouter);

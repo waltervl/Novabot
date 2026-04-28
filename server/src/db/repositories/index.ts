@@ -23,3 +23,4 @@ export { DeviceSettingsRepository, deviceSettingsRepo } from './deviceSettings.j
 export { SignalHistoryRepository, signalHistoryRepo } from './signalHistory.js';
 export { VirtualWallRepository, virtualWallRepo } from './virtualWalls.js';
 export { OtaVersionRepository, otaVersionRepo } from './otaVersions.js';
+export { pushTokensRepo, type PushTokenRow } from './pushTokens.js';

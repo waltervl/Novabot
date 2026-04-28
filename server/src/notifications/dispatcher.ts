@@ -8,6 +8,7 @@
  * events on the `novabot/events/<SN>` topic for HA's MQTT integration.
  */
 import { publishToTopic } from '../mqtt/mapSync.js';
+import { sendExpoPush } from './expoPush.js';
 import { MowerEvent } from './types.js';
 
 const TAG = '[NOTIFY]';
@@ -78,9 +79,11 @@ function publishMqttEvent(ev: MowerEvent): void {
 export function dispatchEvent(ev: MowerEvent): void {
   pushRing(ev);
   publishMqttEvent(ev);
-  // ntfy + HA webhook are async fire-and-forget — don't block the
-  // sensor pipeline on slow upstream HTTP services.
+  // All HTTP channels run async fire-and-forget — none blocks the
+  // sensor pipeline. Expo push is the in-app delivery path for the
+  // OpenNova mobile app; ntfy + HA webhook are external relays.
   void sendNtfy(ev);
   void sendHaWebhook(ev);
+  void sendExpoPush(ev);
   console.log(`${TAG} ${ev.sn} ${ev.type}: ${ev.title}`);
 }
