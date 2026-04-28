@@ -33,19 +33,36 @@ describe('eventDetector', () => {
     expect(events.filter(e => e.ts > Date.now() - 100)).toHaveLength(0);
   });
 
-  it('emits "error" when error_status goes 0 → non-stuck code', () => {
+  it('emits generic "error" for unmapped error_status codes', () => {
     detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
     detectAndDispatch(SN, snap({ error_status: '8', msg: '', battery_power: '90', recharge_status: '0', error_msg: 'LoRa lost' }));
     const ev = getRecentEvents(SN, 1)[0];
     expect(ev.type).toBe('error');
     expect(ev.data.error_status).toBe('8');
+    // Unmapped codes use the firmware's own error_msg as the body.
+    expect(ev.message).toBe('LoRa lost');
   });
 
-  it('emits "stuck" for known stuck error codes', () => {
+  it('emits "stuck" for code 124 (return-to-charge fail)', () => {
     detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
     detectAndDispatch(SN, snap({ error_status: '124', msg: '', battery_power: '90', recharge_status: '0', error_msg: 'recharge fail' }));
     const ev = getRecentEvents(SN, 1)[0];
     expect(ev.type).toBe('stuck');
+  });
+
+  it('emits "safety" for tilt code 158', () => {
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
+    detectAndDispatch(SN, snap({ error_status: '158', msg: '', battery_power: '90', recharge_status: '0', error_msg: '' }));
+    const ev = getRecentEvents(SN, 1)[0];
+    expect(ev.type).toBe('safety');
+    expect(ev.message).toContain('tilted');
+  });
+
+  it('emits "connection_lost" for LoRa code 132', () => {
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
+    detectAndDispatch(SN, snap({ error_status: '132', msg: '', battery_power: '90', recharge_status: '0', error_msg: '' }));
+    const ev = getRecentEvents(SN, 1)[0];
+    expect(ev.type).toBe('connection_lost');
   });
 
   it('emits "error_cleared" on non-zero → 0 transition', () => {

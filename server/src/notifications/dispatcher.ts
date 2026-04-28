@@ -9,6 +9,7 @@
  */
 import { publishToTopic } from '../mqtt/mapSync.js';
 import { sendExpoPush } from './expoPush.js';
+import { writeRobotMessage } from './robotMessageWriter.js';
 import { MowerEvent } from './types.js';
 
 const TAG = '[NOTIFY]';
@@ -79,6 +80,10 @@ function publishMqttEvent(ev: MowerEvent): void {
 export function dispatchEvent(ev: MowerEvent): void {
   pushRing(ev);
   publishMqttEvent(ev);
+  // robot_messages write is synchronous (single SQLite insert) —
+  // matters because stock-app polls the table immediately on open and
+  // we want events visible without waiting for the async HTTP fan-out.
+  writeRobotMessage(ev);
   // All HTTP channels run async fire-and-forget — none blocks the
   // sensor pipeline. Expo push is the in-app delivery path for the
   // OpenNova mobile app; ntfy + HA webhook are external relays.

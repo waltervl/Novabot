@@ -7,12 +7,29 @@
  * events (we can't tell a transition from "first seen").
  */
 import { dispatchEvent } from './dispatcher.js';
+import { lookupError } from './errorMap.js';
 import { MowerEvent, EventType } from './types.js';
 
 const LOW_BATTERY_THRESHOLD = parseInt(process.env.LOW_BATTERY_THRESHOLD ?? '20', 10);
-// Error codes that we surface as "stuck" rather than the generic "error" event.
-// 124/126 = recharge / dock failures, 132 = LoRa data loss (mower disoriented).
-const STUCK_ERROR_CODES = new Set(['124', '126', '132']);
+
+// Friendlier titles per category — keeps notification banners short
+// while the body carries the firmware-translated message.
+const TITLE_BY_TYPE: Record<EventType, string> = {
+  error:                'Mower error',
+  error_cleared:        'Mower error cleared',
+  mowing_started:       'Mowing started',
+  mowing_finished:      'Mowing finished',
+  docked:               'Mower docked',
+  low_battery:          'Low battery',
+  stuck:                'Mower stuck',
+  safety:               'Mower safety stop',
+  pin_locked:           'PIN required',
+  connection_lost:      'Mower connection lost',
+  gps_weak:             'GPS issue',
+  map_error:            'Mapping issue',
+  initialization_error: 'Mower starting up',
+  hardware_fault:       'Hardware fault',
+};
 
 interface SnapshotState {
   errorStatus: string;
@@ -68,19 +85,23 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
   if (prev.errorStatus !== next.errorStatus) {
     if (next.errorStatus !== '0') {
       const errMsg = snValues.get('error_msg') ?? `error_status=${next.errorStatus}`;
-      const isStuck = STUCK_ERROR_CODES.has(next.errorStatus);
+      const code = parseInt(next.errorStatus, 10) || 0;
+      const entry = lookupError(code, errMsg);
+      // Body prefers the curated message text from the stock app's
+      // translation table; fall back to firmware error_msg if unmapped.
+      const body = entry.type === 'error' ? errMsg : entry.message;
       dispatchEvent(makeEvent(
         sn,
-        isStuck ? 'stuck' : 'error',
-        isStuck ? 'Mower stuck' : `Mower error ${next.errorStatus}`,
-        errMsg,
+        entry.type,
+        TITLE_BY_TYPE[entry.type] ?? 'Mower event',
+        body,
         { error_status: next.errorStatus, error_msg: errMsg, msg: next.msg },
       ));
     } else {
       dispatchEvent(makeEvent(
         sn,
         'error_cleared',
-        'Mower error cleared',
+        TITLE_BY_TYPE.error_cleared,
         `Previous error_status=${prev.errorStatus} now 0`,
         { previous_error_status: prev.errorStatus, msg: next.msg },
       ));
