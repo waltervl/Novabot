@@ -908,9 +908,14 @@ def _depart_pile(seconds: float = 4.0, linear: float = 0.25):
 
     Sequence:
       1. Cancel any active recharge so auto_charging stops driving.
-      2. Publish a steady-state Twist on /cmd_vel for `seconds` seconds.
+      2. Publish UInt8(1) to /release_charge_lock — same signal the
+         stock mqtt_node binary sends when handling start_navigation
+         from the dock (decompile mqtt_node:308974). Without this the
+         chassis stays magnet-locked and ignores /cmd_vel commands.
+      3. Wait briefly for the chassis to release.
+      4. Publish a steady-state Twist on /cmd_vel for `seconds` seconds.
          Default 4s @ 0.25 m/s = ~1.0 m back-off, matching the firmware.
-      3. Send a zero Twist to bring the chassis to a stop before the
+      5. Send a zero Twist to bring the chassis to a stop before the
          coverage planner takes over.
 
     Blocking — caller decides when to invoke. Only call this when the
@@ -927,49 +932,83 @@ def _depart_pile(seconds: float = 4.0, linear: float = 0.25):
 
     log(f"depart_pile: starting {seconds}s reverse @ {linear} m/s")
 
-    cancel_cmd = (
-        "source /opt/ros/galactic/setup.bash && "
-        "source /root/novabot/install/setup.bash 2>/dev/null && "
-        "timeout 4 ros2 service call /robot_decision/cancel_recharge std_srvs/srv/Trigger '{}' "
-        ">> /tmp/depart_pile.log 2>&1"
-    )
-    try:
-        subprocess.run(["bash", "-c", cancel_cmd], env=env, timeout=6)
-    except Exception as e:
-        log(f"depart_pile: cancel_recharge failed: {e}")
-
+    # All ros2 CLI calls in one long-running bash so we pay DDS
+    # discovery cost ONCE. Previous design did 4 separate subprocess
+    # calls — each spent 5-8 s rediscovering the graph and the inner
+    # `timeout 2-4` cut them off before they could complete. The full
+    # depart sequence now fits comfortably inside a single 30-second
+    # outer timeout.
     twist = (
         f"'{{linear: {{x: -{linear}, y: 0.0, z: 0.0}}, "
         f"angular: {{x: 0.0, y: 0.0, z: 0.0}}}}'"
     )
-    drive_cmd = (
-        "source /opt/ros/galactic/setup.bash && "
-        "source /root/novabot/install/setup.bash 2>/dev/null && "
-        f"timeout {seconds + 1:.1f} ros2 topic pub --rate 10 /cmd_vel "
-        f"geometry_msgs/msg/Twist {twist} >> /tmp/depart_pile.log 2>&1"
-    )
-    try:
-        proc = subprocess.Popen(["bash", "-c", drive_cmd], env=env)
-        time.sleep(seconds)
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except Exception:
-            proc.kill()
-    except Exception as e:
-        log(f"depart_pile: cmd_vel publish failed: {e}")
-
     stop_twist = "'{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}'"
-    stop_cmd = (
-        "source /opt/ros/galactic/setup.bash && "
-        "source /root/novabot/install/setup.bash 2>/dev/null && "
-        f"timeout 2 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist {stop_twist} "
-        ">> /tmp/depart_pile.log 2>&1"
+
+    # Each ros2 CLI invocation re-runs DDS discovery (~3-5 s on this
+    # hardware). We can't avoid that from the shell, but we CAN make
+    # sure the reverse-Twist publisher actually has time to publish
+    # something before we kill it. Live capture 2026-04-28 showed
+    # `sleep 4` killing the publisher mid-discovery → no cmd_vel
+    # messages reached the chassis, mower stayed put.
+    #
+    # Two changes:
+    #   a) Warm the /cmd_vel publisher with a single --once Twist BEFORE
+    #      starting the streaming publisher. The first publish triggers
+    #      DDS to register the writer; subsequent publishers reuse the
+    #      already-discovered topic.
+    #   b) Hold the streaming publisher long enough that even after
+    #      discovery cost there's still real drive time. Bump the
+    #      blocking sleep to 4s + 4s overhead; mower will only DRIVE
+    #      while messages arrive at 10 Hz, so a longer hold is
+    #      effectively a no-op once messages stop.
+    # ros2 topic pub re-runs DDS discovery on every invocation. Live
+    # capture 2026-04-28 showed iceoryx init alone consuming 7-8 s
+    # before a single message hit the wire. We keep the streaming
+    # publisher alive long enough that — even after worst-case
+    # discovery — there's still real publish time at 10 Hz. Mower's
+    # cmd_vel watchdog brakes within ~0.5 s of message-loss, so a
+    # bigger hold doesn't translate to extra drive distance, just a
+    # safety margin.
+    drive_hold = float(seconds) + 16.0   # 4 s drive + 16 s discovery slack
+    sequence = (
+        "set -x; "
+        "source /opt/ros/galactic/setup.bash; "
+        "source /root/novabot/install/setup.bash 2>/dev/null; "
+        # 1. Best-effort cancel of any active recharge action.
+        "ros2 service call /robot_decision/cancel_recharge "
+        "std_srvs/srv/Trigger '{}' || true; "
+        # 2. Drop the dock magnet (UInt8(1) per stock mqtt_node).
+        "ros2 topic pub --once /release_charge_lock std_msgs/msg/UInt8 "
+        "'{data: 1}' || true; "
+        # 3. Wait for chassis to release (~500 ms).
+        "sleep 0.5; "
+        # 4a. Warm /cmd_vel topic with a single REVERSE Twist so the
+        #     DDS graph already knows about a writer with this exact
+        #     QoS by the time the streaming publisher comes up. Using
+        #     reverse (not zero) also lets the mower's velocity watchdog
+        #     latch on to the signal sooner.
+        f"ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist {twist} || true; "
+        # 4b. Stream the reverse Twist at 10 Hz.
+        f"ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist {twist} & "
+        "TWIST_PID=$!; "
+        f"sleep {drive_hold}; "
+        "kill $TWIST_PID 2>/dev/null; "
+        "wait $TWIST_PID 2>/dev/null; "
+        # 5. Brake — single zero Twist.
+        f"ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist {stop_twist} || true"
     )
+
+    bash_cmd = f"({sequence}) >> /tmp/depart_pile.log 2>&1"
+    # Outer timeout: every ros2 CLI invocation can eat ~5-8s on DDS
+    # discovery. Sequence has 5 ros2 calls plus the drive_hold sleep,
+    # so worst-case ~40s of overhead + drive_hold.
+    outer_timeout = max(60.0, 40.0 + drive_hold + 10.0)
     try:
-        subprocess.run(["bash", "-c", stop_cmd], env=env, timeout=4)
+        rc = subprocess.run(["bash", "-c", bash_cmd], env=env,
+                            timeout=outer_timeout).returncode
+        log(f"depart_pile: sequence rc={rc}")
     except Exception as e:
-        log(f"depart_pile: zero-twist publish failed: {e}")
+        log(f"depart_pile: sequence failed: {e}")
 
     log("depart_pile: done")
 
