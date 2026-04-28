@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { equipmentRepo, messageRepo } from '../../db/repositories/index.js';
+import { deviceCache } from '../../mqtt/sensorData.js';
 import { ok } from '../../types/index.js';
 
 export const equipmentStateRouter = Router();
@@ -39,21 +40,100 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
   const body = req.body as Record<string, unknown>;
   const sn = typeof body.sn === 'string' ? body.sn : undefined;
 
+  // Log every incoming key so we can spot field-name mismatches
+  // between what the mower posts and what our handler reads. Live
+  // capture 2026-04-28 showed an inserted row with sn populated but
+  // every other field NULL — implying the mower sends fields under
+  // names we don't recognise. Trace gives us ground truth without
+  // needing wireshark.
+  const keys = Object.keys(body);
+  console.log(`[STATE] saveCutGrassRecord raw body keys: ${keys.join(',') || '∅'}`);
+  for (const k of keys) {
+    const v = body[k];
+    const preview = typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v).slice(0, 80);
+    console.log(`[STATE]   ${k} (${typeof v}) = ${preview}`);
+  }
+
   if (!sn) {
-    console.log(`[STATE] saveCutGrassRecord: lege body van ${srcIp} (keys=${Object.keys(body).join(',') || '∅'})`);
+    console.log(`[STATE] saveCutGrassRecord: lege body van ${srcIp}`);
     res.json(ok(null));
     return;
   }
 
-  const dateTime = typeof body.dateTime === 'string' ? body.dateTime : null;
-  const workTime = toNum(body.workTime);
-  const workArea = toNum(body.workArea);
-  const cutGrassHeight = toNum(body.cutGrassHeight);
-  const mapNames = toJsonField(body.mapNames);
-  const startWay = typeof body.startWay === 'string' ? body.startWay : null;
-  const workStatus = typeof body.workStatus === 'string' ? body.workStatus : null;
-  const scheduleId = typeof body.scheduleId === 'string' ? body.scheduleId : null;
-  const week = toJsonField(body.week);
+  // Accept multiple naming variants — different mower firmware revisions
+  // (and potentially the stock app's POSTs) send the same field under
+  // slightly different keys. Try camelCase first, then snake_case, then
+  // a few abbreviations.
+  function pickStr(...keys: string[]): string | null {
+    for (const k of keys) {
+      const v = body[k];
+      if (typeof v === 'string' && v.trim() !== '') return v;
+    }
+    return null;
+  }
+  function pickNum(...keys: string[]): number | null {
+    for (const k of keys) {
+      const v = body[k];
+      const n = toNum(v);
+      if (n !== null) return n;
+    }
+    return null;
+  }
+  function pickJson(...keys: string[]): string | null {
+    for (const k of keys) {
+      const v = body[k];
+      const j = toJsonField(v);
+      if (j) return j;
+    }
+    return null;
+  }
+
+  const dateTime = pickStr('dateTime', 'date_time', 'startTime', 'time')
+    ?? new Date().toISOString();
+  let workTime = pickNum('workTime', 'work_time', 'duration');
+  let workArea = pickNum('workArea', 'work_area', 'area', 'mowedArea');
+  let cutGrassHeight = pickNum('cutGrassHeight', 'cut_grass_height', 'cuttingHeight', 'cutterHeight', 'cutterhigh');
+  let mapNames = pickJson('mapNames', 'map_names', 'selectMap', 'selectedMap', 'mapName');
+  let startWay = pickStr('startWay', 'start_way', 'source', 'sourceApp');
+  let workStatus = pickStr('workStatus', 'work_status', 'status', 'finishStatus');
+  const scheduleId = pickStr('scheduleId', 'schedule_id');
+  const week = pickJson('week', 'weekArray', 'weekDay');
+
+  // Fallback to live sensor cache when the mower's POST omitted the
+  // detail fields (observed on interrupted sessions where the
+  // firmware posts only sn + dateTime). Better an approximation
+  // pulled from the last known mower state than an empty row.
+  const cache = deviceCache.get(sn);
+  if (cache) {
+    if (cutGrassHeight === null) {
+      const wire = parseInt(cache.get('target_height') ?? '', 10);
+      if (Number.isFinite(wire)) cutGrassHeight = wire + 2;   // wire→user cm
+    }
+    if (workArea === null) {
+      const a = parseFloat(cache.get('cov_area') ?? '');
+      if (Number.isFinite(a)) workArea = a;
+    }
+    if (workTime === null) {
+      const t = parseFloat(cache.get('cov_work_time') ?? '');
+      if (Number.isFinite(t)) workTime = t;
+    }
+    if (mapNames === null) {
+      const id = cache.get('current_map_ids') ?? cache.get('cover_map_id');
+      if (id) mapNames = JSON.stringify([`map${id}`]);
+    }
+    if (workStatus === null) {
+      const msg = cache.get('msg') ?? '';
+      if (msg.includes('Work:FINISHED')) workStatus = 'finished';
+      else if (msg.includes('Work:WAIT') && cache.get('error_status') !== '0') workStatus = 'interrupted abnormally';
+      else if (msg) workStatus = 'interrupted artificially';
+    }
+    if (startWay === null) {
+      // We don't know which app initiated. Default to a generic
+      // label — operators using the OpenNova app can override via
+      // a future API hook if needed.
+      startWay = 'app';
+    }
+  }
 
   console.log(`[STATE] saveCutGrassRecord: sn=${sn} status=${workStatus ?? '-'} time=${workTime ?? '-'}min area=${workArea ?? '-'}m²`);
 
