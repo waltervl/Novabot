@@ -143,3 +143,38 @@ async def test_resolve_failure_does_not_change_config(tmp_path):
 
     assert switches == []
     assert json.loads(json_cfg.read_text())['mqtt']['value']['addr'] == '192.168.0.10'
+
+
+@pytest.mark.asyncio
+async def test_switch_emits_server_migrated_event(tmp_path):
+    json_cfg = tmp_path / 'json_config.json'
+    json_cfg.write_text(json.dumps({'mqtt': {'value': {'addr': '192.168.0.10', 'port': 1883}}}))
+    http_addr = tmp_path / 'http_address.txt'
+    http_addr.write_text('192.168.0.10:80')
+
+    published: list[tuple[str, dict]] = []
+
+    async def resolve(_hosts):
+        return ResolveResult(host='opennova.local', ip='192.168.0.99')
+
+    def on_switch_with_event(new_host: str, new_port: int) -> None:
+        published.append((
+            f'novabot/events/LFIN1234567890/server_migrated',
+            {'from_ip': '192.168.0.10', 'to_ip': new_host, 'port': new_port},
+        ))
+
+    loop = DiscoveryLoop(
+        config=_make_config('192.168.0.10'),
+        json_path=json_cfg,
+        http_addr_path=http_addr,
+        resolver=resolve,
+        on_switch=on_switch_with_event,
+    )
+    await loop.poll_once()
+    await loop.poll_once()
+
+    assert len(published) == 1
+    topic, payload = published[0]
+    assert topic.endswith('/server_migrated')
+    assert payload['from_ip'] == '192.168.0.10'
+    assert payload['to_ip'] == '192.168.0.99'
