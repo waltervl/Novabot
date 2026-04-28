@@ -66,6 +66,10 @@ Expected response:
 
 ### 5. Set up DNS redirect
 
+> **Custom firmware?** Auto-discovery via mDNS may already work without any DNS
+> setup — see [docs/guide/auto-discovery.md](docs/guide/auto-discovery.md).
+> The DNS options below are required for stock firmware.
+
 Your mower needs to find your server when it looks up `mqtt.lfibot.com`. You have several options:
 
 #### Option A: Pi-hole / AdGuard Home (recommended)

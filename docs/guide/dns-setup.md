@@ -1,5 +1,9 @@
 # DNS Setup Guide
 
+> Have a custom-firmware mower? You can skip DNS rewrite entirely — see
+> [auto-discovery](auto-discovery.md). DNS rewrite is required only for
+> stock-firmware devices.
+
 !!! info "Who needs this?"
     DNS setup is **only needed if you use the original Novabot app** (iOS/Android). If you use the **OpenNova app**, you can skip this entirely — the app connects directly to your server IP.
 
