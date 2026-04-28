@@ -2,6 +2,19 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-04-28 — Work records: field-name variants + sensor-cache fallback
+
+- `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
+  now accepts multiple naming variants per field (camelCase / snake_case /
+  abbreviation) so it tolerates firmware-rev differences in mower POST
+  bodies. When a field is missing entirely, falls back to the live
+  `deviceCache` snapshot — `target_height + 2` for cutting height,
+  `cov_area` / `cov_work_time` for size/duration, `current_map_ids` for
+  mapNames, and `msg` parsed for workStatus. Records of interrupted
+  sessions now show approximate context instead of an empty row.
+- Diagnostic logging dumps every inbound body key at INFO so the next
+  field-name mismatch surfaces in docker logs without needing wireshark.
+
 ## 2026-04-28 — Stock-app FCM token observation
 
 - `routes/appUser.ts`: `POST /api/nova-user/appUser/updateAppUserMachineToken`
