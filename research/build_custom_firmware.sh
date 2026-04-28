@@ -488,8 +488,15 @@ import socket, struct, time
 
 def mdns_query(timeout=8):
     """Discover opennovabot.local via raw mDNS query."""
-    qname = b'\x0eopennovabot\x05local\x00'
-    query = struct.pack('!6H', 0, 0, 1, 0, 0, 0) + qname + struct.pack('!2H', 1, 1)
+    # Query both modern (opennova.local, 0x09 = 9 chars) and legacy
+    # (opennovabot.local, 0x0e = 12 chars) hostnames in one round-trip.
+    qnames = [
+        b'\x09opennova\x05local\x00',
+        b'\x0eopennovabot\x05local\x00',
+    ]
+    query = struct.pack('!6H', 0, 0, len(qnames), 0, 0, 0)
+    for q in qnames:
+        query += q + struct.pack('!2H', 1, 1)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
