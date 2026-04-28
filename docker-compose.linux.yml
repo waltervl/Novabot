@@ -1,13 +1,18 @@
-# Linux productie configuratie — gebruik host networking zodat echte client-IPs zichtbaar zijn.
-# Op Linux heeft de container direct toegang tot het netwerk van de host,
-# waardoor socket.remoteAddress het echte apparaat-IP teruggeeft (geen Docker NAT).
-# Dit maakt automatische detectie van het maaier-IP mogelijk voor SSH map-upload.
+# OpenNova Server — Linux production configuration with host networking.
 #
-# Gebruik op Linux:
-#   docker compose -f docker-compose.linux.yml up -d
+# Op Linux gebruikt de container `network_mode: host` zodat:
+#   - mDNS-multicast de LAN bereikt (mower auto-discovery via novabot.local)
+#   - socket.remoteAddress het echte mower-IP teruggeeft (geen Docker NAT)
+#   - de camera-proxy direct met de mower kan praten
 #
-# Poorten (3000, 1883, 53, 80, 443) worden direct op de host gebonden.
-# Zorg dat deze poorten vrij zijn en pas de firewall aan indien nodig.
+# Quick start:
+#   TARGET_IP=192.168.0.222 docker compose -f docker-compose.linux.yml up -d
+#
+# Poorten (80, 443, 1883, 5353/udp, optioneel 53/udp) worden direct op de
+# host gebonden — zorg dat deze vrij zijn en de firewall ze toelaat.
+#
+# Admin: http://localhost/admin
+# Provision devices: use the OpenNova app (iOS/Android) or bootstrap tool
 
 services:
   opennova:
@@ -15,19 +20,61 @@ services:
     build: .
     container_name: opennova
     restart: unless-stopped
-    network_mode: host      # Geen Docker NAT — echte client IPs zichtbaar
+    network_mode: host          # Geen Docker NAT — echte client-IPs zichtbaar
+                                # + mDNS multicast bereikt LAN
     environment:
+      # Timezone — must match the timezone used by the app when creating schedules
+      TZ: ${TZ:-Europe/Amsterdam}
       PORT: 80
-      PROXY_MODE: ${PROXY_MODE:-local}
       DB_PATH: /data/novabot.db
       STORAGE_PATH: /data/storage
       FIRMWARE_PATH: /data/firmware
-      TARGET_IP: ${TARGET_IP:?}
-      DISABLE_DNS: ${DISABLE_DNS:-false}
-      UPSTREAM_DNS: ${UPSTREAM_DNS:-8.8.8.8}
-      EXTRA_DOMAINS: ${EXTRA_DOMAINS:-}
-    volumes:
-      - novabot-data:/data
+      ENABLE_TLS: "true"
 
-volumes:
-  novabot-data:
+      # Tijdelijk: log iedere succesvolle JWT auth zodat we wisselende tokens kunnen tracen
+      AUTH_DEBUG: "1"
+
+      # Optional: enable web dashboard (default: disabled)
+      ENABLE_DASHBOARD: "true"
+
+      # Your server's LAN IP (for firmware download URLs, TLS cert SAN + DNS)
+      TARGET_IP: ${TARGET_IP:?TARGET_IP must be set — your LAN IP}
+
+      # Proxy mode: 'local' (default) serves Novabot endpoints locally;
+      # 'cloud' forwards every HTTP request to app.lfibot.com (debug).
+      PROXY_MODE: ${PROXY_MODE:-local}
+
+      # Optional: DNS redirect for Novabot app (requires TARGET_IP).
+      # Maps mqtt.lfibot.com / app.lfibot.com → TARGET_IP so unmodified
+      # stock app + firmware reach this server. Bind on host port 53/udp.
+      # ENABLE_DNS: "true"
+      UPSTREAM_DNS: ${UPSTREAM_DNS:-8.8.8.8}
+
+      # Home Assistant MQTT bridge — auto-discover mowers + map images
+      HA_MQTT_HOST: ${HA_MQTT_HOST:-}
+      HA_MQTT_PORT: ${HA_MQTT_PORT:-1883}
+      HA_MQTT_USER: ${HA_MQTT_USER:-}
+      HA_MQTT_PASS: ${HA_MQTT_PASS:-}
+
+      # Public base URL of the OpenNova server — needed so HA can fetch
+      # the rendered map SVG via image entity. Without this the bridge
+      # still publishes sensors but no image entity is discovered.
+      RENDER_BASE_URL: ${RENDER_BASE_URL:-http://${TARGET_IP}}
+
+      # Min interval (ms) between map image republishes. Default 15s
+      # keeps HA responsive without spamming the broker.
+      HA_MAP_THROTTLE_MS: ${HA_MAP_THROTTLE_MS:-15000}
+
+      # ntfy.sh push notifications — set NTFY_TOPIC in .env to enable.
+      # Topics are unauthenticated; pick something long and random.
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      NTFY_PRIORITY: ${NTFY_PRIORITY:-}
+
+      # Optional: HA webhook trigger URL (full event JSON POSTed)
+      HA_WEBHOOK_URL: ${HA_WEBHOOK_URL:-}
+
+      # Battery % crossing point for the low_battery event
+      LOW_BATTERY_THRESHOLD: ${LOW_BATTERY_THRESHOLD:-20}
+    volumes:
+      - ./data:/data
