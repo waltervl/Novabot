@@ -182,6 +182,16 @@ if [ -z "$BASE_VERSION" ]; then
     BASE_VERSION="v0.0.0"
 fi
 
+# Strip a duplicated base-version prefix from VERSION_SUFFIX. Users sometimes
+# pass the full label (e.g. `v6.0.2-custom-25`) instead of just the suffix
+# (`custom-25`); without this guard the build produced
+# `v6.0.2-v6.0.2-custom-25`. Everything before-and-including the first
+# `<base>-` is stripped so only the trailing suffix remains.
+if [[ "$VERSION_SUFFIX" == ${BASE_VERSION}-* ]]; then
+    VERSION_SUFFIX="${VERSION_SUFFIX#${BASE_VERSION}-}"
+    echo "  Note: stripped duplicate '${BASE_VERSION}-' from --version → ${VERSION_SUFFIX}"
+fi
+
 VERSION="${BASE_VERSION}-${VERSION_SUFFIX}$([ "$INCLUDE_SERVER" = "true" ] && echo "-server" || true)"
 
 echo "  Basisversie:  $BASE_VERSION"
