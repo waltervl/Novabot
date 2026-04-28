@@ -4041,6 +4041,80 @@ dashboardRouter.post('/admin/import', async (req: Request, res: Response) => {
   });
 });
 
+// ── POST /api/dashboard/admin/cloud-resync — settings re-import ─────────────
+//
+// Differs from /admin/import: never recreates devices, always merges
+// maps (existing local edits preserved), dedups work records on
+// recordId. Used from the OpenNova app's Settings → Cloud sync flow
+// when the user wants to backfill new history without nuking local
+// state.
+//
+// Body: { email, password, mowerSn? }   (mowerSn defaults to the first
+//   mower bound to the matching local user)
+dashboardRouter.post('/admin/cloud-resync', async (req: Request, res: Response) => {
+  const { email, password, mowerSn } = req.body as {
+    email?: string;
+    password?: string;
+    mowerSn?: string;
+  };
+  if (!email || !password) {
+    res.status(400).json({ ok: false, error: 'email + password required' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const localUser = userRepo.findByEmail(normalizedEmail);
+  if (!localUser) {
+    res.status(404).json({ ok: false, error: 'No local user with that email — run /admin/import first.' });
+    return;
+  }
+
+  // Pick a mower SN: explicit param wins, otherwise first owned mower.
+  const owned = equipmentRepo.findByUserId(localUser.app_user_id);
+  const mowerSnResolved = mowerSn
+    ?? owned.find(e => e.mower_sn?.startsWith('LFIN'))?.mower_sn
+    ?? owned[0]?.mower_sn
+    ?? null;
+  if (!mowerSnResolved) {
+    res.status(400).json({ ok: false, error: 'No mower bound to this account.' });
+    return;
+  }
+
+  let workRecordsImported = 0;
+  let duplicates = 0;
+  try {
+    const { encryptCloudPassword, callLfiCloud } = await import('../services/lfiCloud.js');
+    const { importCloudWorkRecords } = await import('../services/cloudWorkRecordsImport.js');
+    const encryptedPw = encryptCloudPassword(password);
+    const loginResp = await callLfiCloud('POST', '/api/nova-user/appUser/login', {
+      email, password: encryptedPw, imei: 'imei',
+    });
+    const loginVal = (loginResp as Record<string, unknown>).value as Record<string, unknown> | undefined;
+    const cloudToken = loginVal?.accessToken as string | undefined;
+    const cloudAppUserId = loginVal?.appUserId as number | string | undefined;
+    if (!cloudToken || cloudAppUserId == null) {
+      res.status(401).json({ ok: false, error: 'Cloud login failed.' });
+      return;
+    }
+    const equip = equipmentRepo.findByMowerSn(mowerSnResolved);
+    const equipmentId = equip?.equipment_id ?? mowerSnResolved;
+    const result = await importCloudWorkRecords(
+      cloudToken, cloudAppUserId, localUser.app_user_id, equipmentId,
+    );
+    workRecordsImported = result.inserted;
+    duplicates = result.duplicates;
+  } catch (err) {
+    console.error('[admin/cloud-resync] failed:', err);
+    res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : 'cloud-resync failed',
+    });
+    return;
+  }
+
+  res.json({ ok: true, mowerSn: mowerSnResolved, workRecordsImported, duplicates });
+});
+
 // ── Remote Debug — log relay ────────────────────────────────────
 
 // SENDER: user's server stuurt logs naar een remote relay URL

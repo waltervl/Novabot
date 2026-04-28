@@ -174,6 +174,15 @@ export class MapRepository {
     INSERT INTO maps (map_id, mower_sn, map_name, map_area, map_max_min, file_name, file_size, map_type, canonical_name)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  // INSERT OR IGNORE variant — used for merge-mode cloud imports so we
+  // don't clobber locally-edited polygons or freshly-saved maps that
+  // happen to share a (mower_sn, canonical_name) with a cloud record.
+  private _insertIfMissing = db.prepare(`
+    INSERT OR IGNORE INTO maps
+      (map_id, mower_sn, map_name, map_area, map_max_min, file_name, file_size, map_type, canonical_name, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))
+  `);
+
   private _upsert = db.prepare(`
     INSERT OR REPLACE INTO maps (map_id, mower_sn, map_name, map_area, map_max_min, file_name, file_size, map_type, canonical_name, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -305,6 +314,32 @@ export class MapRepository {
       mapType,
       canonical,
     );
+  }
+
+  /** Merge-safe insert — leaves an existing (mower_sn, canonical_name)
+   *  row untouched. Returns true when a new row was inserted, false
+   *  when an existing row preserved local edits. */
+  insertIfMissing(data: CreateMapData): boolean {
+    const mapType = data.map_type ?? 'work';
+    const canonical = data.canonical_name !== undefined
+      ? data.canonical_name
+      : deriveCanonicalName({
+          file_name: data.file_name ?? null,
+          map_name: data.map_name ?? null,
+          map_type: mapType,
+        });
+    const info = this._insertIfMissing.run(
+      data.map_id,
+      data.mower_sn,
+      data.map_name ?? null,
+      data.map_area ?? null,
+      data.map_max_min ?? null,
+      data.file_name ?? null,
+      data.file_size ?? null,
+      mapType,
+      canonical,
+    );
+    return info.changes > 0;
   }
 
   updateName(mapId: string, name: string): void {

@@ -33,6 +33,7 @@ interface CloudRecord {
 
 interface ImportResult {
   inserted: number;
+  duplicates: number;       // rows skipped because record_id already existed
   pagesFetched: number;
   totalCloud: number;
 }
@@ -67,6 +68,7 @@ export async function importCloudWorkRecords(
 ): Promise<ImportResult> {
   let pageNo = 1;
   let inserted = 0;
+  let duplicates = 0;
   let pagesFetched = 0;
   let totalCloud = 0;
 
@@ -90,9 +92,14 @@ export async function importCloudWorkRecords(
     if (rows.length === 0) break;
 
     for (const r of rows) {
+      // Reuse the cloud-supplied recordId so re-imports dedup against
+      // the work_records.record_id UNIQUE constraint. Without one we
+      // generate a fresh UUID — risk is duplicates on re-run, but a
+      // missing recordId is rare in practice.
+      const id = r.recordId ?? uuidv4();
       try {
         messageRepo.createWorkRecordFull(
-          r.recordId ?? uuidv4(),
+          id,
           localUserId,
           r.equipmentId ?? localEquipmentId,
           typeof r.dateTime === 'string' ? r.dateTime : null,
@@ -107,7 +114,15 @@ export async function importCloudWorkRecords(
         );
         inserted++;
       } catch (err) {
-        console.warn('[cloud-import:work-records] insert failed:', err);
+        // SQLite UNIQUE-violation on record_id → already imported.
+        // Surface as duplicates count so callers can show "X new, Y
+        // already had". Anything else is a real failure — log it.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('UNIQUE') || msg.includes('SQLITE_CONSTRAINT')) {
+          duplicates++;
+        } else {
+          console.warn('[cloud-import:work-records] insert failed:', err);
+        }
       }
     }
 
@@ -119,8 +134,9 @@ export async function importCloudWorkRecords(
   }
 
   console.log(
-    `[cloud-import:work-records] imported ${inserted} records ` +
-    `(cloud claimed ${totalCloud}, ${pagesFetched} pages)`,
+    `[cloud-import:work-records] imported ${inserted} new records ` +
+    `(${duplicates} duplicates skipped, cloud claimed ${totalCloud}, ` +
+    `${pagesFetched} pages)`,
   );
-  return { inserted, pagesFetched, totalCloud };
+  return { inserted, duplicates, pagesFetched, totalCloud };
 }

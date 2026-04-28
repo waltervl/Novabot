@@ -110,12 +110,16 @@ setupRouter.post('/cloud-login', async (req: Request, res: Response) => {
 // Calls the existing /api/dashboard/admin/import endpoint internally.
 
 setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
-  const { email, password, deviceName, charger, mower } = req.body as {
+  const { email, password, deviceName, charger, mower, merge } = req.body as {
     email?: string;
     password?: string;
     deviceName?: string;
     charger?: { sn: string; address?: number; channel?: number; mac?: string };
     mower?: { sn: string; mac?: string; version?: string };
+    /** Merge mode (settings re-import): preserve existing local maps
+     *  + dedup work records by recordId. Default = false (first-time
+     *  setup wipes maps before insert, fresh start). */
+    merge?: boolean;
   };
 
   if (!email || !password) {
@@ -253,8 +257,13 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               console.log(`[Setup] Cloud unicom item: fileName=${u.fileName} alias=${u.alias} url=${u.url ? 'yes' : 'MISSING'}`);
             }
 
-            // Wis bestaande maps om duplicaten te voorkomen bij re-import
-            mapRepo.deleteByMowerSn(mower.sn);
+            // Wis bestaande maps om duplicaten te voorkomen bij re-import.
+            // SKIP in merge mode — settings re-import keeps locally edited
+            // polygons + freshly mapped zones intact and only adds rows
+            // for canonical_names that weren't there yet.
+            if (!merge) {
+              mapRepo.deleteByMowerSn(mower.sn);
+            }
 
             // Download each map CSV from cloud and store in DB
             // Flatten: work items + their nested obstacles + unicom items
@@ -349,7 +358,7 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
 
                 const mapId = uuidv4();
                 const alias = (item.alias as string | undefined) ?? fileName.replace('.csv', '');
-                mapRepo.upsert({
+                const mapData = {
                   map_id: mapId,
                   mower_sn: mower.sn,
                   map_name: alias,
@@ -357,8 +366,14 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                   file_name: fileName,
                   file_size: csvData.length,
                   map_type: mapType,
-                });
-                mapsImported++;
+                };
+                // Merge mode: skip rows that already exist (preserves
+                // locally edited polygons). Default mode: replace
+                // (full overwrite, fresh-start semantics).
+                const inserted = merge
+                  ? mapRepo.insertIfMissing(mapData)
+                  : (mapRepo.upsert(mapData), true);
+                if (inserted) mapsImported++;
                 if (points.length >= 2) {
                   console.log(`[Setup] ✓ Imported: ${fileName} (${mapType}, ${points.length} points)`);
                 } else {
@@ -370,11 +385,14 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 if (mapType === 'unicom') {
                   const mapId = uuidv4();
                   const alias = (item.alias as string | undefined) ?? fileName!.replace('.csv', '');
-                  mapRepo.upsert({
+                  const mapData = {
                     map_id: mapId, mower_sn: mower.sn, map_name: alias,
                     map_area: null, file_name: fileName!, file_size: null, map_type: 'unicom',
-                  });
-                  mapsImported++;
+                  };
+                  const inserted = merge
+                    ? mapRepo.insertIfMissing(mapData)
+                    : (mapRepo.upsert(mapData), true);
+                  if (inserted) mapsImported++;
                   console.log(`[Setup] ✓ Imported: ${fileName} (unicom, metadata only — download failed but item preserved)`);
                 } else {
                   importErrors++;
