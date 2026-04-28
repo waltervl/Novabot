@@ -1,6 +1,6 @@
 {
   "name": "novabot-server",
-  "version": "2026.0424.2217",
+  "version": "2026.0427.0842",
   "type": "module",
   "description": "Local Novabot cloud server replacement",
   "main": "dist/index.js",
@@ -16,6 +16,7 @@
     "prepare": "cd .. && husky || true"
   },
   "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@stoprocent/noble": "^2.3.16",
     "@types/archiver": "^7.0.0",
     "aedes": "^1.0.0",
