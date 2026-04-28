@@ -1,0 +1,6 @@
+{
+  "command": "set_cfg_info",
+  "source": "bootstrap/src/ble.ts:461 + CLAUDE.md BLE Provisioning. tz here is SAFE (only OTA path bug).",
+  "inbound": {"set_cfg_info": {"cfg_value": 1, "tz": "Europe/Amsterdam"}},
+  "expected_response": {"set_cfg_info_respond": {"result": 1}}
+}

@@ -56,6 +56,9 @@ TYPE_PACKAGE_HINTS = {
     'SaveUtmOriginInfo': 'novabot_msgs',
     'ResetUtmOriginInfo': 'novabot_msgs',
     'ClearCostmapAroundRobot': 'nav2_msgs',
+    'ChassisLoraSet': 'novabot_msgs',
+    'ChassisPinCodeSet': 'novabot_msgs',
+    'OtaUpgradeSys': 'platform_msgs',
 }
 
 EXCLUSIONS: dict[tuple[str, str, str], str] = {}
@@ -143,10 +146,66 @@ def test_no_fabricated_endpoint_names():
         if ep not in snap:
             missing.append(ep)
 
+    # `OPEN_ADDITIONS` allows our open implementation to wire endpoints
+    # the stock binary lacks (e.g. system-level ROS endpoints we host
+    # for our own diagnostics). Empty by default — every entry needs
+    # justification.
+    OPEN_ADDITIONS: set[str] = set()
+
     if missing:
         raise AssertionError(
             f'{len(missing)} endpoint(s) not found in the live snapshot:\n  '
             + '\n  '.join(missing)
             + '\n\nEither the endpoint is fabricated, or the snapshot needs '
             'a refresh. Re-run Task 1.3 Step 1 to recapture.'
+        )
+
+
+def test_stock_endpoints_all_wired():
+    """Reverse direction of test_no_fabricated_endpoint_names —
+    every endpoint in the live snapshot MUST be wired in the open
+    package somewhere. Catches forgotten subscribers / publishers /
+    service clients before activation.
+
+    Endpoints listed under SYSTEM_OWNED are managed by rclpy itself
+    (parameter services, /rosout, /parameter_events) and are NOT
+    expected to appear in user code.
+    """
+    import re
+    snap_path = (REPO_ROOT / 'research' / 'documents'
+                 / 'mqtt_node-graph-snapshot.txt')
+    snap = snap_path.read_text()
+
+    SYSTEM_OWNED = {
+        '/rosout',
+        '/parameter_events',
+        '/mqtt_node/describe_parameters',
+        '/mqtt_node/get_parameter_types',
+        '/mqtt_node/get_parameters',
+        '/mqtt_node/list_parameters',
+        '/mqtt_node/set_parameters',
+        '/mqtt_node/set_parameters_atomically',
+    }
+
+    # Every stock endpoint appears as `<name>:` (subs/pubs) or `<name>`
+    # alone (action clients). Pull all leading `/...` paths from each
+    # snapshot section.
+    section_re = re.compile(
+        r'^\s+(/[A-Za-z0-9_/\-]+)\s*:?', re.MULTILINE)
+    stock_endpoints = {
+        ep for ep in section_re.findall(snap)
+        if ep not in SYSTEM_OWNED
+    }
+
+    src = '\n'.join(
+        f.read_text() for f in PACKAGE_DIR.glob('*.py')
+        if not f.name.startswith('test_')
+    )
+
+    not_wired = sorted(ep for ep in stock_endpoints if ep not in src)
+    if not_wired:
+        raise AssertionError(
+            f'{len(not_wired)} stock endpoint(s) NOT wired in '
+            f'mower/mqtt_node/:\n  ' + '\n  '.join(not_wired)
+            + '\n\nWire the missing endpoints to reach 100% drop-in.'
         )

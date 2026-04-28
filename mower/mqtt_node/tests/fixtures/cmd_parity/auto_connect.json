@@ -1,0 +1,6 @@
+{
+  "command": "auto_connect",
+  "source": "docs/reference/MQTT.md:148 (catalog § 3A line 122). No api_auto_connect in stock binary — silent ack",
+  "inbound": {"auto_connect": {}},
+  "expected_response": {"auto_connect_respond": {"result": 0}}
+}

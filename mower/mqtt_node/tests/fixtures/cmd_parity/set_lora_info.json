@@ -1,0 +1,6 @@
+{
+  "command": "set_lora_info",
+  "source": "bootstrap/src/ble.ts:425 + working-lora-pair memory. addr+channel pair must match charger.",
+  "inbound": {"set_lora_info": {"addr": 718, "channel": 16, "hc": 20, "lc": 14}},
+  "expected_response": {"set_lora_info_respond": {"result": 1}}
+}

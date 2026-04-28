@@ -186,9 +186,13 @@ def main():
     dispatcher.register('start_navigation', bridge.handle_start_navigation)
     dispatcher.register('start_run', bridge.handle_start_run)
     dispatcher.register('stop_task', bridge.handle_stop_task)
+    dispatcher.register('stop_run', bridge.handle_stop_run)
+    dispatcher.register('pause_run', bridge.handle_pause_run)
+    dispatcher.register('resume_run', bridge.handle_resume_run)
     dispatcher.register('stop_to_charge', bridge.handle_stop_to_charge)
     dispatcher.register('auto_recharge', bridge.handle_auto_recharge)
     dispatcher.register('go_to_charge', bridge.handle_nav_to_recharge)
+    dispatcher.register('go_pile', bridge.handle_go_pile)
     dispatcher.register('cancel_task', bridge.handle_cancel_task)
     dispatcher.register('cancel_recharge', bridge.handle_cancel_recharge)
     dispatcher.register('start_scan_map', bridge.handle_start_scan_map)
@@ -201,11 +205,122 @@ def main():
     dispatcher.register('get_preview_cover_path',
                         bridge.handle_get_preview_cover_path)
     dispatcher.register('save_recharge_pos', bridge.handle_save_recharge_pos)
+    dispatcher.register('get_recharge_pos', bridge.handle_get_recharge_pos)
+    dispatcher.register('stop_scan_map', bridge.handle_stop_scan_map)
+    dispatcher.register('start_erase_map', bridge.handle_start_erase_map)
+    dispatcher.register('stop_erase_map', bridge.handle_stop_erase_map)
+    dispatcher.register('reset_map', bridge.handle_reset_map)
+    dispatcher.register('generate_preview_cover_path',
+                        bridge.handle_generate_preview_cover_path)
+    dispatcher.register('dev_pin_info', bridge.handle_dev_pin_info)
 
-    # OTA
-    ota = OtaClient(work_dir=Path('/userdata/ota'),
-                    progress_cb=lambda pct: log.info('ota progress: %s%%', pct))
+    # Manual movement (joystick) — /cloud_move_cmd publisher
+    dispatcher.register('start_move', bridge.handle_start_move)
+    dispatcher.register('mst', bridge.handle_mst)
+    dispatcher.register('stop_move', bridge.handle_stop_move)
+
+    # Scheduled mowing (timer queue — stock uses internal C++ queue)
+    dispatcher.register('start_time_navigation',
+                        bridge.handle_start_time_navigation)
+    dispatcher.register('stop_time_navigation',
+                        bridge.handle_stop_time_navigation)
+
+    # Stubs — JSON-echo only (patrol, auto_connect, report_state_*)
+    from stub_commands import register_with_dispatcher as register_stubs
+    register_stubs(dispatcher)
+
+    # ── Scheduled mowing timer queue ────────────────────────────
+    # Stock binary uses an internal C++ task_timer_queue; we replicate
+    # in Python so start_time_navigation actually schedules instead of
+    # ack-only-stub behavior.
+    from timer_queue import TimerQueue
+
+    def _on_scheduled_fire(payload):
+        log.info('timer_queue fire → start_navigation %r', payload)
+        try:
+            bridge.handle_start_navigation(payload)
+        except Exception:
+            log.exception('scheduled fire handler raised')
+
+    timer_queue = TimerQueue(
+        state_path=Path('/userdata/open_mqtt_node/scheduled_tasks.json'),
+        on_fire=_on_scheduled_fire,
+    )
+    timer_queue.start()
+    bridge._plan_lookup = timer_queue.plan_lookup
+
+    # Override start/stop_time_navigation so they also touch the queue.
+    _bridge_start_time = _wrapped_start_time  # already wrapped earlier with timer_task announce
+    _bridge_stop_time = _wrapped_stop_time
+
+    def _scheduled_start_time(payload):
+        # Same body shape as handle_start_time_navigation: id, week,
+        # hour/minute, work_time, plus mowing fields.
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('start_time_navigation', payload)
+            if isinstance(payload.get('start_time_navigation'), dict)
+            else payload)
+        if isinstance(inner, dict) and inner.get('id'):
+            try:
+                week_raw = inner.get('week') or []
+                if isinstance(week_raw, str):
+                    week_raw = json.loads(week_raw)
+                week = [int(d) for d in (week_raw or [])]
+                if not week:
+                    week = [1, 2, 3, 4, 5, 6, 7]   # default = every day
+                timer_queue.add_task(
+                    task_id=str(inner['id']),
+                    week=week,
+                    hour=int(inner.get('hour', 0)),
+                    minute=int(inner.get('minute', 0)),
+                    work_time=int(inner.get('work_time', 0)),
+                    payload={'start_navigation': {
+                        'cmd_num': int(inner.get('cmd_num', 0)),
+                        'area': int(inner.get('area', 0)),
+                        'cutterhigh': int(inner.get('cutterhigh', 0)),
+                    }},
+                )
+            except Exception:
+                log.exception('scheduled add_task failed')
+        return _bridge_start_time(payload)
+
+    def _scheduled_stop_time(payload):
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('stop_time_navigation', payload)
+            if isinstance(payload.get('stop_time_navigation'), dict)
+            else payload)
+        if isinstance(inner, dict) and inner.get('id'):
+            try:
+                timer_queue.cancel(str(inner['id']))
+            except Exception:
+                log.exception('scheduled cancel failed')
+        return _bridge_stop_time(payload)
+
+    dispatcher.register('start_time_navigation', _scheduled_start_time)
+    dispatcher.register('stop_time_navigation', _scheduled_stop_time)
+
+    # OTA — wire state_cb so progress events go out as ota_upgrade_state
+    # on the same outbound MQTT topic the response uses. Stock binary
+    # interleaves state updates between download chunks; we mirror that
+    # cadence by emitting at every percent change inside _download.
+    def _ota_state_cb(state_payload):
+        try:
+            payload = json.dumps({'ota_upgrade_state': state_payload},
+                                 separators=(',', ':')).encode('utf-8')
+            mqtt.publish(outbound_topic, payload, encrypted=True)
+        except Exception:
+            log.exception('ota_state_cb publish failed')
+
+    ota = OtaClient(
+        work_dir=Path('/userdata/ota'),
+        progress_cb=lambda pct: log.info('ota progress: %s%%', pct),
+        state_cb=_ota_state_cb,
+    )
     dispatcher.register('ota_upgrade_cmd', ota.handle_upgrade)
+    dispatcher.register('ota_version_info', ota.handle_version_info)
+    # Forward installer-side phase signals (/ota/upgrade_status sub) to
+    # the same state_cb so the app sees a unified ota_upgrade_state stream.
+    bridge._ota_state_forwarder = _ota_state_cb
 
     # MQTT client glue
     mqtt = MqttClient(host=cfg.mqtt_host, port=cfg.mqtt_port, sn=sn)
@@ -236,8 +351,135 @@ def main():
     mqtt.connect()
     mqtt.loop_start()
 
-    # HTTP loops
-    http = HttpClient(host=cfg.http_host, port=cfg.http_port, sn=sn)
+    # ── Info-read commands (file/cache reads, no ROS calls) ─────────
+    from info_commands import InfoSources, register_with_dispatcher as register_info_commands
+
+    # ConfigStore is shared between BLE and MQTT info-write paths so
+    # that set_para_info / set_cfg_info / set_control_mode all persist
+    # to the same `/userdata/lfi/json_config.json`.
+    from ble_commands import default_config_store
+    config_store = default_config_store()  # broker_changed callback wired below
+
+    info_sources = InfoSources(
+        pose=lambda: {
+            'x': float(getattr(aggregator, '_pose').x),
+            'y': float(getattr(aggregator, '_pose').y),
+            'theta': float(getattr(aggregator, '_pose').theta),
+        },
+        # vel_odom not yet wired to ROS — return zero until /odom_raw
+        # subscription lands. Stock value range is small (m/s).
+        vel_odom=lambda: {'linear_x': 0.0, 'angular_wheel': 0.0},
+        # para_info: surface the runtime tunables we can read out
+        # without re-reading the file. target_height + battery is the
+        # subset most app builds query.
+        para_info=lambda: {
+            'target_height': int(getattr(aggregator, '_target_height', 0)),
+        },
+        dev_info=lambda: {
+            'battery_power': int(getattr(aggregator, '_battery').power_percent),
+            'battery_state': str(getattr(aggregator, '_battery').state),
+            'error_status': int(getattr(aggregator, '_error_status', 0)),
+            'error_msg': str(getattr(aggregator, '_error_msg', '')),
+        },
+        versions=lambda: {
+            'sv': str(getattr(aggregator, '_sv', '')),
+            'hv': str(getattr(aggregator, '_hv', '')),
+            'ov': str(getattr(aggregator, '_ov', '')),
+        },
+        map_dir=cfg.map_dir,
+        log_dir=Path('/userdata/log/'),
+        config_path=Path('/userdata/lfi/json_config.json'),
+    )
+
+    def _set_control_mode(body):
+        # Globals on the stock binary; we expose env-style flags here so
+        # other modules (sensor_aggregator, future plumbing) can read.
+        if isinstance(body, dict):
+            if 'sound' in body:
+                os.environ['NOVABOT_SOUND'] = str(int(bool(body.get('sound'))))
+            if 'headlight' in body:
+                os.environ['NOVABOT_HEADLIGHT'] = str(int(bool(body.get('headlight'))))
+
+    register_info_commands(dispatcher, info_sources,
+                           config_store=config_store,
+                           set_control_mode_cb=_set_control_mode)
+
+    # ── BLE GATT server + BLE provisioning dispatcher ───────────────
+    # The BLE side of the protocol is independent from MQTT: provisioning
+    # commands (set_wifi_info, set_mqtt_info, set_lora_info, set_cfg_info,
+    # set_rtk_info, set_para_info, get_signal_info, get_wifi_rssi) arrive
+    # over GATT writes BEFORE the MQTT broker is reachable. They get
+    # their own dispatcher + their own respond_publisher (BLE notify).
+    from ble_handler import BleFramer, BleGattServer
+    from ble_commands import register_with_dispatcher as register_ble_commands
+
+    ble_dispatcher = CommandDispatcher()
+    ble_server = None  # populated below; closed-over by ble_publish
+
+    def ble_publish_respond(respond_key: str, body: dict) -> None:
+        if ble_server is None:
+            log.warning('ble_publish_respond: server not started')
+            return
+        ble_server.notify({respond_key: body})
+
+    ble_dispatcher.set_respond_publisher(ble_publish_respond)
+
+    def _on_broker_changed(host: str, port: int) -> None:
+        # set_mqtt_info commits → reconnect MQTT client to the new
+        # broker so subsequent reports land on the right cloud.
+        log.info('broker change: reconnecting to %s:%d', host, port)
+        try:
+            mqtt.reconnect(host, port)
+        except Exception:
+            log.exception('reconnect after set_mqtt_info failed')
+
+    config_store.on_broker_changed = _on_broker_changed
+    register_ble_commands(ble_dispatcher, store=config_store)
+
+    framer = BleFramer()
+
+    def on_ble_command(cmd: dict) -> None:
+        try:
+            ble_dispatcher.dispatch(cmd)
+        except Exception:
+            log.exception('on_ble_command raised')
+
+    try:
+        ble_server = BleGattServer(on_command=on_ble_command, framer=framer)
+        ble_server.start()
+        log.info('ble: GATT server up + advertising as Novabot')
+    except Exception:
+        log.exception('ble: GATT server failed to start (continuing without BLE)')
+        ble_server = None
+
+    # HTTP loops — heartbeat bodies pull real-time state from the
+    # aggregator so the cloud sees current battery + error_status.
+    def _equipment_body():
+        return {
+            'sn': sn,
+            'battery_power': int(getattr(aggregator, '_battery').power_percent),
+            'error_status': int(getattr(aggregator, '_error_status', 0)),
+            'work_status': int(getattr(aggregator, '_work_status', 0)),
+            'task_mode': int(getattr(aggregator, '_task_mode', 0)),
+        }
+
+    def _user_equipment_body():
+        return {
+            'sn': sn,
+            'sv': str(getattr(aggregator, '_sv', '')),
+            'ov': str(getattr(aggregator, '_ov', '')),
+            'hv': str(getattr(aggregator, '_hv', '')),
+        }
+
+    def _message_body():
+        return {'sn': sn}
+
+    http = HttpClient(
+        host=cfg.http_host, port=cfg.http_port, sn=sn,
+        equipment_body=_equipment_body,
+        user_equipment_body=_user_equipment_body,
+        message_body=_message_body,
+    )
     http.start()
 
     # Periodic state report publish (matches stock ~2.3 s cadence —
@@ -305,6 +547,72 @@ def main():
         name='mqtt_node_server_loop')
     server_thread.start()
 
+    # Announce mqtt_node is up so chassis nodes that gate on
+    # /mqtt_node_active(1) can release their startup hold.
+    # Stock binary publishes both /mqtt_node_active(1) AND
+    # /novabot/init_mower(1) at boot — chassis listens on both.
+    try:
+        bridge.announce_active(1)
+        bridge.init_mower()
+        bridge.announce_wifi_ble(1 if ble_server is not None else 0)
+    except Exception:
+        log.exception('boot announces failed')
+
+    # Wire reset_factory subscriber → publish unbind_finish(1) once the
+    # aggregator has cleared. Stock does this in the C++ subscriber too.
+    _orig_on_reset_factory = bridge._on_reset_factory
+
+    def _wrapped_on_reset_factory(msg):
+        _orig_on_reset_factory(msg)
+        if int(getattr(msg, 'data', 0)) == 1:
+            try:
+                bridge.announce_unbind(1)
+            except Exception:
+                log.exception('announce_unbind failed')
+
+    bridge._on_reset_factory = _wrapped_on_reset_factory
+
+    # get_log_info → publish /x3/log/upload(1) so the log uploader
+    # service rotates fresh logs to /userdata/log/ before the read
+    # handler in info_commands actually tails them. Stock binary does
+    # this synchronously inside api_get_log_info.
+    _orig_get_log_handler = info_sources  # placeholder for clarity
+    # Re-register get_log_info to chain a publish before the read.
+    _existing_log_handler = dispatcher._handlers.get('get_log_info')
+    if _existing_log_handler is not None:
+        def _get_log_info_with_upload(payload):
+            try:
+                bridge.request_log_upload(1)
+            except Exception:
+                log.exception('request_log_upload failed')
+            return _existing_log_handler(payload)
+        dispatcher.register('get_log_info', _get_log_info_with_upload)
+
+    # start_time_navigation success → /timer_task_active(1)
+    # stop_time_navigation       → /timer_task_active(0)
+    _orig_start_time = bridge.handle_start_time_navigation
+    _orig_stop_time = bridge.handle_stop_time_navigation
+
+    def _wrapped_start_time(payload):
+        resp = _orig_start_time(payload)
+        if isinstance(resp, dict) and resp.get('result') == 0:
+            try:
+                bridge.announce_timer_task(1)
+            except Exception:
+                log.exception('announce_timer_task(1) failed')
+        return resp
+
+    def _wrapped_stop_time(payload):
+        resp = _orig_stop_time(payload)
+        try:
+            bridge.announce_timer_task(0)
+        except Exception:
+            log.exception('announce_timer_task(0) failed')
+        return resp
+
+    dispatcher.register('start_time_navigation', _wrapped_start_time)
+    dispatcher.register('stop_time_navigation', _wrapped_stop_time)
+
     # ROS2 spin
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(bridge)
@@ -322,10 +630,23 @@ def main():
         while not stop_evt.is_set():
             executor.spin_once(timeout_sec=1.0)
     finally:
+        try:
+            bridge.announce_active(0)
+        except Exception:
+            log.exception('announce_active(0) failed at shutdown')
+        try:
+            timer_queue.stop()
+        except Exception:
+            log.exception('timer_queue.stop failed')
         publish_stop.set()
         publish_thread.join(timeout=2.0)
         server_thread.join(timeout=2.0)
         http.stop()
+        if ble_server is not None:
+            try:
+                ble_server.stop()
+            except Exception:
+                log.exception('ble_server.stop raised')
         mqtt.loop_stop()
         mqtt.disconnect()
         bridge.destroy_node()

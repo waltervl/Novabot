@@ -1,0 +1,6 @@
+{
+  "command": "set_mqtt_info",
+  "source": "bootstrap/src/ble.ts:439 + CLAUDE.md MQTT Topics. addr=broker host (no scheme).",
+  "inbound": {"set_mqtt_info": {"addr": "192.168.0.222", "port": 1883}},
+  "expected_response": {"set_mqtt_info_respond": {"result": 1}}
+}

@@ -60,6 +60,25 @@ class MqttClient:
         except Exception:
             pass
 
+    def reconnect(self, host: str, port: int) -> None:
+        """Re-target the broker without re-subscribing. Used by
+        set_mqtt_info commits (BLE provisioning path) so a freshly
+        configured broker takes effect immediately, no reboot required.
+
+        paho's connect() can be called repeatedly on the same client;
+        the previous TCP session is torn down inside paho's network
+        loop and a new one opened. We re-subscribe to be defensive in
+        case the broker drops session state.
+        """
+        self.host = host
+        self.port = port
+        try:
+            self._cli.disconnect()
+        except Exception:
+            pass
+        self._cli.connect(self.host, self.port, keepalive=self.keepalive)
+        self._cli.subscribe(f'Dart/Send_mqtt/{self.sn}')
+
     # ── Internal ────────────────────────────────────────────────────
     def _on_message(self, _client, _userdata, msg) -> None:  # noqa: D401
         if not self._handler:

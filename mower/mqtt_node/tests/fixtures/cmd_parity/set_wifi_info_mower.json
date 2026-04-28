@@ -1,0 +1,6 @@
+{
+  "command": "set_wifi_info",
+  "source": "bootstrap/src/ble.ts:339-345 + CLAUDE.md BLE Provisioning. result:1 = ack",
+  "inbound": {"set_wifi_info": {"ap": {"ssid": "OpenNova-Test", "passwd": "secret123", "encrypt": 0}}},
+  "expected_response": {"set_wifi_info_respond": {"result": 1}}
+}

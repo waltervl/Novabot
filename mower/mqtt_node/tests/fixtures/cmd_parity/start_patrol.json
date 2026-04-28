@@ -1,0 +1,6 @@
+{
+  "command": "start_patrol",
+  "source": "Ghidra mqtt_node_decompiled.c:321148-321263 (api_start_patrol)",
+  "inbound": {"start_patrol": {"cmd_num": 1}},
+  "expected_response": {"start_patrol_respond": {"result": 0, "value": 0}}
+}

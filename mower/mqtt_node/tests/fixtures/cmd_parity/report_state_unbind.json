@@ -1,0 +1,6 @@
+{
+  "command": "report_state_unbind",
+  "source": "Ghidra mqtt_node_decompiled.c:319973-320077 (api_report_state_unbind)",
+  "inbound": {"report_state_unbind": {"status": 1}},
+  "expected_response": {"report_state_unbind_respond": {"status": 1}}
+}

@@ -1,0 +1,6 @@
+{
+  "command": "report_state_map_path_list",
+  "source": "Ghidra mqtt_node_decompiled.c:319830-319941 (api_report_state_map_path_list)",
+  "inbound": {"report_state_map_path_list": {"status": "planning", "percentage": 87.5}},
+  "expected_response": {"report_state_map_path_list_respond": {"status": "planning", "percentage": 87.5}}
+}

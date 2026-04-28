@@ -93,6 +93,10 @@ class SensorAggregator:
         self._if_mower_can_finish: bool = False
         self._if_scan_unicom_obstacle: int = 0
         self._start_edit_or_assistant_map_flag: int = 0
+        # plan_path / preview_cover_path subtrees (populated from
+        # /robot_decision/planned_json + preview_planned_json subs)
+        self._plan_path: Any = 0
+        self._preview_cover_path: Any = 0
 
         self._incident_bits: Dict[str, bool] = {}
 
@@ -295,8 +299,8 @@ class SensorAggregator:
                 },
                 'localization_state': self._loc_state,
             },
-            'plan_path': 0,
-            'preview_cover_path': 0,
+            'plan_path': self._plan_path,
+            'preview_cover_path': self._preview_cover_path,
             'start_edit_or_assistant_map_flag': self._start_edit_or_assistant_map_flag,
             'timer_task': 0,
         }

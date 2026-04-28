@@ -1,0 +1,6 @@
+{
+  "command": "stop_patrol",
+  "source": "Ghidra mqtt_node_decompiled.c:321294-321411 (api_stop_patrol)",
+  "inbound": {"stop_patrol": {"cmd_num": 2}},
+  "expected_response": {"stop_patrol_respond": {"result": 0, "value": 0}}
+}

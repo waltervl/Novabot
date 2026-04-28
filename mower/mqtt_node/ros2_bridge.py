@@ -47,8 +47,26 @@ from nav2_msgs.srv import ClearCostmapAroundRobot
 from novabot_msgs.srv import Common
 from platform_msgs.srv import OtaUpgradeSys
 from novabot_msgs.action import ChassisLoraSet, ChassisPinCodeSet
+from novabot_msgs.msg import CloudMoveCmd
+from std_msgs.msg import UInt8 as UInt8Msg
+from get_plan_interfaces.srv import PlanData
 
 log = logging.getLogger('mqtt_node.ros2_bridge')
+
+
+# Default joystick velocities used when the app sends `start_move <int>`
+# without immediately following up with a continuous `mst` stream.
+# Direction enum (per CLAUDE.md "Manual Control" + decompile capture):
+#   1 = left, 2 = right, 3 = forward, 4 = backward
+# linear_x in m/s, angular_wheel in rad/s. Values match observed app
+# defaults (~0.3 m/s straight, ~1.0 rad/s spin) — once `mst` frames
+# start flowing, those override these.
+_START_MOVE_DEFAULTS = {
+    1: (0.0, 1.0),     # left
+    2: (0.0, -1.0),    # right
+    3: (0.3, 0.0),     # forward
+    4: (-0.3, 0.0),    # backward
+}
 
 
 class Ros2Bridge(Node):
@@ -157,6 +175,39 @@ class Ros2Bridge(Node):
             Empty, '/reset_utm_origin_info',
             callback_group=self._cb)
 
+        # ── Topic publishers ──────────────────────────────────────────
+        # All 7 application-level publishers from
+        # research/documents/mqtt_node-graph-snapshot.txt Publishers
+        # section. /rosout + /parameter_events are managed by rclpy.
+        self.pub_cloud_move_cmd = self.create_publisher(
+            CloudMoveCmd, '/cloud_move_cmd', 10)
+        self.pub_mqtt_node_active = self.create_publisher(
+            UInt8Msg, '/mqtt_node_active', 10)
+        self.pub_init_mower = self.create_publisher(
+            UInt8Msg, '/novabot/init_mower', 10)
+        self.pub_release_charge_lock = self.create_publisher(
+            UInt8Msg, '/release_charge_lock', 10)
+        self.pub_timer_task_active = self.create_publisher(
+            UInt8Msg, '/timer_task_active', 10)
+        self.pub_unbind_finish = self.create_publisher(
+            UInt8Msg, '/unbind_finish', 10)
+        self.pub_wifi_ble_active = self.create_publisher(
+            UInt8Msg, '/wifi_ble_active', 10)
+        self.pub_x3_log_upload = self.create_publisher(
+            UInt8Msg, '/x3/log/upload', 10)
+
+        # ── Service server: /PlanCheckTask ──────────────────────────
+        # Stock binary HOSTS this service — robot_decision queries it
+        # to ask "is week N currently scheduled?" and gets back a plan
+        # blob. The actual plan store lives on the cloud (cut_grass_plans
+        # table) but mqtt_node serves a cached version via this RPC.
+        # We answer with `value:0` (not scheduled) + empty plan until
+        # a scheduling cache is wired (matches stock's pre-schedule
+        # state for an idle mower).
+        self.srv_plan_check_task = self.create_service(
+            PlanData, '/PlanCheckTask', self._on_plan_check_task,
+            callback_group=self._cb)
+
         # ── Action clients ─────────────────────────────────────────────
         # Only /chassis_lora_set and /chassis_pin_code_set appear under
         # /mqtt_node Action Clients in the live graph snapshot.
@@ -180,6 +231,20 @@ class Ros2Bridge(Node):
         self._agg = None
         self._battery_state = 'UNKNOWN'
 
+        # Cached signals for subscribers that don't currently surface
+        # via outbound MQTT but the stock binary still subscribes to.
+        self._pipe_charge_status: int = 0
+        self._task_finish: int = 0
+        self._timer_task_stop: int = 0
+        self._mapping_close_map: bool = False
+        self._mapping_save_csv: str = ''
+        self._can_auto_follow_boundary: bool = False
+        # Hooks set by main.py for cross-component wiring.
+        self._ota_state_forwarder = None
+        self._plan_lookup = None
+        # scheduled_id from start_time_navigation, echoed in stop_time_*
+        self._scheduled_id: str = ''
+
     def bind_aggregator(self, aggregator) -> None:
         """Wire ROS topic subscriptions that feed the SensorAggregator.
 
@@ -187,12 +252,13 @@ class Ros2Bridge(Node):
         (live SSH from /mqtt_node node info on LFIN1231000211).
         Schemas verified at research/ros2_msg_definitions/.
         """
-        from decision_msgs.msg import RobotStatus
+        from decision_msgs.msg import RobotStatus, CovTaskResult
         from novabot_msgs.msg import (
             ChassisBatteryMessage, ChassisIncident, BestPos,
         )
         from sensor_msgs.msg import NavSatFix
-        from std_msgs.msg import Bool, String
+        from std_msgs.msg import Bool, String, UInt8 as _UInt8
+        from geometry_msgs.msg import Pose
 
         self._agg = aggregator
 
@@ -216,6 +282,59 @@ class Ros2Bridge(Node):
         self.create_subscription(
             String, '/robot_decision/covered_path_json',
             self._on_covered_path_json, 10, callback_group=self._cb)
+
+        # planned_path JSON — mirrored as `plan_path` in timer_data
+        self.create_subscription(
+            String, '/robot_decision/planned_json',
+            self._on_planned_json, 10, callback_group=self._cb)
+        self.create_subscription(
+            String, '/robot_decision/preview_planned_json',
+            self._on_preview_planned_json, 10, callback_group=self._cb)
+
+        # Map-position pose (stock binary uses this for `get_current_pose`)
+        self.create_subscription(
+            Pose, '/robot_decision/map_position',
+            self._on_map_position, 10, callback_group=self._cb)
+
+        # Coverage task result — report_state_robot finished_num+map_num
+        # update at end-of-task even before the next robot_status frame.
+        self.create_subscription(
+            CovTaskResult, '/robot_decision/cov_task_result',
+            self._on_cov_task_result, 10, callback_group=self._cb)
+
+        # OTA installer service signals progress via this string topic.
+        # mqtt_node forwards it as `ota_upgrade_state` per
+        # ota-percentage-meaning.md memory.
+        self.create_subscription(
+            String, '/ota/upgrade_status',
+            self._on_ota_upgrade_status, 10, callback_group=self._cb)
+
+        # Charging dock pipe contact + reset_factory + task-end UInt8
+        # signals. All feed lightweight aggregator state. close_map +
+        # save_csv_file + can_auto_follow_boundary are mapping-side
+        # context stock binary subscribes to but never reflects in
+        # outbound MQTT — we still subscribe for parity.
+        self.create_subscription(
+            _UInt8, '/pipe_charge_status',
+            self._on_pipe_charge_status, 10, callback_group=self._cb)
+        self.create_subscription(
+            _UInt8, '/reset_factory',
+            self._on_reset_factory, 10, callback_group=self._cb)
+        self.create_subscription(
+            _UInt8, '/tast_finish',
+            self._on_task_finish, 10, callback_group=self._cb)
+        self.create_subscription(
+            _UInt8, '/timer_task_stop',
+            self._on_timer_task_stop, 10, callback_group=self._cb)
+        self.create_subscription(
+            Bool, '/novabot_mapping/close_map',
+            self._on_mapping_close_map, 10, callback_group=self._cb)
+        self.create_subscription(
+            String, '/novabot_mapping/save_csv_file',
+            self._on_mapping_save_csv, 10, callback_group=self._cb)
+        self.create_subscription(
+            Bool, '/nav2_single_node_navigator/can_auto_follow_boundary',
+            self._on_can_auto_follow_boundary, 10, callback_group=self._cb)
 
         # Mapping flags emitted in report_state_timer_data (live graph
         # snapshot Subscribers section)
@@ -368,6 +487,167 @@ class Ros2Bridge(Node):
             lng=float(msg.longitude),
             alt=float(msg.altitude),
             state=state)
+
+    def _on_planned_json(self, msg) -> None:
+        """std_msgs/msg/String — JSON-encoded `plan_path` subtree.
+        Cached so timer_data report can surface a non-zero value once
+        coverage planning finishes."""
+        if self._agg is None:
+            return
+        try:
+            data = __import__('json').loads(msg.data) if msg.data else 0
+        except Exception:
+            data = 0
+        self._agg._plan_path = data
+
+    def _on_preview_planned_json(self, msg) -> None:
+        """std_msgs/msg/String — preview-coverage path. Cached for
+        `report_state_timer_data.preview_cover_path` field."""
+        if self._agg is None:
+            return
+        try:
+            data = __import__('json').loads(msg.data) if msg.data else 0
+        except Exception:
+            data = 0
+        self._agg._preview_cover_path = data
+
+    def _on_map_position(self, msg) -> None:
+        """geometry_msgs/msg/Pose — also feeds the pose cache (used by
+        get_current_pose). Stock binary maintains a parallel cache here
+        so /robot_decision/map_position can serve as a backup if
+        robot_status hasn't ticked recently."""
+        if self._agg is None:
+            return
+        # Pose is x/y plus quaternion. theta = yaw from quaternion.
+        import math
+        q = msg.orientation
+        # Yaw extraction from quaternion (z/w around z-axis).
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        theta = math.atan2(siny_cosp, cosy_cosp)
+        self._agg.update_pose(
+            x=float(msg.position.x),
+            y=float(msg.position.y),
+            theta=float(theta))
+
+    def _on_cov_task_result(self, msg) -> None:
+        """decision_msgs/msg/CovTaskResult — task finished. Mirror the
+        end-of-task counters into the aggregator so the next
+        report_state_robot tick already shows finished_num/map_num
+        without waiting on a robot_status follow-up."""
+        if self._agg is None:
+            return
+        self._agg.update_status_extras(
+            map_num=int(msg.map_num),
+            finished_num=int(msg.finished_num),
+        )
+        log.info('cov_task_result: map_num=%d finished_num=%d work_status=%d '
+                 'error_status=%d area=%.2f',
+                 msg.map_num, msg.finished_num, msg.work_status,
+                 msg.error_status, msg.area)
+
+    def _on_ota_upgrade_status(self, msg) -> None:
+        """std_msgs/msg/String — OTA installer phase signal.
+        Per memory `ota-percentage-meaning.md`: 0..62 download (we own
+        that), 62..68 unpack, 68..100 install (the installer side).
+        Forward as `ota_upgrade_state` if a forwarder is wired."""
+        if self._ota_state_forwarder is None:
+            return
+        try:
+            self._ota_state_forwarder({'phase': str(msg.data)})
+        except Exception:
+            log.exception('ota_upgrade_status forward failed')
+
+    # ─── Lightweight UInt8 subscribers (cached only) ────────────────
+
+    def _on_pipe_charge_status(self, msg) -> None:
+        """std_msgs/msg/UInt8 — charger pipe contact bitfield.
+        Surfaced via cache; consumers can read pipe_charge_status."""
+        self._pipe_charge_status = int(msg.data)
+
+    def _on_reset_factory(self, msg) -> None:
+        """std_msgs/msg/UInt8 — factory-reset trigger from the unbind
+        flow. Stock binary clears its in-memory caches when this fires.
+        We mirror by resetting the aggregator-side prev_* fields."""
+        if int(msg.data) and self._agg is not None:
+            log.info('reset_factory signal received — clearing prev_* state')
+            self._agg.update_status_extras()
+
+    def _on_task_finish(self, msg) -> None:
+        self._task_finish = int(msg.data)
+
+    def _on_timer_task_stop(self, msg) -> None:
+        self._timer_task_stop = int(msg.data)
+
+    def _on_mapping_close_map(self, msg) -> None:
+        self._mapping_close_map = bool(msg.data)
+
+    def _on_mapping_save_csv(self, msg) -> None:
+        self._mapping_save_csv = str(msg.data)
+
+    def _on_can_auto_follow_boundary(self, msg) -> None:
+        self._can_auto_follow_boundary = bool(msg.data)
+
+    # ─── PlanCheckTask service server ───────────────────────────────
+
+    def _on_plan_check_task(self, request, response):
+        """get_plan_interfaces/srv/PlanData — robot_decision asks
+        "is there a plan for week X?" and we answer with `value:0`
+        (no plan) + empty `plan` string. A future scheduler can
+        override this method by setting `_plan_lookup` on the bridge.
+        """
+        week = str(request.week)
+        lookup = getattr(self, '_plan_lookup', None)
+        if callable(lookup):
+            try:
+                value, plan = lookup(week)
+                response.value = int(value)
+                response.plan = str(plan)
+                return response
+            except Exception:
+                log.exception('PlanCheckTask lookup raised')
+        # Default: no scheduled plan.
+        response.value = 0
+        response.plan = ''
+        return response
+
+    # ─── Publisher helpers ──────────────────────────────────────────
+
+    def _publish_uint8(self, publisher, value: int) -> None:
+        if self._shadow_mode:
+            log.info('SHADOW: would publish UInt8(%d) on %s',
+                     int(value), publisher.topic_name)
+            return
+        msg = UInt8Msg()
+        msg.data = int(value) & 0xFF
+        publisher.publish(msg)
+
+    def announce_active(self, value: int = 1) -> None:
+        """Publish /mqtt_node_active. Stock binary toggles this at boot
+        (1 = ready) and on shutdown (0)."""
+        self._publish_uint8(self.pub_mqtt_node_active, value)
+
+    def init_mower(self) -> None:
+        """Publish /novabot/init_mower(1) — boot signal the chassis
+        node listens for to clear startup state."""
+        self._publish_uint8(self.pub_init_mower, 1)
+
+    def release_charge_lock(self, value: int = 1) -> None:
+        """Publish /release_charge_lock(1) — releases the dock magnet.
+        Used by edge-cut depart_pile flow per CLAUDE.md `extended_commands`."""
+        self._publish_uint8(self.pub_release_charge_lock, value)
+
+    def announce_timer_task(self, value: int) -> None:
+        self._publish_uint8(self.pub_timer_task_active, value)
+
+    def announce_unbind(self, value: int = 1) -> None:
+        self._publish_uint8(self.pub_unbind_finish, value)
+
+    def announce_wifi_ble(self, value: int) -> None:
+        self._publish_uint8(self.pub_wifi_ble_active, value)
+
+    def request_log_upload(self, value: int = 1) -> None:
+        self._publish_uint8(self.pub_x3_log_upload, value)
 
     def _on_covered_path_json(self, msg) -> None:
         """std_msgs/msg/String — JSON-encoded cover_path subtree for
@@ -544,6 +824,157 @@ class Ros2Bridge(Node):
 
     # Alias: MQTT docs call this go_to_charge; ROS2 endpoint is nav_to_recharge.
     handle_go_to_charge = handle_nav_to_recharge
+    # `go_pile` is the older app spelling (catalog RE-5 §go_pile,
+    # decompile:350157). Same handler — just pass through.
+    handle_go_pile = handle_nav_to_recharge
+
+    # `stop_run` is the older app spelling for stop_task (catalog RE-5 line 25
+    # "start_run / start_navigation" + line 64 "stop_run / stop_task"). Same
+    # handler — only the MQTT key differs.
+    handle_stop_run = handle_stop_task
+
+    def handle_start_time_navigation(self, payload) -> dict:
+        """Handle MQTT ``start_time_navigation`` — scheduled mowing start.
+
+        MQTT JSON shape (decompile mqtt_node:346911 +
+        catalog RE-5 §start_time_navigation):
+          { "start_time_navigation": { "id": "<scheduled_id>",
+                                       "repeat": <int>,
+                                       "work_time": <int>,
+                                       "area": <int>,
+                                       "cutterhigh": <int>,
+                                       "cmd_num": <int> } }
+
+        ROS 2 endpoint: /robot_decision/start_cov_task
+                        (decision_msgs/srv/StartCoverageTask)
+
+        Per Ghidra (line 346962): same StartCoverageTask request the
+        regular `start_navigation` builds, plus the scheduled `id`
+        cached in a global. We mirror that with one
+        request_type difference — value 12 (scheduled) instead of 11
+        (live MQTT command). Stock binary toggles the same field at
+        line 346999 area; the precise enum value isn't visible in the
+        decompile so we use 11 for parity until live capture confirms
+        a different value.
+
+        Response: `{result, msg, id}` — id echoes the scheduled task
+        identifier so the app can confirm acceptance.
+        """
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('start_time_navigation', payload)
+            if isinstance(payload.get('start_time_navigation'), dict)
+            else payload)
+        scheduled_id = ''
+        if isinstance(inner, dict):
+            sid = inner.get('id')
+            if isinstance(sid, str):
+                scheduled_id = sid
+        # Cache the most-recently-scheduled id so stop_time_navigation
+        # can echo the same value back for app-side correlation.
+        self._scheduled_id = scheduled_id
+
+        req = StartCoverageTask.Request()
+        req.cov_mode = 0           # NORMAL
+        req.request_type = 11      # 0xb — same as live MQTT start; the
+                                   # binary doesn't differentiate at
+                                   # this layer (the timer queue does)
+        try:
+            req.map_ids = int(inner.get('area', 0)) if isinstance(inner, dict) else 0
+        except (TypeError, ValueError):
+            req.map_ids = 0
+        try:
+            cutter = inner.get('cutterhigh') if isinstance(inner, dict) else None
+            req.blade_heights = [int(cutter)] if cutter is not None else []
+        except (TypeError, ValueError):
+            req.blade_heights = []
+
+        resp = self.call_service(self.cli_start_cov_task, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'start_cov_task timeout',
+                    'id': scheduled_id}
+        return {'result': 0 if resp.result else 1,
+                'msg': 'start_time_navigation_respond',
+                'id': scheduled_id}
+
+    def handle_stop_time_navigation(self, payload) -> dict:
+        """Handle MQTT ``stop_time_navigation`` — cancel the scheduled task.
+
+        Per Ghidra (mqtt_node:325477) the stock binary calls
+        `send_msg_to_task_timer_queue(2, 0)` — an INTERNAL C++ queue
+        message, NOT a ROS service. The actual scheduling lives in
+        another component (the timer worker thread inside the same
+        process). Without that runtime we fall back to a clean ack
+        with a passthrough of the most recently scheduled id.
+
+        Response shape mirrors the decompile (line 325568-325596):
+          { type: "stop_time_navigation_respond",
+            message: { result: 0, value: 0 } }
+        We emit the simpler `{result, id}` form our dispatcher already
+        wraps so the wire shape stays consistent with the rest.
+        """
+        scheduled_id = getattr(self, '_scheduled_id', '') or ''
+        if isinstance(payload, dict):
+            sid = payload.get('id')
+            if isinstance(sid, str):
+                scheduled_id = sid
+        log.info('stop_time_navigation: id=%r (queue-only stub)', scheduled_id)
+        return {'result': 0, 'id': scheduled_id}
+
+    def handle_pause_run(self, payload) -> dict:
+        """Handle MQTT ``pause_run`` — pause the active mowing task.
+
+        MQTT JSON shape (catalog RE-5 §pause_run, decompile:347820):
+          { "pause_run": <any> }
+
+        ROS 2 endpoint: /MidPauseTask  (novabot_msgs/srv/Common)
+        Schema: research/ros2_msg_definitions/novabot_msgs/srv/Common.srv
+
+        Common.Request has one field:
+          string data
+        We pass an empty string — the stock binary's call site puts no
+        meaningful payload here per decompile:347820. The decision node
+        on the other side reads only the call event, not the data.
+        """
+        req = Common.Request()
+        req.data = ''
+        resp = self.call_service(self.cli_mid_pause, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'mid_pause timeout or unavailable'}
+        # Common.Response: uint8 result. result == 0 = success per decision_msgs convention.
+        return {'result': 0 if int(resp.result) == 0 else 1,
+                'msg': 'pause_run_respond'}
+
+    def handle_resume_run(self, payload) -> dict:
+        """Handle MQTT ``resume_run`` — resume a paused mowing task.
+
+        MQTT JSON shape (catalog RE-5 §resume_run, decompile:347901):
+          { "resume_run": <any> }
+
+        Stock binary calls TWO services in sequence — `/ResumeTask` first,
+        then `/MidResumeTask` if ResumeTask succeeds. Decompile shows
+        both clients wired, with ResumeTask as the primary path
+        (catalog RE-5 §resume_run line 105-118, "Two clients; try
+        ResumeTask first").
+
+        Both endpoints are novabot_msgs/srv/Common (string data,
+        uint8 result).
+        """
+        req = Common.Request()
+        req.data = ''
+
+        primary = self.call_service(self.cli_resume_task, req)
+        if primary is not None and int(primary.result) == 0:
+            # ResumeTask accepted; the second call is the mid-task
+            # confirmation. Failure on MidResumeTask isn't fatal —
+            # the task already resumed.
+            mid = self.call_service(self.cli_mid_resume, req)
+            if mid is None:
+                log.warning('resume_run: MidResumeTask unavailable, ResumeTask succeeded')
+            return {'result': 0, 'msg': 'resume_run_respond'}
+
+        if primary is None:
+            return {'result': 1, 'msg': 'resume_task timeout or unavailable'}
+        return {'result': 1, 'msg': 'resume_run_respond'}
 
     def handle_cancel_task(self, payload: dict) -> dict:
         """Handle MQTT ``cancel_task``.
@@ -866,6 +1297,198 @@ class Ros2Bridge(Node):
         return {'result': 0, 'msg': 'get_preview_cover_path_respond',
                 'data': data}
 
+    def handle_stop_scan_map(self, payload: dict) -> dict:
+        """Handle MQTT ``stop_scan_map`` — stop the active mapping recorder.
+
+        MQTT JSON shape (catalog RE-5 §stop_scan_map):
+          { "stop_scan_map": { "value": <bool>, ... } }
+
+        ROS 2 endpoint: /robot_decision/map_stop_record  (std_srvs/srv/SetBool)
+        Schema: research/ros2_msg_definitions/std_srvs/srv/SetBool.srv
+
+        Field mapping (per CLAUDE.md "BLE Mapping" + catalog):
+          data = body.value (default True for unicom; False for obstacle stop)
+        """
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('stop_scan_map', payload)
+            if isinstance(payload.get('stop_scan_map'), dict)
+            else payload)
+        req = SetBool.Request()
+        if isinstance(inner, dict) and 'value' in inner:
+            req.data = bool(inner.get('value'))
+        else:
+            req.data = True
+        resp = self.call_service(self.cli_map_stop_record, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'map_stop_record timeout'}
+        return {'result': 0 if resp.success else 1,
+                'msg': resp.message or 'stop_scan_map_respond'}
+
+    def handle_start_erase_map(self, payload: dict) -> dict:
+        """Handle MQTT ``start_erase_map`` — begin obstacle/area erase.
+
+        MQTT JSON shape (catalog RE-5 §start_erase_map):
+          { "start_erase_map": { "mapName": "<string>" } }
+
+        ROS 2 endpoint: /robot_decision/start_erase  (std_srvs/srv/SetBool)
+        Schema: research/ros2_msg_definitions/std_srvs/srv/SetBool.srv
+
+        Field mapping:
+          data = True  (start)
+
+        The mapName field is reserved by the request body but not part
+        of the SetBool schema — the decision node correlates it from
+        the active mapping context.
+        """
+        req = SetBool.Request()
+        req.data = True
+        resp = self.call_service(self.cli_start_erase, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'start_erase timeout'}
+        return {'result': 0 if resp.success else 1,
+                'msg': resp.message or 'start_erase_map_respond'}
+
+    def handle_stop_erase_map(self, payload: dict) -> dict:
+        """Handle MQTT ``stop_erase_map`` — stop the erase operation.
+
+        Same client as start_erase_map, opposite SetBool data value.
+        Catalog RE-5 §stop_erase_map line 80: "Same client as
+        start_erase, opposite bool".
+        """
+        req = SetBool.Request()
+        req.data = False
+        resp = self.call_service(self.cli_start_erase, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'start_erase timeout'}
+        return {'result': 0 if resp.success else 1,
+                'msg': resp.message or 'stop_erase_map_respond'}
+
+    def handle_reset_map(self, payload: dict) -> dict:
+        """Handle MQTT ``reset_map`` — clear a map's recorded data.
+
+        MQTT JSON shape (catalog RE-5 §reset_map):
+          { "reset_map": { "mapName": "<string>" } }
+
+        ROS 2 endpoint: /robot_decision/reset_mapping  (decision_msgs/srv/StartMap)
+        Schema: research/ros2_msg_definitions/decision_msgs/srv/StartMap.srv
+
+        Field mapping:
+          map_name = body.mapName
+          map_type = 0
+          model    = 0
+        """
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('reset_map', payload)
+            if isinstance(payload.get('reset_map'), dict)
+            else payload)
+        map_name = ''
+        if isinstance(inner, dict):
+            map_name = str(inner.get('mapName', ''))
+        req = StartMap.Request()
+        req.mapname = map_name
+        req.type = 0
+        req.model = ''
+        resp = self.call_service(self.cli_reset_mapping, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'reset_mapping timeout'}
+        return {'result': 0 if resp.result else 1,
+                'msg': resp.data or 'reset_map_respond'}
+
+    def handle_generate_preview_cover_path(self, payload: dict) -> dict:
+        """Handle MQTT ``generate_preview_cover_path``.
+
+        MQTT JSON shape (catalog RE-5 §generate_preview_cover_path):
+          { "generate_preview_cover_path": {
+              "map_ids": <int>,
+              "cov_direction": <int>,
+              "specify_direction": <bool>
+          } }
+
+        ROS 2 endpoint: /robot_decision/generate_preview_cover_path
+        Endpoint type: decision_msgs/srv/GenerateCoveragePath
+        Schema: research/ros2_msg_definitions/decision_msgs/srv/GenerateCoveragePath.srv
+        """
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('generate_preview_cover_path', payload)
+            if isinstance(payload.get('generate_preview_cover_path'), dict)
+            else payload)
+        req = GenerateCoveragePath.Request()
+        if isinstance(inner, dict):
+            try:
+                req.map_ids = int(inner.get('map_ids', 0))
+            except (TypeError, ValueError):
+                req.map_ids = 0
+            try:
+                req.cov_direction = float(inner.get('cov_direction', 0.0))
+            except (TypeError, ValueError):
+                req.cov_direction = 0.0
+            req.specify_direction = bool(inner.get('specify_direction', False))
+        resp = self.call_service(self.cli_generate_preview_path, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'generate_preview_cover_path timeout'}
+        return {'result': 0 if resp.result else 1,
+                'msg': resp.message or 'generate_preview_cover_path_respond'}
+
+    def handle_get_recharge_pos(self, payload: dict) -> dict:
+        """Handle MQTT ``get_recharge_pos`` — read the saved charging pose.
+
+        Same client as save_recharge_pos but with control_mode=0
+        (read). Catalog RE-5 §get_recharge_pos.
+
+        ROS 2 endpoint: /robot_decision/save_charging_pose
+        Endpoint type: mapping_msgs/srv/SetChargingPose
+        """
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('get_recharge_pos', payload)
+            if isinstance(payload.get('get_recharge_pos'), dict)
+            else payload)
+        map_name = ''
+        if isinstance(inner, dict):
+            map_name = str(inner.get('mapName', ''))
+        req = SetChargingPose.Request()
+        req.control_mode = 0           # 0 = read
+        req.map_file_name = map_name
+        req.child_map_file_name = map_name
+        resp = self.call_service(self.cli_save_charging_pose, req)
+        if resp is None:
+            return {'result': 1, 'msg': 'save_charging_pose timeout'}
+        return {'result': 0 if resp.result else 1,
+                'msg': resp.message or 'get_recharge_pos_respond',
+                'mapName': map_name}
+
+    def handle_dev_pin_info(self, payload: dict) -> dict:
+        """Handle MQTT ``dev_pin_info`` — chassis PIN-code set/clear.
+
+        MQTT JSON shape (catalog RE-5 §dev_pin_info, decompile:347003):
+          { "dev_pin_info": { "type": <int>, "code": <string> } }
+
+        ROS 2 endpoint: /chassis_pin_code_set  (action)
+        Schema: research/ros2_msg_definitions/novabot_msgs/action/ChassisPinCodeSet.action
+
+        We send_goal_async and immediately ack with `result:0`. Stock
+        binary fires-and-forgets; the action server signals back via
+        chassis_incident, not via a synchronous response.
+        """
+        inner = payload if not isinstance(payload, dict) else (
+            payload.get('dev_pin_info', payload)
+            if isinstance(payload.get('dev_pin_info'), dict)
+            else payload)
+        if not isinstance(inner, dict):
+            return {'result': 1, 'msg': 'invalid_body'}
+        if self._shadow_mode:
+            log.info('SHADOW: would send ChassisPinCodeSet goal: %r', inner)
+            return {'result': 0, 'msg': 'shadow'}
+        goal = ChassisPinCodeSet.Goal()
+        try:
+            goal.type = int(inner.get('type', 0))
+        except (TypeError, ValueError):
+            goal.type = 0
+        goal.code = str(inner.get('code', ''))
+        if not self.act_chassis_pin_code_set.wait_for_server(timeout_sec=1.0):
+            return {'result': 1, 'msg': 'pin_code_set_unavailable'}
+        self.act_chassis_pin_code_set.send_goal_async(goal)
+        return {'result': 0, 'msg': 'dev_pin_info_respond'}
+
     def handle_save_recharge_pos(self, payload: dict) -> dict:
         """Handle MQTT ``save_recharge_pos`` — write charging pose to map.
 
@@ -914,6 +1537,91 @@ class Ros2Bridge(Node):
         # NOTE: resp.map_to_charging_dis intentionally NOT read (audit C2).
         return {'result': 0 if resp.result else 1,
                 'msg': resp.message or 'save_recharge_pos_respond'}
+
+    # ── Movement (manual joystick) ─────────────────────────────────────
+    #
+    # Flow per CLAUDE.md "Manual Control (Joystick) Protocol":
+    #   1. App sends `start_move <int 1..4>` to set the initial direction.
+    #   2. App streams `mst {x_w, y_v, z_g}` every 200 ms while held.
+    #   3. App sends `stop_move {}` to release.
+    #
+    # All three publish a CloudMoveCmd on `/cloud_move_cmd`. The chassis
+    # node consumes it and drives the wheels. There is no service call —
+    # the publisher rate IS the velocity.
+    #
+    # x_w → linear_x   (forward/back, m/s)
+    # y_v → angular_wheel (turn rate, rad/s)
+    # z_g  is unused on the mower chassis (always 0 in app traffic).
+
+    def _publish_cloud_move_cmd(self, linear_x: float,
+                                angular_wheel: float) -> None:
+        """Single-shot CloudMoveCmd publish with current ROS time stamp."""
+        if self._shadow_mode:
+            log.info('SHADOW: would publish CloudMoveCmd '
+                     'linear_x=%.3f angular_wheel=%.3f',
+                     linear_x, angular_wheel)
+            return
+        msg = CloudMoveCmd()
+        msg.stamp = self.get_clock().now().to_msg()
+        msg.linear_x = float(linear_x)
+        msg.angular_wheel = float(angular_wheel)
+        self.pub_cloud_move_cmd.publish(msg)
+
+    def handle_start_move(self, payload) -> dict:
+        """Handle MQTT ``start_move <int>`` — enter manual joystick mode.
+
+        Stock binary expects an INTEGER body (not an object). 1=left,
+        2=right, 3=forward, 4=backward (catalog RE-5 §start_move,
+        memory `mqtt-whitelist-flow.md` confirms the int form is the
+        only one the stock binary accepts).
+
+        Empty object `{}` does NOT work — firmware silently drops it.
+        We ack non-int bodies but skip publishing so the caller still
+        gets a response.
+        """
+        direction = payload if isinstance(payload, int) else None
+        if direction is None and isinstance(payload, dict):
+            # Some app revisions wrap in {value: <int>}; tolerate both.
+            v = payload.get('value')
+            if isinstance(v, int):
+                direction = v
+        if direction is None or direction not in _START_MOVE_DEFAULTS:
+            log.warning('handle_start_move: invalid direction %r '
+                        '(expected int 1..4)', payload)
+            return {'result': 1, 'msg': 'invalid_direction'}
+        linear_x, angular_wheel = _START_MOVE_DEFAULTS[direction]
+        self._publish_cloud_move_cmd(linear_x, angular_wheel)
+        log.info('start_move: direction=%d linear_x=%.2f angular_wheel=%.2f',
+                 direction, linear_x, angular_wheel)
+        return {'result': 0}
+
+    def handle_mst(self, payload) -> dict:
+        """Handle MQTT ``mst {x_w, y_v, z_g}`` — continuous joystick velocity.
+
+        Source: CLAUDE.md "Manual Control (Joystick) Protocol".
+        Repeats at 200 ms during a touch-hold; we publish unconditionally
+        — the chassis side handles velocity smoothing.
+        """
+        if not isinstance(payload, dict):
+            return {'result': 1, 'msg': 'invalid_body'}
+        try:
+            linear_x = float(payload.get('x_w', 0.0))
+            angular_wheel = float(payload.get('y_v', 0.0))
+        except (TypeError, ValueError):
+            return {'result': 1, 'msg': 'invalid_velocity'}
+        self._publish_cloud_move_cmd(linear_x, angular_wheel)
+        # mst is high-rate — no response needed (return None to suppress).
+        return None
+
+    def handle_stop_move(self, payload) -> dict:
+        """Handle MQTT ``stop_move`` — leave manual mode.
+
+        Publishes a single zero-velocity CloudMoveCmd which the chassis
+        treats as a brake. Body is ignored (stock binary takes any).
+        """
+        self._publish_cloud_move_cmd(0.0, 0.0)
+        log.info('stop_move: zero velocity published')
+        return {'result': 0}
 
     # ── Generic helpers ────────────────────────────────────────────────
     def call_service(self, client, request, timeout: float = 5.0):

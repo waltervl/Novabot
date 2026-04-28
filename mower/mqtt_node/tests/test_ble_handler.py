@@ -10,7 +10,14 @@ import json
 
 import pytest
 
-from ble_handler import BleFramer
+from ble_handler import (
+    BleFramer,
+    FLUSH_CHAR_UUID,
+    NOTIFY_CHAR_UUID,
+    SERVICE_UUID,
+    WRITE_CHAR_UUID,
+    wrap_frame,
+)
 
 
 def test_single_frame_yields_decoded_json():
@@ -38,3 +45,20 @@ def test_invalid_json_in_frame_skipped():
     framer = BleFramer()
     out = list(framer.feed(b'le_start{not json}le_end'))
     assert out == []
+
+
+def test_wrap_frame_round_trip_through_framer():
+    framer = BleFramer()
+    payload = {'set_wifi_info_respond': {'result': 1, 'msg': 'ok'}}
+    out = list(framer.feed(wrap_frame(payload)))
+    assert out == [payload]
+
+
+def test_uuids_match_bootstrap_short_form_expansion():
+    # bootstrap/src/ble.ts:23 — mower service '0201', writeChar '0011',
+    # notifyChar '0021', flushChar '3333'. BlueZ expands 16-bit shorts
+    # via the BLE base UUID 0000XXXX-0000-1000-8000-00805f9b34fb.
+    assert SERVICE_UUID == '00000201-0000-1000-8000-00805f9b34fb'
+    assert WRITE_CHAR_UUID == '00000011-0000-1000-8000-00805f9b34fb'
+    assert NOTIFY_CHAR_UUID == '00000021-0000-1000-8000-00805f9b34fb'
+    assert FLUSH_CHAR_UUID == '00003333-0000-1000-8000-00805f9b34fb'
