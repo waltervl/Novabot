@@ -43,6 +43,23 @@ class MqttClient:
         # would create a feedback loop on our own responses.
         self._cli.subscribe(f'Dart/Send_mqtt/{self.sn}')
 
+    def swap_broker(self, host: str, port: int) -> None:
+        """Disconnect from the current broker, point the client at a new
+        host:port, and reconnect. Called by the discovery loop when an
+        mDNS-confirmed switch lands. Safe to call from a non-asyncio thread
+        — paho-mqtt's loop_start spins its own worker."""
+        try:
+            if self._cli is not None:
+                try:
+                    self._cli.disconnect()
+                except Exception:
+                    pass
+        finally:
+            self.host = host
+            self.port = port
+            # Re-run the existing connect flow with the new host/port.
+            self.connect()
+
     def publish(self, topic: str, payload: bytes, encrypted: bool = True,
                 qos: int = 1) -> None:
         body = encrypt(self.sn, payload) if encrypted else payload
