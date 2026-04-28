@@ -390,12 +390,28 @@ def main():
     mqtt.loop_start()
 
     # ── Discovery loop (Phase 2 of zero-touch MQTT redirect) ─────────────
+    def _on_server_switch(new_host: str, new_port: int) -> None:
+        previous_host = discovery._current_host  # captured before the swap
+        mqtt.swap_broker(new_host, new_port)
+        try:
+            payload = json.dumps({
+                'from_ip': previous_host,
+                'to_ip': new_host,
+                'port': new_port,
+                'ts': int(time.time() * 1000),
+            }).encode('utf-8')
+            topic = f'novabot/events/{sn}/server_migrated'
+            mqtt.publish(topic, payload, encrypted=False, qos=1)
+            log.info('emitted server_migrated event topic=%s', topic)
+        except Exception:
+            log.exception('failed to publish server_migrated event')
+
     discovery = DiscoveryLoop(
         config=cfg,
         json_path=Path('/userdata/lfi/json_config.json'),
         http_addr_path=Path('/userdata/lfi/http_address.txt'),
         resolver=_zeroconf_resolve,
-        on_switch=lambda new_host, new_port: mqtt.swap_broker(new_host, new_port),
+        on_switch=_on_server_switch,
     )
 
     discovery_loop_thread = threading.Thread(
