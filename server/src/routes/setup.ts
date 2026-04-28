@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo } from '../db/repositories/index.js';
 import { isSetupComplete, invalidateSetupCache } from '../middleware/setupGuard.js';
+import { importCloudWorkRecords } from '../services/cloudWorkRecordsImport.js';
 // LFI cloud helpers were extracted to `src/services/lfiCloud.ts` on 2026-04-23
 // so cloud-api routes can import them without reaching into `routes/setup.ts`
 // (the cloud-api freeze forbids that direction). Re-export here so existing
@@ -471,8 +472,34 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
       }
     }
 
+    // 6. Import historic work records from the cloud (best-effort).
+    // Done in its own try-block so a 4xx/5xx from this newer endpoint
+    // never blocks the rest of the cloud-apply pipeline.
+    let workRecordsImported = 0;
+    if (mower?.sn) {
+      try {
+        const encryptedPw = encryptCloudPassword(password);
+        const loginResp = await callLfiCloud('POST', '/api/nova-user/appUser/login', {
+          email, password: encryptedPw, imei: 'imei',
+        });
+        const loginVal = (loginResp as Record<string, unknown>).value as Record<string, unknown> | undefined;
+        const cloudToken = loginVal?.accessToken as string | undefined;
+        const cloudAppUserId = loginVal?.appUserId as number | string | undefined;
+        if (cloudToken && cloudAppUserId != null) {
+          const equip = equipmentRepo.findByMowerSn(mower.sn);
+          const equipmentId = equip?.equipment_id ?? mower.sn;
+          const result = await importCloudWorkRecords(
+            cloudToken, cloudAppUserId, appUserId, equipmentId,
+          );
+          workRecordsImported = result.inserted;
+        }
+      } catch (recErr) {
+        console.warn('[Setup] Work-records import failed (non-fatal):', recErr);
+      }
+    }
+
     invalidateSetupCache();
-    res.json({ ok: true, email: normalizedEmail, setupComplete: isSetupComplete(), mapsImported, mapZipSize, chargerGpsImported });
+    res.json({ ok: true, email: normalizedEmail, setupComplete: isSetupComplete(), mapsImported, mapZipSize, chargerGpsImported, workRecordsImported });
   } catch (err) {
     console.error('[Setup] Cloud apply error:', err);
     res.status(500).json({

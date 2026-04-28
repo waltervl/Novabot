@@ -4003,12 +4003,41 @@ dashboardRouter.post('/admin/import', async (req: Request, res: Response) => {
     }
   }
 
+  // 5. Best-effort: pull historic mowing records from the LFI cloud
+  // so the OpenNova app's Records tab is populated immediately. Wraps
+  // its own try block — any failure here is non-fatal.
+  let workRecordsImported = 0;
+  if (mower?.sn) {
+    try {
+      const { encryptCloudPassword, callLfiCloud } = await import('../services/lfiCloud.js');
+      const { importCloudWorkRecords } = await import('../services/cloudWorkRecordsImport.js');
+      const encryptedPw = encryptCloudPassword(password);
+      const loginResp = await callLfiCloud('POST', '/api/nova-user/appUser/login', {
+        email, password: encryptedPw, imei: 'imei',
+      });
+      const loginVal = (loginResp as Record<string, unknown>).value as Record<string, unknown> | undefined;
+      const cloudToken = loginVal?.accessToken as string | undefined;
+      const cloudAppUserId = loginVal?.appUserId as number | string | undefined;
+      if (cloudToken && cloudAppUserId != null) {
+        const equip = equipmentRepo.findByMowerSn(mower.sn);
+        const equipmentId = equip?.equipment_id ?? mower.sn;
+        const result = await importCloudWorkRecords(
+          cloudToken, cloudAppUserId, appUserId, equipmentId,
+        );
+        workRecordsImported = result.inserted;
+      }
+    } catch (recErr) {
+      console.warn('[admin/import] Work-records import failed (non-fatal):', recErr);
+    }
+  }
+
   res.json({
     ok: true,
     userId,
     email: normalizedEmail,
     chargerSn: charger.sn,
     mowerSn: mower?.sn ?? null,
+    workRecordsImported,
   });
 });
 
