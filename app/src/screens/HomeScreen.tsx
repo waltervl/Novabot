@@ -1842,6 +1842,51 @@ export default function HomeScreen() {
             </View>
           )}
 
+          {displayActivity === 'edge_cutting' && (
+            <View style={styles.actionRow}>
+              {/* Stop edge-cut + return to dock. The NTCP edge-cut
+                  action does NOT respond to stop_navigation (it
+                  bypasses robot_decision); we cancel via the firmware
+                  extended command stop_boundary_follow which calls
+                  /coverage_planner_server/cover_task_stop. After the
+                  cancel, send the stock go_pile + go_to_charge sequence
+                  so the mower drives itself back to the dock. */}
+              <TouchableOpacity
+                style={[styles.actionButton, styles.actionButtonRed]}
+                onPress={async () => {
+                  try {
+                    const url = await getServerUrl();
+                    if (!url) return;
+                    const api = new ApiClient(url);
+                    await api.sendExtended(mower.sn, { stop_boundary_follow: {} });
+                  } catch { /* non-fatal */ }
+                  setOptimisticActivity('idle');
+                }}
+                disabled={commandLoading !== null}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="stop" size={20} color={colors.white} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.actionButtonBlue]}
+                onPress={async () => {
+                  try {
+                    const url = await getServerUrl();
+                    if (!url) return;
+                    const api = new ApiClient(url);
+                    await api.sendExtended(mower.sn, { stop_boundary_follow: {} });
+                  } catch { /* non-fatal */ }
+                  setTimeout(() => { sendGoHome(mower.sn); }, 500);
+                  setOptimisticActivity('returning');
+                }}
+                disabled={commandLoading !== null}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="home" size={20} color={colors.white} />
+              </TouchableOpacity>
+            </View>
+          )}
+
           {displayActivity === 'paused' && (() => {
             // Pauze-duur berekenen voor UX-waarschuwing. Boven de drempel
             // blokkeren we de Resume-knop NIET (firmware kan alsnog goed
