@@ -357,7 +357,15 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 }
 
                 const mapId = uuidv4();
-                const alias = (item.alias as string | undefined) ?? fileName.replace('.csv', '');
+                // Friendly name comes from the cloud's `alias` field. If
+                // the cloud didn't supply one (or it's an empty string),
+                // store NULL — never the filename-basename. The basename
+                // (e.g. "map0", "map0_work") looks like a canonical slot
+                // label, which makes map.ts:744's alias-protect logic
+                // think there's no user alias to preserve and silently
+                // overwrites it on the next mower ZIP upload.
+                const rawAlias = typeof item.alias === 'string' ? item.alias.trim() : '';
+                const alias = rawAlias === '' ? null : rawAlias;
                 const mapData = {
                   map_id: mapId,
                   mower_sn: mower.sn,
@@ -384,7 +392,8 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 // Download volledig gefaald — voor unicom items alsnog opslaan (metadata)
                 if (mapType === 'unicom') {
                   const mapId = uuidv4();
-                  const alias = (item.alias as string | undefined) ?? fileName!.replace('.csv', '');
+                  const rawAlias = typeof item.alias === 'string' ? item.alias.trim() : '';
+                  const alias = rawAlias === '' ? null : rawAlias;
                   const mapData = {
                     map_id: mapId, mower_sn: mower.sn, map_name: alias,
                     map_area: null, file_name: fileName!, file_size: null, map_type: 'unicom',
