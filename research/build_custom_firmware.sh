@@ -992,6 +992,66 @@ MONSTOP
     echo "  run_novabot.sh: mqtt_node_monitor start + stop toegevoegd"
 fi
 
+# === Stap 5d-bis: Runtime mDNS discovery loop toevoegen ===
+# Polls opennova.local / opennovabot.local elke 60s via stdlib resolver
+# (libnss-mdns). Bij IP-mismatch met huidige mqtt_host voor 2 polls op rij:
+# atomic rewrite van json_config.json + http_address.txt, kill van mqtt_node
+# zodat mqtt_node_monitor.sh respawnt met nieuwe broker. Geen reboot, geen
+# SSH nodig voor server-migraties (laptop ↔ NAS ↔ Pi).
+# Spec: docs/superpowers/specs/2026-04-28-zero-touch-mqtt-redirect-design.md
+echo "[5d-bis/9] Runtime mDNS discovery loop toevoegen..."
+
+DISCOVERY_SRC="$SCRIPT_DIR/opennova_discovery.py"
+if [ -f "$DISCOVERY_SRC" ]; then
+    cp "$DISCOVERY_SRC" "$NOVABOT_ROOT/scripts/opennova_discovery.py"
+    chmod +x "$NOVABOT_ROOT/scripts/opennova_discovery.py"
+    echo "  opennova_discovery.py gekopieerd naar scripts/"
+
+    # Systemd unit aanmaken via start_service.sh post-install hook
+    # (kan niet via .deb data tree omdat NOVABOT_ROOT mapt naar /root/novabot/,
+    # niet naar / — systemd units moeten op /etc/systemd/system/ landen).
+    if grep -q "opennova-discovery" "$START_SERVICE" 2>/dev/null; then
+        echo "  opennova-discovery hook al aanwezig in start_service.sh — skip"
+    else
+        DISCOVERY_INSTALL_BLOCK="/tmp/opennova_discovery_install.sh"
+        cat > "$DISCOVERY_INSTALL_BLOCK" << 'DISCSVC'
+
+# ============================================================
+# CUSTOM: OpenNova mDNS runtime discovery loop
+# Polls opennova.local elke 60s, switcht broker zonder reboot.
+# ============================================================
+if [ ! -f /etc/systemd/system/opennova-discovery.service ]; then
+    cat > /etc/systemd/system/opennova-discovery.service << 'OPENNOVA_DISCOVERY_UNIT_EOF'
+[Unit]
+Description=OpenNova mDNS runtime discovery loop
+After=novabot_launch.service network-online.target
+Wants=novabot_launch.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /root/novabot/scripts/opennova_discovery.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+OPENNOVA_DISCOVERY_UNIT_EOF
+    systemctl daemon-reload 2>/dev/null
+    systemctl enable opennova-discovery 2>/dev/null
+    systemctl start opennova-discovery 2>/dev/null
+    echo "opennova-discovery.service enabled" >> $path/start_service.log
+fi
+DISCSVC
+        sed -i '' '/sudo apt install -y dnsmasq/r /tmp/opennova_discovery_install.sh' "$START_SERVICE"
+        rm -f "$DISCOVERY_INSTALL_BLOCK"
+        echo "  opennova-discovery systemd unit hook toegevoegd aan start_service.sh"
+    fi
+else
+    echo "  WARN: $DISCOVERY_SRC niet gevonden — discovery loop overgeslagen"
+fi
+
 # === Stap 5d: Camera stream service toevoegen ===
 echo "[5d/9] Camera stream service toevoegen..."
 
