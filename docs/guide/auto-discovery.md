@@ -127,3 +127,163 @@ Stock firmware does not auto-discover. It always asks for
 hostname at the server via your network's DNS (Pi-hole, AdGuard,
 router DNS rewrite, or the container's built-in `ENABLE_DNS=true`
 dnsmasq).
+
+## Port 5353 already in use on the host (ZimaOS / CasaOS / Synology)
+
+If your NAS already runs an `avahi-daemon` (ZimaOS, CasaOS, Synology,
+most Linux distros with desktop bits), the OpenNova container can't
+bind UDP port 5353 — it's already taken. The container start will fail
+or silently skip the advertiser.
+
+Diagnosis from a shell on the NAS:
+
+```bash
+sudo ss -ulnp | grep :5353
+# UNCONN  ...  *:5353  ...  users:(("avahi-daemon",pid=...,fd=...))
+```
+
+The fix is to disable the in-container advertiser and use the host's
+existing avahi-daemon to publish the same A-records. avahi already
+listens on 5353; we just give it two extra hostnames to answer for.
+
+### Step 1 — Tell the container to stop trying to advertise
+
+In `docker-compose.yml`:
+
+```yaml
+environment:
+  - ENABLE_MDNS=false
+ports:
+  # remove the 5353/udp line entirely; nothing inside the container
+  # uses that port now
+  - "80:80"
+  - "443:443"
+  - "1883:1883"
+```
+
+Restart the container so the env change takes effect.
+
+### Step 2 — Publish the hostnames via host avahi
+
+Verify the helper is installed:
+
+```bash
+which avahi-publish-address
+# /usr/bin/avahi-publish-address
+```
+
+If missing: `sudo apt install avahi-utils` (Debian/Ubuntu) or your
+distro's equivalent.
+
+Create two persistent systemd units (substitute your NAS LAN IP):
+
+```bash
+sudo tee /etc/systemd/system/opennova-mdns.service > /dev/null <<'EOF'
+[Unit]
+Description=mDNS A-record alias for OpenNova (opennova.local)
+After=avahi-daemon.service network-online.target
+Wants=avahi-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/avahi-publish-address -R opennova.local 192.168.0.247
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/opennova-mdns-legacy.service > /dev/null <<'EOF'
+[Unit]
+Description=mDNS A-record alias for legacy opennovabot.local
+After=avahi-daemon.service network-online.target
+Wants=avahi-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/avahi-publish-address -R opennovabot.local 192.168.0.247
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now opennova-mdns opennova-mdns-legacy
+```
+
+Verify both units are running:
+
+```bash
+sudo systemctl status opennova-mdns opennova-mdns-legacy --no-pager
+```
+
+And that the names resolve from anywhere on the LAN:
+
+```bash
+dns-sd -G v4 opennova.local      # macOS
+avahi-resolve -n opennova.local  # Linux
+```
+
+You should see your NAS IP back in under a second.
+
+### Why this works
+
+The host avahi already owns 5353 — fighting it is wasteful. We hand the
+two hostnames to it and disable the container's advertiser. The mower
+side doesn't care which process answers the mDNS query, only that
+`opennova.local` resolves to a working IP.
+
+`avahi-publish-address -R` keeps the entry alive as long as the
+service runs; `Restart=always` makes the unit survive avahi-daemon
+restarts (which kick the publishers off).
+
+## Switching a *running* mower to a new server without rebooting
+
+Custom firmware before Phase 2 of this feature lands shipped with a
+boot-time discovery script (`set_server_urls.sh`) that respects existing
+custom MQTT configs — it logs `MQTT addr KEPT (custom)` and won't
+overwrite a non-`mqtt.lfibot.com` host. Useful safety, but it means you
+can't trigger the migration just by re-running that script.
+
+The reliable soft-restart procedure (verified live on `LFIN1231000211`,
+2026-04-29):
+
+```bash
+ssh root@<mower-ip>   # password: novabot
+
+# 1. Rewrite both config files in place
+python3 -c "
+import json
+p = '/userdata/lfi/json_config.json'
+d = json.load(open(p))
+d['mqtt']['value']['addr'] = '192.168.0.247'   # new server IP
+open(p, 'w').write(json.dumps(d, indent=2))
+"
+printf '%s' '192.168.0.247:80' > /userdata/lfi/http_address.txt
+
+# 2. Kill mqtt_node — mqtt_node_monitor.sh respawns it within ~3s,
+#    re-reading the config we just wrote.
+kill $(pgrep -f /root/novabot/install/novabot_api/lib/novabot_api/mqtt_node)
+```
+
+What happens:
+
+1. `mqtt_node_monitor.sh` (already running as part of `novabot_launch`)
+   notices the binary died.
+2. It respawns mqtt_node. The new process reads the now-updated
+   `json_config.json` and `http_address.txt`.
+3. mqtt_node connects to the new broker. Verify with `ss -tnp | grep
+   1883` on the mower, or `docker logs opennova | grep CONNECT` on the
+   server.
+
+Importantly, **a single `kill` is enough**. The monitor script handles
+the respawn cleanly — no need to kill twice or restart
+`novabot_launch`. Rebooting the mower is heavier and unnecessary.
+
+The full Phase 2 implementation (the `discovery_loop` in mqtt_node)
+removes the manual edit — once a custom firmware build with the loop is
+flashed, the mower polls mDNS every 60 s and switches automatically
+without any SSH at all.
