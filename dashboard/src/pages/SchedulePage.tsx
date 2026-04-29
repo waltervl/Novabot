@@ -1,4 +1,5 @@
 import type { DeviceState } from '../types';
+import { Scheduler } from '../components/schedule/Scheduler';
 
 interface Props {
   mower: DeviceState | null;
@@ -9,8 +10,11 @@ export function SchedulePage({ mower }: Props) {
     return <div className="p-8 text-zinc-500">Select a mower.</div>;
   }
   return (
-    <div className="p-8 text-zinc-500">
-      Schedule view ports to this tab in Phase 2.
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <Scheduler
+        sn={mower.sn}
+        online={mower.online}
+      />
     </div>
   );
 }
