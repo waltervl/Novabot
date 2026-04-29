@@ -24,8 +24,18 @@ function ShellInner() {
   const [tab, setTab] = useState<Tab>('map');
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Rain state derivation lands in Phase 2 — for now: null.
-  const rainState = null;
+  // Rain state derived from active mower's sensors. The mower reports
+  // `rain_paused: '1'` when a scheduled run is currently paused by rain
+  // and `rain_detected: '1'` when the rain sensor is wet but no run is
+  // active. Both fields are absent on stock v5.x firmware — we fall
+  // back to 'dry' (which RainBadge renders as no badge).
+  const rainState: 'dry' | 'rain' | 'paused-by-rain' | null = activeMower
+    ? activeMower.sensors.rain_paused === '1'
+      ? 'paused-by-rain'
+      : activeMower.sensors.rain_detected === '1'
+      ? 'rain'
+      : 'dry'
+    : null;
 
   if (loading) {
     return <div className="p-8 text-zinc-500">Loading…</div>;
