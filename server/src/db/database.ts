@@ -333,6 +333,19 @@ export function initDb(): void {
     catch { /* kolom bestaat al */ }
   }
 
+  // Cut-grass plans need cut_grass_height + area columns. App sends them
+  // in saveCutGrassPlan and the mower needs cut_grass_height back via
+  // queryPlanFromMachine to set the blade — without it the schedule is
+  // accepted but the run is silently rejected by the mower.
+  for (const col of [
+    'cut_grass_height INTEGER',
+    'area INTEGER',
+    'timezone TEXT',
+  ]) {
+    try { db.exec(`ALTER TABLE cut_grass_plans ADD COLUMN ${col}`); }
+    catch { /* kolom bestaat al */ }
+  }
+
   // WiFi credentials (cloud slaat deze op en retourneert ze in userEquipmentList)
   for (const col of ['wifi_name TEXT', 'wifi_password TEXT']) {
     try { db.exec(`ALTER TABLE equipment ADD COLUMN ${col}`); }

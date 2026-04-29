@@ -85,15 +85,15 @@ function rowToDto(r: PlanRow, today: Date = new Date()) {
     // Cloud retourneert integer id — app parst het mogelijk als int
     id: r.id ?? Math.abs(hashCode(r.plan_id)),
     sn,
-    timezone: null,
+    timezone: r.timezone ?? null,
     week: nextOccurringDay(weekday, today),  // next-occurring weekday from today
     weeks: weekday,
     weekArray: weekday,
     startTime: r.start_time,
     endTime: r.end_time,
     workTime: r.work_time ?? null,
-    area: workArea.length > 0 ? 1 : null,
-    cutGrassHeight: null,  // TODO: opslaan in DB
+    area: r.area ?? (workArea.length > 0 ? 1 : null),
+    cutGrassHeight: r.cut_grass_height ?? null,
     repeatType: r.repeat_type != null ? Number(r.repeat_type) : 1,
     associationId: null,
     times: r.repeat_count ?? 1,
@@ -226,6 +226,9 @@ cutGrassPlanRouter.post('/saveCutGrassPlan', authMiddleware, (req: AuthRequest, 
     workTime: body.workTime,
     workArea: body.workArea ?? body.areaMapFileNames ? JSON.stringify(body.workArea ?? body.areaMapFileNames) : null,
     workDay: body.workDay != null ? JSON.stringify(body.workDay) : null,
+    cutGrassHeight: body.cutGrassHeight ?? null,
+    area: body.area ?? null,
+    timezone: body.timezone ?? null,
   });
 
   res.json(ok({ planId }));
@@ -236,16 +239,26 @@ cutGrassPlanRouter.post('/updateCutGrassPlan', authMiddleware, (req: AuthRequest
   const body = req.body as { planId?: string } & Record<string, unknown>;
   if (!body.planId) { res.json(fail('planId required', 400)); return; }
 
+  const workAreaInput = body.workArea ?? body.areaMapFileNames;
+  const repeatTypeStr =
+    body.repeatType != null ? String(body.repeatType) : null;
+
   cutGrassPlanRepo.update(body.planId, req.userId!, {
     startTime: (body.startTime as string) ?? null,
     endTime: (body.endTime as string) ?? null,
-    weekday: body.weekday ? JSON.stringify(body.weekday) : null,
+    weekday: body.weekday ?? body.weeks
+      ? JSON.stringify(body.weekday ?? body.weeks)
+      : null,
     repeat: body.repeat !== undefined ? (body.repeat as boolean) : null,
-    repeatCount: (body.repeatCount as number) ?? null,
-    repeatType: (body.repeatType as string) ?? null,
+    repeatCount:
+      (body.repeatCount as number) ?? (body.times as number) ?? null,
+    repeatType: repeatTypeStr,
     workTime: (body.workTime as number) ?? null,
-    workArea: body.workArea ? JSON.stringify(body.workArea) : null,
-    workDay: body.workDay ? JSON.stringify(body.workDay) : null,
+    workArea: workAreaInput ? JSON.stringify(workAreaInput) : null,
+    workDay: body.workDay != null ? JSON.stringify(body.workDay) : null,
+    cutGrassHeight: (body.cutGrassHeight as number) ?? null,
+    area: (body.area as number) ?? null,
+    timezone: (body.timezone as string) ?? null,
   });
   res.json(ok());
 });

@@ -103,6 +103,9 @@ export interface PlanRow {
   work_time: number | null;
   work_area: string | null;
   work_day: string | null;
+  cut_grass_height: number | null;
+  area: number | null;
+  timezone: string | null;
   created_at: string;
   updated_at: string;
 }

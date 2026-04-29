@@ -55,21 +55,25 @@ export class CutGrassPlanRepository {
   private _create = db.prepare(`
     INSERT INTO cut_grass_plans
       (plan_id, equipment_id, user_id, start_time, end_time, weekday, repeat,
-       repeat_count, repeat_type, work_time, work_area, work_day, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       repeat_count, repeat_type, work_time, work_area, work_day,
+       cut_grass_height, area, timezone, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
   private _update = db.prepare(`
     UPDATE cut_grass_plans SET
-      start_time   = COALESCE(?, start_time),
-      end_time     = COALESCE(?, end_time),
-      weekday      = COALESCE(?, weekday),
-      repeat       = COALESCE(?, repeat),
-      repeat_count = COALESCE(?, repeat_count),
-      repeat_type  = COALESCE(?, repeat_type),
-      work_time    = COALESCE(?, work_time),
-      work_area    = COALESCE(?, work_area),
-      work_day     = COALESCE(?, work_day),
-      updated_at   = ?
+      start_time       = COALESCE(?, start_time),
+      end_time         = COALESCE(?, end_time),
+      weekday          = COALESCE(?, weekday),
+      repeat           = COALESCE(?, repeat),
+      repeat_count     = COALESCE(?, repeat_count),
+      repeat_type      = COALESCE(?, repeat_type),
+      work_time        = COALESCE(?, work_time),
+      work_area        = COALESCE(?, work_area),
+      work_day         = COALESCE(?, work_day),
+      cut_grass_height = COALESCE(?, cut_grass_height),
+      area             = COALESCE(?, area),
+      timezone         = COALESCE(?, timezone),
+      updated_at       = ?
     WHERE plan_id = ? AND user_id = ?
   `);
   private _delete = db.prepare(
@@ -113,6 +117,9 @@ export class CutGrassPlanRepository {
     repeatCount?: number; repeatType?: string | null;
     workTime?: number | null; workArea?: string | null;
     workDay?: string | null;
+    cutGrassHeight?: number | null;
+    area?: number | null;
+    timezone?: string | null;
   }): void {
     const now = new Date().toISOString();
     this._create.run(
@@ -124,6 +131,9 @@ export class CutGrassPlanRepository {
       data.workTime ?? null,
       data.workArea ?? null,
       data.workDay ?? null,
+      data.cutGrassHeight ?? null,
+      data.area ?? null,
+      data.timezone ?? null,
       now, now,
     );
   }
@@ -134,6 +144,9 @@ export class CutGrassPlanRepository {
     repeatCount?: number | null; repeatType?: string | null;
     workTime?: number | null; workArea?: string | null;
     workDay?: string | null;
+    cutGrassHeight?: number | null;
+    area?: number | null;
+    timezone?: string | null;
   }): void {
     this._update.run(
       data.startTime ?? null, data.endTime ?? null,
@@ -143,6 +156,9 @@ export class CutGrassPlanRepository {
       data.workTime ?? null,
       data.workArea ?? null,
       data.workDay ?? null,
+      data.cutGrassHeight ?? null,
+      data.area ?? null,
+      data.timezone ?? null,
       new Date().toISOString(),
       planId, userId,
     );
