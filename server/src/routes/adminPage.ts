@@ -26,7 +26,7 @@ export function adminPageHtml(): string {
   .modal-btn-ok{background:#7c3aed;color:#fff}
   .modal-btn-danger{background:#ef4444;color:#fff}
   .modal-btn-success{background:#22c55e;color:#fff}
-  .container{max-width:900px;margin:0 auto;padding:20px}
+  .container{max-width:1200px;margin:0 auto;padding:20px}
   h1{color:#00d4aa;font-size:24px;margin-bottom:4px}
   h2{color:#7c3aed;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
   .version{color:#666;font-size:12px;margin-bottom:24px}
@@ -86,7 +86,8 @@ export function adminPageHtml(): string {
     .tab{padding:6px 12px;font-size:12px}
   }
   #app{display:none}
-  .dev-row{display:grid;grid-template-columns:90px 170px 130px 80px 120px 70px 1fr;align-items:center;gap:6px;padding:8px 4px;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px}
+  .dev-row{display:grid;grid-template-columns:90px 180px 150px 90px 140px 80px minmax(180px,1fr);align-items:center;gap:8px;padding:10px 6px;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px}
+  .dev-row > *:last-child{justify-self:end;display:flex;align-items:center;gap:6px}
   @media(max-width:800px){.dev-row{grid-template-columns:80px 1fr;gap:4px}}
   .lora-chip{font-size:10px;color:#a78bfa;background:rgba(124,58,237,.08);border:1px solid rgba(124,58,237,.2);padding:2px 6px;border-radius:4px;white-space:nowrap}
   .lora-missing{font-size:10px;color:#666;background:rgba(255,255,255,.04);border:1px dashed rgba(255,255,255,.1);padding:2px 6px;border-radius:4px;cursor:pointer}
