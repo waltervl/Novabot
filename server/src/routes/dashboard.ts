@@ -133,6 +133,27 @@ dashboardRouter.get('/system/lora-status/:sn', (req: Request, res: Response) => 
   });
 });
 
+// GET /api/dashboard/system/logs — in-memory MQTT log buffer with optional filtering
+dashboardRouter.get('/system/logs', (req: Request, res: Response) => {
+  const all = getRecentLogs();
+  const { type, sn, direction } = req.query as Record<string, string | undefined>;
+
+  const tailRaw = req.query.tail;
+  let tail = 200;
+  if (typeof tailRaw === 'string') {
+    const n = parseInt(tailRaw, 10);
+    if (Number.isFinite(n) && n > 0 && n <= 500) tail = n;
+  }
+
+  let filtered = all;
+  if (type) filtered = filtered.filter((l) => l.type === type);
+  if (sn) filtered = filtered.filter((l) => l.sn === sn);
+  if (direction) filtered = filtered.filter((l) => l.direction === direction);
+
+  const sliced = filtered.slice(-tail);
+  res.json({ logs: sliced });
+});
+
 // GET /api/dashboard/devices — alle devices met online status en cached sensor waarden
 // Toont alleen apparaten die gebonden zijn (in equipment tabel) of momenteel online zijn,
 // gedepliceerd op SN (meest recente entry per SN)
