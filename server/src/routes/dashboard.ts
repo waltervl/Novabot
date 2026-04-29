@@ -33,6 +33,7 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { v4 as uuidv4 } from 'uuid';
+import { getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -64,6 +65,35 @@ export const dashboardRouter = Router();
   }
   if (rows.length > 0) console.log(`[SETTINGS] Loaded ${rows.length} persisted settings for ${new Set(rows.map(r => r.sn)).size} device(s)`);
 }
+
+// GET /api/dashboard/system/health — mDNS advertiser state, server uptime, per-mower cache status
+dashboardRouter.get('/system/health', (_req: Request, res: Response) => {
+  const advertisement = getActiveAdvertisement();
+
+  const allEquipment = equipmentRepo.listAll();
+  const mowers = allEquipment
+    .filter(eq => !!eq.mower_sn)
+    .map(eq => {
+      const cached = deviceCache.get(eq.mower_sn);
+      return {
+        sn: eq.mower_sn,
+        online: !!cached && cached.size > 0,
+        sensorKeys: cached?.size ?? 0,
+      };
+    });
+
+  const uptimeSec = Math.floor(process.uptime());
+  const startedAt = new Date(Date.now() - uptimeSec * 1000).toISOString();
+
+  res.json({
+    mdns: {
+      running: advertisement !== null,
+      advertisement,
+    },
+    server: { uptimeSec, startedAt },
+    mowers,
+  });
+});
 
 // GET /api/dashboard/devices — alle devices met online status en cached sensor waarden
 // Toont alleen apparaten die gebonden zijn (in equipment tabel) of momenteel online zijn,
