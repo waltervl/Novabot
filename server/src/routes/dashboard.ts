@@ -95,6 +95,44 @@ dashboardRouter.get('/system/health', (_req: Request, res: Response) => {
   });
 });
 
+// GET /api/dashboard/system/lora-status/:sn — cached LoRa pair + drift flag
+// drift = true when this device's pair does not match its paired counterpart.
+// Mower and charger MUST be on identical address+channel; mismatch = Error 8.
+dashboardRouter.get('/system/lora-status/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const own = equipmentRepo.getLoraCache(sn);
+  if (!own) {
+    res.status(404).json({ error: 'no_lora_cache' });
+    return;
+  }
+
+  // Find peer SN: equipment row pairs mower_sn + charger_sn.
+  // findBySn matches on either mower_sn or charger_sn.
+  const eq = equipmentRepo.findBySn(sn);
+  let peerSn: string | null = null;
+  if (eq && eq.mower_sn && eq.charger_sn) {
+    peerSn = eq.mower_sn === sn ? eq.charger_sn : eq.mower_sn;
+  }
+
+  const peer = peerSn ? equipmentRepo.getLoraCache(peerSn) : undefined;
+
+  let drift = false;
+  if (peer) {
+    drift =
+      own.charger_address !== peer.charger_address ||
+      own.charger_channel !== peer.charger_channel;
+  }
+
+  res.json({
+    sn,
+    pair: { address: own.charger_address ?? null, channel: own.charger_channel ?? null },
+    peer: peer
+      ? { sn: peerSn, address: peer.charger_address ?? null, channel: peer.charger_channel ?? null }
+      : { sn: peerSn, address: null, channel: null },
+    drift,
+  });
+});
+
 // GET /api/dashboard/devices — alle devices met online status en cached sensor waarden
 // Toont alleen apparaten die gebonden zijn (in equipment tabel) of momenteel online zijn,
 // gedepliceerd op SN (meest recente entry per SN)
