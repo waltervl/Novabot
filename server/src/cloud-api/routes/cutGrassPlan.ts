@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { cutGrassPlanRepo, equipmentRepo } from '../../db/repositories/index.js';
+import { cutGrassPlanRepo, equipmentRepo, mapRepo } from '../../db/repositories/index.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import { AuthRequest, ok, fail, PlanRow } from '../../types/index.js';
 
@@ -18,12 +18,49 @@ function calcMinutes(start: string, end: string): number {
   return (eh * 60 + em) - (sh * 60 + sm);
 }
 
+/**
+ * Resolve a stored work-area entry to the current map alias for display.
+ * The app's saveCutGrassPlan stores whatever the user picked at save
+ * time — usually a canonical filename like `map1_work.csv` or the
+ * canonical name `map1`. After the user later renames the map via
+ * updateEquipmentMapAlias the stored value goes stale. This helper
+ * looks the entry up against the maps table and returns the current
+ * `map_name` (alias). Falls back to the stored value when no row
+ * matches so legacy data still displays something sensible.
+ */
+function resolveAreaAlias(stored: unknown, mowerSn: string | null): string | null {
+  if (typeof stored !== 'string' || !stored || !mowerSn) {
+    return typeof stored === 'string' ? stored : null;
+  }
+  const baseName = stored.replace(/\.csv$/, '');
+  const workMatch = stored.match(/^map(\d+)(?:_work)?(?:\.csv)?$/);
+  const all = mapRepo.findWithAreaOrderByMapId(mowerSn);
+
+  // First try literal canonical match (mowers that store "map1" or
+  // "map1_work.csv" directly).
+  let row = all.find(m =>
+    m.canonical_name === baseName ||
+    m.canonical_name === stored ||
+    m.file_name === stored ||
+    (m.file_name && m.file_name.replace(/\.csv$/, '') === baseName)
+  );
+
+  // Then fall through on the work-N match.
+  if (!row && workMatch) {
+    const idx = workMatch[1];
+    row = all.find(m => m.canonical_name === `map${idx}` && m.map_type === 'work');
+  }
+
+  return row?.map_name ?? stored;
+}
+
 function rowToDto(r: PlanRow) {
   const weekday = r.weekday ? JSON.parse(r.weekday) : [];
   const workArea = r.work_area ? JSON.parse(r.work_area) : [];
   // Resolve SN from equipment
   const eq = r.equipment_id ? equipmentRepo.findByEquipmentId(r.equipment_id) : null;
   const sn = eq?.mower_sn ?? null;
+  const aliasResolved = workArea.length > 0 ? resolveAreaAlias(workArea[0], sn) : null;
 
   return {
     // Novabot app velden (WorkPlanEntityItem.fromJson parses these exact field names)
@@ -43,7 +80,7 @@ function rowToDto(r: PlanRow) {
     associationId: null,
     times: r.repeat_count ?? 1,
     workDay: r.work_day != null ? (typeof r.work_day === 'string' ? JSON.parse(r.work_day) : r.work_day) : 0,
-    areaFileAlias: workArea.length > 0 ? workArea[0] : null,
+    areaFileAlias: aliasResolved,
     // Dashboard velden (backwards compat)
     planId: r.plan_id,
     equipmentId: r.equipment_id,
