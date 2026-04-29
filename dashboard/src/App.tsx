@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Header } from './components/layout/Header';
-import { DashboardPage } from './components/dashboard/DashboardPage';
+import { DashboardShell } from './shell/DashboardShell';
 import { OnboardingWizard } from './components/setup/OnboardingWizard';
 import { ToastProvider } from './components/common/Toast';
 import { useDevices } from './hooks/useDevices';
@@ -10,7 +9,7 @@ import { MobilePage } from './mobile/MobilePage';
 type AppState = 'loading' | 'onboarding' | 'onboarding-cert-only' | 'ready';
 
 export default function App() {
-  const { devices, loading, connected, logs, bleLogs, otaProgress, liveOutlines, coveredLanes } = useDevices();
+  const { devices, loading, connected, liveOutlines, coveredLanes } = useDevices();
   const [appState, setAppState] = useState<AppState>('loading');
 
   useEffect(() => {
@@ -64,8 +63,7 @@ export default function App() {
         <MobilePage devices={devices} loading={loading} connected={connected} liveOutlines={liveOutlines} coveredLanes={coveredLanes} />
       ) : (
         <div className="dark min-h-screen bg-gray-950 text-white overflow-x-hidden">
-          <Header connected={connected} />
-          <DashboardPage devices={devices} loading={loading} logs={logs} bleLogs={bleLogs} otaProgress={otaProgress} liveOutlines={liveOutlines} coveredLanes={coveredLanes} />
+          <DashboardShell />
         </div>
       )}
     </ToastProvider>
