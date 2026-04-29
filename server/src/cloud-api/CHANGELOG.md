@@ -2,6 +2,19 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-04-29 — Schedule: persist cutGrassHeight / area / timezone
+
+- `routes/cutGrassPlan.ts`: `POST /api/nova-data/appManage/saveCutGrassPlan`
+  +  `POST /api/nova-data/appManage/updateCutGrassPlan` now write the
+  `cutGrassHeight`, `area` and `timezone` fields the Novabot app sends
+  (instead of silently dropping them). `queryPlanFromMachine` and
+  `queryCutGrassPlan` echo the stored values back so the mower can set
+  blade height + area scope. Without this fix the mower received
+  `cutGrassHeight:null` in the plan and silently refused to start the
+  scheduled run — LFI cloud worked, our docker did not. Schema migration
+  in `db/database.ts` adds `cut_grass_height INTEGER`, `area INTEGER`,
+  `timezone TEXT` to `cut_grass_plans` (idempotent ALTER TABLE).
+
 ## 2026-04-28 — Work records: field-name variants + sensor-cache fallback
 
 - `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
