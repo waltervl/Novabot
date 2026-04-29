@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions
+    url: https://github.com/rvbcrs/Novabot/discussions
+    about: Questions, ideas, setup help — anything that isn't a confirmed bug or feature request.

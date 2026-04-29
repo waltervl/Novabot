@@ -1,0 +1,157 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please fill out **all** sections — without
+        the version + app info we usually cannot reproduce the issue.
+
+        Quick checks before submitting:
+        - Server version: open `http://<your-server>/health` or run
+          `docker exec opennova cat /app/server/package.json | grep version`
+        - Mower firmware: SSH the mower and run `cat /userdata/lfi/version`
+          (custom firmware) — or check the OpenNova dashboard → Devices.
+
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which app are you using?
+      description: Stock Novabot (from Play Store / App Store) or our OpenNova app
+      options:
+        - Novabot (stock) — Android
+        - Novabot (stock) — iOS
+        - OpenNova — Android
+        - OpenNova — iOS
+        - Web dashboard only
+        - Other / multiple (explain in description)
+    validations:
+      required: true
+
+  - type: input
+    id: app_version
+    attributes:
+      label: App version
+      description: |
+        Stock Novabot: Settings → About. OpenNova: Settings → About OpenNova.
+        Web dashboard: footer.
+      placeholder: "e.g. Novabot 2.4.0 / OpenNova 2026.0429.0057"
+    validations:
+      required: true
+
+  - type: input
+    id: server_version
+    attributes:
+      label: OpenNova server / docker release
+      description: |
+        Run `curl http://<server-ip>/health` or check `docker images rvbcrs/opennova`.
+        If you are not running our docker, write "LFI cloud" or "none".
+      placeholder: "e.g. v2026.0429.1314 (rvbcrs/opennova:latest)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Where is the OpenNova server running?
+      options:
+        - Mac (Docker Desktop)
+        - Linux server / VM
+        - NAS (ZimaOS / Synology / Unraid / TrueNAS)
+        - Raspberry Pi
+        - LFI cloud (no self-hosted server)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: mower_sn
+    attributes:
+      label: Mower serial number (SN)
+      description: Last 4 digits are enough — full SN if you don't mind sharing.
+      placeholder: "e.g. LFIN…0238"
+    validations:
+      required: true
+
+  - type: input
+    id: mower_firmware
+    attributes:
+      label: Mower firmware
+      description: |
+        Stock Novabot app → Mower settings → Version, or OpenNova
+        dashboard → Devices → Firmware.
+      placeholder: "e.g. v6.0.2 (stock) or v6.0.2-custom-24"
+    validations:
+      required: true
+
+  - type: input
+    id: stm32_firmware
+    attributes:
+      label: STM32 firmware (optional)
+      description: Only if you flashed a custom STM32 build. Leave blank otherwise.
+      placeholder: "e.g. v3.6.0 (stock) / v3.6.12 (custom)"
+
+  - type: input
+    id: charger_firmware
+    attributes:
+      label: Charger firmware (optional)
+      description: Only fill in if the bug involves the charger / docking.
+      placeholder: "e.g. v0.4.0"
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Describe the bug in plain language.
+      placeholder: "I scheduled a launch every day. When it starts I get Error 2 …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps so we can replay it.
+      placeholder: |
+        1. Open app → Schedule
+        2. Add daily plan, all 3 maps, 09:00–11:00
+        3. Wait until 09:00 …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      placeholder: "Mower starts mowing without error popup."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (mower, server, app)
+      description: |
+        - **Server logs:** `docker logs --since 30m opennova` (last error first).
+        - **Mower logs:** `tail -200 /userdata/log/mqtt_node-*.log` if you have SSH.
+        - **App logs:** stock app has no log export — describe popups + screenshots.
+        Paste between the ``` fences. Redact tokens / passwords.
+      render: shell
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots / video
+      description: Drop images directly into this text box.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing open + closed issues for duplicates.
+          required: true
+        - label: I redacted any secrets, JWT tokens, or full email addresses from logs.
+          required: true
