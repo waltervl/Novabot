@@ -18,7 +18,7 @@ import {
   calibrateCharger,
   type VirtualWall,
 } from '../../api/client';
-import { localToGps, gpsToLocal } from '../../utils/coords';
+import { localToGps, gpsToLocal, isUsableChargerGps } from '../../utils/coords';
 import { useToast } from '../common/Toast';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { PolygonEditor } from './PolygonEditor';
@@ -837,10 +837,17 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
   // All rendering code uses gpsMaps (with lat/lng). Only save/create uses local meters.
   type GpsMapData = Omit<MapData, 'mapArea'> & { mapArea: Array<{ lat: number; lng: number }> };
   const gpsMaps: GpsMapData[] = useMemo(() => {
-    if (!chargerGps) return [];
+    if (!isUsableChargerGps(chargerGps)) return [];
+    // Drop any vertex that becomes non-finite after projection — a single
+    // NaN coord crashes Leaflet with "Invalid LatLng object" (issue #15).
     return maps.map(m => ({
       ...m,
-      mapArea: m.mapArea.map(p => localToGps(p, chargerGps!)),
+      mapArea: m.mapArea.flatMap(p => {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
+        const gps = localToGps(p, chargerGps);
+        if (!Number.isFinite(gps.lat) || !Number.isFinite(gps.lng)) return [];
+        return [gps];
+      }),
     }));
   }, [maps, chargerGps]);
 
@@ -889,15 +896,23 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
   }, []);
 
   const hasGps = lat && lng && lat !== '0' && lng !== '0';
-  const position: [number, number] = hasGps
-    ? [parseFloat(lat) + activeCal.offsetLat, parseFloat(lng) + activeCal.offsetLng]
-    : DEFAULT_CENTER;
+  const position: [number, number] = (() => {
+    if (!hasGps) return DEFAULT_CENTER;
+    const numLat = parseFloat(lat) + (Number.isFinite(activeCal.offsetLat) ? activeCal.offsetLat : 0);
+    const numLng = parseFloat(lng) + (Number.isFinite(activeCal.offsetLng) ? activeCal.offsetLng : 0);
+    if (!Number.isFinite(numLat) || !Number.isFinite(numLng)) return DEFAULT_CENTER;
+    return [numLat, numLng];
+  })();
 
   const [userInteracted, setUserInteracted] = useState(false);
   const [mapsFitted, setMapsFitted] = useState(false);
 
   const polygonMaps = gpsMaps.filter(m => m.mapArea.length >= 3);
-  const trailPositions: [number, number][] = trail.map(p => [p.lat + activeCal.offsetLat, p.lng + activeCal.offsetLng]);
+  const trailPositions: [number, number][] = trail.flatMap(p => {
+    const lat = p.lat + (Number.isFinite(activeCal.offsetLat) ? activeCal.offsetLat : 0);
+    const lng = p.lng + (Number.isFinite(activeCal.offsetLng) ? activeCal.offsetLng : 0);
+    return Number.isFinite(lat) && Number.isFinite(lng) ? [[lat, lng] as [number, number]] : [];
+  });
 
   // Mower heading icon (rotates with heading data)
   const headingDeg = heading ? parseFloat(heading) : 0;
@@ -988,17 +1003,26 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
     }).catch(() => toast(`✗ Delete failed`, 'error'));
   }, [sn, toast]);
 
-  // Center of all polygon points (used as rotation/scale pivot)
+  // Center of all polygon points (used as rotation/scale pivot). Skip
+  // any non-finite vertex so a single NaN doesn't propagate into the
+  // pathDirection preview polylines and crash Leaflet (issue #15).
   const polyCenter = useMemo(() => {
     let totalLat = 0, totalLng = 0, count = 0;
     for (const m of polygonMaps) {
       for (const p of m.mapArea) {
+        if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) continue;
         totalLat += p.lat;
         totalLng += p.lng;
         count++;
       }
     }
-    if (count === 0) return { lat: position[0], lng: position[1] };
+    if (count === 0) {
+      const [pLat, pLng] = position;
+      if (Number.isFinite(pLat) && Number.isFinite(pLng)) {
+        return { lat: pLat, lng: pLng };
+      }
+      return { lat: DEFAULT_CENTER[0], lng: DEFAULT_CENTER[1] };
+    }
     return { lat: totalLat / count, lng: totalLng / count };
   }, [polygonMaps, position]);
 
@@ -1438,7 +1462,7 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
             </Marker>
           )}
           {/* Path direction preview: blauwe lijnen bij richting selectie */}
-          {pathDirectionPreview != null && polyCenter.lat !== 0 && (() => {
+          {pathDirectionPreview != null && Number.isFinite(polyCenter.lat) && Number.isFinite(polyCenter.lng) && polyCenter.lat !== 0 && (() => {
             const deg = pathDirectionPreview;
             const rad = (deg * Math.PI) / 180;
             const dLat = Math.cos(rad);

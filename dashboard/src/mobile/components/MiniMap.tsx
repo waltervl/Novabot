@@ -4,7 +4,7 @@ import L from 'leaflet';
 import { Layers, Gamepad2 } from 'lucide-react';
 import type { MapData, TrailPoint, GpsPoint } from '../../types';
 import { fetchMaps, fetchTrail } from '../../api/client';
-import { localToGps } from '../../utils/coords';
+import { localToGps, isUsableChargerGps } from '../../utils/coords';
 import { CoverageStripes } from '../../components/map/MowerMap';
 
 // Fix Leaflet default marker icons in Vite
@@ -175,16 +175,24 @@ export function MiniMap({
     fetchTrail(sn).then(setTrail).catch(() => {});
   }, [sn]);
 
-  // Convert local meter maps to GPS for Leaflet rendering
+  // Convert local meter maps to GPS for Leaflet rendering. Drop any
+  // vertex that becomes non-finite — Leaflet rejects NaN with a hard
+  // throw and white-screens the page (issue #15).
   const gpsMaps = useMemo(() => {
-    if (!chargerGps) return [];
+    if (!isUsableChargerGps(chargerGps)) return [];
     return maps.map(m => ({
       ...m,
-      mapArea: m.mapArea.map(p => localToGps(p, chargerGps!)) as Array<{ lat: number; lng: number }>,
+      mapArea: m.mapArea.flatMap(p => {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
+        const gps = localToGps(p, chargerGps);
+        return Number.isFinite(gps.lat) && Number.isFinite(gps.lng) ? [gps] : [];
+      }) as Array<{ lat: number; lng: number }>,
     }));
   }, [maps, chargerGps]);
 
-  const center: [number, number] = lat && lng ? [lat, lng] : DEFAULT_CENTER;
+  const center: [number, number] = lat && lng && Number.isFinite(lat) && Number.isFinite(lng)
+    ? [lat, lng]
+    : DEFAULT_CENTER;
 
   const mowerIcon = useMemo(() => makeMowerIcon(heading), [heading]);
   const chargerIcon = useMemo(() => makeChargerIcon(), []);
