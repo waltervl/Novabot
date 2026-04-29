@@ -9,11 +9,9 @@ body:
         Thanks for filing a bug. Please fill out **all** sections — without
         the version + app info we usually cannot reproduce the issue.
 
-        Quick checks before submitting:
-        - Server version: open `http://<your-server>/health` or run
-          `docker exec opennova cat /app/server/package.json | grep version`
-        - Mower firmware: SSH the mower and run `cat /userdata/lfi/version`
-          (custom firmware) — or check the OpenNova dashboard → Devices.
+        Where to find the versions:
+        - **Server version** — open the admin panel (`http://<server-ip>/admin`); shown at the top of the page.
+        - **Mower firmware** — admin panel → Devices, or OpenNova app → home screen (under "Charging station"), or Novabot stock app → Settings → Mower info.
 
   - type: dropdown
     id: app
@@ -45,10 +43,8 @@ body:
     id: server_version
     attributes:
       label: OpenNova server / docker release
-      description: |
-        Run `curl http://<server-ip>/health` or check `docker images rvbcrs/opennova`.
-        If you are not running our docker, write "LFI cloud" or "none".
-      placeholder: "e.g. v2026.0429.1314 (rvbcrs/opennova:latest)"
+      description: Shown at the top of the admin panel (`http://<server-ip>/admin`). Write "LFI cloud" if you're not self-hosting.
+      placeholder: "e.g. v2026.0429.1314"
     validations:
       required: true
 
@@ -79,10 +75,8 @@ body:
     id: mower_firmware
     attributes:
       label: Mower firmware
-      description: |
-        Stock Novabot app → Mower settings → Version, or OpenNova
-        dashboard → Devices → Firmware.
-      placeholder: "e.g. v6.0.2 (stock) or v6.0.2-custom-24"
+      description: OpenNova app home screen, Novabot app → Settings → Mower info, or admin panel → Devices.
+      placeholder: "e.g. v6.0.2 or v6.0.2-custom-24"
     validations:
       required: true
 
