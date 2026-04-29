@@ -16,6 +16,7 @@ import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo } from '..
 import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
 import { parseMapZip, polygonArea } from '../mqtt/mapConverter.js';
+import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
@@ -293,6 +294,25 @@ adminStatusRouter.post('/set-active-device', (_req: AuthRequest, res: Response) 
   }
   console.log('[Admin] Active device set to ' + sn);
   res.json({ ok: true });
+});
+
+// POST /api/admin-status/mdns-restart — restart the mDNS advertiser
+adminStatusRouter.post('/mdns-restart', (_req: AuthRequest, res: Response) => {
+  try {
+    stopMdnsAdvertiser();
+    startMdnsAdvertiser();
+    const advertisement = getActiveAdvertisement();
+    console.log('[Admin] mDNS advertiser restarted');
+    res.json({
+      ok: true,
+      restartedAt: new Date().toISOString(),
+      advertisement,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unknown error';
+    console.error('[Admin] mDNS restart failed:', message);
+    res.status(500).json({ ok: false, error: message });
+  }
 });
 
 // POST /api/admin-status/deactivate-device — clear is_active for a specific
