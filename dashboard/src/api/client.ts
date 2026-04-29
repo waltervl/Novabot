@@ -503,3 +503,14 @@ export async function bindDevice(sn: string, name?: string): Promise<{ ok: boole
     return { ok: false, error: e instanceof Error ? e.message : 'Onbekende fout' };
   }
 }
+
+// ── Equipment Settings ──────────────────────────────────────────
+
+export async function updateMowerNickname(sn: string, nickname: string | null): Promise<void> {
+  const res = await fetch(`${BASE}/equipment/${encodeURIComponent(sn)}/nickname`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nickname }),
+  });
+  if (!res.ok) throw new Error(`updateMowerNickname failed: ${res.status}`);
+}

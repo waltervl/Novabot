@@ -1,4 +1,5 @@
 import type { DeviceState } from '../types';
+import { WorkHistory } from '../components/history/WorkHistory';
 
 interface Props {
   mower: DeviceState | null;
@@ -9,8 +10,8 @@ export function WorkRecordsPage({ mower }: Props) {
     return <div className="p-8 text-zinc-500">Select a mower.</div>;
   }
   return (
-    <div className="p-8 text-zinc-500">
-      Work records port to this tab in Phase 3.
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <WorkHistory sn={mower.sn} />
     </div>
   );
 }
