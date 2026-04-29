@@ -34,7 +34,8 @@ function generateCsvFromDb(sn: string, fileName: string): string | null {
 
   let mapRow: MapRow | undefined;
 
-  // First try: find by file_name or map_name
+  // First try: find by file_name or map_name. After a rename map_name no
+  // longer matches the canonical "mapN_work" form, but file_name still does.
   const allMaps = mapRepo.findWithAreaOrderByMapId(sn);
   mapRow = allMaps.find(m =>
     m.file_name === fileName ||
@@ -44,7 +45,30 @@ function generateCsvFromDb(sn: string, fileName: string): string | null {
     (m.file_name && m.file_name.replace('.csv', '') === baseName)
   );
 
-  // Fallback: find by index (mower-uploaded maps)
+  // Canonical-name match (mowers + post-cloud-import). This MUST come before
+  // the array-index fallback below — without it, a user who renamed two work
+  // maps via the app gets polygons swapped: queryEquipmentMap builds the
+  // response item's fileName from canonical_name, but the index fallback
+  // re-resolves on the alphabetical sort of map_name, so map0_work.csv ends
+  // up serving map1's polygon (and vice versa).
+  if (!mapRow) {
+    if (workMatch) {
+      const idx = workMatch[1];
+      mapRow = allMaps.find(m => m.canonical_name === `map${idx}` && m.map_type === 'work');
+    } else if (obstacleMatch) {
+      const work = obstacleMatch[1];
+      const sub = obstacleMatch[2];
+      mapRow = allMaps.find(m =>
+        m.canonical_name === `map${work}_${sub}_obstacle` && m.map_type === 'obstacle'
+      );
+    } else if (unicomMatch) {
+      mapRow = allMaps.find(m => m.canonical_name === baseName && m.map_type === 'unicom');
+    }
+  }
+
+  // Last-resort fallback: positional lookup. Only used when canonical_name is
+  // also missing (legacy data). Keep the existing alphabetical sort to match
+  // historical behaviour for those rows.
   if (!mapRow) {
     if (workMatch) {
       const workMaps = mapRepo.findByMowerSnAndTypeWithArea(sn, 'work');
