@@ -54,7 +54,25 @@ function resolveAreaAlias(stored: unknown, mowerSn: string | null): string | nul
   return row?.map_name ?? stored;
 }
 
-function rowToDto(r: PlanRow) {
+/**
+ * Compute the next-occurring weekday from `today` that is in `weeks`.
+ * Used for the `week` field shown by the app on the home-screen
+ * "Next task : ..." line. Returning weeks[0] (alphabetical first) made
+ * the app always show "Mon" even when today was Wed and the schedule
+ * was Mon/Wed/Fri — the user's reported "first day in series" bug.
+ */
+function nextOccurringDay(weeks: string[], today: Date): string | null {
+  if (!weeks.length) return null;
+  const order = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const todayIdx = today.getDay();
+  for (let offset = 0; offset < 7; offset += 1) {
+    const candidate = order[(todayIdx + offset) % 7];
+    if (weeks.includes(candidate)) return candidate;
+  }
+  return weeks[0];
+}
+
+function rowToDto(r: PlanRow, today: Date = new Date()) {
   const weekday = r.weekday ? JSON.parse(r.weekday) : [];
   const workArea = r.work_area ? JSON.parse(r.work_area) : [];
   // Resolve SN from equipment
@@ -68,7 +86,7 @@ function rowToDto(r: PlanRow) {
     id: r.id ?? Math.abs(hashCode(r.plan_id)),
     sn,
     timezone: null,
-    week: weekday.length > 0 ? weekday[0] : null,  // enkelvoud "week", niet "weeks"
+    week: nextOccurringDay(weekday, today),  // next-occurring weekday from today
     weeks: weekday,
     weekArray: weekday,
     startTime: r.start_time,
@@ -100,14 +118,14 @@ cutGrassPlanRouter.get('/queryCutGrassPlan', authMiddleware, (req: AuthRequest, 
   const rows = equipmentId
     ? cutGrassPlanRepo.findByEquipmentAndUser(equipmentId, req.userId!)
     : cutGrassPlanRepo.findByUser(req.userId!);
-  res.json(ok((rows as PlanRow[]).map(rowToDto)));
+  res.json(ok((rows as PlanRow[]).map((row) => rowToDto(row))));
 });
 cutGrassPlanRouter.post('/queryCutGrassPlan', authMiddleware, (req: AuthRequest, res: Response) => {
   const { equipmentId, sn: _sn } = req.body as { equipmentId?: string; sn?: string };
   const rows = equipmentId
     ? cutGrassPlanRepo.findByEquipmentAndUser(equipmentId, req.userId!)
     : cutGrassPlanRepo.findByUser(req.userId!);
-  const items = (rows as PlanRow[]).map(rowToDto);
+  const items = (rows as PlanRow[]).map((row) => rowToDto(row));
 
   // Novabot app verwacht Map<dag, List<item>> formaat:
   // WorkPlanEntity.fromJson parst json["Mon"], json["Tue"], etc.
@@ -271,5 +289,5 @@ cutGrassPlanRouter.post('/queryPlanFromMachine', (req: Request, res: Response) =
 
   const rows = cutGrassPlanRepo.findBySnForMachine(sn);
 
-  res.json(ok((rows as PlanRow[]).map(rowToDto)));
+  res.json(ok((rows as PlanRow[]).map((row) => rowToDto(row))));
 });
