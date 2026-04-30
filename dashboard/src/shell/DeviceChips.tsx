@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   BatteryMedium, BatteryCharging, Satellite, Wifi, Thermometer,
   Activity, ChevronDown, Circle, TreePine,
@@ -8,6 +8,8 @@ import type { DeviceState } from '../types';
 
 interface Props {
   mower: DeviceState | null;
+  knownMowers: DeviceState[];
+  onSelectMower: (sn: string) => void;
 }
 
 // ── Sensor grouping ──────────────────────────────────────────────────────────
@@ -134,9 +136,18 @@ function SensorDetailPanel({ mower, openedAt }: { mower: DeviceState; openedAt: 
 
 // ── Main DeviceChips component ───────────────────────────────────────────────
 
-export function DeviceChips({ mower }: Props): React.JSX.Element | null {
+export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React.JSX.Element | null {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openedAt, setOpenedAt] = useState<number>(0);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  // Close switcher on outside click (deferred one tick so the opening click doesn't immediately close it)
+  useEffect(() => {
+    if (!switcherOpen) return;
+    const handler = () => setSwitcherOpen(false);
+    const id = setTimeout(() => document.addEventListener('click', handler), 0);
+    return () => { clearTimeout(id); document.removeEventListener('click', handler); };
+  }, [switcherOpen]);
 
   if (mower === null) return null;
 
@@ -151,11 +162,40 @@ export function DeviceChips({ mower }: Props): React.JSX.Element | null {
   if (!mower.online) {
     return (
       <div className="px-4 py-1.5 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
-        <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-zinc-700 text-xs text-zinc-500">
-          <TreePine className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
-          <span className="font-medium">{mower.nickname ?? mower.sn}</span>
+        <div className="inline-flex items-center gap-1.5 h-7">
+          {/* Mower name / switcher */}
+          {knownMowers.length > 1 ? (
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setSwitcherOpen(v => !v); }}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-800 text-sm font-medium text-zinc-500"
+              >
+                <TreePine className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
+                {mower.nickname ?? mower.sn}
+                <ChevronDown className={`w-3 h-3 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {switcherOpen && (
+                <div className="absolute top-full left-0 mt-1 z-[100] bg-zinc-900 border border-zinc-700 rounded shadow-xl min-w-[160px]">
+                  {knownMowers.map(m => (
+                    <button
+                      key={m.sn}
+                      onClick={(e) => { e.stopPropagation(); setSwitcherOpen(false); onSelectMower(m.sn); }}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-800 ${m.sn === mower.sn ? 'text-emerald-400' : 'text-zinc-200'}`}
+                    >
+                      {m.nickname ?? m.sn}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 rounded-md border border-zinc-700 text-xs text-zinc-500">
+              <TreePine className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
+              <span className="font-medium">{mower.nickname ?? mower.sn}</span>
+            </span>
+          )}
           <span className="text-[10px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded-full">offline</span>
-        </span>
+        </div>
       </div>
     );
   }
@@ -187,102 +227,133 @@ export function DeviceChips({ mower }: Props): React.JSX.Element | null {
   return (
     <>
       <div className="px-4 py-1.5 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
-        <button
-          onClick={openDrawer}
-          className="inline-flex items-center gap-1 md:gap-1.5 h-7 px-2.5 rounded-md border border-transparent hover:bg-zinc-800 hover:border-zinc-700 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-          aria-label={`${mower.nickname ?? mower.sn} sensor details`}
-        >
-          {/* Icon + name + online dot */}
-          <TreePine className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-          <span className="text-zinc-300 font-medium">
-            {mower.nickname ?? mower.sn}
-          </span>
-          <Circle className="w-2.5 h-2.5 fill-current text-emerald-500" />
-
-          {hasSensorData && (
-            <>
-              <span className="text-zinc-700 select-none">|</span>
-
-              {/* Battery */}
-              {hasBattery && (
-                <Pill
-                  icon={isCharging ? BatteryCharging : BatteryMedium}
-                  value={`${battery}%`}
-                  color={battery >= 20 ? 'text-emerald-400' : 'text-red-400'}
-                  label={`Battery: ${battery}%${isCharging ? ' (charging)' : ''}`}
-                />
+        <div className="inline-flex items-center gap-1">
+          {/* ── Mower name / switcher (click zone 1: switch active mower) ── */}
+          {knownMowers.length > 1 ? (
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setSwitcherOpen(v => !v); }}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-800 text-sm font-medium text-zinc-100"
+              >
+                <TreePine className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                {mower.nickname ?? mower.sn}
+                <ChevronDown className={`w-3 h-3 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {switcherOpen && (
+                <div className="absolute top-full left-0 mt-1 z-[100] bg-zinc-900 border border-zinc-700 rounded shadow-xl min-w-[160px]">
+                  {knownMowers.map(m => (
+                    <button
+                      key={m.sn}
+                      onClick={(e) => { e.stopPropagation(); setSwitcherOpen(false); onSelectMower(m.sn); }}
+                      className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-800 ${m.sn === mower.sn ? 'text-emerald-400' : 'text-zinc-200'}`}
+                    >
+                      {m.nickname ?? m.sn}
+                    </button>
+                  ))}
+                </div>
               )}
-
-              {/* RTK sat count */}
-              {hasSats && (
-                <Pill
-                  icon={Satellite}
-                  value={mowerSats}
-                  color={
-                    mowerSats >= 15 ? 'text-sky-400' :
-                    mowerSats >= 8  ? 'text-yellow-400' :
-                                      'text-red-400'
-                  }
-                  label={`RTK satellites: ${mowerSats}`}
-                />
-              )}
-
-              {/* RTK fix status */}
-              {mowerRtkKnown && (
-                <span
-                  className={`text-[10px] font-medium ${mowerRtk ? 'text-emerald-400' : 'text-zinc-600'}`}
-                  title={`RTK fix: ${mowerRtk ? 'yes' : 'no'}`}
-                >
-                  RTK{mowerRtk ? '✓' : '—'}
-                </span>
-              )}
-
-              {/* WiFi RSSI */}
-              {hasWifi && (
-                <Pill
-                  icon={Wifi}
-                  value={`${wifiRssi}dB`}
-                  color={
-                    Math.abs(wifiRssi) < 60 ? 'text-emerald-400' :
-                    Math.abs(wifiRssi) < 75 ? 'text-yellow-400' :
-                                               'text-red-400'
-                  }
-                  label={`WiFi RSSI: ${wifiRssi} dBm`}
-                />
-              )}
-
-              {/* CPU temperature */}
-              {hasCpu && (
-                <Pill
-                  icon={Thermometer}
-                  value={`${cpuTemp}°`}
-                  color={
-                    cpuTemp < 50 ? 'text-zinc-400' :
-                    cpuTemp < 65 ? 'text-yellow-400' :
-                                   'text-red-400'
-                  }
-                  label={`CPU temp: ${cpuTemp}°C`}
-                />
-              )}
-
-              {/* Work status when active */}
-              {hasWork && (
-                <Pill
-                  icon={Activity}
-                  value={workStatus!}
-                  color="text-emerald-400"
-                  label={`Work status: ${workStatus}`}
-                />
-              )}
-            </>
+            </div>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2 text-sm font-medium text-zinc-100">
+              <TreePine className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+              {mower.nickname ?? mower.sn}
+            </span>
           )}
 
-          {!hasSensorData && (
-            <span className="text-zinc-600 text-[10px] italic">waiting…</span>
-          )}
+          {/* ── Stats chip + chevron (click zone 2: open sensor drawer) ── */}
+          <button
+            onClick={openDrawer}
+            className="inline-flex items-center gap-1 md:gap-1.5 h-7 px-2.5 rounded-md border border-transparent hover:bg-zinc-800 hover:border-zinc-700 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            aria-label={`${mower.nickname ?? mower.sn} sensor details`}
+          >
+            {/* Online dot */}
+            <Circle className="w-2.5 h-2.5 fill-current text-emerald-500" />
 
-          <ChevronDown className="w-3 h-3 text-zinc-500 ml-0.5" />
-        </button>
+            {hasSensorData && (
+              <>
+                <span className="text-zinc-700 select-none">|</span>
+
+                {/* Battery */}
+                {hasBattery && (
+                  <Pill
+                    icon={isCharging ? BatteryCharging : BatteryMedium}
+                    value={`${battery}%`}
+                    color={battery >= 20 ? 'text-emerald-400' : 'text-red-400'}
+                    label={`Battery: ${battery}%${isCharging ? ' (charging)' : ''}`}
+                  />
+                )}
+
+                {/* RTK sat count */}
+                {hasSats && (
+                  <Pill
+                    icon={Satellite}
+                    value={mowerSats}
+                    color={
+                      mowerSats >= 15 ? 'text-sky-400' :
+                      mowerSats >= 8  ? 'text-yellow-400' :
+                                        'text-red-400'
+                    }
+                    label={`RTK satellites: ${mowerSats}`}
+                  />
+                )}
+
+                {/* RTK fix status */}
+                {mowerRtkKnown && (
+                  <span
+                    className={`text-[10px] font-medium ${mowerRtk ? 'text-emerald-400' : 'text-zinc-600'}`}
+                    title={`RTK fix: ${mowerRtk ? 'yes' : 'no'}`}
+                  >
+                    RTK{mowerRtk ? '✓' : '—'}
+                  </span>
+                )}
+
+                {/* WiFi RSSI */}
+                {hasWifi && (
+                  <Pill
+                    icon={Wifi}
+                    value={`${wifiRssi}dB`}
+                    color={
+                      Math.abs(wifiRssi) < 60 ? 'text-emerald-400' :
+                      Math.abs(wifiRssi) < 75 ? 'text-yellow-400' :
+                                                 'text-red-400'
+                    }
+                    label={`WiFi RSSI: ${wifiRssi} dBm`}
+                  />
+                )}
+
+                {/* CPU temperature */}
+                {hasCpu && (
+                  <Pill
+                    icon={Thermometer}
+                    value={`${cpuTemp}°`}
+                    color={
+                      cpuTemp < 50 ? 'text-zinc-400' :
+                      cpuTemp < 65 ? 'text-yellow-400' :
+                                     'text-red-400'
+                    }
+                    label={`CPU temp: ${cpuTemp}°C`}
+                  />
+                )}
+
+                {/* Work status when active */}
+                {hasWork && (
+                  <Pill
+                    icon={Activity}
+                    value={workStatus!}
+                    color="text-emerald-400"
+                    label={`Work status: ${workStatus}`}
+                  />
+                )}
+              </>
+            )}
+
+            {!hasSensorData && (
+              <span className="text-zinc-600 text-[10px] italic">waiting…</span>
+            )}
+
+            <ChevronDown className="w-3 h-3 text-zinc-500 ml-0.5" />
+          </button>
+        </div>
       </div>
 
       {/* Sensor detail drawer — separate instance from the gear-icon drawer */}

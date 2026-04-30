@@ -48,14 +48,15 @@ function ShellInner() {
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100">
       <Header
-        knownMowers={knownMowers}
-        activeMowerSn={activeMowerSn}
-        onSelectMower={setActiveMowerSn}
         rainState={rainState}
         onOpenDrawer={() => setDrawerOpen(true)}
       />
 
-      <DeviceChips mower={activeMower} />
+      <DeviceChips
+        mower={activeMower}
+        knownMowers={knownMowers}
+        onSelectMower={setActiveMowerSn}
+      />
 
       <nav className="flex gap-1 px-4 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
         {TABS.map(t => (
