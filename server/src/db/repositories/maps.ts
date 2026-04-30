@@ -393,6 +393,15 @@ export class MapRepository {
     const target = this.findByIdAndMower(mapId, mowerSn);
     if (!target) return [];
 
+    // Cascade ONLY when deleting a work-map row. Deleting a single obstacle
+    // or unicom must not nuke the parent work map and its other dependents
+    // — that wipe-out behaviour was the data-loss bug a user hit when they
+    // removed one mis-placed obstacle and lost the entire map family.
+    if (target.map_type !== 'work') {
+      this._deleteByIdAndMower.run(mapId, mowerSn);
+      return [target];
+    }
+
     const prefix = extractCanonicalPrefix(target);
     const deleted: MapRow[] = [target];
 
