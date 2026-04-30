@@ -252,7 +252,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
   // ── Offline chip ────────────────────────────────────────────────────────────
   if (!mower.online) {
     return (
-      <div className="px-4 py-1.5 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
+      <>
         <div className="inline-flex items-center gap-1.5 h-7">
           {/* Mower name / switcher */}
           {knownMowers.length > 1 ? (
@@ -287,7 +287,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
           )}
           <span className="text-[10px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded-full">offline</span>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -317,8 +317,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
   // ── Online chip ─────────────────────────────────────────────────────────────
   return (
     <>
-      <div className="px-4 py-1.5 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
-        <div className="inline-flex items-center gap-1">
+      <div className="inline-flex items-center gap-1">
           {/* ── Mower name / switcher (click zone 1: switch active mower) ── */}
           {knownMowers.length > 1 ? (
             <div className="relative">
@@ -444,7 +443,6 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
 
             <ChevronDown className="w-3 h-3 text-zinc-500 ml-0.5" />
           </button>
-        </div>
       </div>
 
       {/* Sensor detail drawer — separate instance from the gear-icon drawer */}

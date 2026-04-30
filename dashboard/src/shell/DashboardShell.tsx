@@ -12,6 +12,7 @@ import { SettingsPage } from '../pages/SettingsPage';
 import { NetworkHealthCard } from '../components/drawer/NetworkHealthCard';
 import { LiveStatusCard } from '../components/drawer/LiveStatusCard';
 import { ServerLogTail } from '../components/drawer/ServerLogTail';
+import { MowerControls } from '../components/dashboard/MowerControls';
 
 type Tab = 'map' | 'schedule' | 'records' | 'settings';
 
@@ -53,11 +54,22 @@ function ShellInner() {
         onOpenDrawer={() => setDrawerOpen(true)}
       />
 
-      <DeviceChips
-        mower={activeMower}
-        knownMowers={knownMowers}
-        onSelectMower={setActiveMowerSn}
-      />
+      <div className="px-4 py-1.5 bg-zinc-900 border-b border-zinc-800 flex-shrink-0 flex items-center gap-3 flex-wrap">
+        <DeviceChips
+          mower={activeMower}
+          knownMowers={knownMowers}
+          onSelectMower={setActiveMowerSn}
+        />
+        {activeMower && (
+          <div className="flex items-center gap-1.5 ml-auto">
+            <MowerControls
+              sn={activeMower.sn}
+              online={activeMower.online}
+              sensors={activeMower.sensors}
+            />
+          </div>
+        )}
+      </div>
 
       <nav className="flex gap-1 px-4 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
         {TABS.map(t => (
