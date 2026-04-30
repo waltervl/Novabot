@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { Drawer } from './Drawer';
 import type { DeviceState } from '../types';
+import { fetchLoraStatus, type LoraStatus } from '../api/client';
 
 interface Props {
   mower: DeviceState | null;
@@ -134,12 +135,87 @@ function SensorDetailPanel({ mower, openedAt }: { mower: DeviceState; openedAt: 
   );
 }
 
+// ── Summary panel (rendered inside Drawer — default view) ────────────────────
+
+function SummaryPanel({
+  mower,
+  lora,
+  setMode,
+}: {
+  mower: DeviceState;
+  lora: LoraStatus | null;
+  setMode: (m: 'summary' | 'advanced') => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {/* Identity */}
+      <div className="space-y-1">
+        <p className="text-[10px] font-mono text-zinc-300">{mower.sn}</p>
+        {mower.macAddress && (
+          <p className="text-[10px] font-mono text-zinc-600">{mower.macAddress}</p>
+        )}
+        <div className="flex items-center gap-3 text-xs">
+          <span className={mower.online ? 'text-emerald-400' : 'text-zinc-500'}>
+            {mower.online ? '● Online' : '● Offline'}
+          </span>
+          {mower.sensors.sw_version && (
+            <span className="font-mono text-purple-400">&lt;/&gt; {mower.sensors.sw_version}</span>
+          )}
+        </div>
+        {mower.lastSeen && (
+          <p className="text-[10px] text-zinc-500">
+            Last seen: {new Date(mower.lastSeen).toLocaleString()}
+          </p>
+        )}
+      </div>
+
+      {/* Configuration */}
+      {lora && (
+        <div className="space-y-2">
+          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">
+            Configuration
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
+              <p className="text-[10px] text-zinc-500">LoRa Address</p>
+              <p className="text-sm font-mono text-zinc-100">{lora.pair.address ?? '—'}</p>
+            </div>
+            <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
+              <p className="text-[10px] text-zinc-500">LoRa Channel</p>
+              <p className="text-sm font-mono text-zinc-100">{lora.pair.channel ?? '—'}</p>
+            </div>
+          </div>
+          <span
+            className={`inline-block text-[10px] px-2 py-0.5 rounded-full ${
+              lora.drift
+                ? 'bg-amber-900/40 text-amber-300'
+                : 'bg-emerald-900/30 text-emerald-300'
+            }`}
+          >
+            {lora.drift ? 'Pair drift detected' : 'Pair in sync'}
+          </span>
+        </div>
+      )}
+
+      {/* Advanced button */}
+      <button
+        onClick={() => setMode('advanced')}
+        className="w-full mt-4 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-sm text-zinc-200"
+      >
+        Show advanced sensors
+      </button>
+    </div>
+  );
+}
+
 // ── Main DeviceChips component ───────────────────────────────────────────────
 
 export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React.JSX.Element | null {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openedAt, setOpenedAt] = useState<number>(0);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [mode, setMode] = useState<'summary' | 'advanced'>('summary');
+  const [lora, setLora] = useState<LoraStatus | null>(null);
 
   // Close switcher on outside click (deferred one tick so the opening click doesn't immediately close it)
   useEffect(() => {
@@ -148,6 +224,21 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
     const id = setTimeout(() => document.addEventListener('click', handler), 0);
     return () => { clearTimeout(id); document.removeEventListener('click', handler); };
   }, [switcherOpen]);
+
+  // Fetch LoRa status when drawer opens
+  useEffect(() => {
+    if (!drawerOpen || !mower) { setLora(null); return; }
+    let cancelled = false;
+    fetchLoraStatus(mower.sn)
+      .then(s => { if (!cancelled) setLora(s); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [drawerOpen, mower?.sn]);
+
+  // Reset to summary view each time drawer reopens
+  useEffect(() => {
+    if (drawerOpen) setMode('summary');
+  }, [drawerOpen]);
 
   if (mower === null) return null;
 
@@ -358,7 +449,19 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
 
       {/* Sensor detail drawer — separate instance from the gear-icon drawer */}
       <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Sensors">
-        <SensorDetailPanel mower={mower} openedAt={openedAt} />
+        {mode === 'summary' ? (
+          <SummaryPanel mower={mower} lora={lora} setMode={setMode} />
+        ) : (
+          <div className="space-y-3">
+            <button
+              onClick={() => setMode('summary')}
+              className="text-xs text-zinc-400 hover:text-zinc-200"
+            >
+              ← Back to summary
+            </button>
+            <SensorDetailPanel mower={mower} openedAt={openedAt} />
+          </div>
+        )}
       </Drawer>
     </>
   );
