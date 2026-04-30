@@ -1,12 +1,37 @@
 import 'dotenv/config';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { dirname, resolve as resolvePath } from 'path';
+import { readFileSync } from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { initProxyLogger } from './proxy/proxyLogger.js';
 
 // Start proxy logger VOOR alle andere imports — vangt alle console output op
 initProxyLogger();
+
+// Read version from package.json so the docker container log advertises which
+// release is running. Resolved relative to this file so it works whether the
+// server runs from src/ (ts-node), dist/ (compiled), or /app/server in Docker.
+const SERVER_VERSION = (() => {
+  for (const candidate of [
+    resolvePath(__dirname, '../package.json'),
+    resolvePath(__dirname, '../../package.json'),
+  ]) {
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as { version?: string };
+      if (pkg.version) return pkg.version;
+    } catch { /* try next */ }
+  }
+  return 'unknown';
+})();
+
+console.log('');
+console.log('═══════════════════════════════════════════════════════════');
+console.log(`  OpenNova Server — v${SERVER_VERSION}`);
+console.log(`  Started: ${new Date().toISOString()}`);
+console.log(`  Node:    ${process.version}`);
+console.log('═══════════════════════════════════════════════════════════');
+console.log('');
 
 import http from 'http';
 import path from 'path';
@@ -244,7 +269,7 @@ const PORT = parseInt(process.env.PORT ?? '3000', 10);
 const server = http.createServer(app);
 initDashboardSocket(server);
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[SERVER] HTTP + WebSocket listening on port ${PORT}`);
+  console.log(`[SERVER] OpenNova v${SERVER_VERSION} — HTTP + WebSocket listening on port ${PORT}`);
   console.log(`[SERVER] Verwacht nginx proxy manager voor TLS termination op app.lfibot.com`);
   startMdnsAdvertiser();
 });
