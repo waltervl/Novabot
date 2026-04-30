@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Header } from './Header';
 import { Drawer } from './Drawer';
+import { DeviceChips } from './DeviceChips';
 import { useDevices } from '../hooks/useDevices';
 import { useActiveMower } from '../hooks/useActiveMower';
 import { ActiveMowerProvider } from '../contexts/ActiveMowerContext';
@@ -50,6 +51,8 @@ function ShellInner() {
         rainState={rainState}
         onOpenDrawer={() => setDrawerOpen(true)}
       />
+
+      <DeviceChips mower={activeMower} />
 
       <nav className="flex gap-1 px-4 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
         {TABS.map(t => (
