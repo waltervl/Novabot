@@ -286,7 +286,7 @@ export function DeviceChips({ mower }: Props): React.JSX.Element | null {
       </div>
 
       {/* Sensor detail drawer — separate instance from the gear-icon drawer */}
-      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Sensors">
         <SensorDetailPanel mower={mower} openedAt={openedAt} />
       </Drawer>
     </>
