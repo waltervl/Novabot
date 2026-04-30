@@ -383,6 +383,21 @@ export function adminPageHtml(): string {
     </div>
 
     <div class="card">
+      <h2>System Tools</h2>
+      <!-- System tools — soft-restart system services without restarting the whole container -->
+      <div style="margin-bottom:16px;padding:12px;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.2);border-radius:8px">
+        <h3 style="margin:0 0 8px 0;font-size:13px;color:#fbbf24">mDNS Advertiser</h3>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div style="font-size:11px;color:#aaa;flex:1;min-width:240px">
+            Soft-restart the mDNS advertiser if the dashboard's auto-discovery name (<code>opennova.local</code>) becomes unreachable. Does not restart the docker container.
+          </div>
+          <button onclick="restartMdns()" style="padding:8px 16px;background:rgba(245,158,11,.15);color:#fde68a;border:1px solid rgba(245,158,11,.4);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Restart mDNS</button>
+        </div>
+        <div id="mdnsStatus" style="font-size:11px;margin-top:8px;display:none;padding:6px 8px;border-radius:6px"></div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Certificate Setup</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">
         The official Novabot app requires HTTPS with a trusted certificate. Install the OpenNova CA certificate on your phone to trust the server.
@@ -1781,6 +1796,37 @@ async function toggleDnsmasq() {
     await checkDnsmasqStatus();
     checkDns();
   } catch(e) { btn.textContent = 'Error'; }
+}
+
+async function restartMdns() {
+  var status = document.getElementById('mdnsStatus');
+  status.style.display = 'block';
+  status.style.background = 'rgba(245,158,11,.1)';
+  status.style.color = '#fde68a';
+  status.textContent = 'Restarting mDNS advertiser...';
+
+  try {
+    var r = await fetch('/api/admin-status/mdns-restart', {
+      method: 'POST',
+      headers: { 'Authorization': token },
+    });
+    var data = await r.json();
+    if (!r.ok || !data.ok) {
+      status.style.background = 'rgba(239,68,68,.15)';
+      status.style.color = '#fca5a5';
+      status.textContent = 'Failed: ' + (data.error || ('HTTP ' + r.status));
+      return;
+    }
+    status.style.background = 'rgba(34,197,94,.15)';
+    status.style.color = '#86efac';
+    var ad = data.advertisement || {};
+    var hostInfo = ad.host ? ad.host : '(no advertisement)';
+    status.textContent = 'Restarted at ' + new Date(data.restartedAt).toLocaleTimeString() + ' — ' + hostInfo;
+  } catch (err) {
+    status.style.background = 'rgba(239,68,68,.15)';
+    status.style.color = '#fca5a5';
+    status.textContent = 'Network error: ' + (err && err.message ? err.message : err);
+  }
 }
 
 async function checkDns() {
