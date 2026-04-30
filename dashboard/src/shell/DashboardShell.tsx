@@ -48,6 +48,7 @@ function ShellInner() {
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100">
       <Header
+        connected={connected}
         rainState={rainState}
         onOpenDrawer={() => setDrawerOpen(true)}
       />
