@@ -9,6 +9,9 @@ import { MapTab } from '../pages/MapTab';
 import { SchedulePage } from '../pages/SchedulePage';
 import { WorkRecordsPage } from '../pages/WorkRecordsPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { NetworkHealthCard } from '../components/drawer/NetworkHealthCard';
+import { LiveStatusCard } from '../components/drawer/LiveStatusCard';
+import { ServerLogTail } from '../components/drawer/ServerLogTail';
 
 type Tab = 'map' | 'schedule' | 'records' | 'settings';
 
@@ -84,7 +87,9 @@ function ShellInner() {
       </main>
 
       <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <p className="text-sm text-zinc-500">Drawer cards land in Phase 4.</p>
+        <NetworkHealthCard />
+        <LiveStatusCard sn={activeMowerSn} />
+        <ServerLogTail />
       </Drawer>
 
       {/* Bottom-of-page debug strip kept temporarily so existing log/BLE views remain reachable until Phase 4 lands their drawer cards. */}

@@ -514,3 +514,49 @@ export async function updateMowerNickname(sn: string, nickname: string | null): 
   });
   if (!res.ok) throw new Error(`updateMowerNickname failed: ${res.status}`);
 }
+
+// ── System diagnostics (drawer cards) ───────────────────────────────
+
+export interface SystemHealth {
+  mdns: { running: boolean; advertisement: unknown };
+  server: { uptimeSec: number; startedAt: string };
+  mowers: Array<{ sn: string; online: boolean; sensorKeys: number }>;
+}
+export async function fetchSystemHealth(): Promise<SystemHealth> {
+  const res = await get(`${BASE}/system/health`);
+  return res.json() as Promise<SystemHealth>;
+}
+
+export interface LoraStatus {
+  sn: string;
+  pair: { address: string | null; channel: string | null };
+  peer: { sn: string | null; address: string | null; channel: string | null };
+  drift: boolean;
+}
+export async function fetchLoraStatus(sn: string): Promise<LoraStatus | null> {
+  const res = await fetch(`${BASE}/system/lora-status/${encodeURIComponent(sn)}`);
+  if (res.status === 404) return null; // no_lora_cache
+  if (!res.ok) throw new Error(`fetchLoraStatus failed: ${res.status}`);
+  return res.json() as Promise<LoraStatus>;
+}
+
+export interface SystemLogEntry {
+  ts: number;
+  type: string;
+  clientId: string;
+  clientType: 'APP' | 'DEV' | '?';
+  sn: string | null;
+  direction: string;
+  topic: string;
+  payload: string;
+  encrypted: boolean;
+}
+export async function fetchSystemLogs(opts?: { tail?: number; type?: string; sn?: string }): Promise<SystemLogEntry[]> {
+  const qs = new URLSearchParams();
+  if (opts?.tail) qs.set('tail', String(opts.tail));
+  if (opts?.type) qs.set('type', opts.type);
+  if (opts?.sn) qs.set('sn', opts.sn);
+  const res = await get(`${BASE}/system/logs${qs.toString() ? '?' + qs.toString() : ''}`);
+  const data = await res.json() as { logs: SystemLogEntry[] };
+  return data.logs;
+}
