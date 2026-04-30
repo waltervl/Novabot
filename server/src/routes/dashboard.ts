@@ -510,7 +510,32 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
   const rows = mapRepo.findByMowerSn(sn);
 
   // Charger GPS ophalen — dashboard gebruikt dit voor local→GPS conversie
-  const chargerGps = mapRepo.getChargerGps(sn);
+  let chargerGps = mapRepo.getChargerGps(sn);
+
+  if (!chargerGps) {
+    // Auto-detect: als de maaier nu op het dock staat (kleine abs x/y EN
+    // recharge_status bevat "charging") dan IS de GPS van de maaier de GPS
+    // van de charger. Eenmalig persisteren zodat volgende requests het al weten.
+    const sensors = deviceCache.get(sn);
+    if (sensors) {
+      const lat    = parseFloat(sensors.get('latitude')        ?? '');
+      const lng    = parseFloat(sensors.get('longitude')       ?? '');
+      const mapX   = parseFloat(sensors.get('map_position_x')  ?? '');
+      const mapY   = parseFloat(sensors.get('map_position_y')  ?? '');
+      const recharge = (sensors.get('recharge_status') ?? '').toLowerCase();
+
+      const atDock =
+        Number.isFinite(mapX) && Math.abs(mapX) < 1 &&
+        Number.isFinite(mapY) && Math.abs(mapY) < 1 &&
+        recharge.includes('charging');
+
+      if (atDock && Number.isFinite(lat) && Number.isFinite(lng)) {
+        mapRepo.setChargerGps(sn, lat, lng);
+        chargerGps = { lat, lng };
+        console.log(`[MAP] Auto-detected charger GPS for ${sn} from mower-at-dock: ${lat}, ${lng}`);
+      }
+    }
+  }
 
   const maps = rows.map(r => {
     let mapArea: LocalPoint[] = [];

@@ -474,6 +474,15 @@ export class MapRepository {
     if (!row || row.charger_lat == null || row.charger_lng == null) return null;
     return { lat: row.charger_lat, lng: row.charger_lng };
   }
+
+  /**
+   * Persist charger GPS once (idempotent: only writes when both
+   * charger_lat and charger_lng are currently NULL for this mower).
+   * Uses `setCalibration` so all other calibration fields are preserved.
+   */
+  setChargerGps(mowerSn: string, lat: number, lng: number): void {
+    this.setCalibration(mowerSn, { charger_lat: lat, charger_lng: lng });
+  }
 }
 
 export const mapRepo = new MapRepository();
