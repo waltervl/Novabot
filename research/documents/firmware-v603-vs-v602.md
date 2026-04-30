@@ -3,7 +3,7 @@
 **Date**: 2026-04-28
 **Source v6.0.2**: `research/firmware/mower_firmware_v6.0.2.deb` (extracted to `/tmp/v602-mine`)
 **Source v6.0.3**: `research/firmware/novabot.bak.tar.gz` (extracted to `/tmp/v603-mine`)
-  - Pulled off `[REDACTED]` (`[REDACTED]`, [REDACTED]) after he upgraded from
+  - Pulled off a user's mower (SN + userId redacted) after he upgraded from
     v6.0.3 stock → v6.0.2-custom-24 on 2026-04-28. The previous install tree was preserved
     in `/root/novabot.bak/` by the custom OTA installer.
 
@@ -36,7 +36,7 @@ then experienced problems.
 | `.pyc` bytecode diffs | 13 | Python launch-script bytecode caches — same source, different mtime / build-host hash. Not a real change. |
 | Files only in v6.0.2 (extraction artefacts) | 4 | `control`, `control.tar.xz`, `data.tar.xz`, `debian-binary`, plus the `.deb` itself. These come from the deb-extract; v6.0.3 was sourced from an installed tree. |
 | Files only in v6.0.2 (this user's data) | 5 | `data/camera_daemon_monitor.log`, plus three CSV map fragments + `map_info.json` left over in `home0/csv_file/`. User-specific runtime state, not firmware. |
-| Files only in v6.0.3 | many | Two buckets, both noise: (a) `dds_fastrtps` directories under every `*_msgs/include/*/detail/` — generated DDS RTPS headers that were missing from the v6.0.2 deb extract but are also generated at install time, so they don't represent new mower behaviour; (b) `novabot_log/<timestamp>` files that are `[REDACTED]`'s historical run logs. |
+| Files only in v6.0.3 | many | Two buckets, both noise: (a) `dds_fastrtps` directories under every `*_msgs/include/*/detail/` — generated DDS RTPS headers that were missing from the v6.0.2 deb extract but are also generated at install time, so they don't represent new mower behaviour; (b) `novabot_log/<timestamp>` files that are a user's historical run logs. |
 
 ## The four real diffs
 
@@ -126,7 +126,7 @@ differ.
 
 ## Why v6.0.3 was cut
 
-`[REDACTED]` was issued v6.0.3 by Novabot's support team because his v6.0.2 install was
+A user was issued v6.0.3 by Novabot's support team because his v6.0.2 install was
 giving him trouble. Cross-referenced with the file-level diff that's the most economical
 explanation: v6.0.2 shipped charger `v0.4.1`, that ship had a regression on at least
 some chargers, and Novabot's fix was to repackage v6.0.2 with the charger ship-target
