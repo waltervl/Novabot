@@ -2,9 +2,18 @@
 import { Router, Request, Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readAppReleaseManifest } from '../services/appReleaseManifest.js';
 
-let manifestDir = process.env.APP_MANIFEST_DIR ?? path.resolve(__dirname, '../firmware/app');
+// ESM has no __dirname; derive it from import.meta.url so the manifest
+// path resolves consistently in dev (tsx) and prod (compiled JS).
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Default points at the same firmware tree as the static /firmware mount
+// in index.ts. One FIRMWARE_PATH env var keeps both paths in sync.
+const firmwareBase = process.env.FIRMWARE_PATH ?? path.resolve(__dirname, '../../firmware');
+let manifestDir = process.env.APP_MANIFEST_DIR ?? path.join(firmwareBase, 'app');
 
 export function setManifestDir(dir: string): void {
   manifestDir = dir;
