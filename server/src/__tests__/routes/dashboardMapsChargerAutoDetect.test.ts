@@ -94,6 +94,7 @@ vi.mock('../../mqtt/sensorData.js', () => {
     clearLocalTrail: vi.fn(),
     translateValue: vi.fn().mockImplementation((_f: string, v: string) => v),
     markPinVerified: vi.fn(),
+    getDockPose: vi.fn().mockReturnValue(null),
   };
 });
 
@@ -183,16 +184,16 @@ describe('GET /api/dashboard/maps/:sn — charger GPS auto-detect', () => {
     expect(res.body.chargerGps.lng).toBeCloseTo(6.2310356968, 5);
   });
 
-  it('case 4: deviceCache has GPS but map_position_x = 5 (not at dock) → chargerGps: null', async () => {
+  it('case 4: mower at dock with non-zero map_position still auto-detects (charging_pose can be any value)', async () => {
     seedEquipment();
     (deviceCache as Map<string, Map<string, string>>).set(
       TEST_SN,
-      makeDockSensors({ mapX: '5' }),
+      makeDockSensors({ mapX: '-1.23', mapY: '0.50' }),
     );
 
     const res = await request(app).get(`/api/dashboard/maps/${TEST_SN}`);
     expect(res.status).toBe(200);
-    expect(res.body.chargerGps).toBeNull();
+    expect(res.body.chargerGps).not.toBeNull();
   });
 
   it('case 5: deviceCache has GPS but recharge_status is "Idle" → chargerGps: null', async () => {

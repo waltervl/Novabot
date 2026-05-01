@@ -15,7 +15,7 @@ import {
   virtualWallRepo,
   otaVersionRepo,
 } from '../db/repositories/index.js';
-import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGpsTrail, getLocalTrail, clearLocalTrail, deviceCache, translateValue, markPinVerified } from '../mqtt/sensorData.js';
+import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGpsTrail, getLocalTrail, clearLocalTrail, deviceCache, translateValue, markPinVerified, getDockPose } from '../mqtt/sensorData.js';
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum } from '../mqtt/mapSync.js';
@@ -513,21 +513,20 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
   let chargerGps = mapRepo.getChargerGps(sn);
 
   if (!chargerGps) {
-    // Auto-detect: als de maaier nu op het dock staat (kleine abs x/y EN
-    // recharge_status bevat "charging") dan IS de GPS van de maaier de GPS
-    // van de charger. Eenmalig persisteren zodat volgende requests het al weten.
+    // Auto-detect: when the mower is currently docked (recharge_status
+    // contains "charging"), the mower's GPS is the charger's GPS by
+    // definition. Persist once so subsequent requests already have it.
+    //
+    // We do NOT require map_position to be near (0,0) — `charging_pose`
+    // is set during mapping and can be any local-frame value (verified
+    // live: LFIN1231000211 reports charging_pose = (-1.23, 0.50)).
     const sensors = deviceCache.get(sn);
     if (sensors) {
       const lat    = parseFloat(sensors.get('latitude')        ?? '');
       const lng    = parseFloat(sensors.get('longitude')       ?? '');
-      const mapX   = parseFloat(sensors.get('map_position_x')  ?? '');
-      const mapY   = parseFloat(sensors.get('map_position_y')  ?? '');
       const recharge = (sensors.get('recharge_status') ?? '').toLowerCase();
 
-      const atDock =
-        Number.isFinite(mapX) && Math.abs(mapX) < 1 &&
-        Number.isFinite(mapY) && Math.abs(mapY) < 1 &&
-        recharge.includes('charging');
+      const atDock = recharge.includes('charging');
 
       if (atDock && Number.isFinite(lat) && Number.isFinite(lng)) {
         mapRepo.setChargerGps(sn, lat, lng);
@@ -591,6 +590,19 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     } catch { /* ignore */ }
+  }
+
+  // Fallback to live dockPose when the ZIP value is missing or stale (0,0,0).
+  // Mower captures map_position_x/y/orientation while docked — ground truth,
+  // matches what the app uses via DeviceState.dockPose. Old `<sn>_latest.zip`
+  // files can still hold charging_pose:{0,0,0} from sessions before proper
+  // mapping; the live sensor reflects reality.
+  if (!chargingPose || (chargingPose.x === 0 && chargingPose.y === 0 && chargingPose.orientation === 0)) {
+    const dock = getDockPose(sn);
+    if (dock && (dock.x !== 0 || dock.y !== 0)) {
+      chargingPose = { x: dock.x, y: dock.y, orientation: dock.orientation };
+      if (chargerOrientation === 0) chargerOrientation = dock.orientation;
+    }
   }
 
   res.json({
