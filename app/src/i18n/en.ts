@@ -237,6 +237,15 @@ export default {
   battery: 'Battery',
   blade: 'blade',
 
+  // ── App Update ────────────────────────────────────────────────
+  'update.title': 'Update available',
+  'update.skip': 'Skip this version',
+  'update.later': 'Later',
+  'update.update': 'Update',
+  'update.openReleasePage': 'Open release page',
+  'update.downloading': 'Downloading',
+  'update.errorPrefix': 'Error',
+
   // ── Device Pairing ────────────────────────────────────────────
   selectCharger: 'Select Charger',
   whichCharger: 'Which charger should this mower pair with?',

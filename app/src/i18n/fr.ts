@@ -106,4 +106,11 @@ export default {
   appearanceLightCaption: 'Le mode clair est toujours activé.',
   appearanceDarkCaption: 'Le mode sombre est toujours activé.',
   mowerColor: 'Couleur du robot', mowerColorWhite: 'Blanc', mowerColorGrey: 'Gris',
+  'update.title': 'Mise à jour disponible',
+  'update.skip': 'Ignorer cette version',
+  'update.later': 'Plus tard',
+  'update.update': 'Mettre à jour',
+  'update.openReleasePage': 'Ouvrir la page de release',
+  'update.downloading': 'Téléchargement',
+  'update.errorPrefix': 'Erreur',
 };

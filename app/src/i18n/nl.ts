@@ -235,6 +235,15 @@ export default {
   battery: 'Batterij',
   blade: 'mes',
 
+  // ── App Update ────────────────────────────────────────────────
+  'update.title': 'Update beschikbaar',
+  'update.skip': 'Deze versie overslaan',
+  'update.later': 'Later',
+  'update.update': 'Updaten',
+  'update.openReleasePage': 'Releasepagina openen',
+  'update.downloading': 'Downloaden',
+  'update.errorPrefix': 'Fout',
+
   // ── Device Pairing ────────────────────────────────────────────
   selectCharger: 'Kies laadstation',
   whichCharger: 'Met welk laadstation wil je deze maaier koppelen?',

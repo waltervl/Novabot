@@ -106,4 +106,11 @@ export default {
   appearanceLightCaption: 'Heller Modus ist immer aktiv.',
   appearanceDarkCaption: 'Dunkler Modus ist immer aktiv.',
   mowerColor: 'Mäher-Farbe', mowerColorWhite: 'Weiß', mowerColorGrey: 'Grau',
+  'update.title': 'Update verfügbar',
+  'update.skip': 'Diese Version überspringen',
+  'update.later': 'Später',
+  'update.update': 'Aktualisieren',
+  'update.openReleasePage': 'Release-Seite öffnen',
+  'update.downloading': 'Herunterladen',
+  'update.errorPrefix': 'Fehler',
 };
