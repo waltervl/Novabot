@@ -1,32 +1,33 @@
 #!/bin/bash
-# release-app.sh — Build APK via EAS local build, publish to server/firmware/app/,
-# write manifest.json, commit + tag + push.
+# release-app.sh — Build the OpenNova Android APK and write a release
+# manifest. Both files end up in dist/app-release/. You upload them
+# manually to the central NAS host (https://downloads.ramonvanbruggen.nl/app/).
 #
-# NOTE: APKs are tracked in git (~25 MB per release). This is intentional for
-# self-hosted simplicity — each server instance serves the APK directly from
-# the repository. Expect git repo growth of ~25 MB per release.
+# The app polls https://downloads.ramonvanbruggen.nl/app/manifest.json directly,
+# so there is no per-server endpoint and no Docker image bloat.
 #
-# Usage: ./release-app.sh
+# Usage:
+#   1. Bump app/app.json expo.version (semver).
+#   2. ./release-app.sh
+#   3. Drag dist/app-release/{manifest.json, opennova-vX.Y.Z.apk} to the NAS.
+#
 # Prerequisites:
-#   - EAS CLI installed: npm install -g eas-cli
-#   - Android SDK / build toolchain available locally (EAS local build)
-#   - Bump app/app.json expo.version before running
+#   - eas-cli installed (npm install -g eas-cli) — used in --local mode, no credits.
+#   - JDK 17+ and Android SDK on PATH.
 set -e
 
 cd "$(dirname "$0")"
 
-# ── Resolve version from app/app.json ─────────────────────────────────────────
 VERSION=$(node -p "require('./app/app.json').expo.version")
 echo "Building APK for v${VERSION}..."
 
-APK_NAME="opennova-v${VERSION}.apk"
-APK_OUT="server/firmware/app/${APK_NAME}"
+OUT_DIR="dist/app-release"
+mkdir -p "${OUT_DIR}"
 
-# ── Build APK via EAS local build (apk-release profile) ───────────────────────
-# --profile apk-release: buildType=apk, appVersionSource=local, distribution=internal
-# --local: run the build on this machine (no EAS cloud queue)
-# --non-interactive: no prompts
-# --output: drop the finished APK directly into server/firmware/app/
+APK_NAME="opennova-v${VERSION}.apk"
+APK_OUT="${OUT_DIR}/${APK_NAME}"
+
+# ── Build APK locally via EAS (no cloud queue, no credits) ───────────────────
 (
   cd app
   npx eas build \
@@ -37,45 +38,36 @@ APK_OUT="server/firmware/app/${APK_NAME}"
     --output "../${APK_OUT}"
 )
 
-# ── Integrity metadata ─────────────────────────────────────────────────────────
+# ── Integrity metadata ───────────────────────────────────────────────────────
 SHA=$(shasum -a 256 "${APK_OUT}" | awk '{print $1}')
-# macOS: stat -f '%z'; Linux: stat -c '%s'
 SIZE=$(stat -f '%z' "${APK_OUT}" 2>/dev/null || stat -c '%s' "${APK_OUT}")
 
-# ── Server version (minSupportedServerVersion) ────────────────────────────────
+# ── Manifest ─────────────────────────────────────────────────────────────────
+# apkUrl is the absolute URL on the central NAS host. Cache-busted on the
+# client side; the static path here matches what the upload step expects.
+APK_URL="https://downloads.ramonvanbruggen.nl/app/${APK_NAME}"
+RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+RELEASE_NOTES=$(git log --oneline -10 | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))')
 SERVER_VERSION=$(node -p "require('./server/package.json').version")
 
-# ── Release notes: last 10 commits, single line ───────────────────────────────
-RELEASE_NOTES=$(git log --oneline -10 | tr '\n' ';' | sed 's/;$//')
-
-# ── Timestamp ─────────────────────────────────────────────────────────────────
-RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-# ── Write manifest.json ───────────────────────────────────────────────────────
-cat > server/firmware/app/manifest.json <<EOF
+cat > "${OUT_DIR}/manifest.json" <<EOF
 {
   "version": "${VERSION}",
   "platform": "android",
-  "apkFileName": "${APK_NAME}",
+  "apkUrl": "${APK_URL}",
   "sha256": "${SHA}",
   "sizeBytes": ${SIZE},
-  "releaseNotes": "${RELEASE_NOTES}",
+  "releaseNotes": ${RELEASE_NOTES},
   "minSupportedServerVersion": "${SERVER_VERSION}",
   "releasedAt": "${RELEASED_AT}"
 }
 EOF
 
-echo "Manifest written."
-
-# ── Commit, tag, push ─────────────────────────────────────────────────────────
-git add "${APK_OUT}" server/firmware/app/manifest.json
-git commit -m "release(app): v${VERSION}"
-git tag "app-v${VERSION}"
-git push && git push --tags
-
 echo ""
-echo "Released app v${VERSION}"
-echo "  APK: ${APK_OUT}"
-echo "  SHA256: ${SHA}"
-echo "  Size: ${SIZE} bytes"
-echo "  Tag: app-v${VERSION}"
+echo "Built v${VERSION}:"
+echo "  APK:      ${APK_OUT} ($(du -h "${APK_OUT}" | awk '{print $1}'))"
+echo "  Manifest: ${OUT_DIR}/manifest.json"
+echo "  SHA256:   ${SHA}"
+echo ""
+echo "Next: upload both files to the NAS folder behind"
+echo "      https://downloads.ramonvanbruggen.nl/app/"

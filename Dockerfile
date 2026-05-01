@@ -89,10 +89,6 @@ RUN chmod +x /app/docker-entrypoint.sh
 # Persistent data directory
 RUN mkdir -p /data/storage /data/firmware
 
-# Seed the app-update directory so /api/app/latest can serve a manifest
-# from a fresh install. Operators can overwrite via release-app.sh later.
-COPY server/firmware/app /data/firmware/app
-
 # Ports: DNS, HTTP, HTTPS (app), MQTT, API+Dashboard
 EXPOSE 53/udp 53/tcp 80 443 1883 3000
 

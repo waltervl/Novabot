@@ -49,7 +49,6 @@ import { dashboardRouter, initFirmwareSync } from './routes/dashboard.js';
 import { eventsRouter } from './notifications/route.js';
 import { pushRegisterRouter } from './notifications/registerRoute.js';
 import { renderRouter } from './render/route.js';
-import { appUpdateRouter } from './routes/appUpdate.js';
 
 const PROXY_MODE = process.env.PROXY_MODE ?? 'local';
 
@@ -226,12 +225,9 @@ if (PROXY_MODE === 'cloud') {
   // Rendered mower map SVG (used by HA's MQTT image entity + manual viewers)
   app.use('/api/render', renderRouter);
 
-  // App update endpoint — serves latest APK manifest to OpenNova app
-  app.use('/api/app', appUpdateRouter);
-
-  // Static APK serving for in-app update downloads (narrowed to app/ subdir only)
-  const firmwareBase = process.env.FIRMWARE_PATH ?? path.resolve(__dirname, '../firmware');
-  app.use('/firmware/app', express.static(path.resolve(firmwareBase, 'app')));
+  // App self-update flow lives entirely client-side now: the app polls the
+  // central NAS host (downloads.ramonvanbruggen.nl) directly. No server
+  // endpoint or static APK serving needed here.
 
   // ── Maaier firmware log upload (geen /api/ prefix, geen auth) ───────────────
   app.post('/x3/log/upload', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {

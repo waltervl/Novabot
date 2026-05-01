@@ -17,6 +17,13 @@ import * as SecureStore from 'expo-secure-store';
 
 const SKIP_KEY = 'appUpdate.skippedVersion';
 
+/**
+ * Central release host. APK + manifest live here regardless of which
+ * OpenNova server the user is connected to — every app instance checks
+ * the same URL. Update by uploading new files to this NAS path.
+ */
+const RELEASE_MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/app/manifest.json';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -70,13 +77,14 @@ export function hasUpdateAvailable(
 // ---------------------------------------------------------------------------
 
 /**
- * Fetches the latest release manifest from the server.
- * Returns null on 204 / 404 / network errors — never throws.
+ * Fetches the latest release manifest from the central NAS host.
+ * Returns null on 404 / network errors — never throws. Cache-busted via
+ * a millisecond query string so a freshly uploaded manifest is picked up
+ * even when an upstream cache is in front of the host.
  */
-export async function fetchLatest(serverUrl: string): Promise<AppLatest | null> {
+export async function fetchLatest(): Promise<AppLatest | null> {
   try {
-    const r = await fetch(`${serverUrl.replace(/\/$/, '')}/api/app/latest`);
-    if (r.status === 204 || r.status === 404) return null;
+    const r = await fetch(`${RELEASE_MANIFEST_URL}?t=${Date.now()}`);
     if (!r.ok) return null;
     return (await r.json()) as AppLatest;
   } catch {
@@ -110,8 +118,8 @@ export async function setSkippedVersion(v: string): Promise<void> {
  * so the UI can route to GitHub Releases (UpdatePromptModal handles the
  * platform branch). Returns null when there is no update.
  */
-export async function checkForUpdate(serverUrl: string): Promise<AppLatest | null> {
-  const latest = await fetchLatest(serverUrl);
+export async function checkForUpdate(): Promise<AppLatest | null> {
+  const latest = await fetchLatest();
   if (!latest) return null;
   const installed = Application.nativeApplicationVersion ?? '0.0.0';
   const skipped = await getSkippedVersion();
