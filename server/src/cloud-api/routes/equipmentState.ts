@@ -88,8 +88,21 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
     return null;
   }
 
-  const dateTime = pickStr('dateTime', 'date_time', 'startTime', 'time')
+  // Normalise any ISO-8601 timestamp (e.g. "2026-04-29T18:13:10.94Z") to the
+  // SQL-friendly format "2026-04-29 18:13:10" that the app and dashboard expect.
+  // An already-normalised string (no 'T') is passed through unchanged.
+  function normaliseDateTime(raw: string): string {
+    if (!raw.includes('T')) return raw; // already SQL/display format
+    try {
+      return new Date(raw).toISOString().replace('T', ' ').slice(0, 19);
+    } catch {
+      return raw; // keep original on parse failure
+    }
+  }
+
+  const rawDateTime = pickStr('dateTime', 'date_time', 'startTime', 'time')
     ?? new Date().toISOString();
+  const dateTime = normaliseDateTime(rawDateTime);
   let workTime = pickNum('workTime', 'work_time', 'duration');
   let workArea = pickNum('workArea', 'work_area', 'area', 'mowedArea');
   let cutGrassHeight = pickNum('cutGrassHeight', 'cut_grass_height', 'cuttingHeight', 'cutterHeight', 'cutterhigh');
@@ -106,16 +119,26 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
   const cache = deviceCache.get(sn);
   if (cache) {
     if (cutGrassHeight === null) {
+      // Store the wire enum value (cutterhigh, 0-7) — same value the mower
+      // sends directly in its POST body and same value stored by LFI cloud.
+      // The app and dashboard display (wire + 2) cm. Do NOT add 2 here.
       const wire = parseInt(cache.get('target_height') ?? '', 10);
-      if (Number.isFinite(wire)) cutGrassHeight = wire + 2;   // wire→user cm
+      if (Number.isFinite(wire)) cutGrassHeight = wire;
     }
     if (workArea === null) {
       const a = parseFloat(cache.get('cov_area') ?? '');
       if (Number.isFinite(a)) workArea = a;
     }
     if (workTime === null) {
-      const t = parseFloat(cache.get('cov_work_time') ?? '');
-      if (Number.isFinite(t)) workTime = t;
+      // valid_cov_work_time is already in minutes; cov_work_time is in seconds.
+      // Try the minutes field first, fall back to seconds ÷ 60.
+      const tMin = parseFloat(cache.get('valid_cov_work_time') ?? '');
+      if (Number.isFinite(tMin) && tMin > 0) {
+        workTime = tMin;
+      } else {
+        const tSec = parseFloat(cache.get('cov_work_time') ?? '');
+        if (Number.isFinite(tSec) && tSec > 0) workTime = Math.round(tSec / 60);
+      }
     }
     if (mapNames === null) {
       const id = cache.get('current_map_ids') ?? cache.get('cover_map_id');

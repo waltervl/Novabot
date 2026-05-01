@@ -2,6 +2,33 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-01 — Work records: cutting-height, workTime unit, dateTime format (issue #17)
+
+- `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
+  three bug-fixes for reporter waltervl (Novabot v2.4.0 + mower v5.7.1 stock):
+
+  1. **cutGrassHeight stored as wire+2**: The sensor-cache fallback was doing
+     `target_height + 2` converting the wire enum (0-7) to user_cm before
+     storing. The stored value MUST be the wire enum — identical to what the
+     mower POSTs directly and what LFI cloud stores. The Novabot app and
+     dashboard display `cutGrassHeight + 2` cm; storing user_cm caused the
+     display to show `(user_cm + 2)` = two too many. Fix: removed `+ 2` from
+     the sensor-cache fallback (`cutGrassHeight = wire`, not `wire + 2`).
+
+  2. **workTime always 0**: The sensor-cache key `cov_work_time` carries
+     seconds, but `work_records.work_time` is minutes. The old code stored
+     seconds as minutes (effectively multiplying by 60 in the wrong direction).
+     Fix: sensor cache fallback now tries `valid_cov_work_time` (already
+     minutes) first; falls back to `Math.round(cov_work_time / 60)`.
+
+  3. **dateTime formatted as ISO-8601**: Mower v5.7.1 sends
+     `2026-04-29T18:13:10.94Z`. Server now normalises any string containing
+     `'T'` to SQL format `2026-04-29 18:13:10` via
+     `new Date(raw).toISOString().replace('T', ' ').slice(0, 19)`.
+
+- `__tests__/contract/equipmentState.saveCutGrassRecord.test.ts`: 12 new
+  regression tests — one per bug plus dedicated regression guards — all green.
+
 ## 2026-04-29 — Schedule: persist cutGrassHeight / area / timezone
 
 - `routes/cutGrassPlan.ts`: `POST /api/nova-data/appManage/saveCutGrassPlan`
