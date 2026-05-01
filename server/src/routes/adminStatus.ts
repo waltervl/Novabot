@@ -15,8 +15,9 @@ import { awaitCommand, publishToDevice } from '../mqtt/mapSync.js';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo } from '../db/repositories/index.js';
 import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
-import { parseMapZip, polygonArea } from '../mqtt/mapConverter.js';
+import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
+import { listBackups, backupPath } from '../services/mapBackup.js';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
@@ -785,6 +786,163 @@ function downloadFile(url: string, destPath: string): Promise<void> {
     }).on('error', reject);
   });
 }
+
+// ── Map backup endpoints ──────────────────────────────────────────────────────
+
+/** Derive the firmware-canonical slot name from a parsed MapArea. */
+function areaCanonicalName(area: MapArea): string {
+  switch (area.type) {
+    case 'work':
+      return `map${area.mapIndex}`;
+    case 'obstacle':
+      return `map${area.mapIndex}_${area.subIndex ?? 0}_obstacle`;
+    case 'unicom':
+      return `map${area.mapIndex}to${area.target ?? 'charge'}_unicom`;
+  }
+}
+
+/** Derive the CSV filename for a MapArea. */
+function areaCsvFile(area: MapArea): string {
+  switch (area.type) {
+    case 'work':
+      return `map${area.mapIndex}_work.csv`;
+    case 'obstacle':
+      return `map${area.mapIndex}_${area.subIndex ?? 0}_obstacle.csv`;
+    case 'unicom':
+      return `map${area.mapIndex}to${area.target ?? 'charge'}_unicom.csv`;
+  }
+}
+
+// GET /api/admin-status/map-backups/:sn — list available snapshots
+adminStatusRouter.get('/map-backups/:sn', (req: AuthRequest, res: Response) => {
+  const { sn } = req.params;
+  res.json({ backups: listBackups(sn) });
+});
+
+// GET /api/admin-status/map-backups/:sn/:filename — download ZIP
+adminStatusRouter.get('/map-backups/:sn/:filename', (req: AuthRequest, res: Response) => {
+  const { sn, filename } = req.params;
+  try {
+    const p = backupPath(sn, filename);
+    if (!fs.existsSync(p)) {
+      res.status(404).json({ error: 'backup not found' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    fs.createReadStream(p).pipe(res);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'invalid filename' });
+  }
+});
+
+// GET /api/admin-status/map-backups/:sn/:filename/contents — inspect backup
+adminStatusRouter.get('/map-backups/:sn/:filename/contents', (req: AuthRequest, res: Response) => {
+  const { sn, filename } = req.params;
+  try {
+    const p = backupPath(sn, filename);
+    if (!fs.existsSync(p)) {
+      res.status(404).json({ error: 'backup not found' });
+      return;
+    }
+    const parsed = parseMapZip(p);
+    if (!parsed) {
+      res.status(400).json({ error: 'failed to parse backup ZIP' });
+      return;
+    }
+
+    type AreaEntry = { canonicalName: string; csvFile: string; pointCount: number };
+    const work: AreaEntry[] = [];
+    const obstacles: AreaEntry[] = [];
+    const unicoms: AreaEntry[] = [];
+
+    for (const area of parsed.areas) {
+      const entry: AreaEntry = {
+        canonicalName: areaCanonicalName(area),
+        csvFile: areaCsvFile(area),
+        pointCount: area.points.length,
+      };
+      if (area.type === 'work') work.push(entry);
+      else if (area.type === 'obstacle') obstacles.push(entry);
+      else if (area.type === 'unicom') unicoms.push(entry);
+    }
+
+    res.json({
+      work,
+      obstacles,
+      unicoms,
+      chargingPose: parsed.chargingPose ?? null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'unknown error' });
+  }
+});
+
+// POST /api/admin-status/map-backups/:sn/:filename/restore — selective DB restore
+adminStatusRouter.post('/map-backups/:sn/:filename/restore', (req: AuthRequest, res: Response) => {
+  const { sn, filename } = req.params;
+  const items = (req.body?.items ?? []) as Array<{ canonicalName: string; type: string }>;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    res.status(400).json({ error: 'items array required' });
+    return;
+  }
+
+  try {
+    const p = backupPath(sn, filename);
+    if (!fs.existsSync(p)) {
+      res.status(404).json({ error: 'backup not found' });
+      return;
+    }
+    const parsed = parseMapZip(p);
+    if (!parsed) {
+      res.status(400).json({ error: 'failed to parse backup ZIP' });
+      return;
+    }
+
+    let restored = 0;
+    let skipped = 0;
+
+    for (const want of items) {
+      // Find matching area in parsed ZIP
+      const area = parsed.areas.find(a =>
+        a.type === want.type && areaCanonicalName(a) === want.canonicalName,
+      );
+      if (!area) { skipped++; continue; }
+
+      // Skip if a row with same (mower_sn, canonical_name) already exists
+      const existing = mapRepo.findBySnAndCanonical(sn, want.canonicalName);
+      if (existing) { skipped++; continue; }
+
+      if (area.points.length < 2) { skipped++; continue; }
+
+      const mapId = uuidv4();
+      const xs = area.points.map(pt => pt.x);
+      const ys = area.points.map(pt => pt.y);
+
+      mapRepo.create({
+        map_id: mapId,
+        mower_sn: sn,
+        map_name: want.canonicalName,
+        file_name: areaCsvFile(area),
+        map_area: JSON.stringify(area.points),
+        map_max_min: JSON.stringify({
+          minX: Math.min(...xs), maxX: Math.max(...xs),
+          minY: Math.min(...ys), maxY: Math.max(...ys),
+        }),
+        map_type: want.type,
+        canonical_name: want.canonicalName,
+      });
+      restored++;
+    }
+
+    console.log(`[Admin] Map restore for ${sn}: ${restored} restored, ${skipped} skipped`);
+    res.json({ ok: true, restored, skipped });
+  } catch (err) {
+    console.error('[Admin] Map restore failed:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'restore failed' });
+  }
+});
 
 // POST /api/admin-status/factory-reset — wipe all user data and return to setup
 adminStatusRouter.post('/factory-reset', (_req: AuthRequest, res: Response) => {

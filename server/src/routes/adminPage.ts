@@ -281,7 +281,7 @@ export function adminPageHtml(): string {
       <h2>Map Viewer <span class="refresh-btn" onclick="loadMaps()">↻</span></h2>
       <div style="padding:8px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.15);border-radius:6px;margin-bottom:12px;font-size:11px;color:#d97706">Maps stored here are for <b>preview and app display only</b>. They are not synced to the mower. To mow, the mower needs its own maps created via the Novabot app mapping function.</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-        <select id="mapMowerSelect" onchange="loadMaps()" style="flex:1;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value)" style="flex:1;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
         </select>
       </div>
@@ -294,6 +294,21 @@ export function adminPageHtml(): string {
         <button onclick="recalibrateChargingPose()" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
       </div>
       <div id="mapRecalStatus" style="font-size:12px;margin-bottom:8px;display:none"></div>
+      <!-- Map Recovery card -->
+      <div style="padding:8px 12px;background:rgba(124,58,237,.05);border:1px solid rgba(124,58,237,.2);border-radius:8px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:600;color:#a78bfa;margin-bottom:8px">Map Recovery — restore from auto-backup snapshots</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+          <select id="mapBackupSelect" onchange="loadBackupContents()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
+            <option value="">Select a backup snapshot...</option>
+          </select>
+          <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
+        </div>
+        <div id="mapBackupTree" style="margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button onclick="restoreSelection()" style="padding:7px 16px;background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Restore selection to DB</button>
+        </div>
+        <div id="mapRecoveryStatus" style="font-size:12px;margin-top:6px;display:none"></div>
+      </div>
       <div id="mapUploadStatus" style="font-size:12px;margin-bottom:8px;display:none"></div>
       <div id="mapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
       <div style="background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;position:relative">
@@ -2009,6 +2024,150 @@ async function recalibrateChargingPose() {
     status.textContent = 'Recalibrate failed: ' + e.message;
   }
 }
+
+// ── Map Recovery functions ────────────────────────────────────────────────────
+
+async function loadMapBackups(sn) {
+  var sel = document.getElementById('mapBackupSelect');
+  var tree = document.getElementById('mapBackupTree');
+  var status = document.getElementById('mapRecoveryStatus');
+  status.style.display = 'none';
+  tree.innerHTML = '';
+  sel.innerHTML = '<option value="">Select a backup snapshot...</option>';
+
+  if (!sn) return;
+
+  try {
+    var r = await fetch('/api/admin-status/map-backups/' + encodeURIComponent(sn), {
+      headers: { 'Authorization': token },
+    });
+    var data = await r.json();
+    var backups = data.backups || [];
+
+    if (backups.length === 0) {
+      sel.innerHTML = '<option value="">No backups available</option>';
+      return;
+    }
+
+    for (var b of backups) {
+      var opt = document.createElement('option');
+      opt.value = b.filename;
+      var dt = new Date(b.ts);
+      var label = dt.toLocaleString() + '  (' + (b.sizeBytes > 1024 ? Math.round(b.sizeBytes / 1024) + ' KB' : b.sizeBytes + ' B') + ')';
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+  } catch(e) {
+    status.style.display = 'block';
+    status.style.color = '#f87171';
+    status.textContent = 'Failed to load backups: ' + e.message;
+  }
+}
+
+async function loadBackupContents() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var filename = document.getElementById('mapBackupSelect').value;
+  var tree = document.getElementById('mapBackupTree');
+  var status = document.getElementById('mapRecoveryStatus');
+  status.style.display = 'none';
+  tree.innerHTML = '';
+
+  if (!sn || !filename) return;
+
+  try {
+    var r = await fetch('/api/admin-status/map-backups/' + encodeURIComponent(sn) + '/' + encodeURIComponent(filename) + '/contents', {
+      headers: { 'Authorization': token },
+    });
+    if (!r.ok) { var err = await r.json().catch(function(){return{};});throw new Error(err.error||'HTTP '+r.status); }
+    var data = await r.json();
+
+    var html = '';
+    function renderGroup(label, items, type, color) {
+      if (!items || items.length === 0) return '';
+      var h = '<div style="margin-bottom:8px">';
+      h += '<label style="font-size:11px;font-weight:600;color:' + color + ';cursor:pointer;display:flex;align-items:center;gap:4px">';
+      h += '<input type="checkbox" class="backup-grp-all" data-type="' + type + '" onchange="toggleBackupGroup(this)" style="cursor:pointer"> ' + label + ' (' + items.length + ')';
+      h += '</label>';
+      h += '<div style="margin-left:16px;margin-top:4px">';
+      for (var item of items) {
+        var key = type + '::' + item.canonicalName;
+        h += '<label style="font-size:11px;color:#ccc;cursor:pointer;display:flex;align-items:center;gap:4px;padding:2px 0">';
+        h += '<input type="checkbox" class="backup-item-chk" data-type="' + type + '" data-canonical="' + escHtml(item.canonicalName) + '" style="cursor:pointer"> ';
+        h += escHtml(item.canonicalName) + ' <span style="color:#666;margin-left:4px">' + item.pointCount + ' pts</span>';
+        h += '</label>';
+      }
+      h += '</div></div>';
+      return h;
+    }
+
+    html += renderGroup('Work areas', data.work, 'work', '#86efac');
+    html += renderGroup('Obstacles', data.obstacles, 'obstacle', '#fca5a5');
+    html += renderGroup('Channels (unicom)', data.unicoms, 'unicom', '#93c5fd');
+
+    if (data.chargingPose) {
+      var cp = data.chargingPose;
+      html += '<div style="font-size:11px;color:#aaa;margin-top:4px">Charging pose in backup: x=' + cp.x + ' y=' + cp.y + ' θ=' + cp.orientation + '</div>';
+    }
+
+    if (!html) html = '<div style="font-size:11px;color:#666">No areas found in this backup.</div>';
+    tree.innerHTML = html;
+  } catch(e) {
+    status.style.display = 'block';
+    status.style.color = '#f87171';
+    status.textContent = 'Failed to load backup contents: ' + e.message;
+  }
+}
+
+function toggleBackupGroup(checkbox) {
+  var type = checkbox.dataset.type;
+  var checked = checkbox.checked;
+  var items = document.querySelectorAll('.backup-item-chk[data-type="' + type + '"]');
+  items.forEach(function(cb) { cb.checked = checked; });
+}
+
+async function restoreSelection() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var filename = document.getElementById('mapBackupSelect').value;
+  var status = document.getElementById('mapRecoveryStatus');
+  status.style.display = 'block';
+
+  if (!sn) { status.style.color='#f87171'; status.textContent='Please select a mower first.'; return; }
+  if (!filename) { status.style.color='#f87171'; status.textContent='Please select a backup snapshot first.'; return; }
+
+  var checked = document.querySelectorAll('.backup-item-chk:checked');
+  if (checked.length === 0) { status.style.color='#f87171'; status.textContent='Please select at least one item to restore.'; return; }
+
+  var items = [];
+  checked.forEach(function(cb) {
+    items.push({ canonicalName: cb.dataset.canonical, type: cb.dataset.type });
+  });
+
+  status.style.color = '#60a5fa';
+  status.textContent = 'Restoring ' + items.length + ' item(s)...';
+
+  try {
+    var r = await fetch('/api/admin-status/map-backups/' + encodeURIComponent(sn) + '/' + encodeURIComponent(filename) + '/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': token },
+      body: JSON.stringify({ items }),
+    });
+    var result = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !result.ok) throw new Error(result.error || 'HTTP ' + r.status);
+
+    status.style.color = '#00d4aa';
+    status.textContent = 'Restored ' + result.restored + ' item(s). Skipped ' + result.skipped + ' (already exist or not found).';
+    loadMaps();
+  } catch(e) {
+    status.style.color = '#f87171';
+    status.textContent = 'Restore failed: ' + e.message;
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function loadMaps() {
   var sn = document.getElementById('mapMowerSelect').value;

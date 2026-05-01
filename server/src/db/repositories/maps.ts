@@ -3,6 +3,7 @@
  * All queries use prepared statements (SQL injection safe).
  */
 import { db } from '../database.js';
+import { scheduleSnapshot } from '../../services/mapBackup.js';
 
 export interface MapRow {
   id: number;
@@ -292,6 +293,7 @@ export class MapRepository {
       mapType,
       canonical,
     );
+    scheduleSnapshot(data.mower_sn);
   }
 
   upsert(data: CreateMapData): void {
@@ -314,6 +316,7 @@ export class MapRepository {
       mapType,
       canonical,
     );
+    scheduleSnapshot(data.mower_sn);
   }
 
   /** Merge-safe insert — leaves an existing (mower_sn, canonical_name)
@@ -339,41 +342,54 @@ export class MapRepository {
       mapType,
       canonical,
     );
+    if (info.changes > 0) scheduleSnapshot(data.mower_sn);
     return info.changes > 0;
   }
 
   updateName(mapId: string, name: string): void {
     this._updateName.run(name, mapId);
+    const row = this.findById(mapId);
+    if (row) scheduleSnapshot(row.mower_sn);
   }
 
   updateNameByIdAndMower(mapId: string, mowerSn: string, name: string | null): void {
     this._updateNameByIdAndMower.run(name, mapId, mowerSn);
+    scheduleSnapshot(mowerSn);
   }
 
   updateFileName(mapId: string, fileName: string): void {
     this._updateFileName.run(fileName, mapId);
+    const row = this.findById(mapId);
+    if (row) scheduleSnapshot(row.mower_sn);
   }
 
   updateAreaAndBoundsById(mapId: string, mapArea: string, mapMaxMin: string): void {
     this._updateAreaAndBoundsById.run(mapArea, mapMaxMin, mapId);
+    const row = this.findById(mapId);
+    if (row) scheduleSnapshot(row.mower_sn);
   }
 
   updateAreaAndBoundsByIdAndMower(mapId: string, mowerSn: string, mapArea: string, mapMaxMin: string): void {
     this._updateAreaAndBoundsByIdAndMower.run(mapArea, mapMaxMin, mapId, mowerSn);
+    scheduleSnapshot(mowerSn);
   }
 
   // ── Map deletes ──
 
   deleteById(mapId: string): void {
+    const row = this.findById(mapId);
     this._deleteById.run(mapId);
+    if (row) scheduleSnapshot(row.mower_sn);
   }
 
   deleteByMowerSn(mowerSn: string): void {
     this._deleteByMowerSn.run(mowerSn);
+    scheduleSnapshot(mowerSn);
   }
 
   deleteByIdAndMower(mapId: string, mowerSn: string): void {
     this._deleteByIdAndMower.run(mapId, mowerSn);
+    scheduleSnapshot(mowerSn);
   }
 
   /**
@@ -399,6 +415,7 @@ export class MapRepository {
     // removed one mis-placed obstacle and lost the entire map family.
     if (target.map_type !== 'work') {
       this._deleteByIdAndMower.run(mapId, mowerSn);
+      scheduleSnapshot(mowerSn);
       return [target];
     }
 
@@ -419,6 +436,7 @@ export class MapRepository {
     });
     tx();
 
+    scheduleSnapshot(mowerSn);
     return deleted;
   }
 
@@ -443,6 +461,7 @@ export class MapRepository {
       }
     });
     tx();
+    scheduleSnapshot(mowerSn);
     return deleted;
   }
 
