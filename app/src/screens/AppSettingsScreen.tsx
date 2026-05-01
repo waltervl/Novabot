@@ -27,6 +27,7 @@ import { ApiClient } from '../services/api';
 import { useDevMode } from '../context/DevModeContext';
 import { useExperimental } from '../context/ExperimentalContext';
 import { useI18n, LANGUAGES } from '../i18n';
+import * as Application from 'expo-application';
 
 interface AppSettingsScreenProps {
   onLogout: () => void;
@@ -385,7 +386,8 @@ export default function AppSettingsScreen({
 
         <TouchableOpacity onPress={devMode.handleTap} activeOpacity={1}>
           <Text style={styles.versionText}>
-            OpenNova App v1.1.0
+            OpenNova App v{Application.nativeApplicationVersion ?? '?'}
+            {Application.nativeBuildVersion ? ` (build ${Application.nativeBuildVersion})` : ''}
             {devMode.tapCount >= 4 && devMode.tapCount < 7
               ? `  (${7 - devMode.tapCount} taps to go...)`
               : devMode.unlocked
