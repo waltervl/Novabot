@@ -851,16 +851,18 @@ adminStatusRouter.get('/map-backups/:sn/:filename/contents', (req: AuthRequest, 
       return;
     }
 
-    type AreaEntry = { canonicalName: string; csvFile: string; pointCount: number };
+    type AreaEntry = { canonicalName: string; csvFile: string; pointCount: number; existsInDb: boolean };
     const work: AreaEntry[] = [];
     const obstacles: AreaEntry[] = [];
     const unicoms: AreaEntry[] = [];
 
     for (const area of parsed.areas) {
+      const canonicalName = areaCanonicalName(area);
       const entry: AreaEntry = {
-        canonicalName: areaCanonicalName(area),
+        canonicalName,
         csvFile: areaCsvFile(area),
         pointCount: area.points.length,
+        existsInDb: !!mapRepo.findBySnAndCanonical(sn, canonicalName),
       };
       if (area.type === 'work') work.push(entry);
       else if (area.type === 'obstacle') obstacles.push(entry);
@@ -879,9 +881,19 @@ adminStatusRouter.get('/map-backups/:sn/:filename/contents', (req: AuthRequest, 
 });
 
 // POST /api/admin-status/map-backups/:sn/:filename/restore — selective DB restore
+//
+// Each item may carry an optional `overwrite` flag:
+//   { canonicalName, type, overwrite?: boolean }
+//
+// Behaviour per item:
+//   - Not in ZIP           → skippedNotInBackup++
+//   - In ZIP, < 2 pts      → skippedNotInBackup++
+//   - In ZIP, no DB row    → INSERT                   → restored++
+//   - In ZIP, has DB row, overwrite=true  → DELETE + INSERT → overwritten++
+//   - In ZIP, has DB row, overwrite falsy → skip            → skippedExisting++
 adminStatusRouter.post('/map-backups/:sn/:filename/restore', (req: AuthRequest, res: Response) => {
   const { sn, filename } = req.params;
-  const items = (req.body?.items ?? []) as Array<{ canonicalName: string; type: string }>;
+  const items = (req.body?.items ?? []) as Array<{ canonicalName: string; type: string; overwrite?: boolean }>;
 
   if (!Array.isArray(items) || items.length === 0) {
     res.status(400).json({ error: 'items array required' });
@@ -901,20 +913,32 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore', (req: AuthRequest, 
     }
 
     let restored = 0;
-    let skipped = 0;
+    let overwritten = 0;
+    let skippedExisting = 0;
+    let skippedNotInBackup = 0;
 
     for (const want of items) {
       // Find matching area in parsed ZIP
       const area = parsed.areas.find(a =>
         a.type === want.type && areaCanonicalName(a) === want.canonicalName,
       );
-      if (!area) { skipped++; continue; }
+      if (!area || area.points.length < 2) { skippedNotInBackup++; continue; }
 
-      // Skip if a row with same (mower_sn, canonical_name) already exists
+      // Check if a row with same (mower_sn, canonical_name) already exists
       const existing = mapRepo.findBySnAndCanonical(sn, want.canonicalName);
-      if (existing) { skipped++; continue; }
 
-      if (area.points.length < 2) { skipped++; continue; }
+      if (existing) {
+        if (want.overwrite === true) {
+          // Delete the existing row then fall through to INSERT
+          mapRepo.deleteByIdAndMower(existing.map_id, sn);
+          overwritten++;
+        } else {
+          skippedExisting++;
+          continue;
+        }
+      } else {
+        restored++;
+      }
 
       const mapId = uuidv4();
       const xs = area.points.map(pt => pt.x);
@@ -933,11 +957,10 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore', (req: AuthRequest, 
         map_type: want.type,
         canonical_name: want.canonicalName,
       });
-      restored++;
     }
 
-    console.log(`[Admin] Map restore for ${sn}: ${restored} restored, ${skipped} skipped`);
-    res.json({ ok: true, restored, skipped });
+    console.log(`[Admin] Map restore for ${sn}: ${restored} restored, ${overwritten} overwritten, ${skippedExisting} skippedExisting, ${skippedNotInBackup} skippedNotInBackup`);
+    res.json({ ok: true, restored, overwritten, skippedExisting, skippedNotInBackup });
   } catch (err) {
     console.error('[Admin] Map restore failed:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'restore failed' });

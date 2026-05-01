@@ -306,6 +306,8 @@ export function adminPageHtml(): string {
         <div id="mapBackupTree" style="margin-bottom:8px"></div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button onclick="restoreSelection()" style="padding:7px 16px;background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Restore selection to DB</button>
+          <button onclick="setAllConflicts(true)" style="padding:7px 14px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all conflicts</button>
+          <button onclick="setAllConflicts(false)" style="padding:7px 14px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all conflicts</button>
         </div>
         <div id="mapRecoveryStatus" style="font-size:12px;margin-top:6px;display:none"></div>
       </div>
@@ -2090,11 +2092,21 @@ async function loadBackupContents() {
       h += '</label>';
       h += '<div style="margin-left:16px;margin-top:4px">';
       for (var item of items) {
-        var key = type + '::' + item.canonicalName;
-        h += '<label style="font-size:11px;color:#ccc;cursor:pointer;display:flex;align-items:center;gap:4px;padding:2px 0">';
-        h += '<input type="checkbox" class="backup-item-chk" data-type="' + type + '" data-canonical="' + escHtml(item.canonicalName) + '" style="cursor:pointer"> ';
-        h += escHtml(item.canonicalName) + ' <span style="color:#666;margin-left:4px">' + item.pointCount + ' pts</span>';
+        var safeCanon = escHtml(item.canonicalName);
+        var conflictId = 'conflict_' + type + '_' + safeCanon.replace(/[^a-zA-Z0-9]/g, '_');
+        h += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;flex-wrap:wrap">';
+        h += '<label style="font-size:11px;color:#ccc;cursor:pointer;display:flex;align-items:center;gap:4px">';
+        h += '<input type="checkbox" class="backup-item-chk" data-type="' + type + '" data-canonical="' + safeCanon + '" onchange="onBackupItemChange(this)" style="cursor:pointer"> ';
+        h += safeCanon + ' <span style="color:#666;margin-left:4px">' + item.pointCount + ' pts</span>';
         h += '</label>';
+        if (item.existsInDb) {
+          h += '<span style="font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 6px">Exists in DB</span>';
+          h += '<span id="' + conflictId + '" style="display:none;font-size:10px;gap:6px;align-items:center">';
+          h += '<label style="cursor:pointer;display:flex;align-items:center;gap:2px;color:#94a3b8"><input type="radio" name="' + conflictId + '" class="conflict-radio" data-canonical="' + safeCanon + '" data-type="' + type + '" value="skip" checked> Skip</label>';
+          h += '<label style="cursor:pointer;display:flex;align-items:center;gap:2px;color:#fca5a5"><input type="radio" name="' + conflictId + '" class="conflict-radio" data-canonical="' + safeCanon + '" data-type="' + type + '" value="overwrite"> <b>Overwrite</b></label>';
+          h += '</span>';
+        }
+        h += '</div>';
       }
       h += '</div></div>';
       return h;
@@ -2122,7 +2134,26 @@ function toggleBackupGroup(checkbox) {
   var type = checkbox.dataset.type;
   var checked = checkbox.checked;
   var items = document.querySelectorAll('.backup-item-chk[data-type="' + type + '"]');
-  items.forEach(function(cb) { cb.checked = checked; });
+  items.forEach(function(cb) { toggleConflictRadio(cb, checked); cb.checked = checked; });
+}
+
+/** Show or hide the conflict radio pair next to a backup-item-chk */
+function toggleConflictRadio(cb, show) {
+  var safeCanon = (cb.dataset.canonical || '').replace(/[^a-zA-Z0-9]/g, '_');
+  var conflictId = 'conflict_' + cb.dataset.type + '_' + safeCanon;
+  var el = document.getElementById(conflictId);
+  if (el) el.style.display = show ? 'inline-flex' : 'none';
+}
+
+/** Called from inline onchange on each .backup-item-chk */
+function onBackupItemChange(cb) {
+  toggleConflictRadio(cb, cb.checked);
+}
+
+/** Bulk-set all conflict radios to overwrite (true) or skip (false) */
+function setAllConflicts(doOverwrite) {
+  var radios = document.querySelectorAll('.conflict-radio[value="' + (doOverwrite ? 'overwrite' : 'skip') + '"]');
+  radios.forEach(function(r) { r.checked = true; });
 }
 
 async function restoreSelection() {
@@ -2139,7 +2170,11 @@ async function restoreSelection() {
 
   var items = [];
   checked.forEach(function(cb) {
-    items.push({ canonicalName: cb.dataset.canonical, type: cb.dataset.type });
+    var safeCanon = (cb.dataset.canonical || '').replace(/[^a-zA-Z0-9]/g, '_');
+    var conflictId = 'conflict_' + cb.dataset.type + '_' + safeCanon;
+    var overwriteRadio = document.querySelector('#' + conflictId + ' input[value="overwrite"]');
+    var overwrite = overwriteRadio ? overwriteRadio.checked : false;
+    items.push({ canonicalName: cb.dataset.canonical, type: cb.dataset.type, overwrite: overwrite });
   });
 
   status.style.color = '#60a5fa';
@@ -2154,8 +2189,13 @@ async function restoreSelection() {
     var result = await r.json().catch(function(){ return {}; });
     if (!r.ok || !result.ok) throw new Error(result.error || 'HTTP ' + r.status);
 
+    var parts = [];
+    if (result.restored > 0) parts.push('Restored ' + result.restored);
+    if (result.overwritten > 0) parts.push('overwritten ' + result.overwritten);
+    if (result.skippedExisting > 0) parts.push('skipped ' + result.skippedExisting + ' (already existed)');
+    if (result.skippedNotInBackup > 0) parts.push('skipped ' + result.skippedNotInBackup + ' (not in backup)');
     status.style.color = '#00d4aa';
-    status.textContent = 'Restored ' + result.restored + ' item(s). Skipped ' + result.skipped + ' (already exist or not found).';
+    status.textContent = parts.join(', ') + '.';
     loadMaps();
   } catch(e) {
     status.style.color = '#f87171';
