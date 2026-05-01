@@ -119,7 +119,7 @@ export function CameraTab({ sn, online, mowerIp, headlightOn = false }: Props) {
             onClick={() => {
               const next = !lightOn;
               setLightOn(next);
-              sendCommand(sn, { headlight: next ? 2 : 0 });
+              sendCommand(sn, { set_para_info: { headlight: next ? 2 : 0 } });
             }}
             className={`p-2 rounded-full transition-colors ${
               lightOn

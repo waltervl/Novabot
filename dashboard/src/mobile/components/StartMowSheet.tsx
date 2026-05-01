@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, type TouchEvent as ReactTouchEvent } from 'react';
 import { Play } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { MapData, GpsPoint } from '../../types';
+import type { MapData } from '../../types';
 import { sendCommand, fetchMaps } from '../../api/client';
-import { localToGps } from '../../utils/coords';
+import { mmToCutterhigh, workIndexToArea, nextCmdNum } from '../../utils/mqtt';
 import { useToast } from '../../components/common/Toast';
 
 interface Props {
@@ -24,7 +24,6 @@ export function StartMowSheet({ open, onClose, sn, onStarted, initialMapId = nul
   const [pathDirection, setPathDirection] = useState(0);
   const [mapId, setMapId] = useState<string | null>(null);
   const [maps, setMaps] = useState<MapData[]>([]);
-  const [chargerGps, setChargerGps] = useState<GpsPoint | null>(null);
 
   // Swipe-to-dismiss
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -34,7 +33,7 @@ export function StartMowSheet({ open, onClose, sn, onStarted, initialMapId = nul
   // Load maps when opening
   useEffect(() => {
     if (!open || !sn) return;
-    fetchMaps(sn).then(resp => { setMaps(resp.maps); setChargerGps(resp.chargerGps); }).catch(() => {});
+    fetchMaps(sn).then(resp => { setMaps(resp.maps); }).catch(() => {});
     // Reset to defaults (pre-select area if provided)
     setCuttingHeight(40);
     setPathDirection(0);
@@ -44,32 +43,35 @@ export function StartMowSheet({ open, onClose, sn, onStarted, initialMapId = nul
   const handleStart = async () => {
     setStarting(true);
     try {
-      // 1. Set cutting height + direction
-      await sendCommand(sn, {
-        set_para_info: {
-          cutGrassHeight: cuttingHeight,
-          defaultCuttingHeight: cuttingHeight,
-          target_height: cuttingHeight,
-          path_direction: pathDirection,
+      // Convert mm UI value to firmware wire enum: cutterhigh = mm/10 − 2
+      const wireHeight = mmToCutterhigh(cuttingHeight);
+
+      // Compute area enum from map index in work maps list
+      const workMaps = maps.filter(m => m.mapType === 'work');
+      const mapIdx = mapId ? workMaps.findIndex(m => m.mapId === mapId) : -1;
+      const areaParam = mapId ? workIndexToArea(mapIdx >= 0 ? mapIdx : 0) : 200;
+      // When no map selected (all work areas), app uses mapName:'test' and area:200
+      const selectedMap = mapId ? maps.find(m => m.mapId === mapId) : null;
+      const resolvedMapName = selectedMap?.mapName || 'test';
+
+      // start_navigation primary (mirrors app/src/components/StartMowSheet.tsx:302)
+      const cmdNum = nextCmdNum();
+      const navResult = await sendCommand(sn, {
+        start_navigation: {
+          mapName: resolvedMapName,
+          cutterhigh: wireHeight,
+          area: areaParam,
+          cmd_num: cmdNum,
         },
       });
 
-      // 2. Build start_run command
-      const startCmd: Record<string, unknown> = {};
-      if (mapId) {
-        const selectedMap = maps.find(m => m.mapId === mapId);
-        startCmd.map_id = mapId;
-        startCmd.map_name = selectedMap?.mapName ?? '';
-        if (selectedMap?.mapArea && selectedMap.mapArea.length >= 3 && chargerGps) {
-          startCmd.workArea = selectedMap.mapArea.map(p => {
-            const gps = localToGps(p, chargerGps!);
-            return { latitude: gps.lat, longitude: gps.lng };
-          });
-          startCmd.cutGrassHeight = cuttingHeight;
-        }
+      // Fallback: old firmware protocol (mirrors app StartMowSheet.tsx:317)
+      if (!navResult.ok) {
+        await sendCommand(sn, {
+          start_run: { mapName: null, area: areaParam, cutterhigh: wireHeight },
+        });
       }
 
-      await sendCommand(sn, { start_run: startCmd });
       toast(`${t('mobile.startMowing')} ✓`, 'success');
       onStarted();
       onClose();

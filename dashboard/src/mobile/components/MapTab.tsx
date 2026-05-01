@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { MowerDerived, MowerActivity } from '../MobilePage';
 import type { MapData, LocalPoint } from '../../types';
 import { fetchMaps, sendCommand } from '../../api/client';
+import { nextCmdNum } from '../../utils/mqtt';
 import { MiniMap } from './MiniMap';
 import { JoystickControl } from '../../components/dashboard/JoystickControl';
 import { StartMowSheet } from './StartMowSheet';
@@ -101,8 +102,7 @@ export function MapTab({ mower, liveOutlines, coveredLanes }: Props) {
   const handleEmergencyStop = useCallback(async () => {
     setStopBusy(true);
     try {
-      await sendCommand(mower.sn, { stop_run: {} });
-      await sendCommand(mower.sn, { stop_navigation: {} });
+      await sendCommand(mower.sn, { stop_navigation: { cmd_num: nextCmdNum() } });
       toast(t('controls.emergencyStopSent'), 'success');
     } catch {
       toast(t('controls.emergencyStopFailed'), 'error');

@@ -12,6 +12,7 @@ import {
   setDemoMode as setDemoModeApi, getDemoMode,
 } from '../../api/client';
 import { localToGps } from '../../utils/coords';
+import { mmToCutterhigh, workIndexToArea, nextCmdNum } from '../../utils/mqtt';
 import { useToast } from '../common/Toast';
 import { PatternPicker } from '../patterns/PatternPicker';
 import { loadPattern, transformToGps, type NormContour } from '../../utils/patternUtils.js';
@@ -206,50 +207,60 @@ export function MowerControls({
   const handleStart = useCallback(async () => {
     setBusy(true);
     try {
-      // Set cutting height + direction first
-      await sendCommand(sn, {
-        set_para_info: {
-          cutGrassHeight: cuttingHeight,
-          defaultCuttingHeight: cuttingHeight,
-          target_height: cuttingHeight,
-          path_direction: pathDirection,
-        },
-      });
+      // Note: set_para_info (path_direction) is sent only when the user CHANGES the
+      // direction slider below — not here at start time. This matches the official
+      // Novabot app where set_para_info is sent from the direction picker, not during
+      // the start mowing flow (app/src/components/StartMowSheet.tsx lines 295-298).
 
-      // Build start_run command
-      const startCmd: Record<string, unknown> = {};
-      let polySource: Array<{ lat: number; lng: number }> | undefined;
+      // Convert mm UI value to firmware wire enum: cutterhigh = mm/10 - 2
+      const wireHeight = mmToCutterhigh(cuttingHeight);
 
       if (patternMode && patternContours.length > 0 && patternCenter) {
-        // Pattern mowing — merge all contours into one workArea
-        // Use the first (outer) contour as the primary work area
-        polySource = transformToGps(patternContours[0], patternCenter, patternSize, patternRotation);
-        startCmd.map_id = `pattern_${patternId}`;
-        startCmd.map_name = `Pattern ${patternId}`;
+        // Pattern mowing — use start_run with GPS workArea (pattern flow unchanged)
+        const polySource = transformToGps(patternContours[0], patternCenter, patternSize, patternRotation);
+        const startCmd: Record<string, unknown> = {
+          map_id: `pattern_${patternId}`,
+          map_name: `Pattern ${patternId}`,
+        };
+        if (polySource.length >= 3) {
+          const finalPoly = edgeOffset !== 0 ? offsetPolygon(polySource, edgeOffset) : polySource;
+          startCmd.workArea = finalPoly.map((p: { lat: number; lng: number }) => ({
+            latitude: p.lat,
+            longitude: p.lng,
+          }));
+        }
+        const result = await sendCommand(sn, { start_run: startCmd });
+        const detail = result.encrypted ? ` (encrypted, ${result.size}B)` : '';
+        toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
       } else {
-        // Normal map mowing — mapArea is in local meters, convert to GPS
-        startCmd.map_id = mapId || '';
-        startCmd.map_name = mapName || '';
-        const localPoly = pendingPolygon?.mapId === mapId
-          ? pendingPolygon.mapArea
-          : maps.find(m => m.mapId === mapId)?.mapArea;
-        polySource = localPoly && chargerGps
-          ? localPoly.map(p => localToGps(p, chargerGps))
-          : undefined;
+        // Normal map mowing — use start_navigation (mirrors app StartMowSheet.tsx)
+        // Compute area enum: find map index in work maps list (sorted same as API)
+        const workMaps = maps.filter(m => m.mapType === 'work');
+        const mapIdx = mapId ? workMaps.findIndex(m => m.mapId === mapId) : -1;
+        const areaParam = mapId ? workIndexToArea(mapIdx >= 0 ? mapIdx : 0) : 200;
+        // When no map selected (all work areas), app uses mapName:'test' and area:200
+        const resolvedMapName = mapId ? (mapName || 'test') : 'test';
+
+        const cmdNum = nextCmdNum();
+        const navPayload: Record<string, unknown> = {
+          mapName: resolvedMapName,
+          cutterhigh: wireHeight,
+          area: areaParam,
+          cmd_num: cmdNum,
+        };
+        const navResult = await sendCommand(sn, { start_navigation: navPayload });
+
+        if (!navResult.ok) {
+          // Fallback: old firmware protocol (matches app StartMowSheet.tsx line 317)
+          await sendCommand(sn, {
+            start_run: { mapName: null, area: areaParam, cutterhigh: wireHeight },
+          });
+        }
+
+        const detail = navResult.encrypted ? ` (encrypted, ${navResult.size}B)` : '';
+        toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
       }
 
-      if (polySource && polySource.length >= 3) {
-        const finalPoly = edgeOffset !== 0 ? offsetPolygon(polySource, edgeOffset) : polySource;
-        startCmd.workArea = finalPoly.map((p: { lat: number; lng: number }) => ({
-          latitude: p.lat,
-          longitude: p.lng,
-        }));
-        startCmd.cutGrassHeight = cuttingHeight;
-      }
-
-      const result = await sendCommand(sn, { start_run: startCmd });
-      const detail = result.encrypted ? ` (encrypted, ${result.size}B)` : '';
-      toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
       setExpanded(false);
       onPathDirectionChange?.(null);
       onPatternPlacementChange?.(null);
@@ -343,7 +354,7 @@ export function MowerControls({
         </button>
 
         <button
-          onClick={() => send({ pause_run: {} }, t('controls.pause'))}
+          onClick={() => send({ pause_navigation: {} }, t('controls.pause'))}
           disabled={disabled}
           className={`${btnBase} bg-gray-700/60 text-yellow-400 hover:bg-yellow-700/40`}
           title={t('controls.pause')}
@@ -352,7 +363,7 @@ export function MowerControls({
         </button>
 
         <button
-          onClick={() => send({ resume_run: {} }, t('controls.resume'))}
+          onClick={() => send({ resume_navigation: {} }, t('controls.resume'))}
           disabled={disabled}
           className={`${btnBase} bg-gray-700/60 text-blue-400 hover:bg-blue-700/40`}
           title={t('controls.resume')}
@@ -361,7 +372,7 @@ export function MowerControls({
         </button>
 
         <button
-          onClick={() => send({ stop_run: {} }, t('controls.stop'))}
+          onClick={() => send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop'))}
           disabled={disabled}
           className={`${btnBase} bg-gray-700/60 text-red-400 hover:bg-red-700/40`}
           title={t('controls.stop')}
@@ -371,7 +382,7 @@ export function MowerControls({
 
         {/* Secondary buttons — hidden on mobile, inline on desktop */}
         <button
-          onClick={() => send({ go_to_charge: {} }, t('controls.goToCharge'))}
+          onClick={() => send({ go_pile: {} }, t('controls.goToCharge'))}
           disabled={disabled}
           className={`${btnHidden} bg-gray-700/60 text-yellow-300 hover:bg-yellow-700/40`}
           title={t('controls.goToCharge')}
@@ -450,7 +461,7 @@ export function MowerControls({
               <div className="fixed inset-0 z-[9998]" onClick={() => setMoreExpanded(false)} />
               <div className="absolute top-full right-0 mt-1 w-48 z-[10000] bg-gray-800 rounded-lg border border-gray-700 shadow-xl py-1">
                 <button
-                  onClick={() => { setMoreExpanded(false); send({ go_to_charge: {} }, t('controls.goToCharge')); }}
+                  onClick={() => { setMoreExpanded(false); send({ go_pile: {} }, t('controls.goToCharge')); }}
                   disabled={disabled}
                   className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-yellow-300 hover:bg-gray-700/50 transition-colors disabled:opacity-30"
                 >
@@ -683,7 +694,11 @@ export function MowerControls({
                 {DIR_DEGREES.map((deg, i) => (
                   <button
                     key={deg}
-                    onClick={() => { setPathDirection(deg); onPathDirectionChange?.(deg); }}
+                    onClick={() => {
+                      setPathDirection(deg);
+                      onPathDirectionChange?.(deg);
+                      sendCommand(sn, { set_para_info: { path_direction: deg } }).catch(() => {});
+                    }}
                     className={`text-[9px] py-1 rounded transition-colors ${
                       pathDirection === deg
                         ? 'bg-blue-600 text-white font-medium'
@@ -701,6 +716,7 @@ export function MowerControls({
                   const v = parseInt(e.target.value);
                   setPathDirection(v);
                   onPathDirectionChange?.(v);
+                  sendCommand(sn, { set_para_info: { path_direction: v } }).catch(() => {});
                 }}
                 className="w-full h-1.5 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
               />
