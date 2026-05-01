@@ -1,5 +1,6 @@
 import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   open: boolean;
@@ -8,7 +9,9 @@ interface Props {
   title?: string;
 }
 
-export function Drawer({ open, onClose, children, title = 'Diagnostics' }: Props) {
+export function Drawer({ open, onClose, children, title }: Props) {
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t('drawer.title.diagnostics');
   return (
     <>
       <div
@@ -21,7 +24,7 @@ export function Drawer({ open, onClose, children, title = 'Diagnostics' }: Props
         aria-hidden={!open}
       >
         <div className="flex items-center justify-between p-4 border-b border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-100">{title}</h2>
+          <h2 className="text-sm font-semibold text-zinc-100">{resolvedTitle}</h2>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-100">
             <X className="w-5 h-5" />
           </button>

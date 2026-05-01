@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, Wifi, Server } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchSystemHealth, type SystemHealth } from '../../api/client';
 
 // Suppress unused import warning — Activity is available for future use
@@ -13,6 +14,7 @@ function fmtUptime(sec: number): string {
 }
 
 export function NetworkHealthCard() {
+  const { t } = useTranslation();
   const [data, setData] = useState<SystemHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,40 +39,40 @@ export function NetworkHealthCard() {
   if (error) {
     return (
       <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-3 mb-3">
-        <h3 className="text-xs font-semibold text-zinc-300 mb-2">Network health</h3>
-        <p className="text-xs text-red-400">Failed to load: {error}</p>
+        <h3 className="text-xs font-semibold text-zinc-300 mb-2">{t('drawer.network.title')}</h3>
+        <p className="text-xs text-red-400">{t('common.failedToLoad')}: {error}</p>
       </div>
     );
   }
   if (!data) {
     return (
       <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-3 mb-3">
-        <h3 className="text-xs font-semibold text-zinc-300 mb-2">Network health</h3>
-        <p className="text-xs text-zinc-500">Loading…</p>
+        <h3 className="text-xs font-semibold text-zinc-300 mb-2">{t('drawer.network.title')}</h3>
+        <p className="text-xs text-zinc-500">{t('common.loading')}</p>
       </div>
     );
   }
 
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-3 mb-3">
-      <h3 className="text-xs font-semibold text-zinc-300 mb-2">Network health</h3>
+      <h3 className="text-xs font-semibold text-zinc-300 mb-2">{t('drawer.network.title')}</h3>
 
       <div className="space-y-1.5 text-xs">
-        <Row icon={Wifi} label="mDNS"
-             value={data.mdns.running ? 'running' : 'stopped'}
+        <Row icon={Wifi} label={t('drawer.network.mdns')}
+             value={data.mdns.running ? t('drawer.network.running') : t('drawer.network.stopped')}
              ok={data.mdns.running} />
-        <Row icon={Server} label="Server uptime"
+        <Row icon={Server} label={t('drawer.network.serverUptime')}
              value={fmtUptime(data.server.uptimeSec)}
              ok={true} />
         <div className="pt-1 border-t border-zinc-800">
-          <p className="text-[10px] text-zinc-500 mb-1">Mowers</p>
+          <p className="text-[10px] text-zinc-500 mb-1">{t('drawer.network.mowers')}</p>
           {data.mowers.length === 0 ? (
-            <p className="text-zinc-500">— none registered</p>
+            <p className="text-zinc-500">{t('drawer.network.noneRegistered')}</p>
           ) : data.mowers.map(m => (
             <div key={m.sn} className="flex items-center justify-between text-[11px] py-0.5">
               <span className="font-mono text-zinc-400">{m.sn}</span>
               <span className={m.online ? 'text-emerald-400' : 'text-zinc-600'}>
-                {m.online ? `${m.sensorKeys} sensors` : 'offline'}
+                {m.online ? `${m.sensorKeys} sensors` : t('common.offline')}
               </span>
             </div>
           ))}

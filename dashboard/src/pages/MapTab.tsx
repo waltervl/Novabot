@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { DeviceState } from '../types';
 import { MowerMap } from '../components/map/MowerMap';
 
@@ -12,8 +13,9 @@ interface Props {
 }
 
 export function MapTab({ mower, liveOutlines, coveredLanes }: Props) {
+  const { t } = useTranslation();
   if (!mower) {
-    return <div className="p-8 text-zinc-500">Select a mower to view its map.</div>;
+    return <div className="p-8 text-zinc-500">{t('pages.selectMowerForMap')}</div>;
   }
 
   return (

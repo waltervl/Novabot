@@ -18,13 +18,31 @@
     "cancel": "Cancel",
     "delete": "Delete",
     "reset": "Reset",
-    "edit": "Edit"
+    "edit": "Edit",
+    "loading": "Loading…",
+    "failed": "Failed",
+    "failedToLoad": "Failed to load"
+  },
+  "pages": {
+    "selectMower": "Select a mower.",
+    "selectMowerForMap": "Select a mower to view its map."
+  },
+  "chips": {
+    "offline": "offline",
+    "noMowers": "No mowers"
+  },
+  "mower": {
+    "longPause": {
+      "banner": "Mower has been paused for {{minutes}} minutes. Resume, stop, or send to dock?"
+    }
   },
   "time": {
     "justNow": "just now",
     "secondsAgo": "{{seconds}}s ago",
     "minutesAgo": "{{minutes}}m ago",
-    "hoursAgo": "{{hours}}h ago"
+    "hoursAgo": "{{hours}}h ago",
+    "today": "Today",
+    "tomorrow": "Tomorrow"
   },
   "battery": {
     "title": "Battery"
@@ -270,7 +288,13 @@
     "saved": "Schedule saved",
     "created": "Schedule created",
     "saveFailed": "Could not save",
-    "deleteFailed": "Could not delete"
+    "deleteFailed": "Could not delete",
+    "timeline": {
+      "title": "Week timeline",
+      "empty": "No enabled schedules.",
+      "loading": "Loading schedule timeline…",
+      "error": "Failed to load schedule timeline"
+    }
   },
   "rain": {
     "since": "Since {{time}}",
@@ -345,7 +369,23 @@
     "pinSent": "PIN command sent",
     "pinReceived": "PIN response received",
     "pinNoResponse": "No response (timeout)",
-    "pinPlaceholder": "4 digits"
+    "pinPlaceholder": "4 digits",
+    "nickname": {
+      "title": "Mower nickname",
+      "help": "Shown in the dashboard header and in the mobile app device picker. Leave blank to fall back to the serial number.",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Saved."
+    },
+    "notifications": {
+      "title": "Notifications",
+      "help": "Configure where you want to be notified about mowing events. Server-side configuration endpoint lands in a later phase — these channels are listed for reference today.",
+      "push": "Push (mobile app, Expo)",
+      "ntfy": "ntfy",
+      "ha": "Home Assistant webhook",
+      "email": "Email (SMTP)",
+      "comingSoon": "Coming soon"
+    }
   },
   "ai": {
     "title": "AI Perception",
@@ -429,9 +469,47 @@
     "tryAgain": "Try again",
     "close": "Close"
   },
-  "time": {
-    "today": "Today",
-    "tomorrow": "Tomorrow"
+  "drawer": {
+    "title": {
+      "sensors": "Sensors",
+      "diagnostics": "Diagnostics"
+    },
+    "summary": {
+      "lastSeen": "Last seen",
+      "online": "Online",
+      "offline": "Offline",
+      "configuration": "Configuration",
+      "loraAddress": "LoRa Address",
+      "loraChannel": "LoRa Channel",
+      "pairDrift": "Pair drift detected",
+      "pairSync": "Pair in sync",
+      "showAdvanced": "Show advanced sensors",
+      "backToSummary": "← Back to summary",
+      "firmware": "Firmware"
+    },
+    "network": {
+      "title": "Network health",
+      "mdns": "mDNS",
+      "running": "running",
+      "stopped": "stopped",
+      "serverUptime": "Server uptime",
+      "mowers": "Mowers",
+      "noneRegistered": "— none registered"
+    },
+    "live": {
+      "title": "Live status",
+      "pair": "Pair",
+      "peer": "peer",
+      "drift": "Drift",
+      "inSync": "In sync",
+      "mismatch": "mismatch",
+      "matching": "matching",
+      "noLoraCache": "No LoRa cache for this mower yet."
+    },
+    "logs": {
+      "title": "Server log",
+      "empty": "— empty —"
+    }
   },
   "mobile": {
     "activity": {

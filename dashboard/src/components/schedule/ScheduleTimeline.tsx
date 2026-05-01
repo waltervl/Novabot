@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Schedule } from '../../types';
 import { fetchSchedules } from '../../api/client';
 
@@ -27,6 +28,7 @@ function colorForId(id: string): string {
 }
 
 export function ScheduleTimeline({ sn }: Props) {
+  const { t } = useTranslation();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,17 +55,17 @@ export function ScheduleTimeline({ sn }: Props) {
   }, [sn]);
 
   if (loading) {
-    return <div className="p-4 text-zinc-500 text-sm">Loading schedule timeline…</div>;
+    return <div className="p-4 text-zinc-500 text-sm">{t('schedule.timeline.loading')}</div>;
   }
   if (error) {
-    return <div className="p-4 text-red-400 text-sm">Failed to load schedule timeline: {error}</div>;
+    return <div className="p-4 text-red-400 text-sm">{t('schedule.timeline.error')}: {error}</div>;
   }
 
   const enabled = schedules.filter(s => s.enabled);
 
   return (
     <div className="bg-gray-800 rounded-xl border border-gray-700 p-4">
-      <h3 className="text-sm font-semibold text-zinc-100 mb-3">Week timeline</h3>
+      <h3 className="text-sm font-semibold text-zinc-100 mb-3">{t('schedule.timeline.title')}</h3>
 
       {/* Hour grid reference + schedule blocks overlay */}
       <div className="relative overflow-x-auto">
@@ -110,7 +112,7 @@ export function ScheduleTimeline({ sn }: Props) {
       </div>
 
       {enabled.length === 0 && (
-        <div className="mt-3 text-zinc-500 text-xs">No enabled schedules.</div>
+        <div className="mt-3 text-zinc-500 text-xs">{t('schedule.timeline.empty')}</div>
       )}
     </div>
   );

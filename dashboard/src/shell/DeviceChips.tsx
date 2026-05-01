@@ -3,6 +3,7 @@ import {
   BatteryMedium, BatteryCharging, Satellite, Wifi, Thermometer,
   Activity, ChevronDown, Circle, TreePine,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Drawer } from './Drawer';
 import type { DeviceState } from '../types';
 import { fetchLoraStatus, type LoraStatus } from '../api/client';
@@ -146,6 +147,7 @@ function SummaryPanel({
   lora: LoraStatus | null;
   setMode: (m: 'summary' | 'advanced') => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3">
       {/* Identity */}
@@ -156,7 +158,7 @@ function SummaryPanel({
         )}
         <div className="flex items-center gap-3 text-xs">
           <span className={mower.online ? 'text-emerald-400' : 'text-zinc-500'}>
-            {mower.online ? '● Online' : '● Offline'}
+            {mower.online ? `● ${t('drawer.summary.online')}` : `● ${t('drawer.summary.offline')}`}
           </span>
           {mower.sensors.sw_version && (
             <span className="font-mono text-purple-400">&lt;/&gt; {mower.sensors.sw_version}</span>
@@ -164,7 +166,7 @@ function SummaryPanel({
         </div>
         {mower.lastSeen && (
           <p className="text-[10px] text-zinc-500">
-            Last seen: {new Date(mower.lastSeen).toLocaleString()}
+            {t('drawer.summary.lastSeen')}: {new Date(mower.lastSeen).toLocaleString()}
           </p>
         )}
       </div>
@@ -173,15 +175,15 @@ function SummaryPanel({
       {lora && (
         <div className="space-y-2">
           <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">
-            Configuration
+            {t('drawer.summary.configuration')}
           </p>
           <div className="grid grid-cols-2 gap-2">
             <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
-              <p className="text-[10px] text-zinc-500">LoRa Address</p>
+              <p className="text-[10px] text-zinc-500">{t('drawer.summary.loraAddress')}</p>
               <p className="text-sm font-mono text-zinc-100">{lora.pair.address ?? '—'}</p>
             </div>
             <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
-              <p className="text-[10px] text-zinc-500">LoRa Channel</p>
+              <p className="text-[10px] text-zinc-500">{t('drawer.summary.loraChannel')}</p>
               <p className="text-sm font-mono text-zinc-100">{lora.pair.channel ?? '—'}</p>
             </div>
           </div>
@@ -192,7 +194,7 @@ function SummaryPanel({
                 : 'bg-emerald-900/30 text-emerald-300'
             }`}
           >
-            {lora.drift ? 'Pair drift detected' : 'Pair in sync'}
+            {lora.drift ? t('drawer.summary.pairDrift') : t('drawer.summary.pairSync')}
           </span>
         </div>
       )}
@@ -202,7 +204,7 @@ function SummaryPanel({
         onClick={() => setMode('advanced')}
         className="w-full mt-4 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-sm text-zinc-200"
       >
-        Show advanced sensors
+        {t('drawer.summary.showAdvanced')}
       </button>
     </div>
   );
@@ -211,6 +213,7 @@ function SummaryPanel({
 // ── Main DeviceChips component ───────────────────────────────────────────────
 
 export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React.JSX.Element | null {
+  const { t } = useTranslation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openedAt, setOpenedAt] = useState<number>(0);
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -285,7 +288,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
               <span className="font-medium">{mower.nickname ?? mower.sn}</span>
             </span>
           )}
-          <span className="text-[10px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded-full">offline</span>
+          <span className="text-[10px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded-full">{t('chips.offline')}</span>
         </div>
       </>
     );
@@ -446,7 +449,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
       </div>
 
       {/* Sensor detail drawer — separate instance from the gear-icon drawer */}
-      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Sensors">
+      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title={t('drawer.title.sensors')}>
         {mode === 'summary' ? (
           <SummaryPanel mower={mower} lora={lora} setMode={setMode} />
         ) : (
@@ -455,7 +458,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
               onClick={() => setMode('summary')}
               className="text-xs text-zinc-400 hover:text-zinc-200"
             >
-              ← Back to summary
+              {t('drawer.summary.backToSummary')}
             </button>
             <SensorDetailPanel mower={mower} openedAt={openedAt} />
           </div>

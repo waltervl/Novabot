@@ -18,13 +18,18 @@
     "cancel": "Abbrechen",
     "delete": "Löschen",
     "reset": "Zurücksetzen",
-    "edit": "Bearbeiten"
+    "edit": "Bearbeiten",
+    "loading": "Lade…",
+    "failed": "Fehlgeschlagen",
+    "failedToLoad": "Laden fehlgeschlagen"
   },
   "time": {
     "justNow": "gerade eben",
     "secondsAgo": "vor {{seconds}}s",
     "minutesAgo": "vor {{minutes}}m",
-    "hoursAgo": "vor {{hours}}h"
+    "hoursAgo": "vor {{hours}}h",
+    "today": "Heute",
+    "tomorrow": "Morgen"
   },
   "battery": {
     "title": "Batterie"
@@ -95,7 +100,16 @@
     "pathDirection": "Mährichtung",
     "busy": "Arbeitet...",
     "points": "Punkte",
-    "compass": ["N–S", "NO–SW", "O–W", "SO–NW", "S–N", "SW–NO", "W–O", "NW–SO"],
+    "compass": [
+      "N–S",
+      "NO–SW",
+      "O–W",
+      "SO–NW",
+      "S–N",
+      "SW–NO",
+      "W–O",
+      "NW–SO"
+    ],
     "edgeOffset": "Randversatz",
     "edgeOffsetShrink": "Verkleinern",
     "edgeOffsetExpand": "Vergrößern",
@@ -190,15 +204,15 @@
     "chargerCorrectedBtn": "Nein, Position korrigiert",
     "chargerCorrectedHint": "Karten verschieben sich mit der Ladestation",
     "calibrateCharger": "Ladestation kalibrieren",
-    "calibrateConfirm": "Der M\u00e4her f\u00e4hrt ~1m vorw\u00e4rts und parkt dann automatisch \u00fcber ArUco zur\u00fcck an der Station. Stellen Sie sicher, dass vor der Station freier Platz ist.",
+    "calibrateConfirm": "Der Mäher fährt ~1m vorwärts und parkt dann automatisch über ArUco zurück an der Station. Stellen Sie sicher, dass vor der Station freier Platz ist.",
     "calibrateStarted": "Kalibrierung gestartet",
-    "returningToCharger": "M\u00e4her kehrt zur Station zur\u00fcck...",
+    "returningToCharger": "Mäher kehrt zur Station zurück...",
     "chargerSaveOk": "Ladestationsposition gespeichert",
-    "chargerSaveTimeout": "M\u00e4her nicht rechtzeitig zur Station zur\u00fcckgekehrt",
+    "chargerSaveTimeout": "Mäher nicht rechtzeitig zur Station zurückgekehrt",
     "exported": "Karten exportiert",
     "exportFailed": "Export fehlgeschlagen",
     "mower": "Mäher",
-    "headingLabel": "Richtung: {{deg}}\u00b0",
+    "headingLabel": "Richtung: {{deg}}°",
     "chargingStation": "Ladestation",
     "dragToReposition": "Zum Verschieben ziehen",
     "calibrationTitle": "Kartenkalibrierung",
@@ -211,7 +225,7 @@
     "scale": "Maßstab",
     "resetToDefault": "Auf Standard zurücksetzen",
     "mowing": "Mähen",
-    "direction": "Richtung: {{deg}}\u00b0",
+    "direction": "Richtung: {{deg}}°",
     "area": "Fläche",
     "mowed": "Gemäht",
     "speed": "Geschwindigkeit",
@@ -224,7 +238,7 @@
     "needMore": "noch {{count}} nötig",
     "coverage": "Abdeckung",
     "trailPts": "{{count}} Spurpunkte",
-    "mowedArea": "~{{area}} m\u00b2 gemäht",
+    "mowedArea": "~{{area}} m² gemäht",
     "confirmDelete": "Karte \"{{name}}\" löschen?",
     "rename": "Umbenennen",
     "saveRename": "Speichern",
@@ -248,8 +262,25 @@
     "disable": "Deaktivieren",
     "enable": "Aktivieren",
     "sendToMower": "An Mäher senden",
-    "weekdays": ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"],
-    "compass": ["N–S", "NO–SW", "O–W", "SO–NW", "S–N", "SW–NO", "W–O", "NW–SO"],
+    "weekdays": [
+      "So",
+      "Mo",
+      "Di",
+      "Mi",
+      "Do",
+      "Fr",
+      "Sa"
+    ],
+    "compass": [
+      "N–S",
+      "NO–SW",
+      "O–W",
+      "SO–NW",
+      "S–N",
+      "SW–NO",
+      "W–O",
+      "NW–SO"
+    ],
     "alternateDirection": "Richtung alternieren",
     "alternateStep": "Schritt",
     "edgeOffset": "Randversatz",
@@ -270,7 +301,13 @@
     "saved": "Zeitplan gespeichert",
     "created": "Zeitplan erstellt",
     "saveFailed": "Speichern fehlgeschlagen",
-    "deleteFailed": "Löschen fehlgeschlagen"
+    "deleteFailed": "Löschen fehlgeschlagen",
+    "timeline": {
+      "title": "Wochenübersicht",
+      "empty": "Keine aktiven Pläne.",
+      "loading": "Lade Zeitplan…",
+      "error": "Laden des Zeitplans fehlgeschlagen"
+    }
   },
   "rain": {
     "since": "Seit {{time}}",
@@ -345,7 +382,23 @@
     "pinSent": "PIN-Befehl gesendet",
     "pinReceived": "PIN-Antwort erhalten",
     "pinNoResponse": "Keine Antwort (Zeitüberschreitung)",
-    "pinPlaceholder": "4 Ziffern"
+    "pinPlaceholder": "4 Ziffern",
+    "nickname": {
+      "title": "Mäher-Spitzname",
+      "help": "Angezeigt in der Kopfzeile und der mobilen App. Leer lassen, um auf die Seriennummer zurückzufallen.",
+      "save": "Speichern",
+      "saving": "Speichere…",
+      "saved": "Gespeichert."
+    },
+    "notifications": {
+      "title": "Benachrichtigungen",
+      "help": "Konfiguriere, wo du über Mäh-Events benachrichtigt werden möchtest. Der serverseitige Konfigurations-Endpoint folgt in einer späteren Phase — diese Kanäle sind heute zur Referenz aufgeführt.",
+      "push": "Push (Mobile App, Expo)",
+      "ntfy": "ntfy",
+      "ha": "Home Assistant Webhook",
+      "email": "E-Mail (SMTP)",
+      "comingSoon": "Demnächst verfügbar"
+    }
   },
   "ai": {
     "title": "KI-Wahrnehmung",
@@ -385,7 +438,7 @@
     "title": "Mähverlauf",
     "empty": "Noch keine Mähsitzungen aufgezeichnet",
     "duration": "{{min}} Min.",
-    "area": "{{area}} m\u00b2",
+    "area": "{{area}} m²",
     "height": "{{cm}} cm",
     "status": "Status",
     "date": "Datum",
@@ -429,10 +482,6 @@
     "tryAgain": "Erneut versuchen",
     "close": "Schließen"
   },
-  "time": {
-    "today": "Heute",
-    "tomorrow": "Morgen"
-  },
   "mobile": {
     "activity": {
       "idle": "Inaktiv",
@@ -464,5 +513,60 @@
     "starting": "Starten...",
     "sessionEnds": "Mähsitzung endet um",
     "mapObjects": "Kartenobjekte"
+  },
+  "drawer": {
+    "title": {
+      "sensors": "Sensoren",
+      "diagnostics": "Diagnose"
+    },
+    "summary": {
+      "lastSeen": "Zuletzt gesehen",
+      "online": "Online",
+      "offline": "Offline",
+      "configuration": "Konfiguration",
+      "loraAddress": "LoRa-Adresse",
+      "loraChannel": "LoRa-Kanal",
+      "pairDrift": "Pair-Drift erkannt",
+      "pairSync": "Pair synchron",
+      "showAdvanced": "Erweiterte Sensoren anzeigen",
+      "backToSummary": "← Zurück zur Übersicht",
+      "firmware": "Firmware"
+    },
+    "network": {
+      "title": "Netzwerkstatus",
+      "mdns": "mDNS",
+      "running": "aktiv",
+      "stopped": "gestoppt",
+      "serverUptime": "Server-Laufzeit",
+      "mowers": "Mäher",
+      "noneRegistered": "— keine registriert"
+    },
+    "live": {
+      "title": "Live-Status",
+      "pair": "Pair",
+      "peer": "Pair",
+      "drift": "Drift",
+      "inSync": "Synchron",
+      "mismatch": "abweichend",
+      "matching": "übereinstimmend",
+      "noLoraCache": "Noch kein LoRa-Cache für diesen Mäher."
+    },
+    "logs": {
+      "title": "Server-Log",
+      "empty": "— leer —"
+    }
+  },
+  "pages": {
+    "selectMower": "Wähle einen Mäher.",
+    "selectMowerForMap": "Wähle einen Mäher, um die Karte zu sehen."
+  },
+  "chips": {
+    "offline": "offline",
+    "noMowers": "Keine Mäher"
+  },
+  "mower": {
+    "longPause": {
+      "banner": "Mäher pausiert seit {{minutes}} Minuten. Fortsetzen, stoppen oder zur Ladestation?"
+    }
   }
 }

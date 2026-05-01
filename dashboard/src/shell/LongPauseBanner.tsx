@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { DeviceState } from '../types';
 
 interface Props {
@@ -18,6 +19,7 @@ const POLL_MS = 60 * 1000;                  // re-evaluate every minute
  * once they notice).
  */
 export function LongPauseBanner({ mower }: Props) {
+  const { t } = useTranslation();
   const pauseStartRef = useRef<number | null>(null);
   const [pausedFor, setPausedFor] = useState<number>(0);
 
@@ -50,7 +52,7 @@ export function LongPauseBanner({ mower }: Props) {
     <div className="px-4 py-2 bg-amber-900/30 border-b border-amber-700/50 text-amber-100 text-sm flex items-center gap-2">
       <AlertTriangle className="w-4 h-4 flex-shrink-0" />
       <span className="flex-1">
-        Mower has been paused for {minutes} minutes. Resume, stop, or send to dock?
+        {t('mower.longPause.banner', { minutes })}
       </span>
     </div>
   );
