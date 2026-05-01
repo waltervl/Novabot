@@ -797,16 +797,27 @@ setupRouter.get('/health', async (_req: Request, res: Response) => {
 
   const connectedCount = deviceRepo.countOnline(1);
 
-  // Own IP
+  // Own IP — prefer LAN (192.168.x, 10.x) over VPN/Docker-bridge (172.x).
+  // Without this preference the app's discovery shows e.g. 172.21.x.x for
+  // a Mac with a VPN attached — useless for users on the LAN.
   const { networkInterfaces } = await import('os');
-  let serverIp = '192.168.4.1';
+  const ipv4Candidates: string[] = [];
   for (const addrs of Object.values(networkInterfaces())) {
     if (!addrs) continue;
     for (const addr of addrs) {
-      if (addr.family === 'IPv4' && !addr.internal) { serverIp = addr.address; break; }
+      if (addr.family === 'IPv4' && !addr.internal) {
+        ipv4Candidates.push(addr.address);
+      }
     }
-    if (serverIp !== '192.168.4.1') break;
   }
+  const ipScore = (ip: string): number => {
+    if (/^192\.168\./.test(ip)) return 0;
+    if (/^10\./.test(ip)) return 1;
+    if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip)) return 2; // private but commonly Docker/VPN
+    return 3;
+  };
+  ipv4Candidates.sort((a, b) => ipScore(a) - ipScore(b));
+  const serverIp = ipv4Candidates[0] ?? '192.168.4.1';
 
   // DHCP leases — which devices are on the AP
   let apClients: string[] = [];
