@@ -1711,7 +1711,7 @@ export default function HomeScreen() {
                   || /Recharge:(MOVING|RUNNING|GOING)/.test(busyMsg);
                 const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy;
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')
-                  && mower.online && !mower.hasError && !noMap;
+                  && mower.online && !mower.hasError && !noMap && !mowerBusy;
                 return (
                   <View style={[styles.splitButtonWrap, startDisabled && { opacity: 1 }]}>
                     <TouchableOpacity
@@ -1751,7 +1751,7 @@ export default function HomeScreen() {
                         <TouchableOpacity
                           style={[styles.splitButtonChevron, styles.actionButtonGreen]}
                           onPress={() => setShowStartModeSheet(true)}
-                          disabled={commandLoading !== null}
+                          disabled={commandLoading !== null || startDisabled}
                           activeOpacity={0.7}
                           accessibilityLabel="Show more start options"
                         >
