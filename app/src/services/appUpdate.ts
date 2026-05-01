@@ -14,7 +14,6 @@ import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
 
 const SKIP_KEY = 'appUpdate.skippedVersion';
 
@@ -107,11 +106,11 @@ export async function setSkippedVersion(v: string): Promise<void> {
 
 /**
  * Returns the latest release if it's newer than the installed version and not
- * skipped by the user.  Returns null on iOS (no side-loadable APK) or when
- * there is no update.
+ * skipped by the user. Platform-agnostic: iOS callers still receive the data
+ * so the UI can route to GitHub Releases (UpdatePromptModal handles the
+ * platform branch). Returns null when there is no update.
  */
 export async function checkForUpdate(serverUrl: string): Promise<AppLatest | null> {
-  if (Platform.OS !== 'android') return null;
   const latest = await fetchLatest(serverUrl);
   if (!latest) return null;
   const installed = Application.nativeApplicationVersion ?? '0.0.0';
