@@ -136,7 +136,11 @@ function makeDockSensors(opts: {
     ['longitude',       opts.lng      ?? '6.2310356968'],
     ['map_position_x',  opts.mapX     ?? '0'],
     ['map_position_y',  opts.mapY     ?? '0'],
-    ['recharge_status', opts.recharge ?? 'Charging (9)'],
+    // recharge_status in deviceCache is the RAW integer string from the
+    // mower (e.g. '0' = not charging, '1' = charging, '9' = charging
+    // variant). The translated display 'Charging (9)' is added at API
+    // serialise time, not in the cache.
+    ['recharge_status', opts.recharge ?? '9'],
   ]);
 }
 
@@ -196,11 +200,11 @@ describe('GET /api/dashboard/maps/:sn — charger GPS auto-detect', () => {
     expect(res.body.chargerGps).not.toBeNull();
   });
 
-  it('case 5: deviceCache has GPS but recharge_status is "Idle" → chargerGps: null', async () => {
+  it('case 5: deviceCache has GPS but recharge_status is "0" (not charging) → chargerGps: null', async () => {
     seedEquipment();
     (deviceCache as Map<string, Map<string, string>>).set(
       TEST_SN,
-      makeDockSensors({ recharge: 'Idle' }),
+      makeDockSensors({ recharge: '0' }),
     );
 
     const res = await request(app).get(`/api/dashboard/maps/${TEST_SN}`);

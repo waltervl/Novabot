@@ -522,11 +522,16 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
     // live: LFIN1231000211 reports charging_pose = (-1.23, 0.50)).
     const sensors = deviceCache.get(sn);
     if (sensors) {
-      const lat    = parseFloat(sensors.get('latitude')        ?? '');
-      const lng    = parseFloat(sensors.get('longitude')       ?? '');
-      const recharge = (sensors.get('recharge_status') ?? '').toLowerCase();
-
-      const atDock = recharge.includes('charging');
+      const lat = parseFloat(sensors.get('latitude') ?? '');
+      const lng = parseFloat(sensors.get('longitude') ?? '');
+      // recharge_status is stored RAW in deviceCache as the integer string
+      // (e.g. '0' = not charging, '1' = charging, '9' = charging variant).
+      // The translated display 'Charging (9)' is computed at API serialise
+      // time, not in the cache. Treat any non-zero positive integer as
+      // "currently docked".
+      const rechargeRaw = sensors.get('recharge_status') ?? '';
+      const rechargeNum = parseInt(rechargeRaw, 10);
+      const atDock = Number.isFinite(rechargeNum) && rechargeNum > 0;
 
       if (atDock && Number.isFinite(lat) && Number.isFinite(lng)) {
         mapRepo.setChargerGps(sn, lat, lng);
