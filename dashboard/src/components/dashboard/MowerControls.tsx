@@ -19,12 +19,7 @@ import { loadPattern, transformToGps, type NormContour } from '../../utils/patte
 import { offsetPolygon } from '../../utils/polygonOffset.js';
 import type { PatternPlacement } from '../patterns/PatternOverlay';
 
-// Mower path direction is symmetric — 0–180° covers every distinct stripe
-// orientation (180° = same physical line as 0° just walked the other way).
-// The app uses the same 0–180 range (StartMowSheet.tsx clamps `pathDirection`
-// at 180), so the dashboard mirrors that here. Buttons cover the 4 cardinal
-// pairs in 45° steps.
-const DIR_DEGREES = [0, 45, 90, 135];
+// Path direction: 0–180° in 15° steps (matches app StartMowSheet.tsx stepper).
 
 interface PendingPolygon {
   mapId: string;
@@ -98,8 +93,6 @@ export function MowerControls({
   const gpsEnabled = sensors?.gps_state === 'ENABLE';
   const locInitialized = sensors?.localization_state === 'INITIALIZED' || sensors?.localization_state === 'Initialized';
   const mappingReady = gpsEnabled && locInitialized;
-
-  const compassLabels = t('controls.compass', { returnObjects: true }) as string[];
 
   useEffect(() => {
     if (expanded && maps.length === 0) {
@@ -641,85 +634,77 @@ export function MowerControls({
               </>
             )}
 
-            {/* Cutting height (both modes) */}
+            {/* Cutting height stepper (both modes) — matches app StartMowSheet stepper */}
             <div>
-              <div className="flex items-center justify-between">
-                <label className="text-[9px] text-gray-500 uppercase tracking-wide">{t('controls.cuttingHeight')}</label>
-                <span className="text-[11px] text-gray-300 font-mono">{(cuttingHeight / 10).toFixed(1)} cm</span>
-              </div>
-              <input
-                type="range" min={20} max={80} step={5}
-                value={cuttingHeight}
-                onChange={e => setCuttingHeight(parseInt(e.target.value))}
-                className="w-full h-1.5 mt-1 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
-              />
-              <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
-                <span>2 cm</span><span>8 cm</span>
+              <label className="text-[9px] text-gray-500 uppercase tracking-wide block mb-1">{t('controls.cuttingHeight')}</label>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCuttingHeight(Math.max(20, cuttingHeight - 10))}
+                  className="w-9 h-9 rounded-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex items-center justify-center text-emerald-400 text-lg font-semibold"
+                >−</button>
+                <div className="flex-1 text-center text-sm text-gray-200 font-mono">{Math.round(cuttingHeight / 10)} cm</div>
+                <button
+                  onClick={() => setCuttingHeight(Math.min(80, cuttingHeight + 10))}
+                  className="w-9 h-9 rounded-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex items-center justify-center text-emerald-400 text-lg font-semibold"
+                >+</button>
               </div>
             </div>
 
-            {/* Edge offset (map mode only) */}
+            {/* Edge offset stepper (map mode only) — matches app StartMowSheet: -1 to +1 m, 0.1 m steps */}
             {!patternMode && (
               <div>
-                <div className="flex items-center justify-between">
-                  <label className="text-[9px] text-gray-500 uppercase tracking-wide">{t('controls.edgeOffset')}</label>
-                  <span className={`text-[11px] font-mono ${edgeOffset === 0 ? 'text-gray-500' : edgeOffset > 0 ? 'text-blue-300' : 'text-orange-300'}`}>
-                    {edgeOffset > 0 ? '+' : ''}{edgeOffset.toFixed(2)}m
-                  </span>
+                <label className="text-[9px] text-gray-500 uppercase tracking-wide block mb-1">{t('controls.edgeOffset')}</label>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setEdgeOffset(Math.max(-1, +(edgeOffset - 0.1).toFixed(1)))}
+                    className="w-9 h-9 rounded-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex items-center justify-center text-orange-400 text-lg font-semibold"
+                  >−</button>
+                  <div className={`flex-1 text-center text-sm font-mono ${edgeOffset === 0 ? 'text-gray-500' : edgeOffset > 0 ? 'text-blue-300' : 'text-orange-300'}`}>
+                    {edgeOffset === 0
+                      ? 'No offset'
+                      : edgeOffset > 0
+                        ? `+${edgeOffset.toFixed(1)}m`
+                        : `${edgeOffset.toFixed(1)}m`}
+                  </div>
+                  <button
+                    onClick={() => setEdgeOffset(Math.min(1, +(edgeOffset + 0.1).toFixed(1)))}
+                    className="w-9 h-9 rounded-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex items-center justify-center text-blue-400 text-lg font-semibold"
+                  >+</button>
                 </div>
-                <input
-                  type="range" min={-0.5} max={0.5} step={0.05}
-                  value={edgeOffset}
-                  onChange={e => setEdgeOffset(parseFloat(e.target.value))}
-                  className="w-full h-1.5 mt-1 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
-                />
-                <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
+                <div className="flex justify-between text-[8px] text-gray-600 mt-1 px-1">
                   <span>{t('controls.edgeOffsetShrink')}</span>
-                  <span className="text-gray-700">|</span>
                   <span>{t('controls.edgeOffsetExpand')}</span>
                 </div>
               </div>
             )}
 
-            {/* Path direction (both modes) */}
+            {/* Path direction stepper (both modes) — matches app StartMowSheet: 0–180° in 15° steps */}
             <div>
-              <div className="flex items-center justify-between">
-                <label className="text-[9px] text-gray-500 uppercase tracking-wide">{t('controls.pathDirection')}</label>
-                <span className="text-[11px] text-gray-300 font-mono inline-flex items-center gap-1">
-                  <ArrowUp className="w-3 h-3 transition-transform" style={{ transform: `rotate(${pathDirection}deg)` }} />
-                  {pathDirection}&deg;
-                </span>
+              <label className="text-[9px] text-gray-500 uppercase tracking-wide block mb-1">{t('controls.pathDirection')}</label>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const deg = Math.max(0, pathDirection - 15);
+                    setPathDirection(deg);
+                    onPathDirectionChange?.(deg);
+                    sendCommand(sn, { set_para_info: { path_direction: deg } }).catch(() => {});
+                  }}
+                  className="w-9 h-9 rounded-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex items-center justify-center text-emerald-400 text-lg font-semibold"
+                >−</button>
+                <div className="flex-1 text-center text-sm text-gray-200 font-mono inline-flex items-center justify-center gap-1.5">
+                  <ArrowUp className="w-3.5 h-3.5 transition-transform" style={{ transform: `rotate(${pathDirection}deg)` }} />
+                  {pathDirection}°
+                </div>
+                <button
+                  onClick={() => {
+                    const deg = Math.min(180, pathDirection + 15);
+                    setPathDirection(deg);
+                    onPathDirectionChange?.(deg);
+                    sendCommand(sn, { set_para_info: { path_direction: deg } }).catch(() => {});
+                  }}
+                  className="w-9 h-9 rounded-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 flex items-center justify-center text-emerald-400 text-lg font-semibold"
+                >+</button>
               </div>
-              <div className="grid grid-cols-4 sm:grid-cols-4 gap-0.5 sm:gap-1 mt-1 mb-1">
-                {DIR_DEGREES.map((deg, i) => (
-                  <button
-                    key={deg}
-                    onClick={() => {
-                      setPathDirection(deg);
-                      onPathDirectionChange?.(deg);
-                      sendCommand(sn, { set_para_info: { path_direction: deg } }).catch(() => {});
-                    }}
-                    className={`text-[9px] py-1 rounded transition-colors ${
-                      pathDirection === deg
-                        ? 'bg-blue-600 text-white font-medium'
-                        : 'bg-gray-900 text-gray-500 hover:text-gray-300 border border-gray-700'
-                    }`}
-                  >
-                    {compassLabels[i]}
-                  </button>
-                ))}
-              </div>
-              <input
-                type="range" min={0} max={180} step={5}
-                value={pathDirection}
-                onChange={e => {
-                  const v = parseInt(e.target.value);
-                  setPathDirection(v);
-                  onPathDirectionChange?.(v);
-                  sendCommand(sn, { set_para_info: { path_direction: v } }).catch(() => {});
-                }}
-                className="w-full h-1.5 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
-              />
             </div>
 
             {/* Actions */}
