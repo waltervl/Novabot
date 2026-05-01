@@ -170,7 +170,7 @@ describe('GET /map-backups/:sn/:filename/contents', () => {
 
   it('flags existsInDb=false when canonical row is NOT in DB', async () => {
     const area = makeWorkArea(0);
-    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: null });
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
 
     const res = await request(app)
       .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/contents`);
@@ -186,7 +186,7 @@ describe('GET /map-backups/:sn/:filename/contents', () => {
     seedMap('map0', 'work');
 
     const area = makeWorkArea(0);
-    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: null });
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
 
     const res = await request(app)
       .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/contents`);
@@ -204,7 +204,7 @@ describe('POST /map-backups/:sn/:filename/restore', () => {
 
   it('inserts a new row (restored=1) when item does not exist in DB', async () => {
     const area = makeWorkArea(0);
-    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: null });
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
 
     const res = await request(app)
       .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
@@ -227,7 +227,7 @@ describe('POST /map-backups/:sn/:filename/restore', () => {
     seedMap('map0', 'work');
 
     const area = makeWorkArea(0);
-    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: null });
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
 
     const res = await request(app)
       .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
@@ -250,7 +250,7 @@ describe('POST /map-backups/:sn/:filename/restore', () => {
     const oldMapId = before!.map_id;
 
     const area = makeWorkArea(0);
-    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: null });
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
 
     const res = await request(app)
       .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
@@ -270,7 +270,7 @@ describe('POST /map-backups/:sn/:filename/restore', () => {
   });
 
   it('returns skippedNotInBackup when item is not present in the ZIP', async () => {
-    mockParseMapZip.mockReturnValueOnce({ areas: [], chargingPose: null });
+    mockParseMapZip.mockReturnValueOnce({ areas: [], chargingPose: { x: 0, y: 0, orientation: 0 } });
 
     const res = await request(app)
       .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
@@ -290,7 +290,7 @@ describe('POST /map-backups/:sn/:filename/restore', () => {
     // map2 not in DB → insert
 
     const areas: MapArea[] = [makeWorkArea(0), makeWorkArea(1), makeWorkArea(2)];
-    mockParseMapZip.mockReturnValueOnce({ areas, chargingPose: null });
+    mockParseMapZip.mockReturnValueOnce({ areas, chargingPose: { x: 0, y: 0, orientation: 0 } });
 
     const res = await request(app)
       .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
