@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Play, Pause, Square, PlugZap, ArrowUp, X, ChevronDown, MapPin,
   Map as MapIcon, Sparkles, RotateCw, Navigation, Settings2,
-  Power, Camera, Gauge, Battery, Eye, MoreHorizontal,
+  Power, Camera, Gauge, Battery, Eye, MoreHorizontal, Slice,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData, GpsPoint, LocalPoint } from '../../types';
 import {
-  sendCommand, fetchMaps, startPatrol, stopPatrol, rebootMower,
+  sendCommand, sendExtendedCommand, fetchMaps, startPatrol, stopPatrol, rebootMower,
   setChargeThreshold, setMaxSpeed, previewPath,
   setDemoMode as setDemoModeApi, getDemoMode,
 } from '../../api/client';
@@ -55,6 +55,10 @@ export function MowerControls({
   const [mapName, setMapName] = useState('');
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
+
+  // Mode: 'map' (start_navigation) | 'pattern' (start_run+pattern poly) |
+  // 'edge' (extended start_edge_cut). Mirrors app StartMowSheet's mode picker.
+  const [edgeMode, setEdgeMode] = useState(false);
 
   // Pattern mowing state
   const [patternMode, setPatternMode] = useState(false);
@@ -197,6 +201,46 @@ export function MowerControls({
     setBusy(false);
   }, [sn, t, toast]);
 
+  /**
+   * Edge-cut start — mirrors app `HomeScreen.tsx:2090+`.
+   * 1. set_para_info { defaultCuttingHeight: <wire enum cm-2> }
+   * 2. extended start_edge_cut { mapName: 'map0', bladeHeight: <mm>, departFromDock }
+   *
+   * Mower runs the NTCP /boundary_follow action via robot_decision; bladeHeight
+   * is mm (clamped 20..90 server-side per CLAUDE.md edge-cut memory).
+   */
+  const handleStartEdgeCut = useCallback(async () => {
+    setBusy(true);
+    try {
+      const heightCm = Math.max(2, Math.min(9, Math.round(cuttingHeight / 10)));
+      const wireHeight = heightCm - 2;
+      const departFromDock = sensors?.recharge_status
+        ? parseInt(sensors.recharge_status, 10) > 0
+        : false;
+
+      // Pre-set blade height (non-fatal)
+      await sendCommand(sn, {
+        set_para_info: { defaultCuttingHeight: wireHeight },
+      }).catch(() => { /* ignore */ });
+
+      const result = await sendExtendedCommand(sn, {
+        start_edge_cut: {
+          mapName: 'map0',
+          bladeHeight: heightCm * 10,
+          departFromDock,
+        },
+      });
+      const detail = result.encrypted ? ` (encrypted, ${result.size}B)` : '';
+      toast(`✓ ${t('controls.startEdgeCut') ?? 'Edge cut'}${detail}`, 'success');
+      setExpanded(false);
+      onStarted?.();
+    } catch (err) {
+      const detail = err instanceof Error ? `: ${err.message}` : '';
+      toast(`✗ ${t('controls.startEdgeCut') ?? 'Edge cut'}${detail}`, 'error');
+    }
+    setBusy(false);
+  }, [sn, sensors, cuttingHeight, t, toast, onStarted]);
+
   const handleStart = useCallback(async () => {
     setBusy(true);
     try {
@@ -226,13 +270,19 @@ export function MowerControls({
         const detail = result.encrypted ? ` (encrypted, ${result.size}B)` : '';
         toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
       } else {
-        // Normal map mowing — use start_navigation (mirrors app StartMowSheet.tsx)
-        // Compute area enum: find map index in work maps list (sorted same as API)
+        // Normal map mowing — use start_navigation (mirrors app StartMowSheet.tsx).
+        // App's `area` enum = mapIdx (0 → 1, 1 → 10, 2+ → 200). The 200 catch-all
+        // is for the >2 case; the app NEVER ships area=200 for "alle werkgebieden"
+        // because it queues each map separately via MowQueueContext.
+        // Dashboard simplification: when "Alle werkgebieden" is selected, start
+        // the first work map. Multi-map queueing is a follow-up.
         const workMaps = maps.filter(m => m.mapType === 'work');
-        const mapIdx = mapId ? workMaps.findIndex(m => m.mapId === mapId) : -1;
-        const areaParam = mapId ? workIndexToArea(mapIdx >= 0 ? mapIdx : 0) : 200;
-        // When no map selected (all work areas), app uses mapName:'test' and area:200
-        const resolvedMapName = mapId ? (mapName || 'test') : 'test';
+        const targetMap = mapId
+          ? workMaps.find(m => m.mapId === mapId)
+          : workMaps[0];
+        const mapIdx = targetMap ? workMaps.indexOf(targetMap) : 0;
+        const areaParam = workIndexToArea(Math.max(0, mapIdx));
+        const resolvedMapName = targetMap?.mapName ?? 'test';
 
         const cmdNum = nextCmdNum();
         const navPayload: Record<string, unknown> = {
@@ -521,30 +571,48 @@ export function MowerControls({
         <div className="absolute top-full right-0 mt-1 w-[calc(100vw-1rem)] sm:w-72 z-[10000] bg-gray-800 rounded-lg border border-gray-700 shadow-xl overflow-hidden">
           <div className="p-3 space-y-3">
 
-            {/* Mode toggle: Map area / Pattern */}
+            {/* Mode toggle: Map area / Pattern / Edge cut */}
             <div className="flex rounded-md overflow-hidden border border-gray-700">
               <button
-                onClick={() => setPatternMode(false)}
+                onClick={() => { setPatternMode(false); setEdgeMode(false); }}
                 className={`flex-1 text-[10px] py-1.5 flex items-center justify-center gap-1 transition-colors ${
-                  !patternMode ? 'bg-emerald-600 text-white font-medium' : 'bg-gray-900 text-gray-500 hover:text-gray-300'
+                  !patternMode && !edgeMode ? 'bg-emerald-600 text-white font-medium' : 'bg-gray-900 text-gray-500 hover:text-gray-300'
                 }`}
               >
                 <MapPin className="w-3 h-3" />
                 {t('pattern.mapMode')}
               </button>
               <button
-                onClick={() => setPatternMode(true)}
+                onClick={() => { setPatternMode(true); setEdgeMode(false); }}
                 className={`flex-1 text-[10px] py-1.5 flex items-center justify-center gap-1 transition-colors ${
-                  patternMode ? 'bg-purple-600 text-white font-medium' : 'bg-gray-900 text-gray-500 hover:text-gray-300'
+                  patternMode && !edgeMode ? 'bg-purple-600 text-white font-medium' : 'bg-gray-900 text-gray-500 hover:text-gray-300'
                 }`}
               >
                 <Sparkles className="w-3 h-3" />
                 {t('pattern.patternMode')}
               </button>
+              <button
+                onClick={() => { setEdgeMode(true); setPatternMode(false); }}
+                className={`flex-1 text-[10px] py-1.5 flex items-center justify-center gap-1 transition-colors ${
+                  edgeMode ? 'bg-amber-600 text-white font-medium' : 'bg-gray-900 text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <Slice className="w-3 h-3" />
+                {t('controls.startEdgeCut') ?? 'Edge cut'}
+              </button>
             </div>
 
+            {/* ── Edge cut mode ── only height matters (mapName hardcoded 'map0') */}
+            {edgeMode && (
+              <p className="text-[10px] text-gray-400 leading-snug">
+                Edge cut runs along the work-zone boundary at the chosen
+                cutting height. Map is fixed to <code>map0</code>; dock
+                departure detected automatically.
+              </p>
+            )}
+
             {/* ── Pattern mode ── */}
-            {patternMode ? (
+            {edgeMode ? null : patternMode ? (
               <>
                 <PatternPicker
                   selected={patternId}
@@ -650,8 +718,8 @@ export function MowerControls({
               </div>
             </div>
 
-            {/* Edge offset stepper (map mode only) — matches app StartMowSheet: -1 to +1 m, 0.1 m steps */}
-            {!patternMode && (
+            {/* Edge offset stepper (map mode only — edge-cut + pattern hide it) */}
+            {!patternMode && !edgeMode && (
               <div>
                 <label className="text-[9px] text-gray-500 uppercase tracking-wide block mb-1">{t('controls.edgeOffset')}</label>
                 <div className="flex items-center gap-2">
@@ -725,14 +793,21 @@ export function MowerControls({
                 {previewing ? '...' : t('controls.preview')}
               </button>
               <button
-                onClick={handleStart}
+                onClick={edgeMode ? handleStartEdgeCut : handleStart}
                 disabled={busy || (patternMode && !patternReady)}
                 className={`flex-1 inline-flex items-center justify-center gap-1 text-xs px-2 py-2 rounded text-white transition-colors font-medium disabled:opacity-40 ${
-                  patternMode ? 'bg-purple-600 hover:bg-purple-500' : 'bg-emerald-600 hover:bg-emerald-500'
+                  edgeMode ? 'bg-amber-600 hover:bg-amber-500'
+                  : patternMode ? 'bg-purple-600 hover:bg-purple-500'
+                  : 'bg-emerald-600 hover:bg-emerald-500'
                 }`}
               >
-                {patternMode ? <Sparkles className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                {busy ? t('controls.busy') : patternMode ? t('pattern.startPattern') : t('controls.startMowing')}
+                {edgeMode ? <Slice className="w-3.5 h-3.5" />
+                  : patternMode ? <Sparkles className="w-3.5 h-3.5" />
+                  : <Play className="w-3.5 h-3.5" />}
+                {busy ? t('controls.busy')
+                  : edgeMode ? (t('controls.startEdgeCut') ?? 'Edge cut')
+                  : patternMode ? t('pattern.startPattern')
+                  : t('controls.startMowing')}
               </button>
             </div>
           </div>

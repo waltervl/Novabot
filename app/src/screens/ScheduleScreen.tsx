@@ -652,11 +652,12 @@ function ScheduleEditor({
             <MowingDirectionPreview direction={pathDir} size={90} />
           </View>
           <View style={editorStyles.stepperRow}>
-            <TouchableOpacity style={editorStyles.stepperBtn} onPress={() => setPathDir((pathDir - 10 + 360) % 360)}>
+            {/* 15° step + 0–180 range matches StartMowSheet (issue #23). */}
+            <TouchableOpacity style={editorStyles.stepperBtn} onPress={() => setPathDir(Math.max(0, pathDir - 15))}>
               <Ionicons name="remove" size={18} color={colors.white} />
             </TouchableOpacity>
             <Text style={editorStyles.stepperValue}>{pathDir}°</Text>
-            <TouchableOpacity style={editorStyles.stepperBtn} onPress={() => setPathDir((pathDir + 10) % 360)}>
+            <TouchableOpacity style={editorStyles.stepperBtn} onPress={() => setPathDir(Math.min(180, pathDir + 15))}>
               <Ionicons name="add" size={18} color={colors.white} />
             </TouchableOpacity>
           </View>

@@ -114,14 +114,16 @@ function rotatePoint(p: LocalPoint, angle: number): LocalPoint {
 }
 
 /** Convert local meter point to SVG coordinates.
- *  Both axes flipped to match real-world bird's-eye view. */
+ *  X grows left→right, Y inverted because SVG Y grows down. Matches the
+ *  Novabot stock app orientation (LiveMapView.project / earlier this
+ *  view rotated 180° vs Novabot — now aligned). */
 function localToSvg(point: LocalPoint, bounds: LocalBounds, size: number, padding: number) {
   const drawSize = size - padding * 2;
   const xRange = bounds.maxX - bounds.minX || 0.1;
   const yRange = bounds.maxY - bounds.minY || 0.1;
   const scale = Math.min(drawSize / xRange, drawSize / yRange);
-  const x = padding + (bounds.maxX - point.x) * scale + (drawSize - xRange * scale) / 2;
-  const y = padding + (point.y - bounds.minY) * scale + (drawSize - yRange * scale) / 2;
+  const x = padding + (point.x - bounds.minX) * scale + (drawSize - xRange * scale) / 2;
+  const y = padding + (bounds.maxY - point.y) * scale + (drawSize - yRange * scale) / 2;
   return { x, y };
 }
 
@@ -206,10 +208,11 @@ function generateCoverageStripes(
   const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
   const diagonal = Math.sqrt((Math.max(...xs) - Math.min(...xs)) ** 2 + (Math.max(...ys) - Math.min(...ys)) ** 2);
 
-  // Stripes run ALONG the path direction, spacing perpendicular
-  // localToSvg flips both axes, so add 180° to compensate
-  const rad = ((direction + 180) * Math.PI) / 180;
-  const perpRad = ((direction + 270) * Math.PI) / 180;
+  // Stripes run ALONG the path direction, spacing perpendicular.
+  // localToSvg now matches Novabot orientation (X normal, Y inverted) —
+  // direction maps directly without 180° offset.
+  const rad = (direction * Math.PI) / 180;
+  const perpRad = ((direction + 90) * Math.PI) / 180;
   const dx = Math.cos(rad), dy = Math.sin(rad);
   const px = Math.cos(perpRad), py = Math.sin(perpRad);
 
@@ -1496,11 +1499,10 @@ export default function MapScreen() {
                   {/* Mower icon + heading */}
                   {mowerLocal && (() => {
                     const mp = localToSvg(mowerLocal!, bounds, MAP_SIZE, INNER_PADDING);
-                    // Icon points RIGHT at 0°; localToSvg flips the X-axis, so
-                    // we negate heading AND add 180° so the mower renders
-                    // forward-facing on screen. Matches MowingProgressMap
-                    // (HomeScreen) which uses the same transform.
-                    const degHeading = -(heading * 180 / Math.PI) + 180;
+                    // Icon points RIGHT at 0°. localToSvg inverts Y so heading
+                    // rotation direction inverts — negate. Matches Novabot
+                    // LiveMapView convention (`-(orientation * 180 / Math.PI)`).
+                    const degHeading = -(heading * 180 / Math.PI);
                     const mowerSize = 20;
                     return (
                       <G transform={`translate(${mp.x}, ${mp.y}) rotate(${degHeading})`}>
