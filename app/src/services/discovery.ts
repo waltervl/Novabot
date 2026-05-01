@@ -10,7 +10,19 @@
  */
 
 export interface DiscoveredServer {
+  /**
+   * Best-effort identifier the device should use to reach the server.
+   * For hostname-based finds this is e.g. `opennova.local`; for IP-based
+   * sweeps it's the dotted-quad. Stored verbatim so future requests reuse
+   * whatever the device proved it can resolve.
+   */
   ip: string;
+  /**
+   * The non-loopback LAN IP reported by the server's health endpoint, when
+   * available. UI shows this next to the hostname so the user can tell two
+   * `opennova.local` candidates apart on a multi-homed network.
+   */
+  lanIp?: string | null;
 }
 
 const PROBE_TIMEOUT = 2000;
@@ -37,7 +49,7 @@ const HOST_IPS = [
  *     resolve it so storing the hostname lets future requests skip IP-pinning)
  *   - the IP itself when probing by IP
  */
-async function probeUrl(url: string, fallbackHost: string): Promise<string | null> {
+async function probeUrl(url: string, fallbackHost: string): Promise<{ id: string; lanIp: string | null } | null> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT);
@@ -46,24 +58,24 @@ async function probeUrl(url: string, fallbackHost: string): Promise<string | nul
     if (!res.ok) return null;
     const body = (await res.json()) as { server?: string; serverIp?: string } | null;
     if (body?.server !== 'running') return null;
-    const candidate = body.serverIp;
-    if (
-      candidate &&
-      /^192\.168\.|^10\.\d{1,3}\.|^172\.(1[6-9]|2[0-9]|3[01])\./.test(candidate)
-    ) {
-      // candidate is a private address, but Docker bridge IPs sit in
-      // 172.17-21 and are not reachable from the LAN.  When the URL was
-      // probed by a .local hostname we return that hostname — the device
-      // already resolved it successfully so it works for future requests.
-      // When probed by a plain IP we return that IP.
-      const urlHost = new URL(url).hostname;
-      if (/^\d+\.\d+\.\d+\.\d+$/.test(urlHost)) {
-        return urlHost; // probed by LAN IP → that IP works
-      }
-      // probed by hostname (.local) → prefer the hostname
-      return fallbackHost;
+
+    const reported = body.serverIp ?? null;
+    // Docker bridge networks live in 172.17-21; treat those as
+    // unreachable-from-LAN so the LAN-IP shown next to the hostname is
+    // correct (or null when only Docker IP is known).
+    const lanIp =
+      reported && /^192\.168\.|^10\.\d{1,3}\./.test(reported) ? reported : null;
+
+    const urlHost = new URL(url).hostname;
+    const isIpProbe = /^\d+\.\d+\.\d+\.\d+$/.test(urlHost);
+
+    if (isIpProbe) {
+      // Probed by IP — that IP IS the LAN address.
+      return { id: urlHost, lanIp: urlHost };
     }
-    return candidate ?? fallbackHost;
+    // Probed by hostname (.local) — keep hostname as the id, expose the
+    // LAN IP separately for the UI.
+    return { id: fallbackHost, lanIp };
   } catch {
     return null;
   }
@@ -73,10 +85,10 @@ export async function discoverServers(
   onFound: (server: DiscoveredServer) => void,
 ): Promise<void> {
   const found = new Set<string>();
-  const fire = (ip: string) => {
-    if (!found.has(ip)) {
-      found.add(ip);
-      onFound({ ip });
+  const fire = (entry: { id: string; lanIp: string | null }) => {
+    if (!found.has(entry.id)) {
+      found.add(entry.id);
+      onFound({ ip: entry.id, lanIp: entry.lanIp });
     }
   };
 

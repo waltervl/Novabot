@@ -99,8 +99,14 @@ export default function AppSettingsScreen({
     setScanning(true);
     setDiscoveredServers([]);
     discoverServers((server) => {
+      // Format: "http://opennova.local|192.168.0.222" so the render layer
+      // can split and display the LAN IP in muted text below the URL.
+      // For raw-IP finds the host already IS the IP, so lanIp is omitted.
       const url = `http://${server.ip}`;
-      setDiscoveredServers((prev) => prev.includes(url) ? prev : [...prev, url]);
+      const entry = server.lanIp && server.lanIp !== server.ip
+        ? `${url}|${server.lanIp}`
+        : url;
+      setDiscoveredServers((prev) => prev.includes(entry) ? prev : [...prev, entry]);
     }).finally(() => setScanning(false));
   };
 
@@ -210,17 +216,27 @@ export default function AppSettingsScreen({
                   {scanning ? 'Scanning...' : 'Find servers on network'}
                 </Text>
               </TouchableOpacity>
-              {discoveredServers.map((url) => (
-                <TouchableOpacity
-                  key={url}
-                  style={styles.serverItem}
-                  onPress={() => { setEditingUrl(url); handleChangeServer(url); }}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="server" size={16} color={colors.emerald} />
-                  <Text style={styles.serverUrl}>{url}</Text>
-                </TouchableOpacity>
-              ))}
+              {discoveredServers.map((entry) => {
+                const [url, lanIp] = entry.split('|');
+                return (
+                  <TouchableOpacity
+                    key={entry}
+                    style={styles.serverItem}
+                    onPress={() => { setEditingUrl(url); handleChangeServer(url); }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="server" size={16} color={colors.emerald} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.serverUrl}>{url}</Text>
+                      {lanIp ? (
+                        <Text style={[styles.serverUrl, { fontSize: 11, opacity: 0.6 }]}>
+                          {lanIp}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
               {/* Cancel / Save */}
               <View style={styles.buttonRow}>
                 <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsEditingServer(false)} activeOpacity={0.7}>
