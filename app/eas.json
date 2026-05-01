@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 18.4.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -21,7 +21,6 @@
     "apk-release": {
       "distribution": "internal",
       "channel": "production",
-      "appVersionSource": "local",
       "android": {
         "buildType": "apk"
       }
