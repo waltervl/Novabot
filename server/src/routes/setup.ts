@@ -365,7 +365,14 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 // think there's no user alias to preserve and silently
                 // overwrites it on the next mower ZIP upload.
                 const rawAlias = typeof item.alias === 'string' ? item.alias.trim() : '';
-                const alias = rawAlias === '' ? null : rawAlias;
+                // LFI cloud auto-fills obstacle alias as "obstacle1",
+                // "obstacle2", etc. Treat those as default — store NULL so
+                // the app doesn't render them as text labels on the map
+                // (issue #14: 17 obstacles with auto-numbered default
+                // labels overlapping the polygons).
+                const isDefaultObstacleAlias =
+                  mapType === 'obstacle' && /^obstacle[\s_]?\d*(\.csv)?$/i.test(rawAlias);
+                const alias = rawAlias === '' || isDefaultObstacleAlias ? null : rawAlias;
                 const mapData = {
                   map_id: mapId,
                   mower_sn: mower.sn,

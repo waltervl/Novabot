@@ -180,7 +180,9 @@ function isCustomObstacleName(name: string | null | undefined): name is string {
   if (!trimmed) return false;
   // map0_0_obstacle / map12_3_obstacle.csv / obstacle / obstacle_0 → all default
   if (/^map\d+_\d+_obstacle(\.csv)?$/i.test(trimmed)) return false;
-  if (/^obstacle(_\d+)?(\.csv)?$/i.test(trimmed)) return false;
+  // obstacle, obstacle_0, obstacle1, obstacle 1 — LFI cloud's default alias
+  // shape (issue #14: dir26738 saw "obstacle1..obstacle8" labels on the map).
+  if (/^obstacle[\s_]?\d*(\.csv)?$/i.test(trimmed)) return false;
   return true;
 }
 
