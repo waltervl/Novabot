@@ -62,8 +62,14 @@ function checkSchedules() {
     }
 
     // Voorkom dubbele trigger voor dezelfde geplande run.
+    // SQLite datetime('now') produces 'YYYY-MM-DD HH:MM:SS' in UTC without
+    // a timezone marker. JS new Date() parses that as LOCAL time, which made
+    // lastTriggered always lag scheduledAt by the local offset (e.g. 2h in
+    // CEST) — guard never matched, schedule retriggered every 30s.
+    // Issue #13: dir26738 hit this and got Error 2 "Already in running task"
+    // spam from the mower for 5 minutes per scheduled run.
     if (row.last_triggered_at) {
-      const lastTriggered = new Date(row.last_triggered_at);
+      const lastTriggered = new Date(row.last_triggered_at.replace(' ', 'T') + 'Z');
       if (!Number.isNaN(lastTriggered.getTime()) && lastTriggered.getTime() >= scheduledAt.getTime()) {
         continue;
       }

@@ -1698,7 +1698,21 @@ export default function HomeScreen() {
                 // count alone keeps the Start button in sync with the map
                 // list the user actually sees.
                 const noMap = serverMapCount === 0;
-                const startDisabled = !mower.online || mower.hasError || noMap;
+                // Mower already executing a task — firmware would reject a
+                // duplicate start_navigation with Error 2 'Already in
+                // running task' (issue #13). Block at UI level too so the
+                // press doesn't even reach the server. Read raw sensors
+                // because displayActivity at this branch is already
+                // narrowed to idle/charging/error and would mask transient
+                // REQUEST_START / INIT_* transitions.
+                const busySensors = devices.get(mower.sn)?.sensors;
+                const busyWorkStatus = busySensors?.work_status ?? '';
+                const busyMsg = busySensors?.msg ?? '';
+                const mowerBusy =
+                  (busyWorkStatus !== '' && busyWorkStatus !== '0' && busyWorkStatus !== '2' && busyWorkStatus !== '9')
+                  || /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(busyMsg)
+                  || /Recharge:(MOVING|RUNNING|GOING)/.test(busyMsg);
+                const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy;
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')
                   && mower.online && !mower.hasError && !noMap;
                 return (

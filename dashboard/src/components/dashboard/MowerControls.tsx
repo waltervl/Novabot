@@ -317,7 +317,21 @@ export function MowerControls({
     patternMode, patternId, patternContours, patternCenter, patternSize, patternRotation,
     onPathDirectionChange, onPatternPlacementChange, onStarted, chargerGps, t, toast]);
 
+  // Mower is in an active task. Idle states: 0 (WAIT), 2 (CANCELLED/DONE),
+  // 9 (on dock). Anything else means firmware will reject a fresh
+  // start_navigation with Error 2 'Already in running task' (issue #13).
+  const workStatus = sensors?.work_status ?? '';
+  const sensorMsg = sensors?.msg ?? '';
+  const mowerBusy =
+    (workStatus !== '' && workStatus !== '0' && workStatus !== '2' && workStatus !== '9')
+    || /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(sensorMsg)
+    || /Recharge:(MOVING|RUNNING|GOING)/.test(sensorMsg);
+
   const disabled = busy || (!online && !demoActive);
+  // startDisabled also blocks while the mower is already executing a task,
+  // so users can still hit Pause/Stop/Go-home but cannot fire a duplicate
+  // start that the firmware would reject.
+  const startDisabled = disabled || mowerBusy;
   const btnBase = 'inline-flex items-center justify-center p-1 sm:p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
   // Hidden on mobile, shown on desktop — no inline-flex from btnBase to avoid Tailwind display conflict
   const btnHidden = 'hidden md:inline-flex items-center justify-center p-1 sm:p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
@@ -383,13 +397,13 @@ export function MowerControls({
             setMoreExpanded(false);
             onPathDirectionChange?.(next ? pathDirection : null);
           }}
-          disabled={disabled}
+          disabled={startDisabled}
           className={`inline-flex items-center gap-1 text-xs h-7 px-1.5 sm:px-2.5 rounded transition-colors ${
             expanded
               ? 'bg-emerald-600 text-white'
               : 'bg-gray-700/60 text-gray-400 hover:text-white hover:bg-emerald-700'
           } disabled:opacity-30 disabled:cursor-not-allowed`}
-          title={online ? t('controls.startMowing') : t('controls.mowerOffline')}
+          title={mowerBusy ? t('controls.busy') : online ? t('controls.startMowing') : t('controls.mowerOffline')}
         >
           <Play className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">{t('controls.start')}</span>
@@ -794,7 +808,8 @@ export function MowerControls({
               </button>
               <button
                 onClick={edgeMode ? handleStartEdgeCut : handleStart}
-                disabled={busy || (patternMode && !patternReady)}
+                disabled={busy || mowerBusy || (patternMode && !patternReady)}
+                title={mowerBusy ? t('controls.busy') : undefined}
                 className={`flex-1 inline-flex items-center justify-center gap-1 text-xs px-2 py-2 rounded text-white transition-colors font-medium disabled:opacity-40 ${
                   edgeMode ? 'bg-amber-600 hover:bg-amber-500'
                   : patternMode ? 'bg-purple-600 hover:bg-purple-500'

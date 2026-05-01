@@ -13,6 +13,25 @@
 import crypto from 'crypto';
 import { publishRawToDevice } from '../mqtt/mapSync.js';
 import { isDeviceOnline } from '../mqtt/broker.js';
+import { deviceCache } from '../mqtt/sensorData.js';
+
+/**
+ * Returns true when the mower is already executing a task (mowing, edge,
+ * mapping, returning, init/startup transitions). Idle states are
+ * work_status 0 (WAIT), 2 (CANCELLED/DONE), 9 (on dock). Anything else
+ * indicates an active task and accepting another start_navigation will
+ * trigger Error 2 "Already in running task" on the firmware side
+ * (issue #13).
+ */
+export function isMowerBusy(sn: string): boolean {
+  const raw = deviceCache.get(sn);
+  if (!raw) return false;
+  const ws = raw.get('work_status') ?? '';
+  if (ws !== '' && ws !== '0' && ws !== '2' && ws !== '9') return true;
+  const msg = raw.get('msg') ?? '';
+  return /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(msg)
+    || /Recharge:(MOVING|RUNNING|GOING)/.test(msg);
+}
 
 export interface MowingParams {
   sn: string;
@@ -61,6 +80,10 @@ export function startMowing(params: MowingParams): MowingResult {
 
   if (!sn) return { ok: false, error: 'sn required' };
   if (!isDeviceOnline(sn)) return { ok: false, error: 'mower offline' };
+  if (isMowerBusy(sn)) {
+    console.log(`[MowingService] Reject start: ${sn} already busy (work_status/msg active)`);
+    return { ok: false, error: 'mower busy — already in a task' };
+  }
 
   // Normalise input to user cm (2-9), then compute wire value (cm-2).
   // Accept multiple encodings because older callers used different scales:
