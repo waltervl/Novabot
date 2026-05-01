@@ -64,4 +64,29 @@ describe('GET /api/app/latest', () => {
     const r = await request(makeApp()).get('/api/app/latest');
     expect(r.status).toBe(404);
   });
+
+  it('returns 404 when manifest is malformed JSON', async () => {
+    fs.writeFileSync(path.join(TMP, 'manifest.json'), '{ not valid json');
+    const r = await request(makeApp()).get('/api/app/latest');
+    expect(r.status).toBe(404);
+  });
+
+  it('respects OTA_BASE_URL env var when set', async () => {
+    const m = {
+      version: '1.3.0',
+      platform: 'android',
+      apkFileName: 'opennova-v1.3.0.apk',
+      sha256: 'b'.repeat(64),
+      sizeBytes: 2048,
+      releaseNotes: 'cdn test',
+      minSupportedServerVersion: '2026.0501.2158',
+      releasedAt: '2026-05-01T21:00:00Z',
+    };
+    fs.writeFileSync(path.join(TMP, 'manifest.json'), JSON.stringify(m));
+    process.env.OTA_BASE_URL = 'https://cdn.example.com';
+    const r = await request(makeApp()).get('/api/app/latest');
+    expect(r.status).toBe(200);
+    expect(r.body.apkUrl.startsWith('https://cdn.example.com/firmware/app/')).toBe(true);
+    delete process.env.OTA_BASE_URL;
+  });
 });

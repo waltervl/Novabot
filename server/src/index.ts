@@ -229,8 +229,9 @@ if (PROXY_MODE === 'cloud') {
   // App update endpoint — serves latest APK manifest to OpenNova app
   app.use('/api/app', appUpdateRouter);
 
-  // Static APK serving for in-app update downloads
-  app.use('/firmware', express.static(path.resolve(__dirname, '../../firmware')));
+  // Static APK serving for in-app update downloads (narrowed to app/ subdir only)
+  const firmwareBase = process.env.FIRMWARE_PATH ?? path.resolve(__dirname, '../firmware');
+  app.use('/firmware/app', express.static(path.resolve(firmwareBase, 'app')));
 
   // ── Maaier firmware log upload (geen /api/ prefix, geen auth) ───────────────
   app.post('/x3/log/upload', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {

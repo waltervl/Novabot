@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readAppReleaseManifest } from '../services/appReleaseManifest.js';
 
-let manifestDir = path.resolve('server/firmware/app');
+let manifestDir = process.env.APP_MANIFEST_DIR ?? path.resolve(__dirname, '../firmware/app');
 
 export function setManifestDir(dir: string): void {
   manifestDir = dir;
