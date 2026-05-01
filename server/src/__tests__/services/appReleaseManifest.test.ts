@@ -42,4 +42,29 @@ describe('readAppReleaseManifest', () => {
     fs.writeFileSync(path.join(TMP, 'manifest.json'), JSON.stringify({ version: '1.2.0' }));
     expect(readAppReleaseManifest(TMP)).toBeNull();
   });
+
+  it('returns null on empty file', () => {
+    fs.writeFileSync(path.join(TMP, 'manifest.json'), '');
+    expect(readAppReleaseManifest(TMP)).toBeNull();
+  });
+
+  it('returns null on whitespace-only content', () => {
+    fs.writeFileSync(path.join(TMP, 'manifest.json'), '   ');
+    expect(readAppReleaseManifest(TMP)).toBeNull();
+  });
+
+  it('accepts numeric 0 for sizeBytes', () => {
+    const m = {
+      version: '1.0.0',
+      platform: 'android',
+      apkFileName: 'opennova-v1.0.0.apk',
+      sha256: 'b'.repeat(64),
+      sizeBytes: 0,
+      releaseNotes: 'initial',
+      minSupportedServerVersion: '2026.0501.2158',
+      releasedAt: '2026-05-01T00:00:00Z',
+    };
+    fs.writeFileSync(path.join(TMP, 'manifest.json'), JSON.stringify(m));
+    expect(readAppReleaseManifest(TMP)).toEqual(m);
+  });
 });
