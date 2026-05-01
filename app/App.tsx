@@ -35,6 +35,8 @@ import type {
 } from './src/navigation/types';
 import { getToken, getServerUrl } from './src/services/auth';
 import { initSocket, disconnectSocket } from './src/services/socket';
+import { useAppUpdateCheck } from './src/hooks/useAppUpdateCheck';
+import { UpdatePromptModal } from './src/components/UpdatePromptModal';
 
 // Keep splash visible while app loads
 SplashScreen.preventAutoHideAsync();
@@ -69,6 +71,14 @@ const ProvisionStack = createNativeStackNavigator<ProvisionStackParams>();
 const SettingsStack = createNativeStackNavigator<SettingsStackParams>();
 const MapStack = createNativeStackNavigator<MapStackParams>();
 const Tab = createBottomTabNavigator<MainTabParams>();
+
+// ── Update gate ──────────────────────────────────────────────────────────────
+
+function UpdateGate() {
+  const { latest, dismiss } = useAppUpdateCheck();
+  if (!latest) return null;
+  return <UpdatePromptModal latest={latest} onClose={dismiss} />;
+}
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 
@@ -323,6 +333,7 @@ function ThemedApp({
           <MowQueueProvider>
             <PushRegistrar />
             <AuthenticatedApp onLogout={handleLogout} onGoToProvision={handleGoToProvision} />
+            <UpdateGate />
           </MowQueueProvider>
         </ActiveMowerProvider>
       ) : (
