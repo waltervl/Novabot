@@ -1700,17 +1700,14 @@ export default function HomeScreen() {
                 const noMap = serverMapCount === 0;
                 // Mower already executing a task — firmware would reject a
                 // duplicate start_navigation with Error 2 'Already in
-                // running task' (issue #13). Block at UI level too so the
-                // press doesn't even reach the server. Read raw sensors
-                // because displayActivity at this branch is already
-                // narrowed to idle/charging/error and would mask transient
-                // REQUEST_START / INIT_* transitions.
-                const busySensors = devices.get(mower.sn)?.sensors;
-                const busyWorkStatus = busySensors?.work_status ?? '';
-                const busyMsg = busySensors?.msg ?? '';
+                // running task' (issue #13). Detect via msg only because
+                // sensors.work_status comes pre-translated in the initial
+                // socket snapshot (e.g. "Ready" instead of "9") and only
+                // becomes raw after the first live device:update event.
+                // msg has no case in translateValue → always raw.
+                const busyMsg = devices.get(mower.sn)?.sensors?.msg ?? '';
                 const mowerBusy =
-                  (busyWorkStatus !== '' && busyWorkStatus !== '0' && busyWorkStatus !== '2' && busyWorkStatus !== '9')
-                  || /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(busyMsg)
+                  /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(busyMsg)
                   || /Recharge:(MOVING|RUNNING|GOING)/.test(busyMsg);
                 const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy;
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')

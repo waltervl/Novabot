@@ -317,14 +317,15 @@ export function MowerControls({
     patternMode, patternId, patternContours, patternCenter, patternSize, patternRotation,
     onPathDirectionChange, onPatternPlacementChange, onStarted, chargerGps, t, toast]);
 
-  // Mower is in an active task. Idle states: 0 (WAIT), 2 (CANCELLED/DONE),
-  // 9 (on dock). Anything else means firmware will reject a fresh
-  // start_navigation with Error 2 'Already in running task' (issue #13).
-  const workStatus = sensors?.work_status ?? '';
+  // Mower is in an active task — firmware would reject a duplicate
+  // start_navigation with Error 2 (issue #13). Detect via msg, which
+  // is NOT translated by getDeviceSnapshot (sensors.work_status is
+  // translated to a human label like "Idle"/"Ready", so a raw int
+  // compare can't be done here). msg stays in firmware form
+  // "Mode:X Work:Y Recharge:Z".
   const sensorMsg = sensors?.msg ?? '';
   const mowerBusy =
-    (workStatus !== '' && workStatus !== '0' && workStatus !== '2' && workStatus !== '9')
-    || /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(sensorMsg)
+    /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(sensorMsg)
     || /Recharge:(MOVING|RUNNING|GOING)/.test(sensorMsg);
 
   const disabled = busy || (!online && !demoActive);
