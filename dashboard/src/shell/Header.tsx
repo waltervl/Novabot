@@ -1,15 +1,18 @@
 import { useState } from 'react';
-import { Server, ServerOff, Plus } from 'lucide-react';
+import { Server, ServerOff, Plus, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { BleScanner } from '../ble/BleScanner';
+import { BleScanner } from '../components/ble/BleScanner';
+import { RainBadge } from './RainBadge';
 
 const LANGS = ['nl', 'en', 'fr', 'de'] as const;
 
 interface Props {
   connected: boolean;
+  rainState: 'dry' | 'rain' | 'paused-by-rain' | null;
+  onOpenDrawer: () => void;
 }
 
-export function Header({ connected }: Props) {
+export function Header({ connected, rainState, onOpenDrawer }: Props) {
   const { t, i18n } = useTranslation();
   const [showBle, setShowBle] = useState(false);
 
@@ -20,10 +23,18 @@ export function Header({ connected }: Props) {
 
   return (
     <header className="h-12 md:h-16 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-3 md:px-6">
+      {/* Left: logo + title */}
       <div className="flex items-center gap-3">
         <img src="/OpenNova.png" alt="OpenNova" className="h-9 w-auto" />
-        <span className="hidden md:inline text-xl text-gray-300 tracking-widest uppercase" style={{ fontFamily: "'Posterama 1919', sans-serif", letterSpacing: '0.2em' }}>{t('header.dashboard')}</span>
+        <span
+          className="hidden md:inline text-xl text-gray-300 tracking-widest uppercase"
+          style={{ fontFamily: "'Posterama 1919', sans-serif", letterSpacing: '0.2em' }}
+        >
+          {t('header.dashboard')}
+        </span>
       </div>
+
+      {/* Right: add device + lang switcher + server status + rain badge + gear */}
       <div className="flex items-center gap-2 sm:gap-4">
         {/* Add device */}
         <button
@@ -33,6 +44,7 @@ export function Header({ connected }: Props) {
         >
           <Plus className="w-4 h-4" />
         </button>
+
         {/* Language switcher */}
         <div className="flex items-center gap-0.5">
           {LANGS.map(lng => (
@@ -49,6 +61,7 @@ export function Header({ connected }: Props) {
             </button>
           ))}
         </div>
+
         {/* Server status */}
         <div className="flex items-center gap-2 text-sm" title={t('header.connectionTitle')}>
           {connected ? (
@@ -56,9 +69,25 @@ export function Header({ connected }: Props) {
           ) : (
             <ServerOff className="w-4 h-4 text-red-500" />
           )}
-          <span className="hidden sm:inline text-gray-400">{connected ? t('header.server') : t('header.serverOffline')}</span>
+          <span className="hidden sm:inline text-gray-400">
+            {connected ? t('header.server') : t('header.serverOffline')}
+          </span>
         </div>
+
+        {/* Rain badge */}
+        <RainBadge rainState={rainState} />
+
+        {/* Diagnostics drawer */}
+        <button
+          onClick={onOpenDrawer}
+          title="Diagnostics"
+          className="p-1.5 rounded-lg text-gray-500 hover:text-zinc-100 hover:bg-gray-800 transition-colors"
+          aria-label="Open diagnostics drawer"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
       </div>
+
       <BleScanner open={showBle} onClose={() => setShowBle(false)} />
     </header>
   );

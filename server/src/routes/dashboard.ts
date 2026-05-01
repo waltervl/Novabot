@@ -33,6 +33,7 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { v4 as uuidv4 } from 'uuid';
+import { getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -64,6 +65,94 @@ export const dashboardRouter = Router();
   }
   if (rows.length > 0) console.log(`[SETTINGS] Loaded ${rows.length} persisted settings for ${new Set(rows.map(r => r.sn)).size} device(s)`);
 }
+
+// GET /api/dashboard/system/health — mDNS advertiser state, server uptime, per-mower cache status
+dashboardRouter.get('/system/health', (_req: Request, res: Response) => {
+  const advertisement = getActiveAdvertisement();
+
+  const allEquipment = equipmentRepo.listAll();
+  const mowers = allEquipment
+    .filter(eq => !!eq.mower_sn)
+    .map(eq => {
+      const cached = deviceCache.get(eq.mower_sn);
+      return {
+        sn: eq.mower_sn,
+        online: !!cached && cached.size > 0,
+        sensorKeys: cached?.size ?? 0,
+      };
+    });
+
+  const uptimeSec = Math.floor(process.uptime());
+  const startedAt = new Date(Date.now() - uptimeSec * 1000).toISOString();
+
+  res.json({
+    mdns: {
+      running: advertisement !== null,
+      advertisement,
+    },
+    server: { uptimeSec, startedAt },
+    mowers,
+  });
+});
+
+// GET /api/dashboard/system/lora-status/:sn — cached LoRa pair + drift flag
+// drift = true when this device's pair does not match its paired counterpart.
+// Mower and charger MUST be on identical address+channel; mismatch = Error 8.
+dashboardRouter.get('/system/lora-status/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const own = equipmentRepo.getLoraCache(sn);
+  if (!own) {
+    res.status(404).json({ error: 'no_lora_cache' });
+    return;
+  }
+
+  // Find peer SN: equipment row pairs mower_sn + charger_sn.
+  // findBySn matches on either mower_sn or charger_sn.
+  const eq = equipmentRepo.findBySn(sn);
+  let peerSn: string | null = null;
+  if (eq && eq.mower_sn && eq.charger_sn) {
+    peerSn = eq.mower_sn === sn ? eq.charger_sn : eq.mower_sn;
+  }
+
+  const peer = peerSn ? equipmentRepo.getLoraCache(peerSn) : undefined;
+
+  let drift = false;
+  if (peer) {
+    drift =
+      own.charger_address !== peer.charger_address ||
+      own.charger_channel !== peer.charger_channel;
+  }
+
+  res.json({
+    sn,
+    pair: { address: own.charger_address ?? null, channel: own.charger_channel ?? null },
+    peer: peer
+      ? { sn: peerSn, address: peer.charger_address ?? null, channel: peer.charger_channel ?? null }
+      : { sn: peerSn, address: null, channel: null },
+    drift,
+  });
+});
+
+// GET /api/dashboard/system/logs — in-memory MQTT log buffer with optional filtering
+dashboardRouter.get('/system/logs', (req: Request, res: Response) => {
+  const all = getRecentLogs();
+  const { type, sn, direction } = req.query as Record<string, string | undefined>;
+
+  const tailRaw = req.query.tail;
+  let tail = 200;
+  if (typeof tailRaw === 'string') {
+    const n = parseInt(tailRaw, 10);
+    if (Number.isFinite(n) && n > 0 && n <= 500) tail = n;
+  }
+
+  let filtered = all;
+  if (type) filtered = filtered.filter((l) => l.type === type);
+  if (sn) filtered = filtered.filter((l) => l.sn === sn);
+  if (direction) filtered = filtered.filter((l) => l.direction === direction);
+
+  const sliced = filtered.slice(-tail);
+  res.json({ logs: sliced });
+});
 
 // GET /api/dashboard/devices — alle devices met online status en cached sensor waarden
 // Toont alleen apparaten die gebonden zijn (in equipment tabel) of momenteel online zijn,
@@ -421,7 +510,32 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
   const rows = mapRepo.findByMowerSn(sn);
 
   // Charger GPS ophalen — dashboard gebruikt dit voor local→GPS conversie
-  const chargerGps = mapRepo.getChargerGps(sn);
+  let chargerGps = mapRepo.getChargerGps(sn);
+
+  if (!chargerGps) {
+    // Auto-detect: als de maaier nu op het dock staat (kleine abs x/y EN
+    // recharge_status bevat "charging") dan IS de GPS van de maaier de GPS
+    // van de charger. Eenmalig persisteren zodat volgende requests het al weten.
+    const sensors = deviceCache.get(sn);
+    if (sensors) {
+      const lat    = parseFloat(sensors.get('latitude')        ?? '');
+      const lng    = parseFloat(sensors.get('longitude')       ?? '');
+      const mapX   = parseFloat(sensors.get('map_position_x')  ?? '');
+      const mapY   = parseFloat(sensors.get('map_position_y')  ?? '');
+      const recharge = (sensors.get('recharge_status') ?? '').toLowerCase();
+
+      const atDock =
+        Number.isFinite(mapX) && Math.abs(mapX) < 1 &&
+        Number.isFinite(mapY) && Math.abs(mapY) < 1 &&
+        recharge.includes('charging');
+
+      if (atDock && Number.isFinite(lat) && Number.isFinite(lng)) {
+        mapRepo.setChargerGps(sn, lat, lng);
+        chargerGps = { lat, lng };
+        console.log(`[MAP] Auto-detected charger GPS for ${sn} from mower-at-dock: ${lat}, ${lng}`);
+      }
+    }
+  }
 
   const maps = rows.map(r => {
     let mapArea: LocalPoint[] = [];
@@ -447,8 +561,9 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
     };
   });
 
-  // Charger orientatie uit ZIP map_info.json
+  // Charger orientatie + chargingPose uit ZIP map_info.json
   let chargerOrientation = 0;
+  let chargingPose: { x: number; y: number; orientation: number } | null = null;
   const STORAGE_PATH = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
   const latestZip = path.join(STORAGE_PATH, `${sn}_latest.zip`);
   if (fs.existsSync(latestZip)) {
@@ -460,7 +575,17 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
         const infoPath = path.join(tmpDir, 'csv_file', 'map_info.json');
         if (fs.existsSync(infoPath)) {
           const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
-          chargerOrientation = info.charging_pose?.orientation ?? 0;
+          const cp = info.charging_pose;
+          if (cp && typeof cp.x === 'number' && typeof cp.y === 'number') {
+            chargingPose = {
+              x: cp.x,
+              y: cp.y,
+              orientation: typeof cp.orientation === 'number' ? cp.orientation : 0,
+            };
+            chargerOrientation = chargingPose.orientation;
+          } else {
+            chargerOrientation = cp?.orientation ?? 0;
+          }
         }
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -472,6 +597,7 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
     maps,
     chargerGps: chargerGps ? { lat: chargerGps.lat, lng: chargerGps.lng } : null,
     chargerOrientation,
+    chargingPose,
   });
 });
 

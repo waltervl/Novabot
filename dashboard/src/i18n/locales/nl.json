@@ -11,6 +11,48 @@
     "mower": "Maaier",
     "noDevices": "Geen apparaten gevonden"
   },
+  "drawer": {
+    "title": {
+      "sensors": "Sensoren",
+      "diagnostics": "Diagnose"
+    },
+    "summary": {
+      "lastSeen": "Laatst gezien",
+      "online": "Online",
+      "offline": "Offline",
+      "configuration": "Configuratie",
+      "loraAddress": "LoRa Adres",
+      "loraChannel": "LoRa Kanaal",
+      "pairDrift": "Pair drift gedetecteerd",
+      "pairSync": "Pair in sync",
+      "showAdvanced": "Toon geavanceerde sensoren",
+      "backToSummary": "← Terug naar samenvatting",
+      "firmware": "Firmware"
+    },
+    "network": {
+      "title": "Netwerk gezondheid",
+      "mdns": "mDNS",
+      "running": "actief",
+      "stopped": "gestopt",
+      "serverUptime": "Server uptime",
+      "mowers": "Maaiers",
+      "noneRegistered": "— geen geregistreerd"
+    },
+    "live": {
+      "title": "Live status",
+      "pair": "Pair",
+      "peer": "peer",
+      "drift": "Drift",
+      "inSync": "In sync",
+      "mismatch": "mismatch",
+      "matching": "overeenkomend",
+      "noLoraCache": "Nog geen LoRa cache voor deze maaier."
+    },
+    "logs": {
+      "title": "Server log",
+      "empty": "— leeg —"
+    }
+  },
   "common": {
     "online": "Online",
     "offline": "Offline",
@@ -18,13 +60,31 @@
     "cancel": "Annuleren",
     "delete": "Verwijderen",
     "reset": "Reset",
-    "edit": "Bewerken"
+    "edit": "Bewerken",
+    "loading": "Laden…",
+    "failed": "Mislukt",
+    "failedToLoad": "Laden mislukt"
+  },
+  "pages": {
+    "selectMower": "Selecteer een maaier.",
+    "selectMowerForMap": "Selecteer een maaier om de kaart te bekijken."
+  },
+  "chips": {
+    "offline": "offline",
+    "noMowers": "Geen maaiers"
+  },
+  "mower": {
+    "longPause": {
+      "banner": "Maaier staat al {{minutes}} minuten gepauzeerd. Hervatten, stoppen of naar dock?"
+    }
   },
   "time": {
     "justNow": "zojuist",
     "secondsAgo": "{{seconds}}s geleden",
     "minutesAgo": "{{minutes}}m geleden",
-    "hoursAgo": "{{hours}}u geleden"
+    "hoursAgo": "{{hours}}u geleden",
+    "today": "Vandaag",
+    "tomorrow": "Morgen"
   },
   "battery": {
     "title": "Batterij"
@@ -270,7 +330,13 @@
     "saved": "Schema opgeslagen",
     "created": "Schema aangemaakt",
     "saveFailed": "Opslaan mislukt",
-    "deleteFailed": "Verwijderen mislukt"
+    "deleteFailed": "Verwijderen mislukt",
+    "timeline": {
+      "title": "Week tijdlijn",
+      "empty": "Geen actieve schema's.",
+      "loading": "Tijdlijn laden…",
+      "error": "Tijdlijn laden mislukt"
+    }
   },
   "rain": {
     "since": "Sinds {{time}}",
@@ -345,7 +411,23 @@
     "pinSent": "PIN commando verstuurd",
     "pinReceived": "PIN antwoord ontvangen",
     "pinNoResponse": "Geen antwoord (timeout)",
-    "pinPlaceholder": "4 cijfers"
+    "pinPlaceholder": "4 cijfers",
+    "nickname": {
+      "title": "Bijnaam maaier",
+      "help": "Wordt getoond in de header en in de mobiele app. Laat leeg om terug te vallen op het serienummer.",
+      "save": "Opslaan",
+      "saving": "Opslaan…",
+      "saved": "Opgeslagen."
+    },
+    "notifications": {
+      "title": "Notificaties",
+      "help": "Configureer waar je op de hoogte wilt worden gehouden van maai-events. Server-side configuratie endpoint volgt in een latere fase — deze kanalen staan vandaag ter referentie.",
+      "push": "Push (mobiele app, Expo)",
+      "ntfy": "ntfy",
+      "ha": "Home Assistant webhook",
+      "email": "E-mail (SMTP)",
+      "comingSoon": "Komt eraan"
+    }
   },
   "ai": {
     "title": "AI Perceptie",
@@ -428,10 +510,6 @@
     "scanFailed": "BLE scan mislukt",
     "tryAgain": "Opnieuw proberen",
     "close": "Sluiten"
-  },
-  "time": {
-    "today": "Vandaag",
-    "tomorrow": "Morgen"
   },
   "mobile": {
     "activity": {

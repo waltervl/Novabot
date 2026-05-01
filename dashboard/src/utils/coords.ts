@@ -11,7 +11,7 @@ export type LocalPoint = { x: number; y: number };
 
 const DEG_TO_M = 111320; // meters per degree latitude
 
-/** Convert local meters (charger=0,0) to GPS coordinates */
+/** Convert local meters (charger=0,0) to GPS coordinates. */
 export function localToGps(p: LocalPoint, chargerGps: GpsPoint): GpsPoint {
   const cosLat = Math.cos(chargerGps.lat * Math.PI / 180);
   return {
@@ -20,7 +20,7 @@ export function localToGps(p: LocalPoint, chargerGps: GpsPoint): GpsPoint {
   };
 }
 
-/** Convert GPS coordinates to local meters (charger=0,0) */
+/** Convert GPS coordinates to local meters (charger=0,0). */
 export function gpsToLocal(p: GpsPoint, chargerGps: GpsPoint): LocalPoint {
   const cosLat = Math.cos(chargerGps.lat * Math.PI / 180);
   return {
@@ -29,15 +29,35 @@ export function gpsToLocal(p: GpsPoint, chargerGps: GpsPoint): LocalPoint {
   };
 }
 
-/** Convert a full polygon from local meters to Leaflet [lat, lng] tuples */
+/**
+ * True when `chargerGps` has finite numeric `lat` + `lng`. Use this to
+ * guard local↔GPS conversions before they propagate NaN into Leaflet
+ * — Leaflet rejects NaN with "Invalid LatLng object" and white-screens
+ * the page (issue #15).
+ */
+export function isUsableChargerGps(g: GpsPoint | null | undefined): g is GpsPoint {
+  return !!g && Number.isFinite(g.lat) && Number.isFinite(g.lng);
+}
+
+/**
+ * Convert a full polygon from local meters to Leaflet `[lat, lng]` tuples.
+ * Skips any vertex that produces a non-finite GPS pair so a single bad
+ * point never crashes the whole polygon render.
+ */
 export function polygonToLatLng(
   points: LocalPoint[],
   chargerGps: GpsPoint,
 ): [number, number][] {
-  return points.map(p => {
+  if (!isUsableChargerGps(chargerGps)) return [];
+  const out: [number, number][] = [];
+  for (const p of points) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
     const gps = localToGps(p, chargerGps);
-    return [gps.lat, gps.lng];
-  });
+    if (Number.isFinite(gps.lat) && Number.isFinite(gps.lng)) {
+      out.push([gps.lat, gps.lng]);
+    }
+  }
+  return out;
 }
 
 /** Polygon area in m² (Shoelace formula on local meter points) */

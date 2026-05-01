@@ -18,7 +18,12 @@ import { loadPattern, transformToGps, type NormContour } from '../../utils/patte
 import { offsetPolygon } from '../../utils/polygonOffset.js';
 import type { PatternPlacement } from '../patterns/PatternOverlay';
 
-const DIR_DEGREES = [0, 45, 90, 135, 180, 225, 270, 315];
+// Mower path direction is symmetric — 0–180° covers every distinct stripe
+// orientation (180° = same physical line as 0° just walked the other way).
+// The app uses the same 0–180 range (StartMowSheet.tsx clamps `pathDirection`
+// at 180), so the dashboard mirrors that here. Buttons cover the 4 cardinal
+// pairs in 45° steps.
+const DIR_DEGREES = [0, 45, 90, 135];
 
 interface PendingPolygon {
   mapId: string;
@@ -690,7 +695,7 @@ export function MowerControls({
                 ))}
               </div>
               <input
-                type="range" min={0} max={360} step={5}
+                type="range" min={0} max={180} step={5}
                 value={pathDirection}
                 onChange={e => {
                   const v = parseInt(e.target.value);

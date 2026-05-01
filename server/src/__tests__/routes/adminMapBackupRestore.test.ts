@@ -1,0 +1,313 @@
+/**
+ * Route tests — map-backup /contents and /restore endpoints
+ *
+ * Tests the overwrite-vs-skip conflict resolution added to:
+ *   GET  /api/admin-status/map-backups/:sn/:filename/contents
+ *   POST /api/admin-status/map-backups/:sn/:filename/restore
+ *
+ * Heavy deps (broker, socketHandler, mapSync, mdns, etc.) are mocked so the
+ * test stays fast and avoids circular-init issues.
+ *
+ * The mapBackup service and parseMapZip are mocked so we don't need real ZIP
+ * files on disk.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import request from 'supertest';
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+
+// ── Mock heavy deps BEFORE any import of adminStatus.ts ─────────────────────
+
+vi.mock('../../mqtt/broker.js', () => ({
+  isDeviceOnline: vi.fn().mockReturnValue(false),
+  writeRawPublish: vi.fn().mockReturnValue(false),
+  getBrokerDiagnostics: vi.fn().mockReturnValue({}),
+  startMqttBroker: vi.fn(),
+  banishSn: vi.fn(),
+  unbanSn: vi.fn(),
+  listBannedSns: vi.fn().mockReturnValue([]),
+}));
+
+vi.mock('../../dashboard/socketHandler.js', () => ({
+  getRecentLogs: vi.fn().mockReturnValue([]),
+  forwardToDashboard: vi.fn(),
+  onLogEntry: vi.fn(),
+  emitMapsChanged: vi.fn(),
+  emitDeviceOnline: vi.fn(),
+  emitDeviceOffline: vi.fn(),
+  emitTrailClear: vi.fn(),
+  emitCoveredLanes: vi.fn(),
+  setDemoModeChecker: vi.fn(),
+  setOutlineEmitter: vi.fn(),
+  initBleLogger: vi.fn(),
+  sendBleLogHistory: vi.fn(),
+  pushMqttLog: vi.fn(),
+  emitOtaEvent: vi.fn(),
+  emitPinEvent: vi.fn(),
+  emitExtendedEvent: vi.fn(),
+  emitCommandRespond: vi.fn(),
+}));
+
+vi.mock('../../mqtt/mapSync.js', () => ({
+  requestMapList: vi.fn(),
+  requestMapOutline: vi.fn(),
+  publishToDevice: vi.fn(),
+  publishRawToDevice: vi.fn(),
+  publishEncryptedOnTopic: vi.fn(),
+  publishToTopic: vi.fn(),
+  goToChargePayload: vi.fn(),
+  getNextCmdNum: vi.fn().mockReturnValue(1),
+  initMapSync: vi.fn(),
+  handleMapMessage: vi.fn(),
+  handleExtendedResponse: vi.fn(),
+  handleDeviceResponse: vi.fn(),
+  publishToExtended: vi.fn(),
+  onExtendedResponse: vi.fn(),
+  offExtendedResponse: vi.fn(),
+  notifyRespond: vi.fn(),
+  setDemoInterceptor: vi.fn(),
+  onMowerConnected: vi.fn(),
+  awaitCommand: vi.fn(),
+}));
+
+vi.mock('../../services/demoSimulator.js', () => ({
+  isDemoMode: vi.fn().mockReturnValue(false),
+  setDemoMode: vi.fn(),
+  getDemoStatus: vi.fn().mockReturnValue({}),
+  setDemoInterceptor: vi.fn(),
+}));
+
+vi.mock('../../services/mowerIpDiscovery.js', () => ({
+  resolveMowerIp: vi.fn().mockResolvedValue(null),
+  startMowerIpDiscovery: vi.fn(),
+}));
+
+vi.mock('../../services/mdnsAdvertiser.js', () => ({
+  startMdnsAdvertiser: vi.fn(),
+  stopMdnsAdvertiser: vi.fn(),
+  getActiveAdvertisement: vi.fn().mockReturnValue(null),
+}));
+
+// ── Mock mapBackup service ────────────────────────────────────────────────────
+// We don't want real file I/O. backupPath just needs to return a path string;
+// the real fs.existsSync is mocked per-test via vi.spyOn on the 'fs' module.
+// NOTE: vi.mock factories are hoisted to the top of the file by vitest, so we
+// cannot reference variables defined in the test body. Use vi.fn() inline.
+
+vi.mock('../../services/mapBackup.js', () => ({
+  listBackups: vi.fn().mockReturnValue([]),
+  backupPath: vi.fn().mockReturnValue('/fake/backup.zip'),
+  scheduleSnapshot: vi.fn(),
+}));
+
+// ── Mock fs.existsSync (used by the endpoints to check the ZIP exists) ────────
+import fs from 'fs';
+const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+
+// ── Mock parseMapZip + polygonArea ────────────────────────────────────────────
+// Same hoisting constraint: use vi.fn() inline inside the factory.
+
+vi.mock('../../mqtt/mapConverter.js', () => ({
+  generateMapZipFromDb: vi.fn(),
+  gpsToLocal: vi.fn(),
+  localToGps: vi.fn(),
+  parseMapZip: vi.fn(),
+  polygonArea: vi.fn().mockReturnValue(10),
+}));
+
+// ── Now import the router + deps ─────────────────────────────────────────────
+import { adminStatusRouter } from '../../routes/adminStatus.js';
+import { mapRepo } from '../../db/repositories/index.js';
+import * as mapConverter from '../../mqtt/mapConverter.js';
+import type { MapArea } from '../../mqtt/mapConverter.js'; // type-only import safe alongside vi.mock
+
+// Grab typed references to the mocked functions
+const mockParseMapZip = vi.mocked(mapConverter.parseMapZip);
+
+const app = express();
+app.use(express.json());
+app.use('/api/admin-status', adminStatusRouter);
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const SN = 'LFIN2230700238';
+const FILENAME = '2026-04-29T12-00-00.zip';
+
+/** A minimal work-area MapArea with enough points. */
+function makeWorkArea(mapIndex = 0): MapArea {
+  return {
+    type: 'work',
+    mapIndex,
+    points: [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ],
+  } as MapArea;
+}
+
+/** Seed a row into the DB using mapRepo.create directly. */
+function seedMap(canonicalName: string, type = 'work') {
+  mapRepo.create({
+    map_id: uuidv4(),
+    mower_sn: SN,
+    map_name: canonicalName,
+    file_name: canonicalName + '_work.csv',
+    map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 1, y: 1 }]),
+    map_max_min: JSON.stringify({ minX: 0, maxX: 1, minY: 0, maxY: 1 }),
+    map_type: type,
+    canonical_name: canonicalName,
+  });
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('GET /map-backups/:sn/:filename/contents', () => {
+  beforeEach(() => {
+    existsSpy.mockReturnValue(true);
+  });
+
+  it('flags existsInDb=false when canonical row is NOT in DB', async () => {
+    const area = makeWorkArea(0);
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
+
+    const res = await request(app)
+      .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/contents`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.work).toHaveLength(1);
+    expect(res.body.work[0].canonicalName).toBe('map0');
+    expect(res.body.work[0].existsInDb).toBe(false);
+  });
+
+  it('flags existsInDb=true when canonical row IS in DB', async () => {
+    // Seed the row before the request
+    seedMap('map0', 'work');
+
+    const area = makeWorkArea(0);
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
+
+    const res = await request(app)
+      .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/contents`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.work).toHaveLength(1);
+    expect(res.body.work[0].existsInDb).toBe(true);
+  });
+});
+
+describe('POST /map-backups/:sn/:filename/restore', () => {
+  beforeEach(() => {
+    existsSpy.mockReturnValue(true);
+  });
+
+  it('inserts a new row (restored=1) when item does not exist in DB', async () => {
+    const area = makeWorkArea(0);
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
+      .send({ items: [{ canonicalName: 'map0', type: 'work', overwrite: false }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.restored).toBe(1);
+    expect(res.body.overwritten).toBe(0);
+    expect(res.body.skippedExisting).toBe(0);
+    expect(res.body.skippedNotInBackup).toBe(0);
+
+    // Row should now exist in DB
+    const row = mapRepo.findBySnAndCanonical(SN, 'map0');
+    expect(row).toBeDefined();
+    expect(row?.map_type).toBe('work');
+  });
+
+  it('skips item (skippedExisting=1) when row EXISTS and overwrite=false', async () => {
+    seedMap('map0', 'work');
+
+    const area = makeWorkArea(0);
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
+      .send({ items: [{ canonicalName: 'map0', type: 'work', overwrite: false }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.restored).toBe(0);
+    expect(res.body.overwritten).toBe(0);
+    expect(res.body.skippedExisting).toBe(1);
+    expect(res.body.skippedNotInBackup).toBe(0);
+  });
+
+  it('overwrites item (overwritten=1) when row EXISTS and overwrite=true', async () => {
+    seedMap('map0', 'work');
+
+    // Confirm the seeded row exists
+    const before = mapRepo.findBySnAndCanonical(SN, 'map0');
+    expect(before).toBeDefined();
+    const oldMapId = before!.map_id;
+
+    const area = makeWorkArea(0);
+    mockParseMapZip.mockReturnValueOnce({ areas: [area], chargingPose: { x: 0, y: 0, orientation: 0 } });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
+      .send({ items: [{ canonicalName: 'map0', type: 'work', overwrite: true }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.restored).toBe(0);
+    expect(res.body.overwritten).toBe(1);
+    expect(res.body.skippedExisting).toBe(0);
+    expect(res.body.skippedNotInBackup).toBe(0);
+
+    // Row should still exist but have a new map_id (it was deleted + re-inserted)
+    const after = mapRepo.findBySnAndCanonical(SN, 'map0');
+    expect(after).toBeDefined();
+    expect(after!.map_id).not.toBe(oldMapId);
+  });
+
+  it('returns skippedNotInBackup when item is not present in the ZIP', async () => {
+    mockParseMapZip.mockReturnValueOnce({ areas: [], chargingPose: { x: 0, y: 0, orientation: 0 } });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
+      .send({ items: [{ canonicalName: 'map99', type: 'work', overwrite: false }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.restored).toBe(0);
+    expect(res.body.skippedNotInBackup).toBe(1);
+  });
+
+  it('handles mixed items correctly', async () => {
+    // map0 already in DB → overwrite
+    seedMap('map0', 'work');
+    // map1 already in DB → skip
+    seedMap('map1', 'work');
+    // map2 not in DB → insert
+
+    const areas: MapArea[] = [makeWorkArea(0), makeWorkArea(1), makeWorkArea(2)];
+    mockParseMapZip.mockReturnValueOnce({ areas, chargingPose: { x: 0, y: 0, orientation: 0 } });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/${FILENAME}/restore`)
+      .send({
+        items: [
+          { canonicalName: 'map0', type: 'work', overwrite: true },
+          { canonicalName: 'map1', type: 'work', overwrite: false },
+          { canonicalName: 'map2', type: 'work', overwrite: false },
+          { canonicalName: 'map99', type: 'work', overwrite: false }, // not in ZIP
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.restored).toBe(1);        // map2
+    expect(res.body.overwritten).toBe(1);     // map0
+    expect(res.body.skippedExisting).toBe(1); // map1
+    expect(res.body.skippedNotInBackup).toBe(1); // map99
+  });
+});
