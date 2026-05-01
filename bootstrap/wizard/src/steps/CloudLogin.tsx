@@ -121,7 +121,9 @@ export default function CloudLogin({ onDone }: Props) {
         body: JSON.stringify({
           email,
           password,
-          deviceName: chargerEntry?.equipmentNickName ?? 'Novabot',
+          // Mower nick first — charger nick defaults to "Charging station" in
+          // LFI cloud and would otherwise become the imported equipment name.
+          deviceName: mowerEntry?.equipmentNickName ?? chargerEntry?.equipmentNickName ?? 'Novabot',
           charger: {
             sn: chargerSn,
             address: chargerEntry?.chargerAddress,
