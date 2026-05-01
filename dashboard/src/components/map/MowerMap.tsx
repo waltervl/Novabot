@@ -715,6 +715,10 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
 
   // Charger GPS — used for local meter → GPS conversion for Leaflet display
   const [chargerGps, setChargerGps] = useState<GpsPoint | null>(null);
+  // Charger pose in local meter frame (from map_info.json charging_pose).
+  // Used to shift all local coords so that the physical charger position
+  // projects onto chargerGps instead of the local origin (0,0).
+  const [chargingPose, setChargingPose] = useState<{ x: number; y: number; orientation: number } | null>(null);
 
   // Calibration state
   const [savedCal, setSavedCal] = useState<MapCalibration>(DEFAULT_CAL);
@@ -734,6 +738,7 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
       fetchMaps(sn).then(resp => {
         setMaps(resp.maps);
         setChargerGps(resp.chargerGps);
+        setChargingPose(resp.chargingPose ?? null);
       }).catch(() => setMaps([]));
       fetchTrail(sn).then(setTrail).catch(() => setTrail([]));
       fetchCalibration(sn).then(setSavedCal).catch(() => {});
@@ -835,21 +840,30 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
 
   // Convert local meter maps to GPS-projected maps for Leaflet rendering.
   // All rendering code uses gpsMaps (with lat/lng). Only save/create uses local meters.
+  //
+  // Shift: map_info.json declares charging_pose {x,y} in local meters. The
+  // physical charger sits at that offset, NOT at local (0,0). We shift every
+  // point by -(chargingPose.x, chargingPose.y) so that local (chargingPose.x,
+  // chargingPose.y) projects onto chargerGps (where the user placed the icon).
+  // Without this shift the unicom start (which begins at the actual charger pose)
+  // appears offset from the rendered charger icon on the satellite tile.
   type GpsMapData = Omit<MapData, 'mapArea'> & { mapArea: Array<{ lat: number; lng: number }> };
   const gpsMaps: GpsMapData[] = useMemo(() => {
     if (!isUsableChargerGps(chargerGps)) return [];
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
     // Drop any vertex that becomes non-finite after projection — a single
     // NaN coord crashes Leaflet with "Invalid LatLng object" (issue #15).
     return maps.map(m => ({
       ...m,
       mapArea: m.mapArea.flatMap(p => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
-        const gps = localToGps(p, chargerGps);
+        const gps = localToGps({ x: p.x - offX, y: p.y - offY }, chargerGps);
         if (!Number.isFinite(gps.lat) || !Number.isFinite(gps.lng)) return [];
         return [gps];
       }),
     }));
-  }, [maps, chargerGps]);
+  }, [maps, chargerGps, chargingPose]);
 
   // Save edited/drawn polygon — vertices zijn Leaflet GPS coords, converteer naar lokale meters voor API.
   const handleSavePolygon = useCallback(() => {
@@ -1443,7 +1457,7 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
                     setSavedCal(updated);
                     saveCalibration(sn, updated).then(() => {
                       toast(t('map.chargerSaved'), 'success');
-                      fetchMaps(sn).then(resp => { setMaps(resp.maps); setChargerGps(resp.chargerGps); }).catch(() => {});
+                      fetchMaps(sn).then(resp => { setMaps(resp.maps); setChargerGps(resp.chargerGps); setChargingPose(resp.chargingPose ?? null); }).catch(() => {});
                     });
                   }
                 },
@@ -2010,7 +2024,7 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
                   setPendingChargerMove(null);
                   const result = await saveCalibration(sn, updated, { relocateCharger: true });
                   toast(t('map.chargerRelocated', { count: result.mapsRecalculated ?? 0 }), 'success');
-                  fetchMaps(sn).then(resp => { setMaps(resp.maps); setChargerGps(resp.chargerGps); }).catch(() => {});
+                  fetchMaps(sn).then(resp => { setMaps(resp.maps); setChargerGps(resp.chargerGps); setChargingPose(resp.chargingPose ?? null); }).catch(() => {});
                 }}
                 className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors"
               >
@@ -2027,7 +2041,7 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
                   setPendingChargerMove(null);
                   saveCalibration(sn, updated).then(() => {
                     toast(t('map.chargerSaved'), 'success');
-                    fetchMaps(sn).then(resp => { setMaps(resp.maps); setChargerGps(resp.chargerGps); }).catch(() => {});
+                    fetchMaps(sn).then(resp => { setMaps(resp.maps); setChargerGps(resp.chargerGps); setChargingPose(resp.chargingPose ?? null); }).catch(() => {});
                   });
                 }}
                 className="w-full py-3 bg-white/10 hover:bg-white/15 text-gray-300 text-sm font-medium rounded-xl transition-colors"

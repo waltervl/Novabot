@@ -41,6 +41,7 @@ export async function fetchMaps(sn: string): Promise<MapsResponse> {
     maps: data.maps ?? [],
     chargerGps: data.chargerGps ?? null,
     chargerOrientation: data.chargerOrientation ?? 0,
+    chargingPose: data.chargingPose ?? null,
   };
 }
 

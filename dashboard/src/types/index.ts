@@ -52,6 +52,8 @@ export interface MapsResponse {
   maps: MapData[];
   chargerGps: GpsPoint | null;
   chargerOrientation: number;
+  /** Charger pose in local meter frame from map_info.json charging_pose */
+  chargingPose: { x: number; y: number; orientation: number } | null;
 }
 
 export interface TrailPoint {

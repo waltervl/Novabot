@@ -162,6 +162,7 @@ export function MiniMap({
 }: Props) {
   const [maps, setMaps] = useState<MapData[]>([]);
   const [chargerGps, setChargerGps] = useState<GpsPoint | null>(null);
+  const [chargingPose, setChargingPose] = useState<{ x: number; y: number; orientation: number } | null>(null);
   const [trail, setTrail] = useState<TrailPoint[]>([]);
   const [tileLayer, setTileLayer] = useState<'satellite' | 'street'>('satellite');
 
@@ -171,6 +172,7 @@ export function MiniMap({
     fetchMaps(sn).then(resp => {
       setMaps(resp.maps);
       setChargerGps(resp.chargerGps);
+      setChargingPose(resp.chargingPose ?? null);
     }).catch(() => {});
     fetchTrail(sn).then(setTrail).catch(() => {});
   }, [sn]);
@@ -178,17 +180,23 @@ export function MiniMap({
   // Convert local meter maps to GPS for Leaflet rendering. Drop any
   // vertex that becomes non-finite — Leaflet rejects NaN with a hard
   // throw and white-screens the page (issue #15).
+  //
+  // Shift: map_info.json charging_pose {x,y} is in local meters. The physical
+  // charger sits at that offset, not at local (0,0). Shift every point by
+  // -(chargingPose.x, chargingPose.y) so the charger pose projects to chargerGps.
   const gpsMaps = useMemo(() => {
     if (!isUsableChargerGps(chargerGps)) return [];
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
     return maps.map(m => ({
       ...m,
       mapArea: m.mapArea.flatMap(p => {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
-        const gps = localToGps(p, chargerGps);
+        const gps = localToGps({ x: p.x - offX, y: p.y - offY }, chargerGps);
         return Number.isFinite(gps.lat) && Number.isFinite(gps.lng) ? [gps] : [];
       }) as Array<{ lat: number; lng: number }>,
     }));
-  }, [maps, chargerGps]);
+  }, [maps, chargerGps, chargingPose]);
 
   const center: [number, number] = lat && lng && Number.isFinite(lat) && Number.isFinite(lng)
     ? [lat, lng]

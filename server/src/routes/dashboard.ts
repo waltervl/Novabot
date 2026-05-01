@@ -561,8 +561,9 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
     };
   });
 
-  // Charger orientatie uit ZIP map_info.json
+  // Charger orientatie + chargingPose uit ZIP map_info.json
   let chargerOrientation = 0;
+  let chargingPose: { x: number; y: number; orientation: number } | null = null;
   const STORAGE_PATH = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
   const latestZip = path.join(STORAGE_PATH, `${sn}_latest.zip`);
   if (fs.existsSync(latestZip)) {
@@ -574,7 +575,17 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
         const infoPath = path.join(tmpDir, 'csv_file', 'map_info.json');
         if (fs.existsSync(infoPath)) {
           const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
-          chargerOrientation = info.charging_pose?.orientation ?? 0;
+          const cp = info.charging_pose;
+          if (cp && typeof cp.x === 'number' && typeof cp.y === 'number') {
+            chargingPose = {
+              x: cp.x,
+              y: cp.y,
+              orientation: typeof cp.orientation === 'number' ? cp.orientation : 0,
+            };
+            chargerOrientation = chargingPose.orientation;
+          } else {
+            chargerOrientation = cp?.orientation ?? 0;
+          }
         }
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -586,6 +597,7 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
     maps,
     chargerGps: chargerGps ? { lat: chargerGps.lat, lng: chargerGps.lng } : null,
     chargerOrientation,
+    chargingPose,
   });
 });
 
