@@ -27,6 +27,7 @@ import {
   listBackups,
   scheduleSnapshot,
 } from '../../services/mapBackup.js';
+import { mapRepo } from '../../db/repositories/index.js';
 
 let tmpStorage: string;
 
@@ -158,5 +159,49 @@ describe('mapBackup service', () => {
     const betaDir = path.join(tmpStorage, 'maps', 'backups', 'SN_BETA');
     expect(fs.existsSync(alphaDir)).toBe(true);
     expect(fs.existsSync(betaDir)).toBe(true);
+  });
+});
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+describe('bootstrap', () => {
+  it('creates a bootstrap snapshot when backups dir is empty AND DB has maps', () => {
+    mapRepo.create({
+      map_id: 'm0',
+      mower_sn: 'LFIN_BOOT',
+      map_name: 'map0',
+      map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]),
+      map_type: 'work',
+    });
+    const result = listBackups('LFIN_BOOT');
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    expect(result[0].filename).toMatch(/^bootstrap-/);
+  });
+
+  it('falls back to _latest.zip when DB is empty but _latest.zip exists', () => {
+    const root = path.resolve(tmpStorage, 'maps');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'LFIN_LATEST_latest.zip'), Buffer.from('PKstub'));
+    const result = listBackups('LFIN_LATEST');
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    expect(result[0].filename).toMatch(/^bootstrap-/);
+  });
+
+  it('returns empty when DB empty AND no _latest.zip', () => {
+    expect(listBackups('LFIN_NOTHING')).toEqual([]);
+  });
+
+  it('does not re-bootstrap on subsequent calls if a backup exists', () => {
+    mapRepo.create({
+      map_id: 'm1',
+      mower_sn: 'LFIN_TWICE',
+      map_name: 'map0',
+      map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]),
+      map_type: 'work',
+    });
+    const first = listBackups('LFIN_TWICE');
+    const second = listBackups('LFIN_TWICE');
+    expect(first.length).toBe(second.length);
+    expect(first[0].filename).toBe(second[0].filename); // same file, not re-bootstrapped
   });
 });

@@ -13,6 +13,7 @@
 import path from 'path';
 import fs from 'fs';
 import { generateMapZipFromDb } from '../mqtt/mapConverter.js';
+import { mapRepo } from '../db/repositories/index.js';
 
 const TAG = '[MAP-BACKUP]';
 
@@ -45,27 +46,23 @@ function backupDir(sn: string): string {
 
 /**
  * List all backup snapshots for a mower, ordered newest first.
+ *
+ * If the backups directory is empty (e.g. fresh install before any map
+ * mutation), attempts a one-shot bootstrap in this priority order:
+ *   1. DB has map rows → generate a ZIP via generateMapZipFromDb and copy it.
+ *   2. DB empty but `<STORAGE_PATH>/maps/<sn>_latest.zip` exists → copy that.
+ *   3. Both empty → return [].
+ *
+ * Once at least one backup exists the bootstrap is skipped on all future calls.
  */
 export function listBackups(sn: string): Array<{ filename: string; ts: number; sizeBytes: number }> {
-  const dir = path.resolve(
-    process.env.STORAGE_PATH ?? './storage',
-    'maps',
-    'backups',
-    sn,
-  );
-  if (!fs.existsSync(dir)) return [];
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.zip'));
-  return files
-    .map(f => {
-      try {
-        const stat = fs.statSync(path.join(dir, f));
-        return { filename: f, ts: stat.mtimeMs, sizeBytes: stat.size };
-      } catch {
-        return null;
-      }
-    })
-    .filter((x): x is { filename: string; ts: number; sizeBytes: number } => x !== null)
-    .sort((a, b) => b.ts - a.ts);
+  const dir = backupDir(sn);
+  const initial = _readDirSorted(dir);
+  if (initial.length === 0) {
+    _bootstrapBackup(sn);
+    return _readDirSorted(dir);
+  }
+  return initial;
 }
 
 /**
@@ -104,6 +101,70 @@ export function scheduleSnapshot(sn: string): void {
 // ── Internal ─────────────────────────────────────────────────────────────────
 
 /**
+ * Read and return all .zip entries in `dir`, sorted newest first.
+ * Returns [] if the directory does not exist or contains no ZIPs.
+ */
+function _readDirSorted(dir: string): Array<{ filename: string; ts: number; sizeBytes: number }> {
+  if (!fs.existsSync(dir)) return [];
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.zip'));
+  return files
+    .map(f => {
+      try {
+        const stat = fs.statSync(path.join(dir, f));
+        return { filename: f, ts: stat.mtimeMs, sizeBytes: stat.size };
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is { filename: string; ts: number; sizeBytes: number } => x !== null)
+    .sort((a, b) => b.ts - a.ts);
+}
+
+/**
+ * One-shot bootstrap: create the first backup entry when no backups exist yet.
+ *
+ * Priority:
+ *   1. DB has map rows for this SN → generate a fresh ZIP from DB data.
+ *   2. DB empty but `<STORAGE_PATH>/maps/<sn>_latest.zip` exists → copy it.
+ *   3. Both empty → no-op (listBackups will return []).
+ *
+ * The resulting file is named `bootstrap-<ISO>.zip` so it is clearly
+ * distinguishable from regular mutation snapshots in the admin UI.
+ */
+function _bootstrapBackup(sn: string): void {
+  const dir = backupDir(sn);
+  const ts = new Date().toISOString().replace(/:/g, '-');
+  const target = path.join(dir, `bootstrap-${ts}.zip`);
+
+  // Path 1: DB has maps → generate fresh ZIP
+  const dbCount = mapRepo.countByMowerSn(sn);
+  if (dbCount > 0) {
+    const zipPath = generateMapZipFromDb(sn, 0);
+    if (zipPath && fs.existsSync(zipPath)) {
+      try {
+        fs.copyFileSync(zipPath, target);
+        console.log(`${TAG} bootstrap snapshot from DB: ${target} (${dbCount} maps)`);
+      } catch (err) {
+        console.error(`${TAG} bootstrap from DB failed for ${sn}:`, err);
+      }
+    }
+    return;
+  }
+
+  // Path 2: DB empty but _latest.zip exists → copy it
+  const mapsRoot = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
+  const latestZip = path.join(mapsRoot, `${sn}_latest.zip`);
+  if (fs.existsSync(latestZip)) {
+    try {
+      fs.copyFileSync(latestZip, target);
+      console.log(`${TAG} bootstrap snapshot from _latest.zip: ${target}`);
+    } catch (err) {
+      console.error(`${TAG} bootstrap from _latest.zip failed for ${sn}:`, err);
+    }
+  }
+}
+
+/**
  * Build and persist a snapshot immediately (no debounce).
  * Returns the absolute path of the saved ZIP, or null on failure.
  */
@@ -134,7 +195,7 @@ function _fireSnapshot(sn: string): string | null {
  * Prune oldest snapshots so at most RETENTION files remain per mower.
  */
 function _enforceRetention(sn: string): void {
-  const all = listBackups(sn); // newest first
+  const all = _readDirSorted(backupDir(sn)); // newest first — bypass bootstrap logic
   const toDelete = all.slice(RETENTION);
   for (const b of toDelete) {
     try {
