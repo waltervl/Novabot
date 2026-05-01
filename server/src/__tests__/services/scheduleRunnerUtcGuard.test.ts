@@ -21,11 +21,11 @@ describe('SQLite datetime("now") parsing (issue #13 regression)', () => {
     const buggy = new Date(sqliteUtc);
     const correct = parseSqliteUtc(sqliteUtc);
     const driftMs = correct.getTime() - buggy.getTime();
-    // getTimezoneOffset() returns positive minutes WEST of UTC; the drift
-    // between the correct UTC parse and the buggy local parse equals the
-    // negated offset. In UTC the test still passes (drift = 0).
-    const expectedDriftMs = -new Date().getTimezoneOffset() * 60_000;
-    expect(driftMs).toBe(expectedDriftMs);
+    // The drift magnitude equals the local timezone offset. Compare via
+    // |drift| so the assertion holds in UTC (CI runner) where Object.is
+    // distinguishes +0 from -0 and would otherwise fail this test.
+    const expectedDriftMs = Math.abs(new Date().getTimezoneOffset()) * 60_000;
+    expect(Math.abs(driftMs)).toBe(expectedDriftMs);
   });
 
   it('correctly parses SQLite UTC timestamp as UTC', () => {
