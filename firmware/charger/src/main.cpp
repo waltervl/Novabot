@@ -260,13 +260,18 @@ static void loraConfigTask(void* param) {
                     loraSendPayload(payload, 2);
                     break;
 
-                // ── Queue 0x03: GPS GNGGA relay → [0x31, GNGGA...] ─────
+                // ── Queue 0x03: RTK byte stream → [0x31, raw UM980 bytes] ──
+                // Matches stock FUN_4200b8d4 case 0x03: drains gps_parser RTK
+                // stream buffer in chunks ≤ RTK_CHUNK_MAX, emits one or more
+                // LoRa frames per queue notify until the buffer is empty.
+                // Bytes are NMEA + RTCM3 mixed straight from UM980 — mower
+                // STM32 routes them to its GNSS chip's RTCM input.
                 case LORA_Q_GPS_POS: {
-                    GpsData gps = gpsGetData();
-                    if (gps.lastGnggaLen > 0) {
-                        payloadLen = loraBuildRtkRelay(payload, sizeof(payload),
-                                                       gps.lastGngga, gps.lastGnggaLen);
-                        if (payloadLen > 0) loraSendPayload(payload, payloadLen);
+                    while (gpsRtkAvailable() > 0) {
+                        payload[0] = LORA_CAT_RTK_RELAY;
+                        size_t got = gpsReadRtkChunk(payload + 1, RTK_CHUNK_MAX);
+                        if (got == 0) break;
+                        loraSendPayload(payload, got + 1);
                     }
                     break;
                 }
@@ -403,26 +408,54 @@ static void chargerConfigTask(void* param) {
     }
 }
 
-// ── GPS Task — queue GNGGA + position relays to LoRa task ───────────────────
+// ── GPS / RTK Task — pump UM980 bytes to LoRa + MQTT ───────────────────────
+//
+// Matches stock FUN_42009***  byte forwarder (state 0x0e):
+//   UART2 → stream buffer → LoRa queue 0x03 → 0x31 frames → mower STM32
+// Plus OpenNova-only branch:
+//   UART2 → mqtt RTCM queue → MQTT topic rtk/charger/<SN>/raw → external RTK
+//   consumers (perimeter walker, server NTRIP caster).
+//
+// gpsPumpRtk() reads + pushes to its own RTK stream (drained by LoRa task)
+// AND returns the same byte chunk so this task can mirror it to MQTT.
 
 static void gpsTaskFunc(void* param) {
     QueueHandle_t loraQueue = mqttGetLoraQueue();
     uint32_t lastGpsPosRelay = 0;
+    uint32_t bytesSinceNotify = 0;
+
+    // Mirror buffer — gpsPumpRtk fills its own RTK stream buffer for LoRa
+    // and copies the same bytes here for MQTT fan-out. Single UART read,
+    // dual consumer.
+    static uint8_t mqttMirror[256];
 
     for (;;) {
-        if (gpsUpdate()) {
-            GpsData data = gpsGetData();
+        size_t n = gpsPumpRtk(mqttMirror, sizeof(mqttMirror));
 
-            // Queue GNGGA relay (queue cmd 0x03) for RTK correction
-            if (data.lastGnggaLen > 0 && loraQueue) {
-                LoraQueueCmd cmd = {};
-                cmd.queueId = LORA_Q_GPS_POS;  // 0x03 → [0x31, GNGGA...]
-                xQueueSend(loraQueue, &cmd, 0);
+        if (n > 0) {
+            // Fan-out: push to MQTT RTCM queue (drained by mqtt_config_task).
+            mqttQueueRtcm(mqttMirror, n);
+
+            // Notify LoRa task that bytes are waiting; LoRa task drains the
+            // stream buffer in ≤180 B chunks until empty. Coalesce notifies:
+            // one queue send per ~180 B saves queue traffic when UM980 bursts.
+            if (loraQueue) {
+                bytesSinceNotify += n;
+                if (bytesSinceNotify >= RTK_CHUNK_MAX || gpsRtkAvailable() >= RTK_CHUNK_MAX) {
+                    LoraQueueCmd cmd = {};
+                    cmd.queueId = LORA_Q_GPS_POS;  // 0x03 — drain RTK stream buffer
+                    xQueueSend(loraQueue, &cmd, 0);
+                    bytesSinceNotify = 0;
+                }
             }
+        }
 
-            // Queue GPS position relay (queue cmd 0x04) every 2 seconds
-            uint32_t now = millis();
-            if (now - lastGpsPosRelay >= 2000 && data.valid && loraQueue) {
+        // Periodic GPS-position ack (queue cmd 0x04) every 2 s — diagnostic
+        // for mower / dashboard. Uses parsed GNGGA fix data, not raw stream.
+        uint32_t now = millis();
+        if (now - lastGpsPosRelay >= 2000 && loraQueue) {
+            GpsData data = gpsGetData();
+            if (data.valid) {
                 lastGpsPosRelay = now;
                 LoraQueueCmd cmd = {};
                 cmd.queueId = LORA_Q_GPS_ACK;  // 0x04 → [0x33, lat, lon]
@@ -430,7 +463,7 @@ static void gpsTaskFunc(void* param) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(RTK_READ_INTERVAL_MS));
     }
 }
 

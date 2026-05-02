@@ -1,7 +1,7 @@
 #pragma once
 
 // ── Firmware version (single source of truth) ──────────────────────────────
-#define FIRMWARE_VERSION "v0.1.0"
+#define FIRMWARE_VERSION "v0.1.1"
 
 // ── UART0 — Debug console ───────────────────────────────────────────────────
 #define UART_DEBUG          Serial
@@ -29,8 +29,14 @@
 #define MQTT_DEFAULT_PORT   1883
 #define MQTT_TOPIC_PUB_FMT  "Dart/Receive_mqtt/%s"
 #define MQTT_TOPIC_SUB_FMT  "Dart/Send_mqtt/%s"
+#define MQTT_TOPIC_RTCM_FMT "rtk/charger/%s/raw"
 #define MQTT_QOS_PUB        0
 #define MQTT_QOS_SUB        1
+
+// ── RTK / RTCM Stream ───────────────────────────────────────────────────────
+#define RTK_STREAM_BUF_SIZE 4096   // FreeRTOS stream buffer for raw UM980 bytes
+#define RTK_CHUNK_MAX       180    // Max bytes per LoRa frame (matches stock 0xb5 limit)
+#define RTK_READ_INTERVAL_MS 20    // GPS task poll interval (~50 Hz)
 
 // ── BLE Provisioning ────────────────────────────────────────────────────────
 #define BLE_DEVICE_NAME     "CHARGER_PILE"

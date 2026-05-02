@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <freertos/stream_buffer.h>
 
 // ── Static state ─────────────────────────────────────────────────────────────
 
@@ -33,6 +34,11 @@ static volatile bool mqttConnectedFlag = false;
 
 // Status publish gate — matches Ghidra PTR_DAT_42001408
 static volatile uint8_t statusPublishEnabled = 1;
+
+// RTCM publish queue — gps task is producer, mqtt_config_task drains.
+// Stream buffer keeps PubSubClient single-threaded (gps task never calls publish).
+static StreamBufferHandle_t rtcmPubBuf = NULL;
+static char rtcmTopic[64] = {0};
 
 // ── Build MQTT client ID from BLE MAC ───────────────────────────────────────
 // Client ID = "ESP32_" + last 3 bytes of BLE MAC in hex
@@ -93,18 +99,23 @@ void mqttInit(const char* sn, const char* host, uint16_t port) {
     strncpy(serialNumber, sn, sizeof(serialNumber) - 1);
     snprintf(pubTopic, sizeof(pubTopic), MQTT_TOPIC_PUB_FMT, sn);
     snprintf(subTopic, sizeof(subTopic), MQTT_TOPIC_SUB_FMT, sn);
+    snprintf(rtcmTopic, sizeof(rtcmTopic), MQTT_TOPIC_RTCM_FMT, sn);
     buildClientId();
 
+    // PubSubClient buffer must hold one MQTT publish frame. RTCM bursts can
+    // approach 1 KB; bump to 1.5 KB to keep status JSON + RTCM publishes safe.
     mqtt.setServer(host, port);
     mqtt.setCallback(onMqttMessage);
-    mqtt.setBufferSize(1024);
+    mqtt.setBufferSize(1536);
 
     loraQueue = xQueueCreate(10, sizeof(LoraQueueCmd));
     otaQueue = xQueueCreate(1, sizeof(OtaRequest));
     mqttCmdQueue = xQueueCreate(5, sizeof(uint8_t));
+    rtcmPubBuf = xStreamBufferCreate(RTK_STREAM_BUF_SIZE, 1);
 
     Serial.printf("[MQTT] Configured: %s:%d, clientId=%s\n", host, port, clientId);
     Serial.printf("[MQTT] Pub: %s, Sub: %s\n", pubTopic, subTopic);
+    Serial.printf("[MQTT] RTCM: %s\n", rtcmTopic);
 }
 
 void mqttLoop() {
@@ -153,6 +164,35 @@ bool mqttPublishEncrypted(const char* json) {
     }
 
     return mqtt.publish(pubTopic, encrypted, encLen);
+}
+
+bool mqttPublishBinary(const char* topic, const uint8_t* data, size_t len) {
+    if (!mqtt.connected() || !topic || !data || len == 0) return false;
+    // PubSubClient::publish(topic, payload, length) — binary safe, no retain.
+    return mqtt.publish(topic, data, len, false);
+}
+
+void mqttQueueRtcm(const uint8_t* data, size_t len) {
+    if (!rtcmPubBuf || !data || len == 0) return;
+    // Non-blocking push; drop on overflow (stale RTCM useless to walker).
+    xStreamBufferSend(rtcmPubBuf, data, len, 0);
+}
+
+// Drain RTCM stream buffer + publish in one MQTT frame per drain cycle.
+// Called from mqtt_config_task only — keeps PubSubClient single-threaded.
+static void drainAndPublishRtcm() {
+    if (!rtcmPubBuf) return;
+    size_t avail = xStreamBufferBytesAvailable(rtcmPubBuf);
+    if (avail == 0) return;
+
+    // PubSubClient buffer is 1536 — leave headroom for MQTT framing.
+    if (avail > 1200) avail = 1200;
+
+    static uint8_t scratch[1200];
+    size_t got = xStreamBufferReceive(rtcmPubBuf, scratch, avail, 0);
+    if (got > 0) {
+        mqttPublishBinary(rtcmTopic, scratch, got);
+    }
 }
 
 // ── Helper: build response JSON ─────────────────────────────────────────────
@@ -457,6 +497,11 @@ void mqttConfigTask(void* param) {
         }
 
         mqttLoop();
+
+        // Drain RTCM byte stream queued by gps task and publish to
+        // rtk/charger/<SN>/raw. Called every loop tick (~500 ms) so walker
+        // sees corrections within ~1 RTCM cycle.
+        drainAndPublishRtcm();
 
         // Check for incoming commands (500ms timeout, matches Ghidra)
         uint8_t cmd;

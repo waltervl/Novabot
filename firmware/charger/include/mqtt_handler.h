@@ -20,6 +20,15 @@ bool mqttPublishRaw(const char* json);
 // Publish AES-encrypted JSON on charger's publish topic
 bool mqttPublishEncrypted(const char* json);
 
+// Publish raw binary payload on an arbitrary topic (no encryption, no JSON wrap).
+// Used for the RTCM byte stream so external RTK consumers (perimeter walker,
+// NTRIP caster) can subscribe without dealing with JSON or AES.
+bool mqttPublishBinary(const char* topic, const uint8_t* data, size_t len);
+
+// Producer-side push: queue raw RTCM/NMEA bytes for MQTT publish from gps task.
+// Drained in mqtt_config_task to keep PubSubClient single-threaded.
+void mqttQueueRtcm(const uint8_t* data, size_t len);
+
 // Build and publish up_status_info (matches Ghidra FUN_4200f00c)
 void mqttPublishStatus();
 
