@@ -21,6 +21,8 @@ import { execSync } from 'child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import path from 'path';
 import { db } from '../db/database.js';
+import { mapRepo } from '../db/repositories/maps.js';
+import { shiftPoints, isToChargeUnicomName } from '../services/polygonOffset.js';
 
 const TAG = '[MAP-CONV]';
 
@@ -243,6 +245,8 @@ export function generateMapZipFromDb(
     return null;
   }
 
+  const offset = mapRepo.getPolygonOffset(sn);
+
   const areas: MapArea[] = [];
 
   // Splits DB rijen in werk, unicom en obstakels
@@ -252,9 +256,10 @@ export function generateMapZipFromDb(
 
   for (let i = 0; i < workRows.length; i++) {
     const row = workRows[i];
-    const points: LocalPoint[] = JSON.parse(row.map_area!);
+    const rawPoints: LocalPoint[] = JSON.parse(row.map_area!);
 
-    if (!points || points.length < 3) continue;
+    if (!rawPoints || rawPoints.length < 3) continue;
+    const points = shiftPoints(rawPoints, offset.x, offset.y, false);
 
     areas.push({
       mapIndex: i,
@@ -278,8 +283,9 @@ export function generateMapZipFromDb(
     });
     for (const obs of myObstacles) {
       try {
-        const obsPoints: LocalPoint[] = JSON.parse(obs.map_area!);
-        if (!obsPoints || obsPoints.length < 3) continue;
+        const rawObsPoints: LocalPoint[] = JSON.parse(obs.map_area!);
+        if (!rawObsPoints || rawObsPoints.length < 3) continue;
+        const obsPoints = shiftPoints(rawObsPoints, offset.x, offset.y, false);
         // Extract sub-index from whichever field carries the canonical name.
         const canonical = (obs.map_name && obstaclePattern.test(obs.map_name))
           ? obs.map_name
@@ -297,10 +303,14 @@ export function generateMapZipFromDb(
 
     // Zoek een handmatig getekend unicom kanaal voor dit werkgebied
     if (unicomRows[i]) {
-      const unicomPoints: LocalPoint[] = JSON.parse(unicomRows[i].map_area!);
+      const rawUnicomPoints: LocalPoint[] = JSON.parse(unicomRows[i].map_area!);
+      const unicomName = unicomRows[i].file_name ?? unicomRows[i].map_name ?? '';
+      // Strip the trailing .csv extension to match isToChargeUnicomName regex
+      // which expects bare canonical names like "map0tocharge_unicom".
+      const unicomCanonical = unicomName.replace(/\.csv$/, '');
+      const unicomPoints = shiftPoints(rawUnicomPoints, offset.x, offset.y, isToChargeUnicomName(unicomCanonical));
       if (unicomPoints && unicomPoints.length >= 2) {
         // Haal target uit file_name/map_name: "map0tocharge_unicom" → "charge", "map0tomap1_0_unicom" → "map1_0"
-        const unicomName = unicomRows[i].file_name ?? unicomRows[i].map_name ?? '';
         const targetMatch = unicomName.match(/^map\d+to(.+?)_?unicom/);
         areas.push({
           mapIndex: i,
