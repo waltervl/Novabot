@@ -146,9 +146,29 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
     }
     if (workStatus === null) {
       const msg = cache.get('msg') ?? '';
-      if (msg.includes('Work:FINISHED')) workStatus = 'finished';
-      else if (msg.includes('Work:WAIT') && cache.get('error_status') !== '0') workStatus = 'interrupted abnormally';
-      else if (msg) workStatus = 'interrupted artificially';
+      const errorStatus = cache.get('error_status') ?? '0';
+      const covRatio = parseFloat(cache.get('cov_ratio') ?? '0');
+      const finishedNum = parseInt(cache.get('finished_num') ?? '0', 10);
+      // Issue #17 (waltervl): completed sessions were tagged "interrupted
+      // artificially" because the mower's `msg` after a normal end is
+      // "Mode:COVERAGE Work:CANCELLED Prev work:USER_RECHARGE_STOP
+      // Recharge: FINISHED" — Work:FINISHED isn't always present in the
+      // current msg, the actual completion signal lives in Prev work or
+      // in cov_ratio approaching 1. Order matters: check finished
+      // signals BEFORE the "anything else with a msg" fallback.
+      const looksFinished =
+        msg.includes('Work:FINISHED') ||
+        msg.includes('Prev work:FINISHED') ||
+        msg.includes('Prev work:USER_RECHARGE_STOP') ||
+        covRatio >= 0.95 ||
+        finishedNum > 0;
+      if (looksFinished && errorStatus === '0') {
+        workStatus = 'finished';
+      } else if (msg.includes('Work:WAIT') && errorStatus !== '0') {
+        workStatus = 'interrupted abnormally';
+      } else if (msg) {
+        workStatus = 'interrupted artificially';
+      }
     }
     if (startWay === null) {
       // We don't know which app initiated. Default to a generic

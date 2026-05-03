@@ -1272,12 +1272,22 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
           </button>
           {polygonMaps.length > 0 && (() => {
             const counts = { work: 0, obstacle: 0, unicom: 0, other: 0 };
+            // Issue #28: count unicoms over the FULL gpsMaps set (path lines
+            // can have just 2 points and were excluded by the polygon-only
+            // filter, which made the badge show 1/2 channels). Work +
+            // obstacle still need 3+ points to be a real polygon.
             for (const m of polygonMaps) {
               const s = getAreaStyle(m.mapType, m.mapId, m.mapName);
               if (s === AREA_STYLES.work) counts.work++;
               else if (s === AREA_STYLES.obstacle) counts.obstacle++;
               else if (s === AREA_STYLES.unicom) counts.unicom++;
               else counts.other++;
+            }
+            for (const m of gpsMaps) {
+              if (m.mapArea.length >= 2 && m.mapArea.length < 3) {
+                const s = getAreaStyle(m.mapType, m.mapId, m.mapName);
+                if (s === AREA_STYLES.unicom) counts.unicom++;
+              }
             }
             const parts: string[] = [];
             if (counts.work > 0) parts.push(t('map.maps', { count: counts.work }));

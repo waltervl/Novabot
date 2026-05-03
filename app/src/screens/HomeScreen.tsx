@@ -767,10 +767,29 @@ export default function HomeScreen() {
         const res = await api.fetchMaps(mower.sn);
         // Show the currently mowing zone, or the first work map as default
         const workMaps = (res.maps ?? []).filter((m: any) => m.mapType === 'work' && m.mapArea?.length >= 3);
+        // current_map_ids encoding mirrors start_navigation.area:
+        //   1   = map0
+        //   10  = map1
+        //   100 = map2 (NOT bit-2 — verified live on dir26738's mower #14)
+        //   200 = "all maps" sentinel during multi-map sessions; in that
+        //         case we don't know which slot is currently being cut, so
+        //         pick the first work map until cov_map_path or another
+        //         signal narrows it down.
+        // Issue #14: the previous heuristic (currentMapIds-1 as array index)
+        // both used the wrong encoding AND assumed the server's update-order
+        // matched the firmware's map order, which broke selection.
         const currentMapIds = parseInt(devices.get(mower.sn)?.sensors?.current_map_ids ?? '0', 10);
-        // current_map_ids: 1=map0, 2=map1, etc. (1-indexed during mowing, 0=none)
-        const activeIdx = currentMapIds > 0 ? currentMapIds - 1 : 0;
-        const activeWork = workMaps[activeIdx] ?? workMaps[0];
+        const activeCanonicalIdx = currentMapIds === 1 ? 0
+          : currentMapIds === 10 ? 1
+          : currentMapIds === 100 ? 2
+          : null;
+        const matchByCanonical = activeCanonicalIdx == null
+          ? null
+          : workMaps.find((m: any) => {
+              const m2 = (m.canonicalName ?? '').match(/^map(\d+)/);
+              return m2 ? parseInt(m2[1], 10) === activeCanonicalIdx : false;
+            });
+        const activeWork = matchByCanonical ?? workMaps[0];
         if (activeWork) setActiveMapPolygon(activeWork.mapArea);
         const obs = (res.maps ?? []).filter((m: any) => m.mapType === 'obstacle' && m.mapArea?.length >= 3);
         setObstaclePolygons(obs.map((m: any) => ({ id: m.mapId, points: m.mapArea })));
