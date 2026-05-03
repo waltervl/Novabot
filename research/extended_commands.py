@@ -2192,9 +2192,10 @@ def _server_from_config():
         with open("/userdata/lfi/json_config.json") as f:
             cfg = json.load(f)
         addr = cfg.get("mqtt", {}).get("value", {}).get("addr")
-        # MQTT broker = server; HTTP is on same host, port 3000 (Docker) or 80.
-        # Prefer port 80 since the mower's uploadEquipmentMap already uses it.
-        return f"{addr}:80" if addr else None
+        # MQTT broker = server; HTTP on same host, port 8080 (Docker production)
+        # or 3000 (dev). Port 80 is wrong — Caddy on the NAS doesn't proxy
+        # /api/dashboard/maps/* and returns 404. Confirmed live 2026-05-03.
+        return f"{addr}:8080" if addr else None
     except Exception:
         return None
 

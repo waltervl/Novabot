@@ -24,7 +24,7 @@ OUTPUT_DIR="$SCRIPT_DIR/firmware"
 
 # === Configuratie (aanpasbaar via CLI args) ===
 SERVER_HOST="novabot.local"
-SERVER_HTTP_PORT="80"  # OpenNova server standaard poort (Docker draait op 80, dev server op 3000 → gebruik --http-port 3000)
+SERVER_HTTP_PORT="8080"  # OpenNova server poort (Docker draait standaard op 8080, dev server op 3000 → gebruik --http-port 3000)
 MQTT_HOST=""  # Leeg = zelfde als SERVER_HOST
 MQTT_PORT="1883"
 SSH_PASSWORD="novabot"
