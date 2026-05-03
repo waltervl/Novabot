@@ -566,6 +566,11 @@ export default function HomeScreen() {
   const [showHistory, setShowHistory] = useState(false);
   const [showAlerts, setShowAlerts] = useState(false);
   const [activeMapPolygon, setActiveMapPolygon] = useState<Array<{ x: number; y: number }>>([]);
+  // Issue #14: home preview now keeps every work polygon so the mower icon
+  // can never appear "outside" the visible boundary just because we picked
+  // the wrong slot. Active polygon (above) renders highlighted; the rest
+  // render dimmed underneath.
+  const [allWorkPolygons, setAllWorkPolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
   const [mowingTrail, setMowingTrail] = useState<Array<{ x: number; y: number }>>([]);
   const [plannedPaths, setPlannedPaths] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
   const [obstaclePolygons, setObstaclePolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
@@ -791,6 +796,15 @@ export default function HomeScreen() {
             });
         const activeWork = matchByCanonical ?? workMaps[0];
         if (activeWork) setActiveMapPolygon(activeWork.mapArea);
+        // Stash the OTHER polygons so the canvas can render them dimmed
+        // beneath the active one. Without this the mower icon (plotted in
+        // the global map frame) drifts outside the visible polygon when
+        // we pick the wrong slot.
+        setAllWorkPolygons(
+          workMaps
+            .filter((m: any) => m.mapId !== activeWork?.mapId)
+            .map((m: any) => ({ id: m.mapId, points: m.mapArea })),
+        );
         const obs = (res.maps ?? []).filter((m: any) => m.mapType === 'obstacle' && m.mapArea?.length >= 3);
         setObstaclePolygons(obs.map((m: any) => ({ id: m.mapId, points: m.mapArea })));
       } catch { /* ignore */ }
@@ -1482,6 +1496,7 @@ export default function HomeScreen() {
                 activeAreaPoints={parseInt(devices.get(mower.sn)?.sensors?.covering_area_points ?? '0', 10) || undefined}
                 liveCoverSegment={parseCoveringPoints(devices.get(mower.sn)?.sensors?.covering_points)}
                 obstacles={obstaclePolygons}
+                inactivePolygons={allWorkPolygons}
                 mowerPos={mower.mowerPosX != null && mower.mowerPosY != null ? { x: mower.mowerPosX, y: mower.mowerPosY } : null}
                 mowerHeading={mower.mowerHeading ?? undefined}
                 chargerPose={devices.get(mower.sn)?.dockPose ?? null}
