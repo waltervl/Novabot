@@ -2462,10 +2462,10 @@ function polygonCalKeyHandler(e) {
   if (!polygonCal) return;
   var step = e.shiftKey ? 0.10 : 0.01;
   switch (e.key) {
-    case 'ArrowUp':    nudgePolygonOffset(0, step, e); e.preventDefault(); break;
-    case 'ArrowDown':  nudgePolygonOffset(0, -step, e); e.preventDefault(); break;
-    case 'ArrowLeft':  nudgePolygonOffset(-step, 0, e); e.preventDefault(); break;
-    case 'ArrowRight': nudgePolygonOffset(step, 0, e); e.preventDefault(); break;
+    case 'ArrowUp':    nudgePolygonOffset(0, step, null); e.preventDefault(); break;
+    case 'ArrowDown':  nudgePolygonOffset(0, -step, null); e.preventDefault(); break;
+    case 'ArrowLeft':  nudgePolygonOffset(-step, 0, null); e.preventDefault(); break;
+    case 'ArrowRight': nudgePolygonOffset(step, 0, null); e.preventDefault(); break;
     case 'Escape':     cancelPolygonCalibration(); break;
   }
 }
@@ -2742,7 +2742,7 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
       if (!g.mapArea || g.mapArea.length < 2) return;
       ctx.save();
       ctx.strokeStyle = 'rgba(120,120,120,0.6)';
-      ctx.fillStyle = 'rgba(120,120,120,0.18)';
+      ctx.fillStyle = 'rgba(120,120,120,0.35)';
       ctx.setLineDash([4, 3]);
       ctx.lineWidth = 1;
       ctx.beginPath();
