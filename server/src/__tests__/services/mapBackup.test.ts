@@ -42,6 +42,7 @@ import {
 } from '../../services/mapBackup.js';
 import { generateMapZipFromDb } from '../../mqtt/mapConverter.js';
 import { mapRepo } from '../../db/repositories/index.js';
+import { db } from '../../db/database.js';
 
 /**
  * Build a real ZIP under STORAGE_PATH containing a csv_file/ subtree —
@@ -326,5 +327,48 @@ describe('regenerateLatestZipFromBackup', () => {
     expect(info.charging_pose.x).toBeCloseTo(0.5);
     expect(info.charging_pose.y).toBeCloseTo(0.5);
     expect(info['map0_work.csv'].map_size).toBeCloseTo(16); // 4×4
+  });
+
+  it('charging_pose in map_info.json stays at unshifted anchor when offset is non-zero', () => {
+    const SN = 'LFIN_ANCHOR_STABLE';
+    // Seed work + tocharge unicom rows (regenerate needs at least one work
+    // map and one mapNtocharge_unicom for getPolygonAnchor to succeed).
+    mapRepo.create({
+      map_id: `${SN}-work`,
+      mower_sn: SN,
+      map_name: 'map0_work',
+      file_name: 'map0_work.csv',
+      map_area: JSON.stringify([
+        { x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }, { x: 0, y: 5 },
+      ]),
+      map_type: 'work',
+      canonical_name: 'map0_work',
+    });
+    const anchorPt = { x: -1.21, y: 0.48 };
+    mapRepo.create({
+      map_id: `${SN}-tocharge`,
+      mower_sn: SN,
+      map_name: 'map0tocharge_unicom',
+      file_name: 'map0tocharge_unicom.csv',
+      map_area: JSON.stringify([anchorPt, { x: -0.5, y: 0.2 }, { x: 0, y: 0 }]),
+      map_type: 'unicom',
+      canonical_name: 'map0tocharge_unicom',
+    });
+    mapRepo.setPolygonOffset(SN, 0.10, 0.10);
+    vi.mocked(generateMapZipFromDb).mockImplementationOnce(() => buildRealZipWithCsvFile());
+
+    const finalZip = regenerateLatestZipFromBackup(SN);
+    expect(finalZip).not.toBeNull();
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-stable-'));
+    execSync(`unzip -o -q "${finalZip}" -d "${dir}"`);
+    const info = JSON.parse(fs.readFileSync(path.join(dir, 'csv_file/map_info.json'), 'utf8'));
+    expect(info.charging_pose.x).toBeCloseTo(anchorPt.x);
+    expect(info.charging_pose.y).toBeCloseTo(anchorPt.y);
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    // Cleanup the seeded rows so the test doesn't pollute later cases.
+    db.prepare('DELETE FROM maps WHERE mower_sn = ?').run(SN);
+    db.prepare('DELETE FROM map_calibration WHERE mower_sn = ?').run(SN);
   });
 });
