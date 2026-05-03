@@ -412,7 +412,7 @@ export function MowerControls({
         </button>
 
         <button
-          onClick={() => send({ pause_navigation: {} }, t('controls.pause'))}
+          onClick={() => send({ pause_navigation: { cmd_num: nextCmdNum() } }, t('controls.pause'))}
           disabled={disabled}
           className={`${btnBase} bg-gray-700/60 text-yellow-400 hover:bg-yellow-700/40`}
           title={t('controls.pause')}
@@ -421,7 +421,7 @@ export function MowerControls({
         </button>
 
         <button
-          onClick={() => send({ resume_navigation: {} }, t('controls.resume'))}
+          onClick={() => send({ resume_navigation: { cmd_num: nextCmdNum() } }, t('controls.resume'))}
           disabled={disabled}
           className={`${btnBase} bg-gray-700/60 text-blue-400 hover:bg-blue-700/40`}
           title={t('controls.resume')}
@@ -440,7 +440,28 @@ export function MowerControls({
 
         {/* Secondary buttons — hidden on mobile, inline on desktop */}
         <button
-          onClick={() => send({ go_pile: {} }, t('controls.goToCharge'))}
+          onClick={async () => {
+            // Mirror app's HomeScreen.sendGoHome flow exactly: go_pile alone is
+            // the legacy preamble; the real return-to-charge is go_to_charge
+            // with cmd_num + chargerpile sentinel. Without the second packet
+            // the mower acks but does nothing. Issue #16.
+            try {
+              setBusy(true);
+              await sendCommand(sn, { go_pile: {} });
+              await new Promise(r => setTimeout(r, 500));
+              await sendCommand(sn, {
+                go_to_charge: {
+                  cmd_num: nextCmdNum(),
+                  chargerpile: { latitude: 200, longitude: 200 },
+                },
+              });
+              toast(`✓ ${t('controls.goToCharge')}`, 'success');
+            } catch (err) {
+              const detail = err instanceof Error ? `: ${err.message}` : '';
+              toast(`✗ ${t('controls.goToCharge')}${detail}`, 'error');
+            }
+            setBusy(false);
+          }}
           disabled={disabled}
           className={`${btnHidden} bg-gray-700/60 text-yellow-300 hover:bg-yellow-700/40`}
           title={t('controls.goToCharge')}
@@ -519,7 +540,25 @@ export function MowerControls({
               <div className="fixed inset-0 z-[9998]" onClick={() => setMoreExpanded(false)} />
               <div className="absolute top-full right-0 mt-1 w-48 z-[10000] bg-gray-800 rounded-lg border border-gray-700 shadow-xl py-1">
                 <button
-                  onClick={() => { setMoreExpanded(false); send({ go_pile: {} }, t('controls.goToCharge')); }}
+                  onClick={async () => {
+                    setMoreExpanded(false);
+                    try {
+                      setBusy(true);
+                      await sendCommand(sn, { go_pile: {} });
+                      await new Promise(r => setTimeout(r, 500));
+                      await sendCommand(sn, {
+                        go_to_charge: {
+                          cmd_num: nextCmdNum(),
+                          chargerpile: { latitude: 200, longitude: 200 },
+                        },
+                      });
+                      toast(`✓ ${t('controls.goToCharge')}`, 'success');
+                    } catch (err) {
+                      const detail = err instanceof Error ? `: ${err.message}` : '';
+                      toast(`✗ ${t('controls.goToCharge')}${detail}`, 'error');
+                    }
+                    setBusy(false);
+                  }}
                   disabled={disabled}
                   className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-yellow-300 hover:bg-gray-700/50 transition-colors disabled:opacity-30"
                 >
