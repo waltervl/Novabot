@@ -1195,14 +1195,14 @@ adminStatusRouter.post('/maps/:sn/apply-polygon-offset', async (req: AuthRequest
       settled = true;
       offExtendedResponse(sn, handler);
       resolve({ ok: false, timeout: true });
-    }, 8000);
+    }, 30000);
   });
 
   if (syncResult.timeout) {
     res.status(504).json({
       ok: false,
       partial: true,
-      error: 'Mower did not respond within 8s',
+      error: 'Mower did not respond within 30s — sync may still complete in background',
       dx_m: dx, dy_m: dy,
     });
     return;
@@ -1248,13 +1248,13 @@ adminStatusRouter.post('/maps/:sn/reset-polygon-offset', async (req: AuthRequest
       settled = true;
       offExtendedResponse(sn, handler);
       resolve({ ok: false, timeout: true });
-    }, 8000);
+    }, 30000);
   });
 
   if (syncResult.timeout) {
     res.status(504).json({
       ok: false, partial: true,
-      error: 'Mower did not respond within 8s',
+      error: 'Mower did not respond within 30s — sync may still complete in background',
       dx_m: 0, dy_m: 0,
     });
     return;
