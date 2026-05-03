@@ -2203,7 +2203,18 @@ export default function HomeScreen() {
           forceZonePicker={startMowForceZone}
           battery={mower.battery}
           isWorking={displayActivity === 'mowing' || displayActivity === 'edge_cutting' || displayActivity === 'mapping'}
-          currentCuttingHeight={parseInt(devices.get(mower.sn)?.sensors?.target_height ?? '', 10) || undefined}
+          currentCuttingHeight={(() => {
+            // Prefer the user's saved Mower Settings value (defaultCuttingHeight,
+            // mm 20-90 from set_para_info) over the live target_height echo.
+            // target_height only updates after the firmware actually accepts a
+            // mowing command — so a user who just set 40mm in Mower Settings and
+            // never mowed yet would otherwise see the StartMowSheet snap to 5cm.
+            const s = devices.get(mower.sn)?.sensors;
+            const dft = parseInt(s?.defaultCuttingHeight ?? '', 10);
+            if (Number.isFinite(dft) && dft > 0) return dft;
+            const tgt = parseInt(s?.target_height ?? '', 10);
+            return Number.isFinite(tgt) && tgt > 0 ? tgt : undefined;
+          })()}
           currentPathDirection={parseInt(devices.get(mower.sn)?.sensors?.path_direction ?? '', 10) || undefined}
         />
       )}
