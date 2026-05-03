@@ -1477,35 +1477,30 @@ export default function HomeScreen() {
 
           <View style={styles.chipsGroup}>
             <View style={styles.chipsRow}>
-              {mower.wifiRssi != null && (
-                <View style={styles.chip}>
-                  <Ionicons name="wifi" size={11} color={colors.textDim} />
-                  <Text style={styles.chipText}>{mower.wifiRssi}</Text>
+            {(() => {
+              const isActiveCut =
+                displayActivity === 'mowing' ||
+                displayActivity === 'edge_cutting' ||
+                displayActivity === 'returning' ||
+                displayActivity === 'mapping';
+              if (!isActiveCut) return null;
+              // target_height is the firmware-echoed wire enum (cm − 2). Fall
+              // back to the user's selected mowSettings so the chip never goes
+              // blank during the 3-8s window before mqtt_node echoes back.
+              const reported = devices.get(mower.sn)?.sensors?.target_height;
+              const wire =
+                reported != null
+                  ? parseInt(reported, 10)
+                  : mowSettings?.cuttingHeight ?? null;
+              if (wire == null || !Number.isFinite(wire)) return null;
+              const cm = wire + 2;
+              return (
+                <View style={[styles.chip, styles.chipHighlight]}>
+                  <Ionicons name="resize" size={13} color="#4ade80" />
+                  <Text style={styles.chipHighlightText}>{cm} cm</Text>
                 </View>
-              )}
-              {mower.rtkSat != null && (
-                <View style={styles.chip}>
-                  <Ionicons name="navigate" size={11} color={colors.textDim} />
-                  <Text style={styles.chipText}>{mower.rtkSat} sat</Text>
-                </View>
-              )}
-              {devices.get(mower.sn)?.sensors?.cpu_temperature != null && (
-                <View style={styles.chip}>
-                  <Ionicons name="thermometer" size={11} color={colors.textDim} />
-                  <Text style={styles.chipText}>{devices.get(mower.sn)?.sensors?.cpu_temperature}°</Text>
-                </View>
-              )}
-            </View>
-
-            <View style={styles.chipsRow}>
-            {(displayActivity === 'mowing') && devices.get(mower.sn)?.sensors?.target_height && (
-              <View style={styles.chip}>
-                <Ionicons name="resize" size={11} color={colors.textDim} />
-                <Text style={styles.chipText}>
-                  {parseInt(devices.get(mower.sn)!.sensors.target_height ?? '0', 10) + 2} cm
-                </Text>
-              </View>
-            )}
+              );
+            })()}
             {/* ETA chip — shown during active mowing. cov_estimate_time is
                 in minutes (firmware convention, verified 2026-04-20). We also
                 show elapsed cov_work_time so the user has both numbers.
@@ -1526,15 +1521,15 @@ export default function HomeScreen() {
               return (
                 <>
                   {etaLabel && (
-                    <View style={styles.chip}>
-                      <Ionicons name="timer-outline" size={11} color={colors.textDim} />
-                      <Text style={styles.chipText}>~{etaLabel} left</Text>
+                    <View style={[styles.chip, styles.chipHighlight]}>
+                      <Ionicons name="timer-outline" size={13} color="#4ade80" />
+                      <Text style={styles.chipHighlightText}>~{etaLabel} left</Text>
                     </View>
                   )}
                   {elapsedLabel && (
-                    <View style={styles.chip}>
-                      <Ionicons name="time-outline" size={11} color={colors.textDim} />
-                      <Text style={styles.chipText}>{elapsedLabel}</Text>
+                    <View style={[styles.chip, styles.chipHighlight]}>
+                      <Ionicons name="time-outline" size={13} color="#4ade80" />
+                      <Text style={styles.chipHighlightText}>{elapsedLabel}</Text>
                     </View>
                   )}
                 </>
@@ -1546,6 +1541,27 @@ export default function HomeScreen() {
                 <Text style={[styles.chipText, { color: colors.red }]}>{t('offline')}</Text>
               </View>
             )}
+            </View>
+
+            <View style={styles.chipsRow}>
+              {mower.wifiRssi != null && (
+                <View style={styles.chip}>
+                  <Ionicons name="wifi" size={11} color={colors.textDim} />
+                  <Text style={styles.chipText}>{mower.wifiRssi}</Text>
+                </View>
+              )}
+              {mower.rtkSat != null && (
+                <View style={styles.chip}>
+                  <Ionicons name="navigate" size={11} color={colors.textDim} />
+                  <Text style={styles.chipText}>{mower.rtkSat} sat</Text>
+                </View>
+              )}
+              {devices.get(mower.sn)?.sensors?.cpu_temperature != null && (
+                <View style={styles.chip}>
+                  <Ionicons name="thermometer" size={11} color={colors.textDim} />
+                  <Text style={styles.chipText}>{devices.get(mower.sn)?.sensors?.cpu_temperature}°</Text>
+                </View>
+              )}
             </View>
 
             {nextSchedule && (displayActivity === 'idle' || displayActivity === 'charging') && (
@@ -2692,6 +2708,18 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   },
   chipOffline: {
     backgroundColor: 'rgba(239,68,68,0.1)',
+  },
+  chipHighlight: {
+    backgroundColor: 'rgba(34,197,94,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(34,197,94,0.45)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  chipHighlightText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4ade80',
   },
   nextScheduleRow: {
     flexDirection: 'row',
