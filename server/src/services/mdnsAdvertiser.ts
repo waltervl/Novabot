@@ -25,6 +25,11 @@ interface AdvertiserOptions {
   hostnames: string[];
   ttl: number;
   port: number;
+  /** HTTP service port advertised via SRV record so the mower can pick the
+   *  right port automatically (no more hardcoded :80 fallback). */
+  httpPort: number;
+  /** mDNS service-instance name for the SRV record. Mower queries this. */
+  srvName: string;
 }
 
 let socket: ReturnType<typeof mdns> | null = null;
@@ -71,8 +76,13 @@ export function startMdnsAdvertiser(opts?: Partial<AdvertiserOptions>): void {
 
   const ttl = opts?.ttl ?? parseInt(process.env.MDNS_TTL ?? '120', 10);
   const port = opts?.port ?? parseInt(process.env.MDNS_PORT ?? '5353', 10);
+  const httpPort = opts?.httpPort ?? parseInt(process.env.HTTP_PORT ?? process.env.PORT ?? '8080', 10);
+  // Conventional mDNS service-instance form: <instance>.<service>.<proto>.local
+  // We pick `_opennova-http._tcp.local` so it cannot collide with anything
+  // upstream. The mower queries this name for the SRV record.
+  const srvName = opts?.srvName ?? process.env.MDNS_SRV_NAME ?? '_opennova-http._tcp.local';
 
-  active = { ip, hostnames, ttl, port };
+  active = { ip, hostnames, ttl, port, httpPort, srvName };
   socket = mdns({ port });
 
   socket.on('query', (query, rinfo) => {
@@ -83,6 +93,21 @@ export function startMdnsAdvertiser(opts?: Partial<AdvertiserOptions>): void {
       const wantsAny = (q.type as string) === 'ANY';
       if ((q.type === 'A' || wantsAny) && active!.hostnames.includes(q.name)) {
         answers.push({ name: q.name, type: 'A', ttl: active!.ttl, data: active!.ip });
+      }
+      // SRV record carries the service port so the mower no longer has to
+      // hardcode FALLBACK_HTTP_PORT="80" in set_server_urls.sh. The target
+      // points at our primary hostname (first entry in `hostnames`).
+      if ((q.type === 'SRV' || wantsAny) && q.name === active!.srvName) {
+        const target = active!.hostnames[0] ?? 'opennova.local';
+        answers.push({
+          name: q.name,
+          type: 'SRV',
+          ttl: active!.ttl,
+          data: { port: active!.httpPort, target, priority: 0, weight: 0 },
+        });
+        // Bundle the A record in the same response so the resolver doesn't
+        // need a second round-trip.
+        answers.push({ name: target, type: 'A', ttl: active!.ttl, data: active!.ip });
       }
     }
     if (answers.length > 0) {
@@ -98,7 +123,7 @@ export function startMdnsAdvertiser(opts?: Partial<AdvertiserOptions>): void {
     }
   });
 
-  console.log(`${TAG} advertising ${hostnames.join(', ')} → ${ip} (ttl=${ttl}s, port=${port})`);
+  console.log(`${TAG} advertising ${hostnames.join(', ')} → ${ip} (ttl=${ttl}s, mdns-port=${port}, http-port=${httpPort}, srv=${srvName})`);
 }
 
 export function stopMdnsAdvertiser(): void {

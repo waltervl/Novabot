@@ -75,4 +75,70 @@ describe('mDNS advertiser', () => {
 
     expect(replied).toBe(false);
   });
+
+  it('answers SRV query with the configured http port + bundles the A record', async () => {
+    startMdnsAdvertiser({
+      ip: '10.99.0.42',
+      hostnames: ['opennova.local'],
+      ttl: 60,
+      port: TEST_PORT,
+      httpPort: 8080,
+      srvName: '_opennova-http._tcp.local',
+    });
+
+    const client = mdns({ port: 0, multicast: false });
+    const reply = await new Promise<{
+      srv: { port: number; target: string };
+      a: string | null;
+    }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), 1000);
+      client.on('response', (packet) => {
+        const srv = packet.answers?.find(
+          (x) => x.name === '_opennova-http._tcp.local' && x.type === 'SRV',
+        );
+        if (srv) {
+          clearTimeout(timer);
+          const a = packet.answers?.find((x) => x.name === 'opennova.local' && x.type === 'A');
+          resolve({
+            srv: (srv as { data: { port: number; target: string } }).data,
+            a: a ? (a as { data: string }).data : null,
+          });
+        }
+      });
+      // @types/multicast-dns lacks the 3-arg unicast overload — cast to any
+      (client.query as any)(
+        { questions: [{ name: '_opennova-http._tcp.local', type: 'SRV' }] },
+        undefined,
+        { address: '127.0.0.1', port: TEST_PORT },
+      );
+    });
+    client.destroy();
+
+    expect(reply.srv.port).toBe(8080);
+    expect(reply.srv.target).toBe('opennova.local');
+    expect(reply.a).toBe('10.99.0.42');
+  });
+
+  it('uses HTTP_PORT env var as default when httpPort option not supplied', async () => {
+    process.env.HTTP_PORT = '9090';
+    startMdnsAdvertiser({ ip: '10.99.0.42', hostnames: ['opennova.local'], ttl: 60, port: TEST_PORT });
+    delete process.env.HTTP_PORT;
+
+    const client = mdns({ port: 0, multicast: false });
+    const port = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timeout')), 1000);
+      client.on('response', (packet) => {
+        const srv = packet.answers?.find((x) => x.type === 'SRV');
+        if (srv) { clearTimeout(timer); resolve((srv as { data: { port: number } }).data.port); }
+      });
+      (client.query as any)(
+        { questions: [{ name: '_opennova-http._tcp.local', type: 'SRV' }] },
+        undefined,
+        { address: '127.0.0.1', port: TEST_PORT },
+      );
+    });
+    client.destroy();
+
+    expect(port).toBe(9090);
+  });
 });

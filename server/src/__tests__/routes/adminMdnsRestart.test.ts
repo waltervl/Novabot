@@ -119,6 +119,8 @@ describe('POST /api/admin-status/mdns-restart', () => {
       hostnames: ['opennova.local', 'opennovabot.local'],
       ttl: 120,
       port: 5353,
+      httpPort: 8080,
+      srvName: '_opennova-http._tcp.local',
     });
   });
 
@@ -135,6 +137,8 @@ describe('POST /api/admin-status/mdns-restart', () => {
       hostnames: ['opennova.local', 'opennovabot.local'],
       ttl: 120,
       port: 5353,
+      httpPort: 8080,
+      srvName: '_opennova-http._tcp.local',
     });
 
     // Check that mocks were called

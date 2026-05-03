@@ -552,6 +552,74 @@ except:
     pass
 " 2>/dev/null)
 
+# ── mDNS SRV discovery: krijgt poort uit \`_opennova-http._tcp.local\` ─
+# Server adverteert SRV record met de echte HTTP port (default 8080).
+# Faalt query → DISCOVERED_PORT blijft leeg, valt terug op FALLBACK_HTTP_PORT.
+DISCOVERED_PORT=\$(python3 << 'SRV_EOF'
+import socket, struct, time
+
+def _parse_name(data, offset):
+    name = []
+    visited = set()
+    cur = offset
+    while True:
+        if cur >= len(data) or cur in visited: break
+        visited.add(cur)
+        l = data[cur]
+        if l == 0:
+            cur += 1
+            break
+        if l & 0xc0 == 0xc0:
+            ptr = ((l & 0x3f) << 8) | data[cur+1]
+            sub, _ = _parse_name(data, ptr)
+            if sub: name.append(sub)
+            cur += 2
+            return '.'.join(name), cur
+        cur += 1
+        name.append(data[cur:cur+l].decode(errors='ignore'))
+        cur += l
+    return '.'.join(name), cur
+
+def srv(timeout=6):
+    qname = b'\x0e_opennova-http\x04_tcp\x05local\x00'
+    query = struct.pack('!6H', 0, 0, 1, 0, 0, 0) + qname + struct.pack('!2H', 33, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except: pass
+    s.settimeout(2)
+    s.bind(('', 5353))
+    mreq = struct.pack('4sL', socket.inet_aton('224.0.0.251'), socket.INADDR_ANY)
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    end = time.time() + timeout
+    while time.time() < end:
+        s.sendto(query, ('224.0.0.251', 5353))
+        try:
+            while True:
+                data, _ = s.recvfrom(4096)
+                if len(data) < 12: continue
+                if not (struct.unpack('!H', data[2:4])[0] & 0x8000): continue
+                qd = struct.unpack('!H', data[4:6])[0]
+                an = struct.unpack('!H', data[6:8])[0]
+                off = 12
+                for _ in range(qd):
+                    _, off = _parse_name(data, off); off += 4
+                for _ in range(an):
+                    _, off = _parse_name(data, off)
+                    if off + 10 > len(data): break
+                    rtype = struct.unpack('!H', data[off:off+2])[0]
+                    rdlen = struct.unpack('!H', data[off+8:off+10])[0]
+                    if rtype == 33 and off + 10 + 6 <= len(data):
+                        port = struct.unpack('!H', data[off+10+4:off+10+6])[0]
+                        s.close(); print(port); return
+                    off += 10 + rdlen
+        except socket.timeout: pass
+    s.close()
+
+srv()
+SRV_EOF
+)
+
 # ── Bepaal server IP (mDNS → DNS → last-known → hardcoded) ────
 if [ -n "\$DISCOVERED_IP" ]; then
     log "Server ontdekt via mDNS: \$DISCOVERED_IP"
@@ -572,8 +640,14 @@ else
     log "WARN: geen server gevonden — configuratie niet bijgewerkt"
 fi
 
+# Kies poort: SRV-discovered → hardcoded fallback
+HTTP_PORT_FINAL="\${DISCOVERED_PORT:-\$FALLBACK_HTTP_PORT}"
+if [ -n "\$DISCOVERED_PORT" ]; then
+    log "HTTP port via SRV: \$DISCOVERED_PORT"
+fi
+
 if [ -n "\$SERVER_IP" ]; then
-    HTTP_ADDRESS="\${SERVER_IP}\$([ -n "\$FALLBACK_HTTP_PORT" ] && echo ":\$FALLBACK_HTTP_PORT")"
+    HTTP_ADDRESS="\${SERVER_IP}\$([ -n "\$HTTP_PORT_FINAL" ] && echo ":\$HTTP_PORT_FINAL")"
     MQTT_ADDRESS="\$SERVER_IP"
 else
     HTTP_ADDRESS=""
