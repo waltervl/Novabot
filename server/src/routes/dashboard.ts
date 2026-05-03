@@ -559,6 +559,11 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
       mapId: r.map_id,
       mapName: r.map_name,
       mapType: r.map_type ?? 'work',
+      // canonicalName carries the firmware slot identifier (map0, map1, ...).
+      // Issue #14 / #18: app needs this to map a user-selected work map to the
+      // correct firmware `area` enum (map0=1, map1=10, map2=200) — sorting by
+      // updated_at and using array index causes "select front, mow trampo".
+      canonicalName: r.canonical_name ?? null,
       mapArea,
       mapMaxMin,
       createdAt: r.created_at,

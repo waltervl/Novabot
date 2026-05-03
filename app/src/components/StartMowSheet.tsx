@@ -301,8 +301,20 @@ export function StartMowSheet({
       }
 
       // Single-map path (legacy, identical to pre-multi-select behaviour).
-      const selectedIdx = maps.findIndex(m => m.mapId === orderedMapIds[0]);
-      const mapIdx = selectedIdx >= 0 ? selectedIdx : 0;
+      // Issue #14 / #18: derive the firmware `area` enum from the canonical
+      // slot identifier (map0/map1/map2) so the user's selection lines up
+      // with the mower's internal index. Sorting by updated_at + using array
+      // index produced "select front, mow trampo" because the alphabetical
+      // app order didn't match the firmware's creation order.
+      const selectedMap = maps.find(m => m.mapId === orderedMapIds[0]) ?? maps[0];
+      const canonicalIdx = (() => {
+        const m = (selectedMap?.canonicalName ?? '').match(/^map(\d+)/);
+        return m ? parseInt(m[1], 10) : null;
+      })();
+      const fallbackIdx = maps.findIndex(m => m.mapId === orderedMapIds[0]);
+      const mapIdx = canonicalIdx ?? (fallbackIdx >= 0 ? fallbackIdx : 0);
+      // Firmware `area` enum: map0=1, map1=10, map2=200. Confirmed in
+      // docs/reference/MOWING-FLOW.md. Three slots only (firmware limit).
       const areaParam = mapIdx === 0 ? 1 : mapIdx === 1 ? 10 : 200;
 
       // 0. Clear old trail from previous session

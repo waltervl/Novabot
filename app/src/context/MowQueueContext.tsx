@@ -234,12 +234,17 @@ export function MowQueueProvider({ children }: { children: React.ReactNode }) {
 
     const remaining: QueueItem[] = [];
     for (const id of mapIds) {
-      const idx = workMaps.findIndex(m => m.mapId === id);
-      if (idx < 0) continue;
+      const arrayIdx = workMaps.findIndex(m => m.mapId === id);
+      if (arrayIdx < 0) continue;
+      // Issue #14 / #18: prefer the firmware-canonical slot index from
+      // canonicalName ("map0", "map1", ...) over the server's update-order
+      // array position. Otherwise the queue dispatches the wrong map.
+      const canonicalMatch = (workMaps[arrayIdx].canonicalName ?? '').match(/^map(\d+)/);
+      const mapIdx = canonicalMatch ? parseInt(canonicalMatch[1], 10) : arrayIdx;
       remaining.push({
         mapId: id,
-        mapName: workMaps[idx].mapName ?? id,
-        mapIdx: idx,
+        mapName: workMaps[arrayIdx].mapName ?? id,
+        mapIdx,
       });
     }
     if (remaining.length === 0) return;

@@ -33,6 +33,10 @@ export interface MapData {
   mapId: string;
   mapName: string;
   mapType: string;
+  /** Firmware slot identifier, e.g. "map0", "map0_0_obstacle",
+   *  "map0tocharge_unicom". Carries the stable mower-side index that
+   *  start_navigation.area depends on (#14, #18). */
+  canonicalName?: string | null;
   mapArea: Array<LocalPoint>;
 }
 
