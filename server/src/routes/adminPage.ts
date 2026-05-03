@@ -325,6 +325,7 @@ export function adminPageHtml(): string {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button onclick="restoreSelection()" style="padding:7px 16px;background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Restore selection to DB</button>
           <button onclick="restoreAndRealign()" title="Full restore: DB + mower files + GPS update + sync_map MQTT push" style="padding:7px 16px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore + Realign Mower</button>
+          <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:7px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Calibrate Polygon Offset</button>
           <button onclick="setAllConflicts(true)" style="padding:7px 14px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all conflicts</button>
           <button onclick="setAllConflicts(false)" style="padding:7px 14px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all conflicts</button>
         </div>
