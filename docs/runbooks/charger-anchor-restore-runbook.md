@@ -256,6 +256,46 @@ on certain edges, prefer the polygon-offset calibration over a full restore:
 
 Spec: `docs/superpowers/specs/2026-05-03-admin-polygon-offset-calibration.md`.
 
+## Mower offline after server restart / mqtt_node kill
+
+**Symptom:** Mower shows `online:true` in dashboard `/devices` API but its
+sensor map only contains cached settings (`defaultCuttingHeight`,
+`obstacle_avoidance_sensitivity`, `path_direction`, `headlight`,
+`avoiding_obstacle_time`). Live state fields (`battery_state`, `work_status`,
+`map_position`, `gps_*`, `report_state_robot`) are missing. App shows mower
+offline.
+
+**Root cause:** ESP-IDF MQTT layer inside `mqtt_node` (C++ binary) can land
+in an `MQTT_EVENT_INIT_NET_ERROR` retry loop after a TCP-level disconnection
+(opennova container restart, network blip, killing mqtt_node manually).
+TCP works (verified via `curl --max-time 3 telnet://192.168.0.247:1883`),
+broker is reachable, other clients (`extended_commands.py`,
+`led_bridge`) connect fine — but `mqtt_node` itself stops opening any TCP
+socket to port 1883. `daemon_node` respawn does NOT clear the stuck state.
+
+**Fix:** SSH to the mower and re-run the URL bootstrap script:
+
+```bash
+sshpass -p 'novabot' ssh root@<MOWER_IP> 'bash /root/novabot/scripts/set_server_urls.sh'
+```
+
+Within ~20 s the log `/root/novabot/data/ros2_log/mqtt_node_*.log` will show
+`MQTT_EVENT_INIT_NET_OK` + `mqtt_init` + `Subscribing_to_topic
+Dart/Send_mqtt/<SN>` — mower comes back online with full sensor stream.
+
+**Why a full reboot doesn't help:** Reboot triggers the same `daemon_node`
+respawn path that already failed; `set_server_urls.sh` is the only thing
+that re-bootstraps the network state cleanly (DNS lookup +
+`http_address.txt` rewrite + clean `mqtt_node` kill).
+
+**Auto-recovery on every sync_map (next firmware bake):**
+`research/extended_commands.py` `handle_sync_map` now calls
+`_rerun_set_server_urls()` as step 6 after every successful map install. So
+any future `apply-polygon-offset` or `restore-and-realign` MQTT round-trip
+will self-heal a stuck mqtt_node along the way. Live mowers running the
+older `extended_commands.py` (Apr 28) still need the manual SSH fix above
+until they receive the new firmware.
+
 ## References
 
 - Spec for the 2026-05-02 manual restore: `docs/superpowers/specs/2026-05-02-mower-charger-anchor-restore.md`

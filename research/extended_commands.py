@@ -2169,12 +2169,23 @@ def handle_sync_map(params, respond):
     #    the realign would require a full mower reboot.
     auto_recharge_restart_ok = _restart_auto_recharge_server()
 
+    # 6. Re-run set_server_urls.sh as a defensive recovery step.
+    #    When the OpenNova server (Docker container) restarts, mqtt_node's
+    #    ESP-IDF MQTT layer can land in a stuck state where TCP retries loop
+    #    on MQTT_EVENT_INIT_NET_ERROR forever — daemon_node respawn does NOT
+    #    clear it, only re-running set_server_urls.sh does. Verified live on
+    #    LFIN1231000211 2026-05-03. By tagging this onto every sync_map we
+    #    ensure that any apply-polygon-offset / restore-and-realign call also
+    #    self-heals a stuck mqtt_node along the way.
+    server_urls_ok = _rerun_set_server_urls()
+
     respond("sync_map_respond", {
         "result": 0,
         "md5": got_md5,
         "sizeBytes": len(zip_bytes),
         "restart": restart_ok,
         "auto_recharge_restart": auto_recharge_restart_ok,
+        "server_urls_refresh": server_urls_ok,
     })
 
 
@@ -2286,6 +2297,35 @@ def _restart_auto_recharge_server():
         # pkill returns 1 when no processes matched — treat as success
         # (auto_recharge_server may not be running yet, e.g. mid-boot).
         return rc.returncode in (0, 1)
+    except Exception:
+        return False
+
+
+def _rerun_set_server_urls():
+    """Defensive recovery — re-run set_server_urls.sh to unstick mqtt_node.
+
+    After a Docker container restart on the OpenNova server, mqtt_node's
+    ESP-IDF MQTT layer can lock into an MQTT_EVENT_INIT_NET_ERROR loop that
+    daemon_node respawn cannot clear. Re-running the URL bootstrap script
+    forces a clean reinit (DNS lookup + http_address.txt rewrite + mqtt_node
+    kill so daemon_node respawns it with a fresh socket).
+
+    Idempotent — safe to call after every sync_map. Verified live on
+    LFIN1231000211 2026-05-03: stuck mqtt_node recovered within 30 s.
+
+    Returns True when the script executed cleanly, False on any failure
+    (does NOT block the sync_map response).
+    """
+    import subprocess
+    script = "/root/novabot/scripts/set_server_urls.sh"
+    if not os.path.exists(script):
+        return False
+    try:
+        rc = subprocess.run(
+            ["bash", script],
+            capture_output=True, text=True, timeout=60,
+        )
+        return rc.returncode == 0
     except Exception:
         return False
 
