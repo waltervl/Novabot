@@ -2404,9 +2404,10 @@ async function restoreAndRealign() {
 // Spec: docs/superpowers/specs/2026-05-03-admin-polygon-offset-calibration.md
 // ─────────────────────────────────────────────────────────────────────────────
 
-var polygonCal = null;  // { dxStart, dyStart, dx, dy, ghostMaps } | null
+var polygonCal = null;  // { dx, dy, ghostMaps } | null
 
 async function enterPolygonCalibration() {
+  if (polygonCal) return;  // already in calibration mode
   var sn = document.getElementById('mapMowerSelect').value;
   if (!sn) { alert('Select a mower first.'); return; }
 
@@ -2421,8 +2422,6 @@ async function enterPolygonCalibration() {
     : null;
 
   polygonCal = {
-    dxStart: current.dx_m || 0,
-    dyStart: current.dy_m || 0,
     dx: current.dx_m || 0,
     dy: current.dy_m || 0,
     ghostMaps: ghostMaps,
