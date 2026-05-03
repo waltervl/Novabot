@@ -36,8 +36,22 @@ interface SnapshotState {
   msg: string;
   rechargeStatus: string;
   batteryPower: number;
+  batteryState: string;
   initialised: boolean;        // false until first frame seen — suppresses startup events
 }
+
+/**
+ * Error codes that fire so often / self-recover so quickly that pushing a
+ * notification for each one drowns the user in noise. The HomeScreen
+ * banner already hides them via NON_BLOCKING_ERRORS — we mirror that for
+ * push notifications. Operationally meaningful warnings (124 out-of-area,
+ * 122/123 coverage failures) still notify.
+ */
+const SUPPRESSED_ERROR_CODES = new Set([
+  8,    // LoRa flicker — happens every few minutes on a noisy site
+  113,  // transient sensor/perception warning, auto-recovers
+  132,  // data transmission loss, auto-recovers within seconds
+]);
 
 const stateBySn = new Map<string, SnapshotState>();
 
@@ -47,6 +61,7 @@ function readSnapshot(snValues: Map<string, string>): SnapshotState {
     msg: snValues.get('msg') ?? '',
     rechargeStatus: snValues.get('recharge_status') ?? '0',
     batteryPower: parseInt(snValues.get('battery_power') ?? '0', 10) || 0,
+    batteryState: (snValues.get('battery_state') ?? '').toUpperCase(),
     initialised: true,
   };
 }
@@ -87,25 +102,43 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
     if (next.errorStatus !== '0') {
       const errMsg = snValues.get('error_msg') ?? `error_status=${next.errorStatus}`;
       const code = parseInt(next.errorStatus, 10) || 0;
-      const entry = lookupError(code, errMsg);
-      // Body prefers the curated message text from the stock app's
-      // translation table; fall back to firmware error_msg if unmapped.
-      const body = entry.type === 'error' ? errMsg : entry.message;
-      dispatchEvent(makeEvent(
-        sn,
-        entry.type,
-        TITLE_BY_TYPE[entry.type] ?? 'Mower event',
-        body,
-        { error_status: next.errorStatus, error_msg: errMsg, msg: next.msg },
-      ));
+      // Suppress notifications for codes the firmware self-recovers from
+      // (LoRa flicker, transient coverage retries, etc.) AND additionally
+      // suppress *any* error while the mower is on the dock — error
+      // notifications while charging are almost always stale state from
+      // the previous session and just pollute the user's lockscreen.
+      const onDock = next.batteryState === 'CHARGING' || next.batteryState === 'FINISHED';
+      if (SUPPRESSED_ERROR_CODES.has(code) || onDock) {
+        // Skip dispatch — we still mutate stateBySn above so the next
+        // genuine transition is detected.
+      } else {
+        const entry = lookupError(code, errMsg);
+        // Body prefers the curated message text from the stock app's
+        // translation table; fall back to firmware error_msg if unmapped.
+        const body = entry.type === 'error' ? errMsg : entry.message;
+        dispatchEvent(makeEvent(
+          sn,
+          entry.type,
+          TITLE_BY_TYPE[entry.type] ?? 'Mower event',
+          body,
+          { error_status: next.errorStatus, error_msg: errMsg, msg: next.msg },
+        ));
+      }
     } else {
-      dispatchEvent(makeEvent(
-        sn,
-        'error_cleared',
-        TITLE_BY_TYPE.error_cleared,
-        `Previous error_status=${prev.errorStatus} now 0`,
-        { previous_error_status: prev.errorStatus, msg: next.msg },
-      ));
+      // Mirror the suppression on clear-events so we don't emit a "Mower
+      // error cleared" ping for codes that never produced a notification
+      // in the first place.
+      const prevCode = parseInt(prev.errorStatus, 10) || 0;
+      const wasOnDock = prev.batteryState === 'CHARGING' || prev.batteryState === 'FINISHED';
+      if (!SUPPRESSED_ERROR_CODES.has(prevCode) && !wasOnDock) {
+        dispatchEvent(makeEvent(
+          sn,
+          'error_cleared',
+          TITLE_BY_TYPE.error_cleared,
+          `Previous error_status=${prev.errorStatus} now 0`,
+          { previous_error_status: prev.errorStatus, msg: next.msg },
+        ));
+      }
     }
   }
 

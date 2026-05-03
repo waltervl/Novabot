@@ -33,19 +33,35 @@ describe('eventDetector', () => {
     expect(events.filter(e => e.ts > Date.now() - 100)).toHaveLength(0);
   });
 
-  it('emits generic "error" for unmapped error_status codes', () => {
-    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
-    detectAndDispatch(SN, snap({ error_status: '8', msg: '', battery_power: '90', recharge_status: '0', error_msg: 'LoRa lost' }));
+  it('emits generic "error" for unmapped error_status codes (off dock)', () => {
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '99', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED', error_msg: 'unknown fault' }));
     const ev = getRecentEvents(SN, 1)[0];
     expect(ev.type).toBe('error');
-    expect(ev.data.error_status).toBe('8');
+    expect(ev.data.error_status).toBe('99');
     // Unmapped codes use the firmware's own error_msg as the body.
-    expect(ev.message).toBe('LoRa lost');
+    expect(ev.message).toBe('unknown fault');
   });
 
-  it('emits "stuck" for code 124 (return-to-charge fail)', () => {
-    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
-    detectAndDispatch(SN, snap({ error_status: '124', msg: '', battery_power: '90', recharge_status: '0', error_msg: 'recharge fail' }));
+  it('SUPPRESSES code 8 (LoRa flicker) — too noisy', () => {
+    const before = getRecentEvents(SN, 50).length;
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '8', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED', error_msg: 'LoRa lost' }));
+    const after = getRecentEvents(SN, 50).length;
+    expect(after).toBe(before);
+  });
+
+  it('SUPPRESSES any error while on dock (CHARGING)', () => {
+    const before = getRecentEvents(SN, 50).length;
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'CHARGING' }));
+    detectAndDispatch(SN, snap({ error_status: '124', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'CHARGING', error_msg: 'out of area' }));
+    const after = getRecentEvents(SN, 50).length;
+    expect(after).toBe(before);
+  });
+
+  it('emits "stuck" for code 124 (return-to-charge fail) — only off dock', () => {
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '124', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED', error_msg: 'recharge fail' }));
     const ev = getRecentEvents(SN, 1)[0];
     expect(ev.type).toBe('stuck');
   });
@@ -58,19 +74,29 @@ describe('eventDetector', () => {
     expect(ev.message).toContain('tilted');
   });
 
-  it('emits "connection_lost" for LoRa code 132', () => {
-    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
-    detectAndDispatch(SN, snap({ error_status: '132', msg: '', battery_power: '90', recharge_status: '0', error_msg: '' }));
-    const ev = getRecentEvents(SN, 1)[0];
-    expect(ev.type).toBe('connection_lost');
+  it('SUPPRESSES code 132 (transmission loss) — auto-recovers', () => {
+    const before = getRecentEvents(SN, 50).length;
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '132', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED', error_msg: '' }));
+    const after = getRecentEvents(SN, 50).length;
+    expect(after).toBe(before);
   });
 
-  it('emits "error_cleared" on non-zero → 0 transition', () => {
-    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
-    detectAndDispatch(SN, snap({ error_status: '8', msg: '', battery_power: '90', recharge_status: '0' }));
-    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0' }));
+  it('emits "error_cleared" on non-zero → 0 transition (off dock, real code)', () => {
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '124', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
     const ev = getRecentEvents(SN, 1)[0];
     expect(ev.type).toBe('error_cleared');
+  });
+
+  it('does NOT emit "error_cleared" when the prior error was suppressed', () => {
+    const before = getRecentEvents(SN, 50).length;
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '8', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    detectAndDispatch(SN, snap({ error_status: '0', msg: '', battery_power: '90', recharge_status: '0', battery_state: 'DISCHARGED' }));
+    const after = getRecentEvents(SN, 50).length;
+    expect(after).toBe(before);
   });
 
   it('emits mowing_started when msg enters Work:RUNNING', () => {
