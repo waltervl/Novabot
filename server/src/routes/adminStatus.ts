@@ -25,7 +25,7 @@ import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
 
-const MANIFEST_URL = 'https://download.ramonvanbruggen.nl/file/opennova-manifest.json';
+const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/file/opennova-manifest.json';
 
 export const adminStatusRouter = Router();
 
