@@ -38,7 +38,24 @@ export default function LoginScreen({ navigation, onLoginSuccess }: Props) {
   const [error, setError] = useState('');
   const [scanning, setScanning] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // Format: "http://opennova.local|192.168.0.222". The lanIp suffix lets the
+  // render layer show the LAN address muted under the hostname so two
+  // candidates on a multi-homed network are distinguishable.
+  const [discoveredServers, setDiscoveredServers] = useState<string[]>([]);
   const devMode = useDevMode();
+
+  const runDiscover = () => {
+    if (scanning) return;
+    setScanning(true);
+    setDiscoveredServers([]);
+    discoverServers((server) => {
+      const url = `http://${server.ip}`;
+      const entry = server.lanIp && server.lanIp !== server.ip
+        ? `${url}|${server.lanIp}`
+        : url;
+      setDiscoveredServers((prev) => prev.includes(entry) ? prev : [...prev, entry]);
+    }).finally(() => setScanning(false));
+  };
 
   // Load saved server URL on mount
   useEffect(() => {
@@ -51,16 +68,14 @@ export default function LoginScreen({ navigation, onLoginSuccess }: Props) {
     })();
   }, []);
 
-  // Auto-discover servers on mount
+  // Auto-discover servers on first launch (no saved URL).
+  // The discovered list is always shown so users can pick even when a URL
+  // is already saved (e.g. moved to a different network).
   useEffect(() => {
     if (!loaded) return;
-    if (serverUrl) return; // Don't scan if we already have a URL
-
-    setScanning(true);
-    discoverServers((server) => {
-      setServerUrlState(`http://${server.ip}`);
-    }).finally(() => setScanning(false));
-  }, [loaded, serverUrl]);
+    if (serverUrl) return;
+    runDiscover();
+  }, [loaded]);
 
   const handleLogin = async () => {
     setError('');
@@ -166,10 +181,47 @@ export default function LoginScreen({ navigation, onLoginSuccess }: Props) {
               keyboardType="url"
               returnKeyType="next"
             />
-            {scanning && (
-              <ActivityIndicator size="small" color={colors.emerald} />
-            )}
           </View>
+
+          {/* Discover servers — auto-runs on first launch, manual rescan available. */}
+          <TouchableOpacity
+            style={styles.discoverBtn}
+            onPress={runDiscover}
+            disabled={scanning}
+            activeOpacity={0.7}
+          >
+            {scanning ? (
+              <ActivityIndicator size="small" color={colors.emerald} />
+            ) : (
+              <Ionicons name="search" size={16} color={colors.emerald} />
+            )}
+            <Text style={styles.discoverText}>
+              {scanning ? 'Scanning...' : 'Find servers on network'}
+            </Text>
+          </TouchableOpacity>
+
+          {discoveredServers.map((entry) => {
+            const [url, lanIp] = entry.split('|');
+            return (
+              <TouchableOpacity
+                key={entry}
+                style={styles.serverItem}
+                onPress={() => {
+                  setServerUrlState(url);
+                  setError('');
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="server" size={16} color={colors.emerald} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.serverUrl}>{url}</Text>
+                  {lanIp ? (
+                    <Text style={styles.serverLanIp}>{lanIp}</Text>
+                  ) : null}
+                </View>
+              </TouchableOpacity>
+            );
+          })}
 
           <Text style={[styles.label, { marginTop: 20 }]}>EMAIL</Text>
           <View style={styles.inputRow}>
@@ -395,5 +447,44 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   registerTextHighlight: {
     color: c.emerald,
     fontWeight: '600',
+  },
+  discoverBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    marginTop: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(16,185,129,0.4)',
+    backgroundColor: 'rgba(16,185,129,0.08)',
+  },
+  discoverText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: c.emerald,
+  },
+  serverItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    borderRadius: 10,
+    backgroundColor: c.inputBg,
+    borderWidth: 1,
+    borderColor: c.inputBorder,
+  },
+  serverUrl: {
+    fontSize: 14,
+    color: c.text,
+    fontWeight: '500',
+  },
+  serverLanIp: {
+    fontSize: 11,
+    color: c.textDim,
+    marginTop: 2,
   },
 });

@@ -196,9 +196,16 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
   // "Sticky" mowing: off dock + coverage mode + work not explicitly stopped/finished
   // Prevents flicker during lane transitions (brief Work:WAIT between lanes)
   // But NOT sticky when returning home or explicitly cancelled/finished
+  //
+  // The server translates work_status numeric → human label (sensorData.ts
+  // WORK_STATUS_LABELS). Check both raw and translated forms so the UI
+  // works regardless of which side does the translation. Idle-like states
+  // (mower not actively executing a coverage path):
+  //   '0'/'Idle', '9'/'Ready', '70'/'Finished once', '72'/'Cancelled'
+  const IDLE_WORK_STATES = ['0', '9', '70', '72', 'Idle', 'Ready', 'Finished once', 'Cancelled'];
   const isMowingSticky = !isOnDock && taskMode === 1 && !isReturning
     && !msg.includes('Work:FINISHED') && !msg.includes('Work:CANCELLED')
-    && workStatus !== '0' && workStatus !== '9';
+    && !IDLE_WORK_STATES.includes(workStatus);
 
   // Edge-cut state is surfaced by the firmware via extended_response edge_cut_status
   // → server writes `edge_active` ('0'/'1') + supporting fields to the sensor cache.

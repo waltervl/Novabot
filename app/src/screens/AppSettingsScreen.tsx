@@ -13,6 +13,7 @@ import {
   Modal,
   ActivityIndicator,
   Linking,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,6 +22,11 @@ import { useMowerColor, type MowerColor } from '../hooks/useMowerColor';
 import { getServerUrl, setServerUrl as saveServerUrl, getToken, clearToken } from '../services/auth';
 import { initSocket, disconnectSocket } from '../services/socket';
 import { discoverServers } from '../services/discovery';
+import {
+  getReleaseManifestUrl,
+  setReleaseManifestUrl,
+  getDefaultReleaseManifestUrl,
+} from '../services/appUpdate';
 import { useMowerState } from '../hooks/useMowerState';
 import { useActiveMower } from '../hooks/useActiveMower';
 import { ApiClient } from '../services/api';
@@ -54,6 +60,11 @@ export default function AppSettingsScreen({
   const [scanning, setScanning] = useState(false);
   const [discoveredServers, setDiscoveredServers] = useState<string[]>([]);
   const [email, setEmail] = useState('');
+  const [updateUrl, setUpdateUrl] = useState('');
+  const [editingUpdateUrl, setEditingUpdateUrl] = useState('');
+  const [isEditingUpdateUrl, setIsEditingUpdateUrl] = useState(false);
+  const defaultUpdateUrl = getDefaultReleaseManifestUrl();
+  const isCustomUpdateUrl = updateUrl !== defaultUpdateUrl;
   const devMode = useDevMode();
   const experimental = useExperimental();
   const { language, setLanguage, t } = useI18n();
@@ -69,6 +80,9 @@ export default function AppSettingsScreen({
       const url = await getServerUrl();
       if (url) setServerUrl(url);
 
+      const manifestUrl = await getReleaseManifestUrl();
+      setUpdateUrl(manifestUrl);
+
       const token = await getToken();
       if (token) {
         try {
@@ -81,6 +95,25 @@ export default function AppSettingsScreen({
       }
     })();
   }, []);
+
+  const handleSaveUpdateUrl = async (raw: string) => {
+    const trimmed = raw.trim();
+    // Empty input = revert to default. Any non-empty value persists verbatim.
+    if (trimmed.length === 0 || trimmed === defaultUpdateUrl) {
+      await setReleaseManifestUrl(null);
+      setUpdateUrl(defaultUpdateUrl);
+    } else {
+      await setReleaseManifestUrl(trimmed);
+      setUpdateUrl(trimmed);
+    }
+    setIsEditingUpdateUrl(false);
+  };
+
+  const handleResetUpdateUrl = async () => {
+    await setReleaseManifestUrl(null);
+    setUpdateUrl(defaultUpdateUrl);
+    setIsEditingUpdateUrl(false);
+  };
 
   const handleChangeServer = async (newUrl: string) => {
     const normalized = newUrl.trim().replace(/\/+$/, '');
@@ -255,6 +288,91 @@ export default function AppSettingsScreen({
             value={connected ? 'Connected' : 'Disconnected'}
             valueColor={connected ? colors.green : colors.red}
           />
+        </Section>
+
+        {/* App update — current version (always) + manifest URL override
+            (Android only — iOS can't sideload APKs). */}
+        <Section title="APP UPDATES">
+          <SettingsRow
+            icon="information-circle-outline"
+            label="Installed version"
+            value={`v${Application.nativeApplicationVersion ?? '?'}${
+              Application.nativeBuildVersion ? ` (build ${Application.nativeBuildVersion})` : ''
+            }`}
+          />
+          {Platform.OS === 'android' && !isEditingUpdateUrl && (
+            <View style={styles.rowContainer}>
+              <Ionicons name="cloud-download-outline" size={20} color={colors.textDim} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowLabel}>Update URL</Text>
+                <Text
+                  style={[styles.rowValue, { fontSize: 12, opacity: 0.75 }]}
+                  numberOfLines={2}
+                >
+                  {updateUrl || 'Loading...'}
+                </Text>
+                {isCustomUpdateUrl && (
+                  <Text style={[styles.rowValue, { fontSize: 11, color: colors.amber }]}>
+                    Custom (default: {defaultUpdateUrl})
+                  </Text>
+                )}
+              </View>
+              <TouchableOpacity
+                style={styles.changeBtn}
+                onPress={() => {
+                  setEditingUpdateUrl(updateUrl);
+                  setIsEditingUpdateUrl(true);
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.changeText}>Change</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {Platform.OS === 'android' && isEditingUpdateUrl && (
+            <View style={styles.editContainer}>
+              <View style={styles.inputRow}>
+                <TextInput
+                  style={styles.input}
+                  value={editingUpdateUrl}
+                  onChangeText={setEditingUpdateUrl}
+                  placeholder={defaultUpdateUrl}
+                  placeholderTextColor={colors.textMuted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  returnKeyType="done"
+                  onSubmitEditing={() => handleSaveUpdateUrl(editingUpdateUrl)}
+                />
+              </View>
+              <Text style={[styles.rowValue, { fontSize: 11, opacity: 0.7, marginTop: 6 }]}>
+                Full URL to manifest.json. Leave blank to revert to default.
+              </Text>
+              <View style={styles.buttonRow}>
+                <TouchableOpacity
+                  style={styles.cancelBtn}
+                  onPress={() => setIsEditingUpdateUrl(false)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.cancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.cancelBtn, { flex: 0, paddingHorizontal: 14 }]}
+                  onPress={handleResetUpdateUrl}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.cancelText}>Default</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.saveBtn}
+                  onPress={() => handleSaveUpdateUrl(editingUpdateUrl)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.saveText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </Section>
 
         {/* Account */}

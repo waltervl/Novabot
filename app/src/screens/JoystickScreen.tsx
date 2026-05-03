@@ -86,8 +86,13 @@ export default function JoystickScreen() {
     const returning = rechargeStatus === 1 || msg.includes('Recharge: GOING')
       || msg.includes('Work:GO_PILE') || msg.includes('Work:BACK_CHARGER')
       || msg.includes('Work:DOCKING');
+    // The server translates work_status numeric → human label
+    // (sensorData.ts WORK_STATUS_LABELS). Check both raw and translated
+    // forms. Idle-like states (mower not actively executing a coverage
+    // path): '0'/'Idle', '9'/'Ready', '70'/'Finished once', '72'/'Cancelled'.
+    const IDLE_WORK_STATES = ['0', '9', '70', '72', 'Idle', 'Ready', 'Finished once', 'Cancelled'];
     const stickyMowing = !onDock && taskMode === 1 && !returning
-      && workStatus !== '0' && workStatus !== '9'
+      && !IDLE_WORK_STATES.includes(workStatus)
       && !msg.includes('Work:FINISHED') && !msg.includes('Work:CANCELLED');
     const mapping = s.start_edit_or_assistant_map_flag === '1' && taskMode !== 1;
     return coverageRunning || returning || stickyMowing || mapping;

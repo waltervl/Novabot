@@ -10,19 +10,24 @@
  */
 
 import * as Application from 'expo-application';
-import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as SecureStore from 'expo-secure-store';
+import { sha256 } from 'js-sha256';
 
 const SKIP_KEY = 'appUpdate.skippedVersion';
+const URL_KEY = 'appUpdate.manifestUrl';
 
 /**
- * Central release host. APK + manifest live here regardless of which
- * OpenNova server the user is connected to — every app instance checks
- * the same URL. Update by uploading new files to this NAS path.
+ * Default release manifest host. APK + manifest live here regardless of which
+ * OpenNova server the user is connected to. Users can override the full URL
+ * in Settings → Update URL when running their own release host.
+ *
+ * NOTE: hostname is `downloads` (plural). Both `downloads.` and `download.`
+ * resolve via DNS CNAME so either works, but plural is the canonical form
+ * used by historical manifests and what's documented on the NAS.
  */
-const RELEASE_MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/app/manifest.json';
+const DEFAULT_RELEASE_MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/app/manifest.json';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,18 +78,50 @@ export function hasUpdateAvailable(
 }
 
 // ---------------------------------------------------------------------------
+// Manifest URL override (Settings)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the user-configured manifest URL, or the built-in default.
+ */
+export async function getReleaseManifestUrl(): Promise<string> {
+  try {
+    const stored = await SecureStore.getItemAsync(URL_KEY);
+    return stored && stored.trim().length > 0 ? stored.trim() : DEFAULT_RELEASE_MANIFEST_URL;
+  } catch {
+    return DEFAULT_RELEASE_MANIFEST_URL;
+  }
+}
+
+/**
+ * Persists a custom manifest URL. Pass null/empty to revert to the default.
+ */
+export async function setReleaseManifestUrl(url: string | null): Promise<void> {
+  if (!url || url.trim().length === 0) {
+    await SecureStore.deleteItemAsync(URL_KEY);
+    return;
+  }
+  await SecureStore.setItemAsync(URL_KEY, url.trim());
+}
+
+export function getDefaultReleaseManifestUrl(): string {
+  return DEFAULT_RELEASE_MANIFEST_URL;
+}
+
+// ---------------------------------------------------------------------------
 // Network
 // ---------------------------------------------------------------------------
 
 /**
- * Fetches the latest release manifest from the central NAS host.
+ * Fetches the latest release manifest from the configured (or default) host.
  * Returns null on 404 / network errors — never throws. Cache-busted via
  * a millisecond query string so a freshly uploaded manifest is picked up
  * even when an upstream cache is in front of the host.
  */
 export async function fetchLatest(): Promise<AppLatest | null> {
   try {
-    const r = await fetch(`${RELEASE_MANIFEST_URL}?t=${Date.now()}`);
+    const url = await getReleaseManifestUrl();
+    const r = await fetch(`${url}?t=${Date.now()}`);
     if (!r.ok) return null;
     return (await r.json()) as AppLatest;
   } catch {
@@ -158,22 +195,37 @@ export async function downloadApk(
   const result = await dl.downloadAsync();
   if (!result?.uri) throw new Error('APK download failed — no URI returned');
 
-  // Read the file as base64, decode to binary, compute SHA256
-  const base64Data = await FileSystem.readAsStringAsync(result.uri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-
-  // Decode base64 → Uint8Array for binary-accurate hashing
-  const binaryString = atob(base64Data);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+  // Chunked SHA256: load 1 MB at a time so a 95 MB APK doesn't OOM the JS
+  // heap. Reading the whole file as base64 inflates ~33% (95 MB → 127 MB
+  // string) which crashes Android with java.lang.OutOfMemoryError before
+  // we ever get to hash the bytes.
+  const info = await FileSystem.getInfoAsync(result.uri);
+  if (!info.exists || info.size == null) {
+    throw new Error('APK download verification failed — file missing or empty');
   }
 
-  // Crypto.digest takes BufferSource (Uint8Array) and returns ArrayBuffer
-  const hashBuffer = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, bytes);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const actualSha256 = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  const CHUNK = 1024 * 1024; // 1 MB binary per iteration
+  const hasher = sha256.create();
+
+  for (let offset = 0; offset < info.size; offset += CHUNK) {
+    const length = Math.min(CHUNK, info.size - offset);
+    const base64Chunk = await FileSystem.readAsStringAsync(result.uri, {
+      encoding: FileSystem.EncodingType.Base64,
+      position: offset,
+      length,
+    });
+
+    // Decode base64 → bytes; feed into incremental hasher then drop the
+    // intermediate buffer so GC can reclaim it before the next chunk.
+    const binaryString = atob(base64Chunk);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    hasher.update(bytes);
+  }
+
+  const actualSha256 = hasher.hex();
 
   if (actualSha256 !== expectedSha256.toLowerCase()) {
     await FileSystem.deleteAsync(result.uri, { idempotent: true });
