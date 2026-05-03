@@ -98,6 +98,11 @@ export function adminPageHtml(): string {
   .menu-item:hover{background:rgba(255,255,255,.08)}
   .ota-progress-bar{width:100%;height:8px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
   .ota-progress-fill{height:100%;background:#00d4aa;border-radius:4px;transition:width .5s ease}
+  .cal-arrow {
+    background: #374151; border: 0; border-radius: 6px; color: #fff;
+    padding: 8px 0; cursor: pointer; font-size: 14px; line-height: 1;
+  }
+  .cal-arrow:hover { background: #4b5563; }
 </style>
 </head>
 <body>
@@ -335,6 +340,30 @@ export function adminPageHtml(): string {
       <div id="mapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
       <div style="background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;position:relative">
         <canvas id="mapCanvas" width="800" height="600" style="width:100%;display:block;background:#0a0a1a"></canvas>
+        <div id="polygonCalPanel" style="display:none;position:absolute;top:12px;left:12px;z-index:1000;background:rgba(15,15,30,0.95);backdrop-filter:blur(6px);border:1px solid #444;border-radius:10px;padding:14px;width:240px;box-shadow:0 6px 30px rgba(0,0,0,0.45)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#fbbf24;font-weight:600">Polygon Offset</span>
+            <span style="cursor:pointer;color:#888" onclick="cancelPolygonCalibration()" title="Cancel">&times;</span>
+          </div>
+          <div style="display:grid;grid-template-columns:36px 36px 36px;gap:4px;justify-content:center;margin-bottom:10px">
+            <span></span>
+            <button class="cal-arrow" onclick="nudgePolygonOffset(0, 0.01, event)" title="North (Shift = 10 cm)">&uarr;</button>
+            <span></span>
+            <button class="cal-arrow" onclick="nudgePolygonOffset(-0.01, 0, event)" title="West (Shift = 10 cm)">&larr;</button>
+            <div id="polygonCalDisplay" style="background:#0d0d20;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:monospace;color:#9ca3af;padding:2px">+0.00, +0.00 m</div>
+            <button class="cal-arrow" onclick="nudgePolygonOffset(0.01, 0, event)" title="East (Shift = 10 cm)">&rarr;</button>
+            <span></span>
+            <button class="cal-arrow" onclick="nudgePolygonOffset(0, -0.01, event)" title="South (Shift = 10 cm)">&darr;</button>
+            <span></span>
+          </div>
+          <div style="font-size:10px;color:#666;text-align:center;margin-bottom:10px">Shift+klik = 10 cm</div>
+          <div style="display:flex;gap:6px">
+            <button onclick="resetPolygonOffsetUI()" style="flex:1;padding:6px;background:#374151;border:0;border-radius:6px;color:#fff;cursor:pointer">Reset</button>
+            <button onclick="cancelPolygonCalibration()" style="flex:1;padding:6px;background:#374151;border:0;border-radius:6px;color:#fff;cursor:pointer">Cancel</button>
+            <button id="polygonCalApplyBtn" onclick="applyPolygonOffset()" style="flex:1.2;padding:6px;background:#10b981;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600">Apply</button>
+          </div>
+          <div id="polygonCalStatus" style="margin-top:8px;font-size:11px;color:#9ca3af;min-height:14px"></div>
+        </div>
       </div>
       <div id="mapLegend" style="display:none;margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#aaa">
         <span><span style="display:inline-block;width:12px;height:12px;background:rgba(34,197,94,.3);border:2px solid #166534;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Work area</span>
