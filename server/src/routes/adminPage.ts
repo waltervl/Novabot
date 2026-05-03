@@ -2400,6 +2400,133 @@ async function restoreAndRealign() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Polygon offset calibration mode
+// Spec: docs/superpowers/specs/2026-05-03-admin-polygon-offset-calibration.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+var polygonCal = null;  // { dxStart, dyStart, dx, dy, ghostMaps } | null
+
+async function enterPolygonCalibration() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) { alert('Select a mower first.'); return; }
+
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/polygon-offset', {
+    headers: { 'Authorization': token },
+  });
+  var current = r.ok ? await r.json() : { dx_m: 0, dy_m: 0 };
+
+  var canvas = document.getElementById('mapCanvas');
+  var ghostMaps = canvas.__mapState && canvas.__mapState.maps
+    ? JSON.parse(JSON.stringify(canvas.__mapState.maps))
+    : null;
+
+  polygonCal = {
+    dxStart: current.dx_m || 0,
+    dyStart: current.dy_m || 0,
+    dx: current.dx_m || 0,
+    dy: current.dy_m || 0,
+    ghostMaps: ghostMaps,
+  };
+
+  document.getElementById('polygonCalPanel').style.display = 'block';
+  updatePolygonCalDisplay();
+  rerenderWithGhost();
+  document.addEventListener('keydown', polygonCalKeyHandler);
+}
+
+function cancelPolygonCalibration() {
+  polygonCal = null;
+  document.getElementById('polygonCalPanel').style.display = 'none';
+  document.removeEventListener('keydown', polygonCalKeyHandler);
+  loadMaps();
+}
+
+function resetPolygonOffsetUI() {
+  if (!polygonCal) return;
+  polygonCal.dx = 0;
+  polygonCal.dy = 0;
+  updatePolygonCalDisplay();
+  rerenderWithGhost();
+}
+
+function nudgePolygonOffset(dx, dy, evt) {
+  if (!polygonCal) return;
+  var mult = (evt && evt.shiftKey) ? 10 : 1;
+  polygonCal.dx = +(polygonCal.dx + dx * mult).toFixed(3);
+  polygonCal.dy = +(polygonCal.dy + dy * mult).toFixed(3);
+  updatePolygonCalDisplay();
+  rerenderWithGhost();
+}
+
+function polygonCalKeyHandler(e) {
+  if (!polygonCal) return;
+  var step = e.shiftKey ? 0.10 : 0.01;
+  switch (e.key) {
+    case 'ArrowUp':    nudgePolygonOffset(0, step, e); e.preventDefault(); break;
+    case 'ArrowDown':  nudgePolygonOffset(0, -step, e); e.preventDefault(); break;
+    case 'ArrowLeft':  nudgePolygonOffset(-step, 0, e); e.preventDefault(); break;
+    case 'ArrowRight': nudgePolygonOffset(step, 0, e); e.preventDefault(); break;
+    case 'Escape':     cancelPolygonCalibration(); break;
+  }
+}
+
+function updatePolygonCalDisplay() {
+  if (!polygonCal) return;
+  var d = document.getElementById('polygonCalDisplay');
+  var sx = (polygonCal.dx >= 0 ? '+' : '') + polygonCal.dx.toFixed(2);
+  var sy = (polygonCal.dy >= 0 ? '+' : '') + polygonCal.dy.toFixed(2);
+  d.textContent = sx + ', ' + sy + ' m';
+}
+
+function rerenderWithGhost() {
+  if (!polygonCal) return;
+  var canvas = document.getElementById('mapCanvas');
+  if (!canvas || !canvas.__mapState) return;
+  var ghostBase = polygonCal.ghostMaps || canvas.__mapState.maps;
+  var live = JSON.parse(JSON.stringify(ghostBase)).map(function(m) {
+    if (!m.mapArea || !Array.isArray(m.mapArea)) return m;
+    var isToCharge = /^map\\d+tocharge_unicom$/.test(m.mapName || '');
+    m.mapArea = m.mapArea.map(function(p, i) {
+      if (isToCharge && i === 0) return p;
+      return { x: p.x + polygonCal.dx, y: p.y + polygonCal.dy };
+    });
+    return m;
+  });
+  renderMapCanvas(canvas, live, canvas.__mapState.chargingPose, ghostBase);
+}
+
+async function applyPolygonOffset() {
+  if (!polygonCal) return;
+  var sn = document.getElementById('mapMowerSelect').value;
+  var btn = document.getElementById('polygonCalApplyBtn');
+  var status = document.getElementById('polygonCalStatus');
+  btn.disabled = true;
+  status.style.color = '#60a5fa';
+  status.textContent = 'Applying...';
+
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/apply-polygon-offset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': token },
+      body: JSON.stringify({ dx_m: polygonCal.dx, dy_m: polygonCal.dy }),
+    });
+    var result = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !result.ok) {
+      var msg = result.error || ('HTTP ' + r.status);
+      if (result.partial) msg += ' (partial: DB updated, mower not yet synced)';
+      throw new Error(msg);
+    }
+    status.style.color = '#10b981';
+    status.textContent = 'Applied (' + polygonCal.dx.toFixed(2) + ', ' + polygonCal.dy.toFixed(2) + ' m). Synced.';
+    setTimeout(cancelPolygonCalibration, 1200);
+  } catch (e) {
+    status.style.color = '#f87171';
+    status.textContent = 'Apply failed: ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Attach mouse-wheel zoom + drag pan handlers to the map canvas. Idempotent:
 // only attaches once per canvas (flag set on element). Re-renders by calling
