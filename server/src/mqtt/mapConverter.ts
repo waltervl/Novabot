@@ -21,7 +21,6 @@ import { execSync } from 'child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import path from 'path';
 import { db } from '../db/database.js';
-import { mapRepo } from '../db/repositories/maps.js';
 import { shiftPoints, isToChargeUnicomName } from '../services/polygonOffset.js';
 
 const TAG = '[MAP-CONV]';
@@ -245,7 +244,15 @@ export function generateMapZipFromDb(
     return null;
   }
 
-  const offset = mapRepo.getPolygonOffset(sn);
+  // Read polygon offset directly from the DB table to avoid pulling
+  // mapRepo (which transitively imports mapBackup → mapConverter and
+  // creates an evaluation cycle).
+  const offsetRow = db.prepare(
+    'SELECT polygon_offset_x_m, polygon_offset_y_m FROM map_calibration WHERE mower_sn = ?'
+  ).get(sn) as { polygon_offset_x_m: number; polygon_offset_y_m: number } | undefined;
+  const offset = offsetRow
+    ? { x: offsetRow.polygon_offset_x_m ?? 0, y: offsetRow.polygon_offset_y_m ?? 0 }
+    : { x: 0, y: 0 };
 
   const areas: MapArea[] = [];
 

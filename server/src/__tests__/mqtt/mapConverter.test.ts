@@ -126,4 +126,49 @@ describe('generateMapZipFromDb polygon offset', () => {
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it('shifts every point of map-to-map unicom (no anchor exemption)', () => {
+    // Add a second work area + a non-tocharge unicom row pointing at it.
+    const MAP1_TO_MAP0_PTS = [
+      { x: 6.0, y: 6.0 },
+      { x: 5.0, y: 5.5 },
+      { x: 4.5, y: 5.0 },
+    ];
+    mapRepo.create({
+      map_id: `${SN}-work2`,
+      mower_sn: SN,
+      map_name: 'map1_work',
+      file_name: 'map1_work.csv',
+      map_area: JSON.stringify([
+        { x: 10, y: 10 }, { x: 12, y: 10 }, { x: 12, y: 12 }, { x: 10, y: 12 },
+      ]),
+      map_type: 'work',
+      canonical_name: 'map1_work',
+    });
+    // Use map1tomap0_0_unicom as the unicom for work area 1 (unicomRows index 1).
+    // map_id "LFIN_OFFSET_TEST-unicom-zzz-m2m" sorts after "-unicom-tocharge" so this
+    // row becomes unicomRows[1] and is picked up for work area index 1 (map1_work).
+    mapRepo.create({
+      map_id: `${SN}-unicom-zzz-m2m`,
+      mower_sn: SN,
+      map_name: 'map1tomap0_0_unicom',
+      file_name: 'map1tomap0_0_unicom.csv',
+      map_area: JSON.stringify(MAP1_TO_MAP0_PTS),
+      map_type: 'unicom',
+      canonical_name: 'map1tomap0_0_unicom',
+    });
+    mapRepo.setPolygonOffset(SN, 0.05, -0.03);
+
+    const zip = generateMapZipFromDb(SN, 0);
+    const dir = unzipTo(zip!);
+
+    // map-to-map unicom: every point shifted (no anchor exemption)
+    const m2m = readCsv(path.join(dir, 'csv_file/map1tomap0_0_unicom.csv'));
+    expect(m2m[0].x).toBeCloseTo(MAP1_TO_MAP0_PTS[0].x + 0.05);
+    expect(m2m[0].y).toBeCloseTo(MAP1_TO_MAP0_PTS[0].y - 0.03);
+    expect(m2m[1].x).toBeCloseTo(MAP1_TO_MAP0_PTS[1].x + 0.05);
+    expect(m2m[1].y).toBeCloseTo(MAP1_TO_MAP0_PTS[1].y - 0.03);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
