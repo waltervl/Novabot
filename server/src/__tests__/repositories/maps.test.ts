@@ -242,5 +242,19 @@ describe('MapRepository', () => {
       expect(row.polygon_offset_x_m).toBeCloseTo(0.08);
       expect(row.polygon_offset_y_m).toBe(0);
     });
+
+    it('setCalibration preserves polygon offset when updating other fields', () => {
+      mapRepo.setPolygonOffset(SN, 0.05, -0.03);
+      mapRepo.setCalibration(SN, { rotation: 0.5 });
+      const off = mapRepo.getPolygonOffset(SN);
+      expect(off).toEqual({ x: 0.05, y: -0.03 });
+    });
+
+    it('setChargerGps preserves polygon offset', () => {
+      mapRepo.setPolygonOffset(SN, 0.07, 0.02);
+      mapRepo.setChargerGps(SN, 51.5, 5.5);
+      const off = mapRepo.getPolygonOffset(SN);
+      expect(off).toEqual({ x: 0.07, y: 0.02 });
+    });
   });
 });

@@ -215,8 +215,8 @@ export class MapRepository {
   private _getCalibration = db.prepare('SELECT * FROM map_calibration WHERE mower_sn = ?');
   private _setCalibration = db.prepare(`
     INSERT OR REPLACE INTO map_calibration
-      (mower_sn, offset_lat, offset_lng, rotation, scale, charger_lat, charger_lng, gps_charger_lat, gps_charger_lng, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      (mower_sn, offset_lat, offset_lng, rotation, scale, charger_lat, charger_lng, gps_charger_lat, gps_charger_lng, polygon_offset_x_m, polygon_offset_y_m, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
   private _getChargerGps = db.prepare('SELECT charger_lat, charger_lng FROM map_calibration WHERE mower_sn = ?');
   private _setPolygonOffset = db.prepare(`
@@ -495,7 +495,9 @@ export class MapRepository {
   }
 
   setCalibration(mowerSn: string, data: SetCalibrationData): void {
-    // Merge with existing calibration (preserve fields not being updated)
+    // Merge with existing calibration (preserve fields not being updated,
+    // including polygon_offset_x_m / polygon_offset_y_m which are managed
+    // exclusively via setPolygonOffset and must survive a full-replace here).
     const existing = this.getCalibration(mowerSn);
     this._setCalibration.run(
       mowerSn,
@@ -507,6 +509,8 @@ export class MapRepository {
       data.charger_lng !== undefined ? data.charger_lng : (existing?.charger_lng ?? null),
       data.gps_charger_lat !== undefined ? data.gps_charger_lat : (existing?.gps_charger_lat ?? null),
       data.gps_charger_lng !== undefined ? data.gps_charger_lng : (existing?.gps_charger_lng ?? null),
+      existing?.polygon_offset_x_m ?? 0,
+      existing?.polygon_offset_y_m ?? 0,
     );
   }
 
