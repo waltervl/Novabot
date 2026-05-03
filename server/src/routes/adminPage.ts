@@ -2646,7 +2646,7 @@ async function loadMaps() {
   }
 }
 
-function renderMapCanvas(canvas, maps, chargingPose) {
+function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   // Cache last-rendered data on the canvas so wheel/drag handlers can
   // re-render without re-fetching from server. Also persists view-state
   // (user-applied zoom + pan) across re-renders so interactions feel
@@ -2734,6 +2734,29 @@ function renderMapCanvas(canvas, maps, chargingPose) {
   ctx.font = '10px system-ui';
   ctx.textAlign = 'right';
   ctx.fillText(rangeX.toFixed(1) + 'm x ' + rangeY.toFixed(1) + 'm', W - 10, H - 8);
+
+  // Calibration ghost: render the original polygons greyed out underneath
+  // the live (offset-shifted) layer for visual comparison.
+  if (ghostMaps && Array.isArray(ghostMaps)) {
+    ghostMaps.forEach(function(g) {
+      if (!g.mapArea || g.mapArea.length < 2) return;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(120,120,120,0.6)';
+      ctx.fillStyle = 'rgba(120,120,120,0.18)';
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      g.mapArea.forEach(function(p, i) {
+        var sx = offsetX + (p.x - minX) * scale;
+        var sy = offsetY + (maxY - p.y) * scale;
+        if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+      });
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
 
   // Draw each map polygon
   for (var i = 0; i < maps.length; i++) {
