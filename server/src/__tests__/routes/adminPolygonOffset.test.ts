@@ -200,14 +200,32 @@ describe('POST /api/admin-status/maps/:sn/apply-polygon-offset', () => {
     expect(mapRepo.getPolygonOffset(SN).x).toBeCloseTo(0.02);
   });
 
-  it('returns 500 when regenerate fails (DB still updated)', async () => {
+  it('returns 400 when no map data found (DB still updated)', async () => {
     vi.mocked(mapBackupModule.regenerateLatestZipFromBackup).mockReturnValue(null);
     const r = await request(app)
       .post(`/api/admin-status/maps/${SN}/apply-polygon-offset`)
       .send({ dx_m: 0.02, dy_m: 0 });
-    expect(r.status).toBe(500);
+    expect(r.status).toBe(400);
     expect(r.body.ok).toBe(false);
+    expect(r.body.error).toMatch(/map the area first/i);
     expect(mapRepo.getPolygonOffset(SN).x).toBeCloseTo(0.02);
+  });
+
+  // Skipped: vitest fake-timers + supertest don't compose cleanly — advanceTimersByTimeAsync
+  // advances the Promise-based setTimeout in the route, but supertest's internal await
+  // still hangs until vitest's real 5000ms test-timeout fires. The 504 path is implemented
+  // and exercisable via manual/integration test; no unit-test equivalent is feasible here.
+  it.skip('returns 504 when sync_map ack times out', async () => {
+    vi.useFakeTimers();
+    vi.mocked(mapSync.onExtendedResponse).mockImplementation(() => {}); // never fires
+    const req = request(app)
+      .post(`/api/admin-status/maps/${SN}/apply-polygon-offset`)
+      .send({ dx_m: 0.01, dy_m: 0 });
+    await vi.advanceTimersByTimeAsync(8001);
+    const r = await req;
+    expect(r.status).toBe(504);
+    expect(r.body.partial).toBe(true);
+    vi.useRealTimers();
   });
 });
 

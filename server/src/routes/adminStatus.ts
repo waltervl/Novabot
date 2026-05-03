@@ -11,7 +11,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { db } from '../db/database.js';
 import { isDeviceOnline, banishSn, unbanSn, listBannedSns } from '../mqtt/broker.js';
-import { awaitCommand, publishToDevice } from '../mqtt/mapSync.js';
+import { awaitCommand, publishToDevice, publishToExtended, onExtendedResponse, offExtendedResponse } from '../mqtt/mapSync.js';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo } from '../db/repositories/index.js';
 import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
@@ -19,7 +19,6 @@ import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
-import { publishToExtended, onExtendedResponse, offExtendedResponse } from '../mqtt/mapSync.js';
 import { deviceCache } from '../mqtt/sensorData.js';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
@@ -1163,7 +1162,7 @@ adminStatusRouter.post('/maps/:sn/apply-polygon-offset', async (req: AuthRequest
   // 2. Regenerate ZIP with the new offset baked in.
   const regenPath = regenerateLatestZipFromBackup(sn);
   if (!regenPath) {
-    res.status(500).json({ ok: false, error: 'Failed to regenerate <SN>_latest.zip', dx_m: dx, dy_m: dy });
+    res.status(400).json({ ok: false, error: 'No map data found for this mower — map the area first.', dx_m: dx, dy_m: dy });
     return;
   }
 
@@ -1220,7 +1219,7 @@ adminStatusRouter.post('/maps/:sn/reset-polygon-offset', async (req: AuthRequest
   mapRepo.setPolygonOffset(sn, 0, 0);
   const regenPath = regenerateLatestZipFromBackup(sn);
   if (!regenPath) {
-    res.status(500).json({ ok: false, error: 'Failed to regenerate <SN>_latest.zip', dx_m: 0, dy_m: 0 });
+    res.status(400).json({ ok: false, error: 'No map data found for this mower — map the area first.', dx_m: 0, dy_m: 0 });
     return;
   }
   if (!isDeviceOnline(sn)) {
