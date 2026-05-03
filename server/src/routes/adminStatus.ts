@@ -1128,6 +1128,143 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (
   });
 });
 
+// ── Polygon-offset calibration endpoints ────────────────────────────────────
+// These allow operators to nudge the mower's work polygon overlay without
+// touching the underlying GPS calibration.  The offset is persisted in
+// map_calibration and baked into the regenerated _latest.zip on every call.
+
+const MAX_OFFSET_M = 1.0;
+
+// GET /api/admin-status/maps/:sn/polygon-offset
+adminStatusRouter.get('/maps/:sn/polygon-offset', (req: AuthRequest, res: Response) => {
+  const off = mapRepo.getPolygonOffset(req.params.sn);
+  res.json({ dx_m: off.x, dy_m: off.y });
+});
+
+// POST /api/admin-status/maps/:sn/apply-polygon-offset
+adminStatusRouter.post('/maps/:sn/apply-polygon-offset', async (req: AuthRequest, res: Response) => {
+  const { sn } = req.params;
+  const { dx_m, dy_m } = req.body as { dx_m?: unknown; dy_m?: unknown };
+  const dx = typeof dx_m === 'number' ? dx_m : NaN;
+  const dy = typeof dy_m === 'number' ? dy_m : NaN;
+
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+    res.status(400).json({ ok: false, error: 'dx_m and dy_m must be finite numbers' });
+    return;
+  }
+  if (Math.abs(dx) > MAX_OFFSET_M || Math.abs(dy) > MAX_OFFSET_M) {
+    res.status(400).json({ ok: false, error: `Offset magnitude must be ≤ ${MAX_OFFSET_M} m per axis` });
+    return;
+  }
+
+  // 1. Persist (idempotent — even when downstream fails the operator can retry).
+  mapRepo.setPolygonOffset(sn, dx, dy);
+
+  // 2. Regenerate ZIP with the new offset baked in.
+  const regenPath = regenerateLatestZipFromBackup(sn);
+  if (!regenPath) {
+    res.status(500).json({ ok: false, error: 'Failed to regenerate <SN>_latest.zip', dx_m: dx, dy_m: dy });
+    return;
+  }
+
+  // 3. Online check.
+  if (!isDeviceOnline(sn)) {
+    res.status(404).json({
+      ok: false,
+      partial: true,
+      error: 'Mower offline — sync_map not pushed; mower will pick up offset on next reconnect',
+      dx_m: dx, dy_m: dy,
+    });
+    return;
+  }
+
+  // 4. Fire sync_map and wait up to 8s for ack — same pattern as restore-and-realign.
+  const syncResult = await new Promise<{ ok: boolean; respond?: Record<string, unknown>; timeout?: boolean }>((resolve) => {
+    let settled = false;
+    const handler = (data: Record<string, unknown>) => {
+      const respond = data.sync_map_respond as Record<string, unknown> | undefined;
+      if (!respond) return;
+      if (settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: respond.result === 0, respond });
+    };
+    onExtendedResponse(sn, handler);
+    publishToExtended(sn, { sync_map: {} });
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: false, timeout: true });
+    }, 8000);
+  });
+
+  if (syncResult.timeout) {
+    res.status(504).json({
+      ok: false,
+      partial: true,
+      error: 'Mower did not respond within 8s',
+      dx_m: dx, dy_m: dy,
+    });
+    return;
+  }
+
+  console.log(`[Admin] apply-polygon-offset ${sn}: dx=${dx} dy=${dy} syncOk=${syncResult.ok}`);
+  res.json({ ok: syncResult.ok, dx_m: dx, dy_m: dy, syncResult: syncResult.respond ?? null });
+});
+
+// POST /api/admin-status/maps/:sn/reset-polygon-offset
+adminStatusRouter.post('/maps/:sn/reset-polygon-offset', async (req: AuthRequest, res: Response) => {
+  const { sn } = req.params;
+
+  mapRepo.setPolygonOffset(sn, 0, 0);
+  const regenPath = regenerateLatestZipFromBackup(sn);
+  if (!regenPath) {
+    res.status(500).json({ ok: false, error: 'Failed to regenerate <SN>_latest.zip', dx_m: 0, dy_m: 0 });
+    return;
+  }
+  if (!isDeviceOnline(sn)) {
+    res.status(404).json({
+      ok: false, partial: true,
+      error: 'Mower offline — sync_map not pushed; mower will pick up offset on next reconnect',
+      dx_m: 0, dy_m: 0,
+    });
+    return;
+  }
+
+  const syncResult = await new Promise<{ ok: boolean; respond?: Record<string, unknown>; timeout?: boolean }>((resolve) => {
+    let settled = false;
+    const handler = (data: Record<string, unknown>) => {
+      const respond = data.sync_map_respond as Record<string, unknown> | undefined;
+      if (!respond) return;
+      if (settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: respond.result === 0, respond });
+    };
+    onExtendedResponse(sn, handler);
+    publishToExtended(sn, { sync_map: {} });
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: false, timeout: true });
+    }, 8000);
+  });
+
+  if (syncResult.timeout) {
+    res.status(504).json({
+      ok: false, partial: true,
+      error: 'Mower did not respond within 8s',
+      dx_m: 0, dy_m: 0,
+    });
+    return;
+  }
+
+  console.log(`[Admin] reset-polygon-offset ${sn}: syncOk=${syncResult.ok}`);
+  res.json({ ok: syncResult.ok, dx_m: 0, dy_m: 0, syncResult: syncResult.respond ?? null });
+});
+
 // POST /api/admin-status/factory-reset — wipe all user data and return to setup
 adminStatusRouter.post('/factory-reset', (_req: AuthRequest, res: Response) => {
   console.log('[Admin] FACTORY RESET initiated by', _req.userId);
