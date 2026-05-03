@@ -2510,8 +2510,11 @@ async function applyPolygonOffset() {
       body: JSON.stringify({ dx_m: polygonCal.dx, dy_m: polygonCal.dy }),
     });
     var result = await r.json().catch(function(){ return {}; });
+    console.log('apply-polygon-offset response:', result);
     if (!r.ok || !result.ok) {
       var msg = result.error || ('HTTP ' + r.status);
+      if (result.syncResult && result.syncResult.error) msg += ' — mower: ' + result.syncResult.error;
+      else if (result.syncResult) msg += ' — mower respond: ' + JSON.stringify(result.syncResult);
       if (result.partial) msg += ' (partial: DB updated, mower not yet synced)';
       throw new Error(msg);
     }
