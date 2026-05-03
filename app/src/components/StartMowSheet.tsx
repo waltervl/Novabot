@@ -15,6 +15,7 @@ import {
   ScrollView,
   Alert,
   Platform,
+  Switch,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polygon, Line, G, Defs, ClipPath } from 'react-native-svg';
@@ -85,6 +86,10 @@ export function StartMowSheet({
   const [patternCenter, setPatternCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [edgeOffset, setEdgeOffset] = useState(0); // meters: negative=shrink, positive=expand
   const [previewing, setPreviewing] = useState(false);
+  // Rain confirmation modal — replaces the prior Alert.alert so we can host a
+  // Switch ("Negeer regen deze sessie") inside the prompt itself.
+  const [rainPrompt, setRainPrompt] = useState<{ mm: number; prob: number; atMs: number } | null>(null);
+  const [rainIgnoreToggle, setRainIgnoreToggle] = useState(false);
 
   const styles = useStyles(makeStyles);
   const { colors } = useTheme();
@@ -206,25 +211,36 @@ export function StartMowSheet({
       return;
     }
 
-    // 5. rainForecastIntercept: rain expected within ~3h (warn, not block)
+    // 5. rainForecastIntercept: rain expected within ~3h.
+    // Show inline modal with "Negeer regen deze sessie" toggle. Toggle off →
+    // server's rain monitor will pause as soon as rain hits (current behaviour).
+    // Toggle on → server records rain_ignore_session for this SN, monitor
+    // skips pause until the mowing session ends.
     const rain = await fetchIncomingRain(sn);
     if (rain) {
-      const timeLabel = new Date(rain.atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      Alert.alert(
-        t('rainWarningTitle') || 'Rain Expected',
-        t('rainWarningDesc', {
-          time: timeLabel,
-          mm: rain.mm.toFixed(1),
-          prob: String(rain.prob),
-        }) || `Rain is forecast around ${timeLabel} (${rain.mm.toFixed(1)}mm · ${rain.prob}%). Start mowing anyway?`,
-        [
-          { text: t('cancel') || 'Cancel', style: 'cancel' },
-          { text: t('startAnyway') || 'Start Anyway', style: 'destructive', onPress: () => doStart() },
-        ],
-      );
+      setRainIgnoreToggle(false);
+      setRainPrompt(rain);
       return;
     }
 
+    doStart();
+  };
+
+  /** User accepted the rain prompt. If toggle was on, set the per-session
+   *  rain-ignore flag on the server before kicking off start_navigation. */
+  const confirmRainStart = async () => {
+    setRainPrompt(null);
+    if (rainIgnoreToggle && sn) {
+      try {
+        const url = await getServerUrl();
+        if (url) {
+          const api = new ApiClient(url);
+          await api.setRainIgnoreSession(sn, true);
+        }
+      } catch (e) {
+        console.log('[StartMow] rain-ignore-session POST failed:', e);
+      }
+    }
     doStart();
   };
 
@@ -695,6 +711,67 @@ export function StartMowSheet({
           </ScrollView>
         </View>
       </View>
+
+      {/* Rain forecast confirmation modal — replaces the old Alert.alert so we
+          can host an inline "Negeer regen deze sessie" Switch. */}
+      <Modal
+        visible={!!rainPrompt}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRainPrompt(null)}
+      >
+        <View style={styles.rainModalBackdrop}>
+          <View style={styles.rainModalCard}>
+            <View style={styles.rainModalIconRow}>
+              <Ionicons name="rainy" size={28} color="#60a5fa" />
+              <Text style={styles.rainModalTitle}>{t('rainWarningTitle') || 'Regen voorspeld'}</Text>
+            </View>
+
+            {rainPrompt && (
+              <Text style={styles.rainModalBody}>
+                {(t('rainWarningDesc', {
+                  time: new Date(rainPrompt.atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                  mm: rainPrompt.mm.toFixed(1),
+                  prob: String(rainPrompt.prob),
+                }) || `Regen voorspeld om ${new Date(rainPrompt.atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${rainPrompt.mm.toFixed(1)}mm · ${rainPrompt.prob}%). Toch maaien?`)}
+              </Text>
+            )}
+
+            <View style={styles.rainModalToggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rainModalToggleLabel}>
+                  {t('ignoreRainSession') || 'Negeer regen deze sessie'}
+                </Text>
+                <Text style={styles.rainModalToggleHint}>
+                  {t('ignoreRainSessionHint') ||
+                    'Aan: regen-pauze blijft uit tot deze maai-sessie eindigt. Uit: maaier pauzeert zodra regen valt.'}
+                </Text>
+              </View>
+              <Switch
+                value={rainIgnoreToggle}
+                onValueChange={setRainIgnoreToggle}
+                trackColor={{ false: '#374151', true: '#10b981' }}
+                thumbColor={rainIgnoreToggle ? '#ecfdf5' : '#9ca3af'}
+              />
+            </View>
+
+            <View style={styles.rainModalButtons}>
+              <TouchableOpacity
+                style={[styles.rainModalBtn, styles.rainModalBtnCancel]}
+                onPress={() => setRainPrompt(null)}
+              >
+                <Text style={styles.rainModalBtnCancelText}>{t('cancel') || 'Annuleren'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.rainModalBtn, styles.rainModalBtnGo]}
+                onPress={confirmRainStart}
+              >
+                <Text style={styles.rainModalBtnGoText}>{t('startMowing') || 'Start maaien'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Modal>
   );
 }
@@ -818,4 +895,36 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     borderColor: 'rgba(16,185,129,0.2)',
   },
   placedText: { fontSize: 12, color: c.emerald, fontFamily: 'monospace' },
+
+  // Rain confirmation modal
+  rainModalBackdrop: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center', alignItems: 'center', padding: 24,
+  },
+  rainModalCard: {
+    width: '100%', maxWidth: 380,
+    backgroundColor: c.bg, borderRadius: 16, padding: 20,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+  },
+  rainModalIconRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12,
+  },
+  rainModalTitle: { fontSize: 17, fontWeight: '700', color: c.text },
+  rainModalBody: { fontSize: 14, color: c.text, lineHeight: 20, marginBottom: 16 },
+  rainModalToggleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10, padding: 12, marginBottom: 16,
+  },
+  rainModalToggleLabel: { fontSize: 14, fontWeight: '600', color: c.text, marginBottom: 4 },
+  rainModalToggleHint: { fontSize: 11, color: c.textDim, lineHeight: 15 },
+  rainModalButtons: { flexDirection: 'row', gap: 10 },
+  rainModalBtn: {
+    flex: 1, paddingVertical: 12, borderRadius: 10,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  rainModalBtnCancel: { backgroundColor: 'rgba(255,255,255,0.08)' },
+  rainModalBtnCancelText: { color: c.text, fontSize: 14, fontWeight: '600' },
+  rainModalBtnGo: { backgroundColor: '#10b981' },
+  rainModalBtnGoText: { color: '#fff', fontSize: 14, fontWeight: '700' },
 });

@@ -333,6 +333,14 @@ export class ApiClient {
     );
   }
 
+  async setRainIgnoreSession(sn: string, active: boolean): Promise<{ ok: boolean; active: boolean }> {
+    return this.request<{ ok: boolean; active: boolean }>(
+      'POST',
+      `/api/dashboard/rain-ignore-session/${encodeURIComponent(sn)}`,
+      { body: { active } },
+    );
+  }
+
   /**
    * Register an Expo push token for a bound mower. Idempotent on the
    * server side — re-registering with the same (token, sn) is a no-op

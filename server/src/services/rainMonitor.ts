@@ -31,6 +31,28 @@ const CHECK_INTERVAL = 5 * 60 * 1000; // 5 minuten
 // Track welke maaiers al een go_to_charge hebben gekregen (voorkom dubbele commando's)
 const pendingGoCharge = new Set<string>();
 
+// Per-mower opt-out: user vinkte "Negeer regen deze sessie" aan in StartMowSheet.
+// Geldig tot maaier niet meer mowing rapporteert (auto-clear in checkActiveMowers).
+const ignoreSessionSet = new Set<string>();
+
+/**
+ * Set the rain-ignore flag for a single mowing session. When active, the
+ * monitor skips its pause-trigger for this SN. Auto-clears the moment the
+ * mower transitions out of active mowing (next 5-minute tick).
+ */
+export function setRainIgnoreSession(sn: string, active: boolean): void {
+  if (active) {
+    ignoreSessionSet.add(sn);
+    console.log(`[RainMonitor] Rain-ignore enabled for session: ${sn}`);
+  } else if (ignoreSessionSet.delete(sn)) {
+    console.log(`[RainMonitor] Rain-ignore disabled for: ${sn}`);
+  }
+}
+
+export function isRainIgnoredForSession(sn: string): boolean {
+  return ignoreSessionSet.has(sn);
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 /** Haal charger GPS coördinaten op voor een maaier SN */
@@ -107,8 +129,20 @@ async function checkActiveMowers(): Promise<void> {
   const candidates = new Set<string>(scheduled);
   for (const sn of getAllCachedMowerSns()) candidates.add(sn);
 
+  // Auto-clear ignore flags for any mower no longer mowing — flag is per-session,
+  // so once the session ends the next start should pause normally again.
+  for (const sn of Array.from(ignoreSessionSet)) {
+    if (!isMowing(sn)) {
+      ignoreSessionSet.delete(sn);
+      console.log(`[RainMonitor] Rain-ignore auto-cleared for ${sn} (mowing ended)`);
+    }
+  }
+
   for (const mower_sn of candidates) {
     if (!isDeviceOnline(mower_sn)) continue;
+
+    // User opted to ride out the rain for this session.
+    if (ignoreSessionSet.has(mower_sn)) continue;
 
     // Check of er al een actieve rain session is voor deze maaier
     const existing = scheduleRepo.findRainSessionByMower(mower_sn, 'paused');

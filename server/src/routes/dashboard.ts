@@ -2333,6 +2333,24 @@ dashboardRouter.get('/rain-sessions/:sn', (req: Request, res: Response) => {
   res.json({ sessions });
 });
 
+// POST /api/dashboard/rain-ignore-session/:sn — user vinkte "Negeer regen
+// deze sessie" aan in StartMowSheet. Server slaat per-mower vlag op die de
+// rain monitor doet skippen tot de sessie eindigt (work_status terug naar
+// idle). Body: { active: boolean }.
+dashboardRouter.post('/rain-ignore-session/:sn', async (req: Request, res: Response) => {
+  const { setRainIgnoreSession } = await import('../services/rainMonitor.js');
+  const { active } = req.body as { active?: boolean };
+  setRainIgnoreSession(req.params.sn, !!active);
+  res.json({ ok: true, active: !!active });
+});
+
+// GET /api/dashboard/rain-ignore-session/:sn — zodat de RainOverlay banner
+// kan tonen dat regen genegeerd wordt deze sessie.
+dashboardRouter.get('/rain-ignore-session/:sn', async (req: Request, res: Response) => {
+  const { isRainIgnoredForSession } = await import('../services/rainMonitor.js');
+  res.json({ active: isRainIgnoredForSession(req.params.sn) });
+});
+
 // GET /api/dashboard/rain-sessions — alle actieve rain sessions
 dashboardRouter.get('/rain-sessions', (_req: Request, res: Response) => {
   const sessions = getActiveRainSessions();
