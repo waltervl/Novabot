@@ -84,3 +84,4 @@ app/node_modules
 .dolt/
 *.db
 .beads-credential-key
+.superpowers/
