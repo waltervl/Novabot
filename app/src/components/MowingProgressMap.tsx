@@ -92,6 +92,10 @@ interface Props {
   activeAreaPoints?: number; // # points of the active sub-path already mowed (from covering_area.points)
   liveCoverSegment?: LocalPoint[]; // recent cover_path.covered.covering points
   obstacles?: Array<{ id: string; points: LocalPoint[] }>;    // obstacle polygons
+  /** Other work polygons that aren't the active one — drawn dimmed beneath
+   *  the active polygon so the mower icon never sits "outside" the visible
+   *  boundary when we picked the wrong active slot (#14). */
+  inactivePolygons?: Array<{ id: string; points: LocalPoint[] }>;
   mowerPos?: LocalPoint | null;  // mower position in local meters
   mowerHeading?: number;    // radians
   showProgressOverlay?: boolean; // show big percentage overlay (default: true)
@@ -203,6 +207,7 @@ export function MowingProgressMap({
   activeAreaPoints,
   liveCoverSegment,
   obstacles,
+  inactivePolygons,
   mowerPos,
   mowerHeading,
   showProgressOverlay = true,
@@ -278,8 +283,11 @@ export function MowingProgressMap({
     const extra = [charger];
     if (mowerPos) extra.push(mowerPos);
     if (trail && trail.length > 0) extra.push(...trail);
+    if (inactivePolygons) {
+      for (const ip of inactivePolygons) extra.push(...ip.points);
+    }
     return computeBounds(polygon, extra);
-  }, [polygon, mowerPos, trail]);
+  }, [polygon, mowerPos, trail, inactivePolygons]);
 
   const svgPoints = useMemo(
     () => polygon.map(p => toSvg(p, bounds, renderSize, padding)),
@@ -325,6 +333,24 @@ export function MowingProgressMap({
           <SvgPolygon points={pointsStr} />
         </ClipPath>
       </Defs>
+
+      {/* Inactive (other) work polygons — drawn UNDER the active one, dimmed,
+          so the user has spatial context across the whole yard. Issue #14. */}
+      {inactivePolygons && inactivePolygons.map((poly) => {
+        if (!poly.points || poly.points.length < 3) return null;
+        const ipSvg = poly.points.map(p => toSvg(p, bounds, renderSize, padding));
+        return (
+          <SvgPolygon
+            key={`inactive-${poly.id}`}
+            points={ipSvg.map(p => `${p.x},${p.y}`).join(' ')}
+            fill="rgba(120,120,120,0.10)"
+            stroke="rgba(160,160,160,0.55)"
+            strokeWidth={1}
+            strokeLinejoin="round"
+            strokeDasharray="4,3"
+          />
+        );
+      })}
 
       {/* Polygon background */}
       <SvgPolygon points={pointsStr} fill={mapPalette.polygonFill} stroke={mapPalette.polygonStroke} strokeWidth={1.5} strokeLinejoin="round" />
