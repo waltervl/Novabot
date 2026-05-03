@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { mapRepo } from '../../db/repositories/index.js';
 import { deriveCanonicalName, isCanonicalMapName } from '../../db/repositories/maps.js';
+import { db } from '../../db/database.js';
 
 describe('MapRepository', () => {
   const sn = 'LFIN0001';
@@ -213,6 +214,33 @@ describe('MapRepository', () => {
 
     it('getChargerGps returns null if no calibration', () => {
       expect(mapRepo.getChargerGps(sn)).toBeNull();
+    });
+  });
+
+  describe('polygon offset', () => {
+    const SN = 'LFIN1234567890';
+
+    beforeEach(() => {
+      db.prepare('DELETE FROM map_calibration WHERE mower_sn = ?').run(SN);
+    });
+
+    it('returns 0/0 when no calibration row exists', () => {
+      expect(mapRepo.getPolygonOffset(SN)).toEqual({ x: 0, y: 0 });
+    });
+
+    it('round-trips a positive + negative offset', () => {
+      mapRepo.setPolygonOffset(SN, 0.05, -0.03);
+      expect(mapRepo.getPolygonOffset(SN)).toEqual({ x: 0.05, y: -0.03 });
+    });
+
+    it('preserves other calibration fields when updating offset', () => {
+      mapRepo.setCalibration(SN, { rotation: 1.5, scale: 1.1 });
+      mapRepo.setPolygonOffset(SN, 0.08, 0);
+      const row = mapRepo.getCalibration(SN)!;
+      expect(row.rotation).toBeCloseTo(1.5);
+      expect(row.scale).toBeCloseTo(1.1);
+      expect(row.polygon_offset_x_m).toBeCloseTo(0.08);
+      expect(row.polygon_offset_y_m).toBe(0);
     });
   });
 });

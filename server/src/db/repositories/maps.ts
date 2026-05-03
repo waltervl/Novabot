@@ -37,6 +37,8 @@ export interface CalibrationRow {
   charger_lng: number | null;
   gps_charger_lat: number | null;
   gps_charger_lng: number | null;
+  polygon_offset_x_m: number;
+  polygon_offset_y_m: number;
 }
 
 export interface CreateMapData {
@@ -217,6 +219,17 @@ export class MapRepository {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
   private _getChargerGps = db.prepare('SELECT charger_lat, charger_lng FROM map_calibration WHERE mower_sn = ?');
+  private _setPolygonOffset = db.prepare(`
+    INSERT INTO map_calibration (mower_sn, polygon_offset_x_m, polygon_offset_y_m, updated_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(mower_sn) DO UPDATE SET
+      polygon_offset_x_m = excluded.polygon_offset_x_m,
+      polygon_offset_y_m = excluded.polygon_offset_y_m,
+      updated_at = datetime('now')
+  `);
+  private _getPolygonOffset = db.prepare(
+    'SELECT polygon_offset_x_m, polygon_offset_y_m FROM map_calibration WHERE mower_sn = ?',
+  );
 
   // ── Map lookups ──
 
@@ -510,6 +523,25 @@ export class MapRepository {
    */
   setChargerGps(mowerSn: string, lat: number, lng: number): void {
     this.setCalibration(mowerSn, { charger_lat: lat, charger_lng: lng });
+  }
+
+  /**
+   * Returns the cumulative polygon offset (metres, local map frame) for the
+   * mower. Defaults to (0, 0) when no calibration row exists.
+   */
+  getPolygonOffset(mowerSn: string): { x: number; y: number } {
+    const row = this._getPolygonOffset.get(mowerSn) as
+      { polygon_offset_x_m: number; polygon_offset_y_m: number } | undefined;
+    if (!row) return { x: 0, y: 0 };
+    return { x: row.polygon_offset_x_m ?? 0, y: row.polygon_offset_y_m ?? 0 };
+  }
+
+  /**
+   * Persist absolute polygon offset (metres). Replaces any prior value.
+   * Other calibration fields are untouched.
+   */
+  setPolygonOffset(mowerSn: string, x: number, y: number): void {
+    this._setPolygonOffset.run(mowerSn, x, y);
   }
 }
 

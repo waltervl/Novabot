@@ -361,6 +361,14 @@ export function initDb(): void {
     catch { /* kolom bestaat al */ }
   }
 
+  // Polygon translation offset (metres, mower local map frame).
+  // Applied at ZIP-generation time so the canonical map_area rows stay
+  // immutable and calibration is fully reversible.
+  for (const col of ['polygon_offset_x_m REAL NOT NULL DEFAULT 0', 'polygon_offset_y_m REAL NOT NULL DEFAULT 0']) {
+    try { db.exec(`ALTER TABLE map_calibration ADD COLUMN ${col}`); }
+    catch { /* kolom bestaat al */ }
+  }
+
   // Voeg map_type kolom toe aan maps (migratie – work/obstacle/unicom)
   try {
     db.exec(`ALTER TABLE maps ADD COLUMN map_type TEXT NOT NULL DEFAULT 'work'`);
