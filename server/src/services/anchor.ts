@@ -6,9 +6,12 @@
  *   1. `map0tocharge_unicom.csv` first point — automatically written by the
  *      mower at mapping time (save_recharge_pos). Survives metadata corruption
  *      because it lives inside the polygon CSV itself, not in a sidecar file.
- *   2. Orientation is not in unicom CSV — fall back to mower's current
- *      `map_position_orientation` sensor reading when localization is healthy,
- *      else 1.5 rad (≈ 86°, typical dock orientation default).
+ *   2. Orientation is not in unicom CSV — the caller supplies it (typically
+ *      from sensor cache `map_position_orientation` when localization is
+ *      healthy, else 1.5 rad fallback). Splitting the orientation lookup out
+ *      of this module keeps anchor.ts a pure DB read so it can be imported
+ *      from server-init paths without pulling the broker → socketHandler
+ *      circular chain via `mqtt/sensorData`.
  *
  * Used by:
  *   - regenerateLatestZipFromBackup (Novabot-kmn) — embed correct charger pose
@@ -22,15 +25,15 @@
  */
 
 import { mapRepo } from '../db/repositories/maps.js';
-import { deviceCache } from '../mqtt/sensorData.js';
 
 export interface PolygonAnchor {
   /** Charger position in map-frame meters, x. */
   x: number;
   /** Charger position in map-frame meters, y. */
   y: number;
-  /** Charger heading in radians. From sensor cache when localization is
-   *  healthy; else default 1.5 rad. */
+  /** Charger heading in radians. From caller-supplied source (sensor or
+   *  default). Always set so downstream consumers can write the pose
+   *  unconditionally. */
   orientation: number;
   /** Where the orientation came from — useful for callers to log/decide
    *  whether to retry once localization stabilises. */
@@ -44,10 +47,29 @@ const DEFAULT_ORIENTATION = 1.5;
  * Stock firmware emits a mix of literal labels (NOT_INITIALIZED, INITIALIZING,
  * INITIALIZED, LOST) and free-form labels (RUNNING) depending on the source
  * node. We deny-list the explicitly-bad ones; everything else is acceptable.
+ *
+ * Exported so callers (which read sensor cache directly) reuse the same gate.
  */
-function isLocalizationHealthy(state: string | null | undefined): boolean {
+export function isLocalizationHealthy(state: string | null | undefined): boolean {
   if (!state) return false;
   return !/^(not[ _]?initialized|initializing|lost|failed|error)$/i.test(state);
+}
+
+/**
+ * Resolve an orientation value from a sensor map (the caller's deviceCache
+ * entry). Returns the sensor reading when localization is healthy, else the
+ * 1.5 rad default. Pure function — no module-level imports of sensorData.
+ */
+export function resolveOrientation(
+  sensors: Map<string, string> | null | undefined,
+): { orientation: number; source: 'sensor' | 'default' } {
+  const locState = sensors?.get('localization_state');
+  const orientationRaw = sensors?.get('map_position_orientation');
+  const orientationNum = orientationRaw != null ? Number(orientationRaw) : NaN;
+  if (isLocalizationHealthy(locState ?? null) && Number.isFinite(orientationNum)) {
+    return { orientation: orientationNum, source: 'sensor' };
+  }
+  return { orientation: DEFAULT_ORIENTATION, source: 'default' };
 }
 
 /**
@@ -58,8 +80,16 @@ function isLocalizationHealthy(state: string | null | undefined): boolean {
  * The unicom CSV is stored in `maps.map_area` as a JSON-encoded array of
  * {x, y} points. By construction the first point is the mower's pose at
  * `save_recharge_pos` time — i.e. the charger position in map frame.
+ *
+ * Pass the mower's sensor map (from deviceCache) when available so the
+ * orientation reflects the live heading; pass null/undefined to use the
+ * default 1.5 rad. Decoupling sensorData lookup from this module avoids
+ * pulling the broker init chain into pure-DB-read consumers.
  */
-export function getPolygonAnchor(sn: string): PolygonAnchor | null {
+export function getPolygonAnchor(
+  sn: string,
+  sensors?: Map<string, string> | null,
+): PolygonAnchor | null {
   const unicomMaps = mapRepo.findAllByMowerSnAndType(sn, 'unicom');
   if (unicomMaps.length === 0) return null;
 
@@ -88,17 +118,6 @@ export function getPolygonAnchor(sn: string): PolygonAnchor | null {
   const y = Number(first.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
 
-  // Orientation: try sensor cache, else default.
-  const sensors = deviceCache.get(sn);
-  const locState = sensors?.get('localization_state');
-  const orientationRaw = sensors?.get('map_position_orientation');
-  const orientationNum = orientationRaw != null ? Number(orientationRaw) : NaN;
-  const sensorUsable = isLocalizationHealthy(locState ?? null) && Number.isFinite(orientationNum);
-
-  return {
-    x,
-    y,
-    orientation: sensorUsable ? orientationNum : DEFAULT_ORIENTATION,
-    orientationSource: sensorUsable ? 'sensor' : 'default',
-  };
+  const { orientation, source } = resolveOrientation(sensors);
+  return { x, y, orientation, orientationSource: source };
 }

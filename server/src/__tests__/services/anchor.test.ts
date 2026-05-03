@@ -1,19 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Mock data sources before importing the SUT so the module pulls our stubs.
 vi.mock('../../db/repositories/maps.js', () => ({
   mapRepo: {
     findAllByMowerSnAndType: vi.fn().mockReturnValue([]),
   },
 }));
 
-vi.mock('../../mqtt/sensorData.js', () => ({
-  deviceCache: new Map<string, Map<string, string>>(),
-}));
-
-import { getPolygonAnchor } from '../../services/anchor.js';
+import {
+  getPolygonAnchor,
+  isLocalizationHealthy,
+  resolveOrientation,
+} from '../../services/anchor.js';
 import { mapRepo } from '../../db/repositories/maps.js';
-import { deviceCache } from '../../mqtt/sensorData.js';
 
 const SN = 'LFIN1231000211';
 
@@ -36,7 +34,6 @@ function unicomRow(canonical: string, points: Array<{ x: number; y: number }>) {
 
 beforeEach(() => {
   vi.mocked(mapRepo.findAllByMowerSnAndType).mockReset().mockReturnValue([]);
-  deviceCache.clear();
 });
 
 describe('getPolygonAnchor', () => {
@@ -76,9 +73,8 @@ describe('getPolygonAnchor', () => {
     const sensors = new Map<string, string>();
     sensors.set('localization_state', 'RUNNING');
     sensors.set('map_position_orientation', '1.586');
-    deviceCache.set(SN, sensors);
 
-    const a = getPolygonAnchor(SN);
+    const a = getPolygonAnchor(SN, sensors);
     expect(a!.orientation).toBeCloseTo(1.586);
     expect(a!.orientationSource).toBe('sensor');
   });
@@ -90,9 +86,8 @@ describe('getPolygonAnchor', () => {
     const sensors = new Map<string, string>();
     sensors.set('localization_state', 'Not initialized');
     sensors.set('map_position_orientation', '0');
-    deviceCache.set(SN, sensors);
 
-    const a = getPolygonAnchor(SN);
+    const a = getPolygonAnchor(SN, sensors);
     expect(a!.orientation).toBeCloseTo(1.5);
     expect(a!.orientationSource).toBe('default');
   });
@@ -110,9 +105,8 @@ describe('getPolygonAnchor', () => {
     const sensors = new Map<string, string>();
     sensors.set('localization_state', state);
     sensors.set('map_position_orientation', '2.5');
-    deviceCache.set(SN, sensors);
 
-    const a = getPolygonAnchor(SN);
+    const a = getPolygonAnchor(SN, sensors);
     expect(a!.orientationSource).toBe('default');
   });
 
@@ -148,5 +142,47 @@ describe('getPolygonAnchor', () => {
       unicomRow('map0tocharge_unicom', [{ x: NaN, y: 0 }]),
     ]);
     expect(getPolygonAnchor(SN)).toBeNull();
+  });
+});
+
+describe('isLocalizationHealthy', () => {
+  it('rejects null/undefined/empty', () => {
+    expect(isLocalizationHealthy(null)).toBe(false);
+    expect(isLocalizationHealthy(undefined)).toBe(false);
+    expect(isLocalizationHealthy('')).toBe(false);
+  });
+
+  it.each(['NOT_INITIALIZED', 'not_initialized', 'Not initialized', 'INITIALIZING', 'LOST', 'failed', 'error'])(
+    'rejects %s',
+    (state) => {
+      expect(isLocalizationHealthy(state)).toBe(false);
+    },
+  );
+
+  it.each(['INITIALIZED', 'RUNNING', 'OK', 'unknown_label'])('accepts %s', (state) => {
+    expect(isLocalizationHealthy(state)).toBe(true);
+  });
+});
+
+describe('resolveOrientation', () => {
+  it('returns default when sensors null', () => {
+    expect(resolveOrientation(null)).toEqual({ orientation: 1.5, source: 'default' });
+    expect(resolveOrientation(undefined)).toEqual({ orientation: 1.5, source: 'default' });
+  });
+
+  it('returns sensor value when healthy + finite', () => {
+    const s = new Map([
+      ['localization_state', 'RUNNING'],
+      ['map_position_orientation', '0.42'],
+    ]);
+    expect(resolveOrientation(s)).toEqual({ orientation: 0.42, source: 'sensor' });
+  });
+
+  it('returns default when value not finite', () => {
+    const s = new Map([
+      ['localization_state', 'RUNNING'],
+      ['map_position_orientation', 'not-a-number'],
+    ]);
+    expect(resolveOrientation(s)).toEqual({ orientation: 1.5, source: 'default' });
   });
 });

@@ -1033,7 +1033,8 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (
   }
 
   // ── 3. Resolve polygon anchor (must succeed for realign to be coherent) ─
-  const anchor = getPolygonAnchor(sn);
+  const sensors = deviceCache.get(sn);
+  const anchor = getPolygonAnchor(sn, sensors);
   if (!anchor) {
     res.status(400).json({
       ok: false,
@@ -1044,7 +1045,6 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (
   }
 
   // ── 4. Read mower live GPS (mandatory) ──────────────────────────────────
-  const sensors = deviceCache.get(sn);
   const lat = parseFloat(sensors?.get('gps_latitude') ?? '');
   const lng = parseFloat(sensors?.get('gps_longitude') ?? '');
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0 || lng === 0) {

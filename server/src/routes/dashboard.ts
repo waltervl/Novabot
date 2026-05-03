@@ -1201,7 +1201,7 @@ dashboardRouter.get('/maps/:sn/sync-info', async (req: Request, res: Response) =
     // When present, posJson is offset so `mower at charger → map_position == anchor`,
     // and `charging_pose` is published for the mower to write into yaml.
     const { getPolygonAnchor } = await import('../services/anchor.js');
-    const anchor = getPolygonAnchor(sn);
+    const anchor = getPolygonAnchor(sn, deviceCache.get(sn));
 
     res.json({
       md5,
