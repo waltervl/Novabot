@@ -2330,15 +2330,15 @@ async function restoreAndRealign() {
   if (!filename) { status.style.color='#f87171'; status.textContent='Please select a backup snapshot first.'; return; }
 
   var ok = confirm(
-    'Restore + Realign Mower will:\n\n' +
-    '  1. Restore ALL polygons + obstacles + unicom from the selected backup ZIP (overwrites existing rows)\n' +
-    '  2. Re-anchor charger pose from the polygon mapNtocharge_unicom first point\n' +
-    '  3. Update DB chargerGps to the mower live RTK GPS reading\n' +
-    '  4. Regenerate <SN>_latest.zip with embedded charger pose\n' +
-    '  5. Push everything to mower via sync_map MQTT\n' +
-    '  6. Mower restarts novabot_mapping + auto_recharge_server\n\n' +
-    'Preconditions: mower must be online + on dock + RTK FIX.\n' +
-    '\nContinue?'
+    'Restore + Realign Mower will:\\n\\n' +
+    '  1. Restore ALL polygons + obstacles + unicom from the selected backup ZIP (overwrites existing rows)\\n' +
+    '  2. Re-anchor charger pose from the polygon mapNtocharge_unicom first point\\n' +
+    '  3. Update DB chargerGps to the mower live RTK GPS reading\\n' +
+    '  4. Regenerate <SN>_latest.zip with embedded charger pose\\n' +
+    '  5. Push everything to mower via sync_map MQTT\\n' +
+    '  6. Mower restarts novabot_mapping + auto_recharge_server\\n\\n' +
+    'Preconditions: mower must be online + on dock + RTK FIX.\\n' +
+    '\\nContinue?'
   );
   if (!ok) return;
 
