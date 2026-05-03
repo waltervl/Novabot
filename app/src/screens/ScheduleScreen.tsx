@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { useStyles, useTheme, type Colors } from '../theme';
 import { useActiveMower } from '../hooks/useActiveMower';
+import { useMowerState } from '../hooks/useMowerState';
 import { ApiClient, type MapData, type Schedule } from '../services/api';
 import { getServerUrl } from '../services/auth';
 import { useDemo } from '../context/DemoContext';
@@ -53,6 +54,24 @@ export default function ScheduleScreen() {
   const mowerSn = activeMowerSn ?? '';
 
   const demo = useDemo();
+  // Issue #23: pre-fill new schedules with the mower's current
+  // cuttingHeight + pathDirection from the live sensor cache so the
+  // user doesn't get a hard-coded 5cm / 120° default that overrides
+  // whatever they set in Mower Settings or Start Full Mow.
+  const { devices } = useMowerState();
+  const liveSensors = devices.get(mowerSn)?.sensors;
+  const liveDefaultHeightRaw = parseInt(liveSensors?.defaultCuttingHeight ?? '', 10);
+  const liveCuttingHeightCm = (() => {
+    if (!Number.isFinite(liveDefaultHeightRaw) || liveDefaultHeightRaw <= 0) return undefined;
+    if (liveDefaultHeightRaw >= 20 && liveDefaultHeightRaw <= 90) return Math.round(liveDefaultHeightRaw / 10);  // mm
+    if (liveDefaultHeightRaw >= 0 && liveDefaultHeightRaw <= 7) return liveDefaultHeightRaw + 2;                   // wire (cm-2)
+    if (liveDefaultHeightRaw >= 2 && liveDefaultHeightRaw <= 9) return liveDefaultHeightRaw;                       // user cm
+    return undefined;
+  })();
+  const livePathDirRaw = parseInt(liveSensors?.path_direction ?? '', 10);
+  const livePathDirection = Number.isFinite(livePathDirRaw) && livePathDirRaw >= 0 && livePathDirRaw <= 360
+    ? livePathDirRaw
+    : undefined;
 
   const fetchSchedules = useCallback(async () => {
     if (!mowerSn) return;
@@ -410,6 +429,8 @@ export default function ScheduleScreen() {
           schedule={editingSchedule}
           initialMapId={editorPrefill?.mapId ?? null}
           initialMapName={editorPrefill?.mapName ?? null}
+          defaultCuttingHeight={liveCuttingHeightCm}
+          defaultPathDirection={livePathDirection}
           onClose={() => {
             setShowEditor(false);
             setEditorPrefill(null);
@@ -432,6 +453,8 @@ function ScheduleEditor({
   schedule,
   initialMapId,
   initialMapName,
+  defaultCuttingHeight,
+  defaultPathDirection,
   onClose,
   onSaved,
 }: {
@@ -439,6 +462,10 @@ function ScheduleEditor({
   schedule: Schedule | null;
   initialMapId?: string | null;
   initialMapName?: string | null;
+  /** Live mower-settings defaults (sensor cache) for NEW schedules only.
+   *  Edit-mode keeps the saved schedule's own values. Issue #23. */
+  defaultCuttingHeight?: number;
+  defaultPathDirection?: number;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -461,8 +488,12 @@ function ScheduleEditor({
   const [hour, setHour] = useState(initialHour);
   const [minute, setMinute] = useState(initialMinute);
   const [duration, setDuration] = useState(String(schedule?.duration_minutes ?? 60));
-  const [cuttingHeight, setCuttingHeight] = useState(schedule?.cuttingHeight ?? schedule?.cutting_height ?? 5);
-  const [pathDir, setPathDir] = useState(schedule?.pathDirection ?? schedule?.path_direction ?? 120);
+  const [cuttingHeight, setCuttingHeight] = useState(
+    schedule?.cuttingHeight ?? schedule?.cutting_height ?? defaultCuttingHeight ?? 5,
+  );
+  const [pathDir, setPathDir] = useState(
+    schedule?.pathDirection ?? schedule?.path_direction ?? defaultPathDirection ?? 120,
+  );
   const [rainPause, setRainPause] = useState(schedule?.rainPause ?? schedule?.rain_pause ?? true);
   const [availableMaps, setAvailableMaps] = useState<MapData[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(
