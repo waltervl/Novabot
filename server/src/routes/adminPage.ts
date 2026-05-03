@@ -3187,8 +3187,14 @@ async function cloudImport() {
     for (var pi = 0; pi < maxLen; pi++) {
       var c = chargers[pi], m = mowers[pi];
       var key = (c ? c.sn : '') + ':' + (m ? m.sn : '');
+      // Issue #19: never fall back to the charger name when a mower is
+      // present — LFI defaults the charger nickname to "Charging Station"
+      // and that leaked through as the mower's app-side label after every
+      // factory-reset re-import. Only use the charger name when the pair
+      // has no mower at all (charger-only entry).
+      var pairName = (m && m.name) || (m ? null : (c && c.name)) || null;
       pairs[key] = {
-        deviceName: (m && m.name) || (c && c.name) || 'My Novabot',
+        deviceName: pairName,
         charger: c ? { sn: c.sn, address: c.address, channel: c.channel, mac: c.mac } : undefined,
         mower: m ? { sn: m.sn, mac: m.mac, version: m.version } : undefined,
       };

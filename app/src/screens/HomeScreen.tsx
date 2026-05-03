@@ -442,6 +442,24 @@ export default function HomeScreen() {
   const styles = useStyles(makeStyles);
   const hero = HERO_PALETTE[colorScheme];
   const mower = useMemo(() => deriveMower(activeMower), [activeMower]);
+  // Dismiss-state for the error banner. Issue #13: stock firmware re-emits
+  // the same error_status on every report_state_robot tick, so even after
+  // hitting Clear the banner reappears within milliseconds. We hide it
+  // locally when the user dismisses, and only re-show when the underlying
+  // error code/text actually changes (a new fault).
+  const [dismissedError, setDismissedError] = useState<{ status: string; msg: string } | null>(null);
+  // Reset dismissal when the mower switches OR the error fingerprint changes.
+  useEffect(() => {
+    if (!dismissedError) return;
+    const curStatus = String(mower?.errorStatus ?? '');
+    const curMsg = String(mower?.errorMsg ?? '');
+    if (curStatus !== dismissedError.status || curMsg !== dismissedError.msg) {
+      setDismissedError(null);
+    }
+  }, [mower?.sn, mower?.errorStatus, mower?.errorMsg, dismissedError]);
+  const errorBannerHidden = !!dismissedError
+    && String(mower?.errorStatus ?? '') === dismissedError.status
+    && String(mower?.errorMsg ?? '') === dismissedError.msg;
   // Rename flow for the active mower — wired to the pencil icon inside the
   // MowerPickerChevron trigger. Keeping it here (instead of inside the
   // chevron component) so HomeScreen stays the single owner of API + socket
@@ -1584,7 +1602,7 @@ export default function HomeScreen() {
         </View>
 
         {/* Error display */}
-        {mower.hasError && (
+        {mower.hasError && !errorBannerHidden && (
           <View style={styles.errorCard}>
             <Ionicons name="alert-circle" size={22} color={colors.red} />
             <View style={styles.errorContent}>
@@ -1598,6 +1616,14 @@ export default function HomeScreen() {
             <TouchableOpacity
               style={{ backgroundColor: 'rgba(239,68,68,0.15)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}
               onPress={async () => {
+                // Hide locally first — the mower keeps re-emitting the same
+                // error_status, so without this dismissal the banner pops
+                // back instantly and the user gets stuck in a clear-loop
+                // (issue #13).
+                setDismissedError({
+                  status: String(mower.errorStatus ?? ''),
+                  msg: String(mower.errorMsg ?? ''),
+                });
                 try {
                   const url = await getServerUrl();
                   if (!url || !mower.sn) return;

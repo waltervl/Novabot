@@ -67,7 +67,11 @@ export function ScheduleTimeline({ sn }: Props) {
     <div className="bg-gray-800 rounded-xl border border-gray-700 p-4">
       <h3 className="text-sm font-semibold text-zinc-100 mb-3">{t('schedule.timeline.title')}</h3>
 
-      {/* Hour grid reference + schedule blocks overlay */}
+      {/* Hour grid + schedule blocks. Issue #27: schedule overlay used to
+          live in a sibling div BELOW the hour grid, so the block "10:00"
+          row visually drifted apart from the hour label row by however
+          tall the header row rendered. Folding both into one grid keeps
+          the columns aligned in every browser. */}
       <div className="relative overflow-x-auto">
         <div className="grid grid-cols-[64px_1fr] gap-1 text-xs">
           {/* Header row */}
@@ -76,38 +80,57 @@ export function ScheduleTimeline({ sn }: Props) {
             {DAYS.map(d => <div key={d} className="py-1">{d}</div>)}
           </div>
 
-          {/* Hour rows */}
-          {Array.from({ length: 24 }).map((_, hour) => (
-            <ScheduleTimeline.Row key={hour} hour={hour} />
-          ))}
-        </div>
-      </div>
+          {/* Hour labels column */}
+          <div>
+            {Array.from({ length: 24 }).map((_, hour) => (
+              <div
+                key={hour}
+                className="text-zinc-500 text-right pr-2 leading-none"
+                style={{ height: HOUR_PX }}
+              >
+                {String(hour).padStart(2, '0')}:00
+              </div>
+            ))}
+          </div>
 
-      {/* Schedule blocks overlay (absolute positioned) */}
-      <div className="relative mt-2 rounded border border-gray-700" style={{ height: 24 * HOUR_PX }}>
-        <div className="absolute inset-0 grid grid-cols-7 gap-1 p-1">
-          {DAYS.map((_, dayIdx) => (
-            <div key={dayIdx} className="relative border-l border-gray-700 first:border-l-0">
-              {enabled.flatMap(s => {
-                if (!s.weekdays.some(w => DAY_INDEX[w] === dayIdx)) return [];
-                const start = timeToMinutes(s.startTime);
-                const end = s.endTime ? timeToMinutes(s.endTime) : Math.min(start + 60, 24 * 60);
-                if (end <= start) return [];
-                const top = (start / 60) * HOUR_PX;
-                const height = ((end - start) / 60) * HOUR_PX;
-                return [
+          {/* Day columns: gridlines + absolutely positioned schedule blocks.
+              Each column is exactly 24 * HOUR_PX tall, matching the labels
+              column above to the pixel. */}
+          <div className="grid grid-cols-7 gap-1" style={{ height: 24 * HOUR_PX }}>
+            {DAYS.map((_, dayIdx) => (
+              <div
+                key={dayIdx}
+                className="relative border-l border-gray-800 first:border-l-0"
+                style={{ height: 24 * HOUR_PX }}
+              >
+                {Array.from({ length: 24 }).map((_, h) => (
                   <div
-                    key={s.scheduleId}
-                    title={`${s.scheduleName ?? 'Schedule'} ${s.startTime}–${s.endTime ?? ''}`}
-                    className="absolute left-1 right-1 rounded text-[10px] text-white px-1 py-0.5 overflow-hidden"
-                    style={{ top, height, backgroundColor: colorForId(s.scheduleId) }}
-                  >
-                    {s.scheduleName ?? `${s.startTime}`}
-                  </div>,
-                ];
-              })}
-            </div>
-          ))}
+                    key={h}
+                    className="border-t border-gray-800"
+                    style={{ height: HOUR_PX }}
+                  />
+                ))}
+                {enabled.flatMap(s => {
+                  if (!s.weekdays.some(w => DAY_INDEX[w] === dayIdx)) return [];
+                  const start = timeToMinutes(s.startTime);
+                  const end = s.endTime ? timeToMinutes(s.endTime) : Math.min(start + 60, 24 * 60);
+                  if (end <= start) return [];
+                  const top = (start / 60) * HOUR_PX;
+                  const height = ((end - start) / 60) * HOUR_PX;
+                  return [
+                    <div
+                      key={s.scheduleId}
+                      title={`${s.scheduleName ?? 'Schedule'} ${s.startTime}–${s.endTime ?? ''}`}
+                      className="absolute left-1 right-1 rounded text-[10px] text-white px-1 py-0.5 overflow-hidden"
+                      style={{ top, height, backgroundColor: colorForId(s.scheduleId) }}
+                    >
+                      {s.scheduleName ?? `${s.startTime}`}
+                    </div>,
+                  ];
+                })}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -118,17 +141,3 @@ export function ScheduleTimeline({ sn }: Props) {
   );
 }
 
-ScheduleTimeline.Row = function Row({ hour }: { hour: number }) {
-  return (
-    <>
-      <div className="text-zinc-500 text-right pr-2 leading-none" style={{ height: HOUR_PX }}>
-        {String(hour).padStart(2, '0')}:00
-      </div>
-      <div className="grid grid-cols-7 gap-1" style={{ height: HOUR_PX }}>
-        {Array.from({ length: 7 }).map((_, i) => (
-          <div key={i} className="border-t border-gray-800" />
-        ))}
-      </div>
-    </>
-  );
-};
