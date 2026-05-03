@@ -4,7 +4,7 @@
  *
  * Flow: set_para_info (height+direction) → start_run (with map + workArea)
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -95,8 +95,21 @@ export function StartMowSheet({
   const { colors } = useTheme();
 
   // Load maps when sheet opens
+  // Issue #18: don't include currentCuttingHeight / currentPathDirection in
+  // the deps. Those are sensor-cache values that re-flow whenever the mower
+  // echoes set_para_info — including ourselves clicking the +/- buttons in
+  // this very sheet. The previous deps array re-ran the effect on every
+  // path-direction tap, which silently re-fetched maps and reset the
+  // user's selection. We only want to seed defaults when the sheet first
+  // OPENS (visible flips false→true), not on every prop nudge.
+  const initialCuttingHeightRef = useRef(currentCuttingHeight);
+  const initialPathDirectionRef = useRef(currentPathDirection);
   useEffect(() => {
     if (!visible || !sn) return;
+    // Snapshot the live sensor values at OPEN time so subsequent prop
+    // updates don't reset the form.
+    initialCuttingHeightRef.current = currentCuttingHeight;
+    initialPathDirectionRef.current = currentPathDirection;
     // `currentCuttingHeight` comes from sensor cache. We accept multiple encodings
     // because legacy server/app versions used different units:
     //   20-90 → legacy mm (firmware mm), cm = value / 10
@@ -105,7 +118,7 @@ export function StartMowSheet({
     //    0-9  → NEW wire value post-fix = `cm + 2`... wait no, NEW wire = cm - 2
     //           so value = cm - 2 means user cm = value + 2 (for 0..7)
     //   2-9   → already user cm
-    const raw = currentCuttingHeight ?? 5;
+    const raw = initialCuttingHeightRef.current ?? 5;
     let cm = 5;
     if (raw >= 20 && raw <= 90) cm = Math.round(raw / 10);           // mm
     else if (raw >= 10 && raw < 20) cm = Math.round(raw / 10);       // mm edge
@@ -114,7 +127,7 @@ export function StartMowSheet({
     if (cm < 2) cm = 2;
     if (cm > 9) cm = 9;
     setCuttingHeight(cm);
-    setPathDirection(currentPathDirection ?? 0);
+    setPathDirection(initialPathDirectionRef.current ?? 0);
     (async () => {
       try {
         const url = await getServerUrl();
@@ -140,7 +153,8 @@ export function StartMowSheet({
         }
       } catch { /* ignore */ }
     })();
-  }, [visible, sn, currentCuttingHeight, currentPathDirection, initialSelectedMapId, forceZonePicker]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, sn, initialSelectedMapId, forceZonePicker]);
 
   // Check if a unicom (channel) exists for the selected map
   const hasUnicom = allMaps.some(m => m.mapType === 'unicom' && m.mapArea?.length >= 2);
