@@ -17,7 +17,10 @@ import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
 import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
-import { listBackups, backupPath } from '../services/mapBackup.js';
+import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
+import { getPolygonAnchor } from '../services/anchor.js';
+import { publishToExtended, onExtendedResponse, offExtendedResponse } from '../mqtt/mapSync.js';
+import { deviceCache } from '../mqtt/sensorData.js';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
@@ -965,6 +968,164 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore', (req: AuthRequest, 
     console.error('[Admin] Map restore failed:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'restore failed' });
   }
+});
+
+// POST /api/admin-status/map-backups/:sn/:filename/restore-and-realign
+//
+// One-click recovery (Novabot-uvf): orchestrates everything documented in
+// docs/runbooks/charger-anchor-restore-runbook.md and the manual flow from
+// 2026-05-02:
+//   1. Full DB restore from selected backup ZIP (overwrites all rows).
+//   2. Look up polygon anchor (first point of mapNtocharge_unicom).
+//   3. Update map_calibration.charger_lat/lng with mower's live RTK GPS.
+//   4. regenerateLatestZipFromBackup → enriched <SN>_latest.zip.
+//   5. publishToExtended(sn, { sync_map: {} }) → mower pulls + applies.
+//   6. Wait sync_map_respond ≤ 8 s.
+//
+// Spec: docs/superpowers/specs/2026-05-03-restore-and-realign-mower-from-zip.md
+adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (req: AuthRequest, res: Response) => {
+  const { sn, filename } = req.params;
+
+  // ── 1. Validate backup + parse ──────────────────────────────────────────
+  let backupAbsPath: string;
+  try {
+    backupAbsPath = backupPath(sn, filename);
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'bad filename' });
+    return;
+  }
+  if (!fs.existsSync(backupAbsPath)) {
+    res.status(404).json({ ok: false, error: 'backup not found' });
+    return;
+  }
+  const parsed = parseMapZip(backupAbsPath);
+  if (!parsed) {
+    res.status(400).json({ ok: false, error: 'failed to parse backup ZIP' });
+    return;
+  }
+
+  // ── 2. Full DB restore — overwrite all rows ─────────────────────────────
+  let restored = 0;
+  for (const area of parsed.areas) {
+    if (area.points.length < 2) continue;
+    const canonical = areaCanonicalName(area);
+    if (!canonical) continue;
+
+    const existing = mapRepo.findBySnAndCanonical(sn, canonical);
+    if (existing) mapRepo.deleteByIdAndMower(existing.map_id, sn);
+
+    const xs = area.points.map(pt => pt.x);
+    const ys = area.points.map(pt => pt.y);
+    mapRepo.create({
+      map_id: uuidv4(),
+      mower_sn: sn,
+      map_name: canonical,
+      file_name: areaCsvFile(area),
+      map_area: JSON.stringify(area.points),
+      map_max_min: JSON.stringify({
+        minX: Math.min(...xs), maxX: Math.max(...xs),
+        minY: Math.min(...ys), maxY: Math.max(...ys),
+      }),
+      map_type: area.type,
+      canonical_name: canonical,
+    });
+    restored++;
+  }
+
+  // ── 3. Resolve polygon anchor (must succeed for realign to be coherent) ─
+  const anchor = getPolygonAnchor(sn);
+  if (!anchor) {
+    res.status(400).json({
+      ok: false,
+      error: 'Backup has no mapNtocharge_unicom — cannot anchor charger pose',
+      restoredItems: restored,
+    });
+    return;
+  }
+
+  // ── 4. Read mower live GPS (mandatory) ──────────────────────────────────
+  const sensors = deviceCache.get(sn);
+  const lat = parseFloat(sensors?.get('gps_latitude') ?? '');
+  const lng = parseFloat(sensors?.get('gps_longitude') ?? '');
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0 || lng === 0) {
+    res.status(400).json({
+      ok: false,
+      error: 'Mower GPS not reported — wait for mower to be online + on dock + RTK FIX',
+      restoredItems: restored,
+    });
+    return;
+  }
+
+  // ── 5. Update DB chargerGps to live reading ─────────────────────────────
+  mapRepo.setChargerGps(sn, lat, lng);
+
+  // ── 6. Regenerate enriched _latest.zip ──────────────────────────────────
+  const regenPath = regenerateLatestZipFromBackup(sn);
+  if (!regenPath) {
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to regenerate <SN>_latest.zip',
+      restoredItems: restored,
+      anchor,
+    });
+    return;
+  }
+
+  // ── 7. Trigger sync_map MQTT (must be online) ───────────────────────────
+  if (!isDeviceOnline(sn)) {
+    res.status(404).json({
+      ok: false,
+      error: 'Mower offline — sync_map cannot run',
+      restoredItems: restored,
+      anchor,
+      gps: { lat, lng },
+      note: 'Server-side state already restored; mower will pick up on next sync_map trigger',
+    });
+    return;
+  }
+
+  const syncResult = await new Promise<{ ok: boolean; respond?: Record<string, unknown>; timeout?: boolean }>((resolve) => {
+    let settled = false;
+    const handler = (data: Record<string, unknown>) => {
+      const respond = data.sync_map_respond as Record<string, unknown> | undefined;
+      if (!respond) return;
+      if (settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: respond.result === 0, respond });
+    };
+    onExtendedResponse(sn, handler);
+    publishToExtended(sn, { sync_map: {} });
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: false, timeout: true });
+    }, 8000);
+  });
+
+  if (syncResult.timeout) {
+    res.status(504).json({
+      ok: false,
+      error: 'Mower did not respond within 8s',
+      restoredItems: restored,
+      anchor,
+      gps: { lat, lng },
+      partial: true,
+    });
+    return;
+  }
+
+  console.log(
+    `[Admin] restore-and-realign ${sn} from ${filename}: restored=${restored} anchor=(${anchor.x}, ${anchor.y}, ${anchor.orientation}) gps=(${lat}, ${lng}) syncOk=${syncResult.ok}`,
+  );
+  res.json({
+    ok: syncResult.ok,
+    restoredItems: restored,
+    anchor,
+    gps: { lat, lng },
+    syncResult: syncResult.respond ?? null,
+  });
 });
 
 // POST /api/admin-status/factory-reset — wipe all user data and return to setup

@@ -9,8 +9,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { execSync } from 'child_process';
 
 // ── Mock mapConverter BEFORE importing mapBackup ─────────────────────────────
+//
+// The default stub writes a 10-byte "PKstub-zip" payload — fine for snapshot
+// tests that only check filename/size, but invalid for the regenerate flow
+// which actually unzips the file. Tests for regenerateLatestZipFromBackup
+// override this with a real (small) ZIP via vi.mocked(...) below.
 vi.mock('../../mqtt/mapConverter.js', () => ({
   generateMapZipFromDb: vi.fn((_sn: string) => {
     const p = path.join(os.tmpdir(), `mock-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.zip`);
@@ -20,14 +26,40 @@ vi.mock('../../mqtt/mapConverter.js', () => ({
   parseMapZip: vi.fn(() => null),
 }));
 
+// Stub sensorData so anchor.ts (transitively imported via mapBackup) doesn't
+// pull the broker → socketHandler chain into the test runtime.
+vi.mock('../../mqtt/sensorData.js', () => ({
+  deviceCache: new Map<string, Map<string, string>>(),
+}));
+
 // Import the service AFTER the mock is set up
 import {
   _drainScheduled,
   _snapshotNow,
   listBackups,
   scheduleSnapshot,
+  regenerateLatestZipFromBackup,
 } from '../../services/mapBackup.js';
+import { generateMapZipFromDb } from '../../mqtt/mapConverter.js';
 import { mapRepo } from '../../db/repositories/index.js';
+
+/**
+ * Build a real ZIP under STORAGE_PATH containing a csv_file/ subtree —
+ * matches what the production generateMapZipFromDb output looks like.
+ */
+function buildRealZipWithCsvFile(stub: { 'map_info.json'?: string } = {}): string {
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-genzip-'));
+  const csvDir = path.join(stage, 'csv_file');
+  fs.mkdirSync(csvDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(csvDir, 'map_info.json'),
+    stub['map_info.json'] ?? JSON.stringify({ charging_pose: { x: 0, y: 0, orientation: 0 } }),
+  );
+  fs.writeFileSync(path.join(csvDir, 'map0_work.csv'), '0,0\n1,0\n1,1\n0,1\n0,0\n');
+  const zipOut = path.join(os.tmpdir(), `fakezip-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.zip`);
+  execSync(`cd "${stage}" && zip -q -r "${zipOut}" csv_file/`);
+  return zipOut;
+}
 
 let tmpStorage: string;
 
@@ -203,5 +235,96 @@ describe('bootstrap', () => {
     const second = listBackups('LFIN_TWICE');
     expect(first.length).toBe(second.length);
     expect(first[0].filename).toBe(second[0].filename); // same file, not re-bootstrapped
+  });
+});
+
+// ── regenerateLatestZipFromBackup (Novabot-kmn) ───────────────────────────────
+
+describe('regenerateLatestZipFromBackup', () => {
+  it('returns null when polygon has no unicom (cannot anchor)', () => {
+    mapRepo.create({
+      map_id: 'work-no-unicom',
+      mower_sn: 'LFIN_NO_UNICOM',
+      map_name: 'map0',
+      map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }, { x: 0, y: 5 }]),
+      map_type: 'work',
+    });
+    const out = regenerateLatestZipFromBackup('LFIN_NO_UNICOM');
+    expect(out).toBeNull();
+  });
+
+  it('writes <SN>_latest.zip with enriched map_info.json from polygon anchor', () => {
+    const SN = 'LFIN_REGEN';
+    mapRepo.create({
+      map_id: 'work',
+      mower_sn: SN,
+      map_name: 'map0',
+      map_area: JSON.stringify([
+        { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 5 }, { x: 0, y: 5 },
+      ]),
+      map_type: 'work',
+    });
+    mapRepo.create({
+      map_id: 'unicom',
+      mower_sn: SN,
+      map_name: 'map0tocharge_unicom',
+      map_area: JSON.stringify([{ x: -1.21, y: 0.48 }, { x: -1.0, y: 0.4 }]),
+      map_type: 'unicom',
+    });
+
+    // Replace the mock for THIS test with one that builds a real ZIP.
+    vi.mocked(generateMapZipFromDb).mockImplementationOnce(() => buildRealZipWithCsvFile());
+
+    const out = regenerateLatestZipFromBackup(SN);
+    expect(out).toBeTruthy();
+    expect(out!.endsWith(`${SN}_latest.zip`)).toBe(true);
+    expect(fs.existsSync(out!)).toBe(true);
+
+    // Inspect the enriched map_info.json inside the produced ZIP.
+    const peekDir = fs.mkdtempSync(path.join(os.tmpdir(), 'peek-regen-'));
+    execSync(`unzip -o -q "${out}" -d "${peekDir}"`);
+    const info = JSON.parse(
+      fs.readFileSync(path.join(peekDir, 'csv_file', 'map_info.json'), 'utf8'),
+    );
+    expect(info.charging_pose.x).toBeCloseTo(-1.21);
+    expect(info.charging_pose.y).toBeCloseTo(0.48);
+    expect(info.charging_pose.orientation).toBeCloseTo(1.5); // default, no sensor
+    // Work polygon area (10×5 rectangle) = 50 m²
+    expect(info['map0_work.csv'].map_size).toBeCloseTo(50);
+  });
+
+  it('is idempotent: running twice produces the same map_info.json', () => {
+    const SN = 'LFIN_REGEN_TWICE';
+    mapRepo.create({
+      map_id: 'work',
+      mower_sn: SN,
+      map_name: 'map0',
+      map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 4 }, { x: 0, y: 4 }]),
+      map_type: 'work',
+    });
+    mapRepo.create({
+      map_id: 'unicom',
+      mower_sn: SN,
+      map_name: 'map0tocharge_unicom',
+      map_area: JSON.stringify([{ x: 0.5, y: 0.5 }]),
+      map_type: 'unicom',
+    });
+    vi.mocked(generateMapZipFromDb)
+      .mockImplementationOnce(() => buildRealZipWithCsvFile())
+      .mockImplementationOnce(() => buildRealZipWithCsvFile());
+
+    const out1 = regenerateLatestZipFromBackup(SN);
+    const out2 = regenerateLatestZipFromBackup(SN);
+    expect(out1).toBeTruthy();
+    expect(out2).toBeTruthy();
+
+    const peekDir = fs.mkdtempSync(path.join(os.tmpdir(), 'peek-idem-'));
+    execSync(`unzip -o -q "${out2}" -d "${peekDir}"`);
+    const info = JSON.parse(
+      fs.readFileSync(path.join(peekDir, 'csv_file', 'map_info.json'), 'utf8'),
+    );
+    expect(info.charging_pose.x).toBeCloseTo(0.5);
+    expect(info.charging_pose.y).toBeCloseTo(0.5);
+    expect(info['map0_work.csv'].map_size).toBeCloseTo(16); // 4×4
   });
 });

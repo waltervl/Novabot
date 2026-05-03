@@ -2109,6 +2109,51 @@ def handle_sync_map(params, respond):
         if pos_json:
             with open("/userdata/pos.json", "w") as f:
                 json.dump(pos_json, f)
+
+        # NEW (Novabot-53y): full anchor restore extension for the
+        # /restore-and-realign one-click recovery flow. The server's enriched
+        # /sync-info now also returns `charging_pose` (canonical anchor from
+        # polygon's mapNtocharge_unicom first point). When present, write the
+        # three additional state files the manual runbook used to write by hand:
+        #   - /userdata/lfi/charging_station_file/charging_station.yaml
+        #   - /root/novabot/data/maps/home0/csv_file/   (mirror)
+        #   - /root/novabot/data/maps/home0/x3_csv_file/ (mirror)
+        # Then restart auto_recharge_server so it re-reads charging_station.yaml
+        # (it caches at boot — without restart the new pose is ignored until
+        # the next mower reboot).
+        #
+        # Backwards compat: old server (no charging_pose in sync-info payload)
+        # → block is skipped, behaviour unchanged.
+        cp = info.get("charging_pose")
+        if isinstance(cp, dict):
+            try:
+                cx = float(cp.get("x"))
+                cy = float(cp.get("y"))
+                cth = float(cp.get("orientation"))
+                # 1. charging_station.yaml — auto_recharge_server's canonical
+                #    source-of-truth at boot.
+                yaml_path = "/userdata/lfi/charging_station_file/charging_station.yaml"
+                os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
+                with open(yaml_path, "w") as f:
+                    f.write(f"charging_pose: [{cx}, {cy}, {cth}]\n")
+            except Exception as ex:
+                # Don't fail the whole sync_map for a yaml write — log and continue.
+                print(f"[sync_map] charging_station.yaml write failed: {ex}")
+
+        # 2. Mirror csv_file + x3_csv_file to /root/novabot/data/maps/home0/.
+        #    Some firmware paths read from this duplicate location.
+        try:
+            data_home0 = "/root/novabot/data/maps/home0"
+            os.makedirs(data_home0, exist_ok=True)
+            for sub in ("csv_file", "x3_csv_file"):
+                src_dir = f"{home0}/{sub}"
+                dst_dir = f"{data_home0}/{sub}"
+                if os.path.isdir(src_dir):
+                    if os.path.isdir(dst_dir):
+                        shutil.rmtree(dst_dir)
+                    shutil.copytree(src_dir, dst_dir)
+        except Exception as ex:
+            print(f"[sync_map] /root mirror copy failed: {ex}")
     except Exception as e:
         respond("sync_map_respond", {"result": 1, "error": f"install: {e}"})
         return
@@ -2118,11 +2163,18 @@ def handle_sync_map(params, respond):
 
     # 4. Restart novabot_mapping so coverage_planner reloads from new CSVs.
     restart_ok = _restart_novabot_mapping()
+
+    # 5. Restart auto_recharge_server so it re-reads charging_station.yaml.
+    #    It caches the dock pose at boot/respawn only — without this restart
+    #    the realign would require a full mower reboot.
+    auto_recharge_restart_ok = _restart_auto_recharge_server()
+
     respond("sync_map_respond", {
         "result": 0,
         "md5": got_md5,
         "sizeBytes": len(zip_bytes),
         "restart": restart_ok,
+        "auto_recharge_restart": auto_recharge_restart_ok,
     })
 
 
@@ -2203,6 +2255,36 @@ def _restart_novabot_mapping():
         )
         rc = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True, timeout=20)
         return rc.returncode == 0
+    except Exception:
+        return False
+
+
+def _restart_auto_recharge_server():
+    """Kill auto_recharge_server so it respawns and re-reads charging_station.yaml.
+
+    Used by handle_sync_map after the realign restore writes a new charger pose.
+    auto_recharge_server caches the dock pose at boot/respawn, so without this
+    restart the new yaml value is ignored until the next full mower reboot.
+
+    The launch file uses respawn=True (per
+    install/automatic_recharge/share/automatic_recharge/launch/automatic_recharge_launch.py),
+    so a single pkill is sufficient — the launch supervisor brings it back
+    within a few seconds.
+
+    Returns True when pkill succeeded; False on subprocess error.
+    """
+    import subprocess
+    try:
+        # `pkill -f` matches the full command line. The exact binary path is
+        # /root/novabot/install/automatic_recharge/lib/automatic_recharge/auto_recharge_server,
+        # but matching the suffix is enough and survives reorganisation.
+        rc = subprocess.run(
+            ["pkill", "-f", "auto_recharge_server"],
+            capture_output=True, text=True, timeout=5,
+        )
+        # pkill returns 1 when no processes matched — treat as success
+        # (auto_recharge_server may not be running yet, e.g. mid-boot).
+        return rc.returncode in (0, 1)
     except Exception:
         return False
 

@@ -281,7 +281,7 @@ export function adminPageHtml(): string {
       <h2>Map Viewer <span class="refresh-btn" onclick="loadMaps()">↻</span></h2>
       <div style="padding:8px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.15);border-radius:6px;margin-bottom:12px;font-size:11px;color:#d97706">Maps stored here are for <b>preview and app display only</b>. They are not synced to the mower. To mow, the mower needs its own maps created via the Novabot app mapping function.</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value)" style="flex:1;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value)" style="flex:1;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
         </select>
       </div>
@@ -289,9 +289,27 @@ export function adminPageHtml(): string {
         <input type="file" id="mapZipFile" accept=".zip" style="flex:1;min-width:180px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:12px">
         <button onclick="uploadMapZip()" style="padding:8px 16px;background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Import ZIP</button>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;padding:8px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px">
-        <div style="font-size:11px;color:#aaa;flex:1;min-width:260px">Recovery — wrong charger pose causes mower to drive off target. Put mower physically on dock (battery CHARGING) then press <b>Recalibrate Charging Pose</b> to overwrite map_info.json with the current reported pose.</div>
-        <button onclick="recalibrateChargingPose()" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+      <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-bottom:12px">
+        <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
+          <b style="color:#fca5a5">Recovery — wrong charger pose causes mower to drive off target.</b><br>
+          Stock firmware needs a drive-back cycle to initialize localization
+          before the reported pose is trustworthy. While docked at boot,
+          <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
+          <b>Workflow:</b>
+          <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
+            <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1–2 m)</li>
+            <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
+            <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
+            <li>Then press <b>Recalibrate Charging Pose</b></li>
+          </ol>
+        </div>
+        <!-- Live localization snapshot — refreshes every 2s while panel open -->
+        <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:monospace">
+          <span style="color:#888">Loading localization status...</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+        </div>
       </div>
       <div id="mapRecalStatus" style="font-size:12px;margin-bottom:8px;display:none"></div>
       <!-- Map Recovery card -->
@@ -306,6 +324,7 @@ export function adminPageHtml(): string {
         <div id="mapBackupTree" style="margin-bottom:8px"></div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button onclick="restoreSelection()" style="padding:7px 16px;background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Restore selection to DB</button>
+          <button onclick="restoreAndRealign()" title="Full restore: DB + mower files + GPS update + sync_map MQTT push" style="padding:7px 16px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore + Realign Mower</button>
           <button onclick="setAllConflicts(true)" style="padding:7px 14px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all conflicts</button>
           <button onclick="setAllConflicts(false)" style="padding:7px 14px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all conflicts</button>
         </div>
@@ -1971,6 +1990,96 @@ async function uploadMapZip() {
   }
 }
 
+// ── Live localization status polling ──────────────────────────────
+// Polls /api/dashboard/devices/:sn every 2s while a mower is selected,
+// renders localization_state + map_position_* into #mapLocalizationStatus,
+// and gates the Recalibrate button so the user can't write (0, 0, 0).
+var __mapLocPollTimer = null;
+
+function __renderLocStatus(sensors) {
+  var el = document.getElementById('mapLocalizationStatus');
+  if (!el) return false;
+  var locState = (sensors && sensors.localization_state) || 'unknown';
+  var battery = (sensors && sensors.battery_state) || 'unknown';
+  var mx = sensors && sensors.map_position_x;
+  var my = sensors && sensors.map_position_y;
+  var mo = sensors && sensors.map_position_orientation;
+  var hasMP = mx !== undefined && my !== undefined && mo !== undefined;
+  var fx = function(v) { var n = Number(v); return Number.isFinite(n) ? n.toFixed(3) : String(v); };
+  var allZero = hasMP && Number(mx) === 0 && Number(my) === 0 && Number(mo) === 0;
+  // Allow any localization state EXCEPT explicitly-bad ones. Stock firmware
+  // emits a mix of labels (NOT_INITIALIZED, INITIALIZING, INITIALIZED, LOST,
+  // RUNNING). We only block the known-bad ones; the (0,0,0) check above
+  // already filters uninitialized poses.
+  var locBad = /^(not[ _]?initialized|initializing|lost|failed|error)$/i.test(String(locState)) || !locState;
+  var locOk = !locBad;
+
+  var stateColor = locOk ? '#86efac' : '#fca5a5';
+  var poseColor = (allZero || !hasMP) ? '#fca5a5' : '#86efac';
+  var btnColor = (locOk && !allZero && hasMP && String(battery).toUpperCase() === 'CHARGING') ? 'safe' : 'unsafe';
+
+  el.innerHTML =
+    '<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:baseline">' +
+      '<span><span style="color:#888">localization_state:</span> <b style="color:' + stateColor + '">' + locState + '</b></span>' +
+      '<span><span style="color:#888">battery:</span> <b style="color:' + (String(battery).toUpperCase() === 'CHARGING' ? '#86efac' : '#fbbf24') + '">' + battery + '</b></span>' +
+      (hasMP
+        ? '<span><span style="color:#888">map_position:</span> <b style="color:' + poseColor + '">x=' + fx(mx) + ' y=' + fx(my) + ' θ=' + fx(mo) + '</b></span>'
+        : '<span><span style="color:#888">map_position:</span> <b style="color:#fca5a5">not reported</b></span>') +
+      (allZero
+        ? '<span style="color:#fca5a5;font-size:10px">⚠ (0,0,0) = uninitialized placeholder — drive first</span>'
+        : '') +
+    '</div>';
+
+  // Gate the Recalibrate button — disable when not safe to write
+  var btn = document.getElementById('mapRecalBtn');
+  if (btn) {
+    if (btnColor === 'safe') {
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+      btn.title = 'Localization initialized + map_position non-zero + on dock — safe to recalibrate';
+    } else {
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+      btn.style.cursor = 'not-allowed';
+      btn.title = 'Cannot recalibrate: ' +
+        (allZero ? 'pose is (0,0,0) placeholder. ' : '') +
+        (!locOk ? 'localization_state="' + locState + '" (need Localized). ' : '') +
+        (String(battery).toUpperCase() !== 'CHARGING' ? 'battery_state="' + battery + '" (need CHARGING). ' : '') +
+        'Drive mower briefly off dock so localization initializes, then return to dock.';
+    }
+  }
+  return true;
+}
+
+async function __pollLocOnce(sn) {
+  try {
+    var r = await fetch('/api/dashboard/devices/' + encodeURIComponent(sn));
+    if (!r.ok) return;
+    var d = await r.json();
+    __renderLocStatus(d.sensors || {});
+  } catch (e) {
+    // network blip — ignore, will retry next interval
+  }
+}
+
+function startLocalizationPoll(sn) {
+  if (__mapLocPollTimer) {
+    clearInterval(__mapLocPollTimer);
+    __mapLocPollTimer = null;
+  }
+  var el = document.getElementById('mapLocalizationStatus');
+  if (!sn) {
+    if (el) el.innerHTML = '<span style="color:#888">Select a mower to see live localization status.</span>';
+    var btn0 = document.getElementById('mapRecalBtn');
+    if (btn0) { btn0.disabled = true; btn0.style.opacity = '0.5'; btn0.style.cursor = 'not-allowed'; }
+    return;
+  }
+  if (el) el.innerHTML = '<span style="color:#888">Loading localization status for ' + sn + '...</span>';
+  __pollLocOnce(sn);
+  __mapLocPollTimer = setInterval(function() { __pollLocOnce(sn); }, 2000);
+}
+
 async function recalibrateChargingPose() {
   var sn = document.getElementById('mapMowerSelect').value;
   var status = document.getElementById('mapRecalStatus');
@@ -1983,8 +2092,9 @@ async function recalibrateChargingPose() {
   }
 
   var confirmMsg = 'Overwrite charging pose on ' + sn + ' with current mower pose?\\n\\n' +
-    'Physical mower MUST be on its dock with battery_state=CHARGING.\\n' +
-    'This writes map_info.json in both csv_file/ and x3_csv_file/.';
+    'Physical mower MUST be on its dock with battery_state=CHARGING\\n' +
+    'AND localization_state must be Localized (drive-back done).\\n\\n' +
+    'This writes map_info.json in both csv_file/ and x3_csv_file/ and charging_station.yaml.';
   if (!confirm(confirmMsg)) return;
 
   status.style.color = '#60a5fa';
@@ -2207,7 +2317,128 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Restore + Realign Mower (Novabot-ff8): one-click recovery that runs the full
+// flow documented in docs/runbooks/charger-anchor-restore-runbook.md. Calls
+// POST /api/admin-status/map-backups/<SN>/<filename>/restore-and-realign.
+async function restoreAndRealign() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var filename = document.getElementById('mapBackupSelect').value;
+  var status = document.getElementById('mapRecoveryStatus');
+  status.style.display = 'block';
+
+  if (!sn) { status.style.color='#f87171'; status.textContent='Please select a mower first.'; return; }
+  if (!filename) { status.style.color='#f87171'; status.textContent='Please select a backup snapshot first.'; return; }
+
+  var ok = confirm(
+    'Restore + Realign Mower will:\n\n' +
+    '  1. Restore ALL polygons + obstacles + unicom from the selected backup ZIP (overwrites existing rows)\n' +
+    '  2. Re-anchor charger pose from the polygon\'s mapNtocharge_unicom first point\n' +
+    '  3. Update DB chargerGps to the mower\'s live RTK GPS reading\n' +
+    '  4. Regenerate <SN>_latest.zip with embedded charger pose\n' +
+    '  5. Push everything to mower via sync_map MQTT\n' +
+    '  6. Mower restarts novabot_mapping + auto_recharge_server\n\n' +
+    'Preconditions: mower must be online + on dock + RTK FIX.\n' +
+    '\nContinue?'
+  );
+  if (!ok) return;
+
+  status.style.color = '#60a5fa';
+  status.textContent = 'Restore + Realign in progress (up to 30 s)…';
+
+  try {
+    var r = await fetch('/api/admin-status/map-backups/' + encodeURIComponent(sn) + '/' + encodeURIComponent(filename) + '/restore-and-realign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': token },
+    });
+    var result = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !result.ok) {
+      var errMsg = result.error || ('HTTP ' + r.status);
+      if (result.partial) errMsg += ' (partial: server-side state already restored — re-run after mower recovers)';
+      throw new Error(errMsg);
+    }
+
+    var anchorStr = result.anchor
+      ? '(' + result.anchor.x.toFixed(2) + ', ' + result.anchor.y.toFixed(2) + ', ' + result.anchor.orientation.toFixed(2) + ')'
+      : '?';
+    status.style.color = '#00d4aa';
+    status.textContent = 'Restore + Realign complete — restored ' + (result.restoredItems || 0) + ' items, anchor ' + anchorStr;
+    loadMaps();
+  } catch(e) {
+    status.style.color = '#f87171';
+    status.textContent = 'Restore + Realign failed: ' + e.message;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Attach mouse-wheel zoom + drag pan handlers to the map canvas. Idempotent:
+// only attaches once per canvas (flag set on element). Re-renders by calling
+// renderMapCanvas with the cached maps + chargingPose stored on the element.
+function attachMapInteraction(canvas) {
+  if (canvas.__interactionBound) return;
+  canvas.__interactionBound = true;
+  canvas.style.cursor = 'grab';
+
+  function reRender() {
+    var st = canvas.__mapState;
+    if (st && st.maps) renderMapCanvas(canvas, st.maps, st.chargingPose || null);
+  }
+
+  // Zoom on wheel — anchor at cursor so cursor-pixel stays fixed.
+  canvas.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var st = canvas.__mapState;
+    if (!st) return;
+    var rect = canvas.getBoundingClientRect();
+    var cx = e.clientX - rect.left;
+    var cy = e.clientY - rect.top;
+    var oldScale = st.userScale;
+    var factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    var newScale = Math.max(0.2, Math.min(20, oldScale * factor));
+    if (newScale === oldScale) return;
+    // Adjust pan so the cursor-anchor stays put: pan += (cx, cy) * (1 - newScale/oldScale)
+    var ratio = newScale / oldScale;
+    st.userPanX = cx - (cx - st.userPanX) * ratio;
+    st.userPanY = cy - (cy - st.userPanY) * ratio;
+    st.userScale = newScale;
+    reRender();
+  }, { passive: false });
+
+  // Pan on drag
+  var dragging = false;
+  var dragX = 0, dragY = 0;
+  canvas.addEventListener('mousedown', function(e) {
+    dragging = true;
+    dragX = e.clientX;
+    dragY = e.clientY;
+    canvas.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    var st = canvas.__mapState;
+    if (!st) return;
+    st.userPanX += (e.clientX - dragX);
+    st.userPanY += (e.clientY - dragY);
+    dragX = e.clientX;
+    dragY = e.clientY;
+    reRender();
+  });
+  window.addEventListener('mouseup', function() {
+    if (!dragging) return;
+    dragging = false;
+    canvas.style.cursor = 'grab';
+  });
+
+  // Double-click resets to fit-to-bounds
+  canvas.addEventListener('dblclick', function() {
+    var st = canvas.__mapState;
+    if (!st) return;
+    st.userScale = 1;
+    st.userPanX = 0;
+    st.userPanY = 0;
+    reRender();
+  });
+}
 
 async function loadMaps() {
   var sn = document.getElementById('mapMowerSelect').value;
@@ -2247,8 +2478,9 @@ async function loadMaps() {
     var workCount = maps.filter(function(m) { return m.mapType === 'work'; }).length;
     info.textContent = workCount + ' work area(s), ' + maps.length + ' total for ' + sn;
     legend.style.display = 'flex';
-    renderMapCanvas(canvas, maps);
+    renderMapCanvas(canvas, maps, data.chargingPose || null);
     renderMapList(mapList, maps, sn);
+    attachMapInteraction(canvas);
   } catch(e) {
     info.textContent = 'Failed to load maps: ' + e.message;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -2257,7 +2489,15 @@ async function loadMaps() {
   }
 }
 
-function renderMapCanvas(canvas, maps) {
+function renderMapCanvas(canvas, maps, chargingPose) {
+  // Cache last-rendered data on the canvas so wheel/drag handlers can
+  // re-render without re-fetching from server. Also persists view-state
+  // (user-applied zoom + pan) across re-renders so interactions feel
+  // continuous instead of resetting to fit-to-bounds.
+  canvas.__mapState = canvas.__mapState || { userScale: 1, userPanX: 0, userPanY: 0 };
+  canvas.__mapState.maps = maps;
+  canvas.__mapState.chargingPose = chargingPose;
+
   // Get device pixel ratio for sharp rendering
   var dpr = window.devicePixelRatio || 1;
   var rect = canvas.getBoundingClientRect();
@@ -2270,8 +2510,13 @@ function renderMapCanvas(canvas, maps) {
 
   ctx.clearRect(0, 0, W, H);
 
-  // Collect all points to find bounds
-  var allX = [0], allY = [0]; // include charger origin
+  // Charger anchor in local meters (from server map_info.json). Falls back
+  // to (0,0) when not available — same as before this change.
+  var chargerLx = (chargingPose && typeof chargingPose.x === 'number') ? chargingPose.x : 0;
+  var chargerLy = (chargingPose && typeof chargingPose.y === 'number') ? chargingPose.y : 0;
+
+  // Collect all points to find bounds (include charger anchor)
+  var allX = [chargerLx], allY = [chargerLy];
   for (var i = 0; i < maps.length; i++) {
     var pts = maps[i].mapArea || [];
     for (var j = 0; j < pts.length; j++) {
@@ -2291,15 +2536,18 @@ function renderMapCanvas(canvas, maps) {
   var rangeY = maxY - minY || 1;
   var scaleX = (W - pad * 2) / rangeX;
   var scaleY = (H - pad * 2) / rangeY;
-  var scale = Math.min(scaleX, scaleY);
+  var fitScale = Math.min(scaleX, scaleY);
+  var scale = fitScale * canvas.__mapState.userScale;
 
-  // Center the drawing
-  var drawW = rangeX * scale;
-  var drawH = rangeY * scale;
-  var offsetX = pad + (W - pad * 2 - drawW) / 2;
-  var offsetY = pad + (H - pad * 2 - drawH) / 2;
+  // Center the drawing (using fit-to-bounds as base, then user pan offset)
+  var drawW = rangeX * fitScale;
+  var drawH = rangeY * fitScale;
+  var baseOffsetX = pad + (W - pad * 2 - drawW) / 2;
+  var baseOffsetY = pad + (H - pad * 2 - drawH) / 2;
+  var offsetX = baseOffsetX + canvas.__mapState.userPanX;
+  var offsetY = baseOffsetY + canvas.__mapState.userPanY;
 
-  // Transform: local meters → canvas pixels (flip y-axis)
+  // Transform: local meters → canvas pixels (flip y-axis), with user zoom
   function tx(x) { return offsetX + (x - minX) * scale; }
   function ty(y) { return offsetY + (maxY - y) * scale; } // flip Y
 
@@ -2392,9 +2640,12 @@ function renderMapCanvas(canvas, maps) {
     }
   }
 
-  // Draw charger marker at origin (0,0)
-  var chargerX = tx(0);
-  var chargerY = ty(0);
+  // Draw charger marker at the charger's anchor in local meters (was
+  // hardcoded (0,0) which only matched maps where mapping origin == charger).
+  // For polygons mapped with a non-zero charger pose (e.g. Achtertuin
+  // anchored at (-1.21, 0.48)), the marker now lands on the unicom start.
+  var chargerX = tx(chargerLx);
+  var chargerY = ty(chargerLy);
   ctx.beginPath();
   ctx.arc(chargerX, chargerY, 6, 0, Math.PI * 2);
   ctx.fillStyle = '#f59e0b';

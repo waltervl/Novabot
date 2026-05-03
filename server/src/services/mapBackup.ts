@@ -12,8 +12,10 @@
 
 import path from 'path';
 import fs from 'fs';
+import { execSync } from 'child_process';
 import { generateMapZipFromDb } from '../mqtt/mapConverter.js';
 import { mapRepo } from '../db/repositories/index.js';
+import { getPolygonAnchor } from './anchor.js';
 
 const TAG = '[MAP-BACKUP]';
 
@@ -201,6 +203,111 @@ function _enforceRetention(sn: string): void {
     try {
       fs.unlinkSync(path.join(backupDir(sn), b.filename));
     } catch { /* ignore ENOENT races */ }
+  }
+}
+
+// ── Restore + Realign helpers ────────────────────────────────────────────────
+
+/**
+ * Compute the area of a 2D polygon via the shoelace formula.
+ * Returns absolute area (sign-independent).
+ */
+function polygonArea(points: Array<{ x: number; y: number }>): number {
+  if (!Array.isArray(points) || points.length < 3) return 0;
+  let acc = 0;
+  for (let i = 0; i < points.length; i++) {
+    const j = (i + 1) % points.length;
+    acc += points[i].x * points[j].y - points[j].x * points[i].y;
+  }
+  return Math.abs(acc) / 2;
+}
+
+/**
+ * Regenerate the canonical `<SN>_latest.zip` from the just-restored DB rows
+ * AND embed correct charger pose metadata in the ZIP's csv_file/map_info.json.
+ *
+ * Used by /api/admin-status/map-backups/:sn/:filename/restore-and-realign
+ * (Novabot-uvf) — one-click recovery endpoint. After this fires, the mower's
+ * extended_commands.py handle_sync_map will pull the ZIP and write all five
+ * mower-disk state files consistently.
+ *
+ * Returns the absolute path of the written ZIP, or null when:
+ *   - DB has no maps for this SN.
+ *   - Polygon has no `mapNtocharge_unicom` (cannot anchor charger pose).
+ *   - ZIP build / edit fails.
+ *
+ * Does NOT change the polygon CSV bytes — only edits map_info.json metadata.
+ */
+export function regenerateLatestZipFromBackup(sn: string): string | null {
+  const anchor = getPolygonAnchor(sn);
+  if (!anchor) {
+    console.warn(`${TAG} regenerate skipped — no polygon anchor for ${sn}`);
+    return null;
+  }
+
+  // Compute work polygon area (preserve in map_info.json so dashboard's
+  // "X.YZ m²" label keeps working).
+  let mapSize = 0;
+  const workMaps = mapRepo.findByMowerSnAndType(sn, 'work');
+  if (workMaps.length > 0 && workMaps[0].map_area) {
+    try {
+      const pts = JSON.parse(workMaps[0].map_area) as Array<{ x: number; y: number }>;
+      mapSize = polygonArea(pts);
+    } catch { /* ignore — leave 0 */ }
+  }
+
+  // Build fresh ZIP from current DB state.
+  const tmpZip = generateMapZipFromDb(sn, anchor.orientation);
+  if (!tmpZip || !fs.existsSync(tmpZip)) {
+    console.warn(`${TAG} regenerate skipped — generateMapZipFromDb returned no zip for ${sn}`);
+    return null;
+  }
+
+  // Edit csv_file/map_info.json inside the ZIP. Use unzip+rezip via the
+  // system tools because Node has no first-class ZIP edit primitive in stdlib
+  // and adding a dep just for this is heavy. The container's base image
+  // already has unzip + zip available (used by handle_sync_map on the mower
+  // and by other server-side flows here).
+  const stagingDir = path.join(path.dirname(tmpZip), `regen_${sn}_${Date.now()}`);
+  fs.mkdirSync(stagingDir, { recursive: true });
+  try {
+    execSync(`unzip -o -q "${tmpZip}" -d "${stagingDir}"`);
+
+    const csvDir = path.join(stagingDir, 'csv_file');
+    if (!fs.existsSync(csvDir)) {
+      console.warn(`${TAG} regenerate aborted — generated ZIP has no csv_file/ for ${sn}`);
+      return null;
+    }
+    const infoPath = path.join(csvDir, 'map_info.json');
+    const enriched = {
+      charging_pose: {
+        x: anchor.x,
+        y: anchor.y,
+        orientation: anchor.orientation,
+      },
+      'map0_work.csv': { map_size: mapSize },
+    };
+    fs.writeFileSync(infoPath, JSON.stringify(enriched, null, 3));
+
+    // Rebuild ZIP atomically into the canonical _latest.zip slot.
+    const mapsRoot = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
+    fs.mkdirSync(mapsRoot, { recursive: true });
+    const finalZip = path.join(mapsRoot, `${sn}_latest.zip`);
+    const tmpFinal = `${finalZip}.tmp`;
+    if (fs.existsSync(tmpFinal)) fs.unlinkSync(tmpFinal);
+    // `zip -r` from inside stagingDir so paths are relative (csv_file/...).
+    execSync(`cd "${stagingDir}" && zip -q -r "${tmpFinal}" csv_file/`);
+    fs.renameSync(tmpFinal, finalZip);
+
+    console.log(
+      `${TAG} regenerated ${finalZip} — anchor (${anchor.x}, ${anchor.y}, ${anchor.orientation}) [${anchor.orientationSource}], map_size ${mapSize.toFixed(2)}m²`,
+    );
+    return finalZip;
+  } catch (err) {
+    console.error(`${TAG} regenerate failed for ${sn}:`, err);
+    return null;
+  } finally {
+    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 

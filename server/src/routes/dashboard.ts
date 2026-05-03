@@ -1165,6 +1165,11 @@ dashboardRouter.get('/maps/:sn/download-zip', (req: Request, res: Response) => {
 
 // GET /api/dashboard/maps/:sn/sync-info — cheap HEAD-like check, returns MD5 +
 // charger GPS so the mower can decide whether to re-download and generate pos.json.
+//
+// Also returns the polygon's canonical `charging_pose` (Novabot-aev) when
+// available — used by the mower's extended sync_map handler to write
+// charging_station.yaml after restore-and-realign. Old mowers ignore unknown
+// fields, so this is backwards-compatible.
 dashboardRouter.get('/maps/:sn/sync-info', async (req: Request, res: Response) => {
   const { sn } = req.params;
   try {
@@ -1192,10 +1197,19 @@ dashboardRouter.get('/maps/:sn/sync-info', async (req: Request, res: Response) =
       if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) charger = { lat, lng };
     }
 
+    // Polygon anchor (canonical charger pose from unicom CSV first point).
+    // When present, posJson is offset so `mower at charger → map_position == anchor`,
+    // and `charging_pose` is published for the mower to write into yaml.
+    const { getPolygonAnchor } = await import('../services/anchor.js');
+    const anchor = getPolygonAnchor(sn);
+
     res.json({
       md5,
       sizeBytes: readFileSync(zipPath).length,
-      posJson: charger ? generatePosJson(charger) : null,
+      posJson: charger ? generatePosJson(charger, anchor ? { x: anchor.x, y: anchor.y } : null) : null,
+      charging_pose: anchor
+        ? { x: anchor.x, y: anchor.y, orientation: anchor.orientation }
+        : null,
       // Mower will hit /api/dashboard/maps/:sn/sync-zip to pull the bytes
       zipUrl: `/api/dashboard/maps/${encodeURIComponent(sn)}/sync-zip`,
     });
@@ -1234,7 +1248,10 @@ dashboardRouter.get('/maps/:sn/sync-zip', async (req: Request, res: Response) =>
 });
 
 // ── UTM conversie voor pos.json ──────────────────────────────────────────────
-function generatePosJson(charger: GpsPoint): Record<string, unknown> {
+function generatePosJson(
+  charger: GpsPoint,
+  anchor?: { x: number; y: number } | null,
+): Record<string, unknown> {
   const { lat, lng } = charger;
   const a = 6378137.0;
   const f = 1 / 298.257223563;
@@ -1261,13 +1278,36 @@ function generatePosJson(charger: GpsPoint): Record<string, unknown> {
     - (35 * e2 ** 3 / 3072) * Math.sin(6 * latRad)
   );
 
-  const x = k0 * N * (A + (1 - T + C) * A ** 3 / 6 + (5 - 18 * T + T ** 2 + 72 * C - 58 * ePrime2) * A ** 5 / 120) + 500000;
-  const y = k0 * (M + N * Math.tan(latRad) * (A ** 2 / 2 + (5 - T + 9 * C + 4 * C ** 2) * A ** 4 / 24 + (61 - 58 * T + T ** 2 + 600 * C - 330 * ePrime2) * A ** 6 / 720));
+  const xCharger = k0 * N * (A + (1 - T + C) * A ** 3 / 6 + (5 - 18 * T + T ** 2 + 72 * C - 58 * ePrime2) * A ** 5 / 120) + 500000;
+  const yCharger = k0 * (M + N * Math.tan(latRad) * (A ** 2 / 2 + (5 - T + 9 * C + 4 * C ** 2) * A ** 4 / 24 + (61 - 58 * T + T ** 2 + 600 * C - 330 * ePrime2) * A ** 6 / 720));
+
+  // Default behaviour: utm_origin = charger UTM, wgs84_origin = charger lat/lng.
+  // When an anchor is supplied the map_frame origin is offset from the charger
+  // by -anchor (so when mower is physically at the charger, its map_position
+  // reads as `anchor` instead of (0, 0)). This is the polygon-anchor restore
+  // path used by /restore-and-realign — keeps the polygon's coordinate system
+  // intact even after RTK reference drift.
+  const utmX = xCharger - (anchor?.x ?? 0);
+  const utmY = yCharger - (anchor?.y ?? 0);
+
+  // Reverse-project (utmX, utmY) → lat/lng. Use a small linear approximation
+  // around the charger pose: dy ≈ d_lat * 111132m, dx ≈ d_lng * 111132m * cos(lat).
+  // For typical anchor offsets (≤ 5 m) this matches Snyder reverse to <1cm
+  // — far below RTK noise floor. Skipping the full reverse series keeps the
+  // function a single page of math.
+  let originLat = lat;
+  let originLng = lng;
+  if (anchor && (anchor.x !== 0 || anchor.y !== 0)) {
+    const M_PER_DEG_LAT = 111132.954;
+    const M_PER_DEG_LNG = 111132.954 * Math.cos(latRad);
+    originLat = lat - (anchor.y / M_PER_DEG_LAT);
+    originLng = lng - (anchor.x / M_PER_DEG_LNG);
+  }
 
   return {
     time_stamp: Date.now() / 1000,
-    utm_origin: { utm_zone: zone, x, y, z: 0 },
-    wgs84_origin: { latitude: lat, longitude: lng },
+    utm_origin: { utm_zone: zone, x: utmX, y: utmY, z: 0 },
+    wgs84_origin: { latitude: originLat, longitude: originLng },
   };
 }
 
@@ -1431,6 +1471,40 @@ dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request,
     res.status(400).json({ ok: false, error: `Invalid pose: x=${xRaw} y=${yRaw} theta=${thetaRaw}` });
     return;
   }
+
+  // Critical — refuse (0, 0, 0). Stock firmware reports map_position as
+  // (0, 0, 0) when localization_state is "Not initialized" (placeholder
+  // value). Writing that as the charger pose corrupts the map frame and
+  // makes the mower drive off-target. Live evidence:
+  //   sensors{ localization_state: "Not initialized", map_position_*: 0 }
+  // Reproduced 2026-05-02 on LFIN1231000211.
+  if (x === 0 && y === 0 && theta === 0) {
+    res.status(400).json({
+      ok: false,
+      error: 'Mower reported (0, 0, 0) — placeholder for uninitialized localization. Drive the mower a short distance off the dock so localization initializes (heading discovery), let it return to dock, then retry.',
+      hint: 'Stock firmware needs a drive-back cycle before localization is valid. While docked at boot, map_position is always zero.',
+    });
+    return;
+  }
+
+  // Hard guard on localization state — refuse known-bad states. Stock
+  // firmware reports a mix of literal strings (NOT_INITIALIZED, INITIALIZING,
+  // INITIALIZED, LOST) and free-form labels (RUNNING) depending on the
+  // active node. The server's translateLocalization() only normalises a
+  // subset; anything else passes through verbatim. We allow-pass anything
+  // that is NOT explicitly bad — combined with the (0, 0, 0) refusal above
+  // this is sufficient (a real localized pose is non-zero).
+  const locState = (sensors.get('localization_state') ?? '').toString();
+  const locBad = /^(not[ _]?initialized|initializing|lost|failed|error)$/i.test(locState) || locState === '';
+  if (locBad) {
+    res.status(400).json({
+      ok: false,
+      error: `Mower localization is "${locState || 'unknown'}". Pose values are not trustworthy yet. Drive the mower briefly off the dock, return, then retry.`,
+      localization_state: locState,
+    });
+    return;
+  }
+
   // Defensive: if somehow x and y are bit-identical the caller hit the
   // report_state_robot bug upstream. Refuse the write.
   if (xRaw === yRaw && x !== 0) {
