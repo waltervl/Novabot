@@ -2332,8 +2332,8 @@ async function restoreAndRealign() {
   var ok = confirm(
     'Restore + Realign Mower will:\n\n' +
     '  1. Restore ALL polygons + obstacles + unicom from the selected backup ZIP (overwrites existing rows)\n' +
-    '  2. Re-anchor charger pose from the polygon\'s mapNtocharge_unicom first point\n' +
-    '  3. Update DB chargerGps to the mower\'s live RTK GPS reading\n' +
+    '  2. Re-anchor charger pose from the polygon mapNtocharge_unicom first point\n' +
+    '  3. Update DB chargerGps to the mower live RTK GPS reading\n' +
     '  4. Regenerate <SN>_latest.zip with embedded charger pose\n' +
     '  5. Push everything to mower via sync_map MQTT\n' +
     '  6. Mower restarts novabot_mapping + auto_recharge_server\n\n' +
