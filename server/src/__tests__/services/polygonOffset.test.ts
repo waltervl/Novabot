@@ -15,18 +15,22 @@ describe('shiftPoints', () => {
 
   it('shifts every point by (dx, dy) when not unicom-tocharge', () => {
     const out = shiftPoints(pts, 0.05, -0.03, false);
-    expect(out).toEqual([
-      { x: -1.16, y: 0.45 },
-      { x: -1.15, y: 0.42 },
-      { x: 1.05, y: 1.97 },
-    ]);
+    expect(out).toHaveLength(3);
+    expect(out[0].x).toBeCloseTo(-1.16);
+    expect(out[0].y).toBeCloseTo(0.45);
+    expect(out[1].x).toBeCloseTo(-1.15);
+    expect(out[1].y).toBeCloseTo(0.42);
+    expect(out[2].x).toBeCloseTo(1.05);
+    expect(out[2].y).toBeCloseTo(1.97);
   });
 
   it('exempts only index 0 when isToChargeUnicom=true', () => {
     const out = shiftPoints(pts, 0.05, -0.03, true);
     expect(out[0]).toEqual({ x: -1.21, y: 0.48 });
-    expect(out[1]).toEqual({ x: -1.15, y: 0.42 });
-    expect(out[2]).toEqual({ x: 1.05, y: 1.97 });
+    expect(out[1].x).toBeCloseTo(-1.15);
+    expect(out[1].y).toBeCloseTo(0.42);
+    expect(out[2].x).toBeCloseTo(1.05);
+    expect(out[2].y).toBeCloseTo(1.97);
   });
 
   it('handles single-point input', () => {

@@ -14,6 +14,13 @@ export interface XY {
   y: number;
 }
 
+export interface AABB {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
 const TO_CHARGE_UNICOM_RE = /^map\d+tocharge_unicom$/;
 
 /**
@@ -42,11 +49,7 @@ export function shiftPoints(
   if (dx === 0 && dy === 0) return pts;
   return pts.map((p, i) => {
     if (isToChargeUnicom && i === 0) return p;
-    // Round to 9 decimal places to avoid floating-point noise in metre-scale coordinates.
-    return {
-      x: Math.round((p.x + dx) * 1e9) / 1e9,
-      y: Math.round((p.y + dy) * 1e9) / 1e9,
-    };
+    return { x: p.x + dx, y: p.y + dy };
   });
 }
 
@@ -57,7 +60,7 @@ export function shiftPoints(
  */
 export function recomputeBounds(
   pts: XY[],
-): { minX: number; maxX: number; minY: number; maxY: number } | null {
+): AABB | null {
   if (pts.length === 0) return null;
   let minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
   for (let i = 1; i < pts.length; i++) {
