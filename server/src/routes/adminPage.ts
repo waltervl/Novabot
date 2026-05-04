@@ -2574,7 +2574,17 @@ function attachMapInteraction(canvas) {
 
   function reRender() {
     var st = canvas.__mapState;
-    if (st && st.maps) renderMapCanvas(canvas, st.maps, st.chargingPose || null);
+    if (!st || !st.maps) return;
+    // While polygon-offset calibration is active, route through
+    // rerenderWithGhost() so the ghost (pre-offset reference) layer
+    // stays in sync with zoom + pan. The plain renderMapCanvas path
+    // dropped the 4th ghostMaps argument, which made the ghost layer
+    // disappear after the first wheel/drag event.
+    if (typeof polygonCal !== 'undefined' && polygonCal) {
+      rerenderWithGhost();
+    } else {
+      renderMapCanvas(canvas, st.maps, st.chargingPose || null);
+    }
   }
 
   // Zoom on wheel — anchor at cursor so cursor-pixel stays fixed.
