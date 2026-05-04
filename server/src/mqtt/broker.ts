@@ -264,7 +264,14 @@ const onlineBySn = new Map<string, Set<string>>();
 // De sweeper hieronder markeert een SN offline als er >45s geen PUBLISH
 // is gezien. De mower reports state elke ~2s, dus 45s stilte = echt dood.
 const lastPublishBySn = new Map<string, number>();
-const STALE_SN_MS = 45_000;
+// Issue #25: bumped 45s → 90s. The mower's report_state_robot publishes every
+// ~3-5s so 45s tolerated only ~10 missed cycles — short Wi-Fi blips or
+// mqtt_node restarts pushed the SN over the line and the app flickered
+// online → offline → online within seconds. 90s gives the mower ~20-25
+// missed cycles of slack before the stale sweeper kicks in, which kills
+// nearly all spurious flickers without making genuine power-off detection
+// noticeably slower (Aedes' own keepalive backstop is 2 minutes).
+const STALE_SN_MS = 90_000;
 
 // Raw TCP sockets per SN opslaan voor directe PUBLISH bypass
 const rawSocketBySn = new Map<string, net.Socket>();

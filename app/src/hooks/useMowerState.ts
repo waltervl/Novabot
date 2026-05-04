@@ -64,7 +64,19 @@ export function useMowerState(): UseMowerStateResult {
     });
   }, []);
 
+  // Issue #25: short Wi-Fi blips on the mower side cause an offline → online
+  // sequence within a handful of seconds. Debounce the offline transition by
+  // 8s so a quick reconnect cancels the offline state before the UI ever
+  // flickers. A genuine power-off still flips the badge, just 8s later.
+  const offlineTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
   const handleDeviceOnline = useCallback((e: DeviceOnlineEvent) => {
+    // Cancel any pending offline timer — a fresh online event invalidates it.
+    const pending = offlineTimers.current.get(e.sn);
+    if (pending) {
+      clearTimeout(pending);
+      offlineTimers.current.delete(e.sn);
+    }
     setDevices((prev) => {
       const next = new Map(prev);
       const existing = next.get(e.sn);
@@ -88,14 +100,21 @@ export function useMowerState(): UseMowerStateResult {
   }, []);
 
   const handleDeviceOffline = useCallback((e: DeviceOnlineEvent) => {
-    setDevices((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(e.sn);
-      if (existing) {
-        next.set(e.sn, { ...existing, online: false, lastUpdate: Date.now() });
-      }
-      return next;
-    });
+    // Defer the offline-state mutation. A reconnect within 8s cancels it.
+    const existing = offlineTimers.current.get(e.sn);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      offlineTimers.current.delete(e.sn);
+      setDevices((prev) => {
+        const next = new Map(prev);
+        const dev = next.get(e.sn);
+        if (dev) {
+          next.set(e.sn, { ...dev, online: false, lastUpdate: Date.now() });
+        }
+        return next;
+      });
+    }, 8000);
+    offlineTimers.current.set(e.sn, timer);
   }, []);
 
   // Re-check for socket every second until we have one
@@ -140,6 +159,10 @@ export function useMowerState(): UseMowerStateResult {
       socket.off('device:update', handleDeviceUpdate);
       socket.off('device:online', handleDeviceOnline);
       socket.off('device:offline', handleDeviceOffline);
+      // Drop any pending offline-debounce timers so they don't fire after
+      // the hook is unmounted (e.g. logout / theme reload).
+      offlineTimers.current.forEach(t => clearTimeout(t));
+      offlineTimers.current.clear();
     };
   }, [socketReady, handleSnapshot, handleDeviceUpdate, handleDeviceOnline, handleDeviceOffline]);
 

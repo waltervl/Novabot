@@ -1717,11 +1717,15 @@ export default function MapScreen() {
                                   // pattern (USER_MAP / ASSISTANT_MAP) and the non-zero
                                   // start-flag bitmask (firmware reports 16, not 1).
                                   const mapFlagRaw = mower?.sensors.start_edit_or_assistant_map_flag ?? '0';
-                                  const isMapping = (
-                                    msg.includes('Work:USER_MAP') ||
-                                    msg.includes('Work:ASSISTANT_MAP') ||
-                                    (mapFlagRaw !== '0' && mapFlagRaw !== '')
-                                  ) && !msg.includes('Work:FINISHED') && !msg.includes('Work:WAIT');
+                                  // Trust task_mode + Mode:MAPPING substring only — same heuristic
+                                  // as the top-level `isMapping` (line 357). The
+                                  // start_edit_or_assistant_map_flag bit + the Work:USER_MAP
+                                  // substring are both sticky in the firmware cache after a
+                                  // failed save, so they linger long after the mower has
+                                  // returned to idle and trigger a phantom 'Mapping in
+                                  // progress' on the Start button.
+                                  const taskModeForBtn = mower?.sensors.task_mode ?? '0';
+                                  const isMapping = taskModeForBtn === '3' || msg.includes('Mode:MAPPING');
                                   // Firmware zet Work:USER_STOP bij pause via app — zie HomeScreen comment.
                                   const isPaused = msg.includes('Work:PAUSED') || msg.includes('Work:USER_STOP');
 
