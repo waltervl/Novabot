@@ -2771,16 +2771,18 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   ctx.textAlign = 'right';
   ctx.fillText(rangeX.toFixed(1) + 'm x ' + rangeY.toFixed(1) + 'm', W - 10, H - 8);
 
-  // Calibration ghost: render the original polygons greyed out underneath
-  // the live (offset-shifted) layer for visual comparison.
+  // Calibration ghost: render the original (pre-offset) polygons
+  // underneath the live (offset-shifted) layer for visual comparison.
+  // High-contrast white dashed outline with a faint fill — the previous
+  // grey-on-dark was almost invisible against the green work polygon.
   if (ghostMaps && Array.isArray(ghostMaps)) {
     ghostMaps.forEach(function(g) {
       if (!g.mapArea || g.mapArea.length < 2) return;
       ctx.save();
-      ctx.strokeStyle = 'rgba(120,120,120,0.6)';
-      ctx.fillStyle = 'rgba(120,120,120,0.35)';
-      ctx.setLineDash([4, 3]);
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 2;
       ctx.beginPath();
       g.mapArea.forEach(function(p, i) {
         var sx = offsetX + (p.x - minX) * scale;
