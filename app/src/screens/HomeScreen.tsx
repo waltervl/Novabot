@@ -2234,7 +2234,7 @@ export default function HomeScreen() {
 
       {/* History modal */}
       <Modal visible={showHistory} animationType="slide" presentationStyle="pageSheet">
-        <View style={styles.modalHeader}>
+        <View style={[styles.modalHeader, { paddingTop: insets.top + 12 }]}>
           <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.modalClose}>
             <Ionicons name="arrow-back" size={28} color={colors.text} />
           </TouchableOpacity>
@@ -2455,7 +2455,7 @@ export default function HomeScreen() {
       })()}
 
       <Modal visible={showAlerts} animationType="slide" presentationStyle="pageSheet">
-        <View style={styles.modalHeader}>
+        <View style={[styles.modalHeader, { paddingTop: insets.top + 12 }]}>
           <TouchableOpacity onPress={() => setShowAlerts(false)} style={styles.modalClose}>
             <Ionicons name="arrow-back" size={28} color={colors.text} />
           </TouchableOpacity>
