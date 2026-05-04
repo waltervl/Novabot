@@ -284,7 +284,6 @@ export function adminPageHtml(): string {
   <div id="tab_maps" style="display:none">
     <div class="card">
       <h2>Map Viewer <span class="refresh-btn" onclick="loadMaps()">↻</span></h2>
-      <div style="padding:8px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.15);border-radius:6px;margin-bottom:12px;font-size:11px;color:#d97706">Maps stored here are for <b>preview and app display only</b>. They are not synced to the mower. To mow, the mower needs its own maps created via the Novabot app mapping function.</div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
         <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value)" style="flex:1;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
