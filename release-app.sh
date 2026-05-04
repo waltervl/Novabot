@@ -47,7 +47,45 @@ SIZE=$(stat -f '%z' "${APK_OUT}" 2>/dev/null || stat -c '%s' "${APK_OUT}")
 # client side; the static path here matches what the upload step expects.
 APK_URL="https://downloads.ramonvanbruggen.nl/app/${APK_NAME}"
 RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-RELEASE_NOTES=$(git log --oneline -10 | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))')
+
+# ── Release notes — user-friendly summary ────────────────────────────────────
+# Earlier versions dumped `git log --oneline` which leaked commit hashes,
+# conventional-commit prefixes, and internal cleanup noise. Build a curated
+# bullet list instead:
+#   - find commits since the previous app version tag (or the last
+#     `release(app):` commit if no tag), so each release shows only what
+#     changed THIS cycle
+#   - keep commits scoped to the app (or unscoped fixes/features that affect
+#     the app) and drop pure chore/test/docs/release noise
+#   - strip the conventional-commit prefix and capitalise so each line reads
+#     like a release-note bullet, not a git subject
+PREV_TAG=$(git tag --list 'app-v*' --sort=-v:refname | head -1)
+if [ -n "$PREV_TAG" ]; then
+  COMMIT_RANGE="${PREV_TAG}..HEAD"
+else
+  # Fallback: anchor on the most recent app-version-bump commit so we don't
+  # dump the entire repo history into the very first manifest.
+  PREV_BUMP=$(git log --grep='^release(app)' --pretty=%H -1 HEAD~1 2>/dev/null || true)
+  COMMIT_RANGE="${PREV_BUMP:+${PREV_BUMP}..HEAD}"
+fi
+
+RELEASE_NOTES=$(
+  git log --pretty=format:'%s' ${COMMIT_RANGE} 2>/dev/null \
+    | grep -vE '^(release|chore|test|docs|ci|build|style|refactor)(\(|:)' \
+    | grep -vE '^Merge ' \
+    | grep -E '\((app|i18n|admin|firmware)\)|^(fix|feat):' \
+    | sed -E 's/^(fix|feat|perf)\([^)]+\):[[:space:]]+//' \
+    | sed -E 's/^(fix|feat|perf):[[:space:]]+//' \
+    | sed -E 's/[[:space:]]*\(#[0-9]+\)[[:space:]]*$//' \
+    | awk 'NF { sub(/^[[:space:]]+/,""); first=toupper(substr($0,1,1)); rest=substr($0,2); print "• " first rest }' \
+    | head -20 \
+    | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().rstrip()))'
+)
+# Empty-list fallback so the manifest stays valid JSON.
+if [ -z "$RELEASE_NOTES" ] || [ "$RELEASE_NOTES" = '""' ]; then
+  RELEASE_NOTES='"Maintenance release."'
+fi
+
 SERVER_VERSION=$(node -p "require('./server/package.json').version")
 
 cat > "${OUT_DIR}/manifest.json" <<EOF
