@@ -239,6 +239,29 @@ low-value).
   active slot back from a marker file (e.g. `home0/.active_slot`)
   the handler writes after a successful copy.
 
+## TODO before implementation
+
+**Confirm firmware accepts `mapName: "mapN"` for N ≥ 3.** Novabot
+Flutter's `_getMapName()` caps at "map2" (3-map UI limit). Firmware
+side is unknown — `mqtt_node` reads `mapName` literally with no
+visible validation in the decompile. Empirical test required:
+
+1. Patch our OpenNova app's mapping screen so `_getMapName()`
+   equivalent returns `"map3"` when 3 maps already exist.
+2. Walk a 4th work area on the mower via BLE.
+3. SSH `/userdata/lfi/maps/home0/` — verify `map3_work.csv`,
+   `map3.yaml`, `map3.pgm`, `map3.png` were generated.
+4. If yes → swap-flow design as written works for arbitrary N.
+5. If no → firmware caps internally. Two fallbacks:
+   - Reverse-engineer the cap in `mqtt_node`/`novabot_mapping`
+     binary (find where the `MAX_MAPS=3` check lives) and patch.
+   - Activate open `mqtt_node` (already exists at `mower/mqtt_node/`)
+     + intercept `add_scan_map` to multiplex into virtual slots.
+
+The implementation plan must NOT assume the empirical test passed.
+Plan task 0 is "run the test, document result". Subsequent tasks
+branch on outcome.
+
 ## Operator Runbook
 
 1. App / dashboard: pick the work map you want to mow.
