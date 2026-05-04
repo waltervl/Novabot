@@ -1,8 +1,52 @@
 import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { messageRepo } from '../../db/repositories/index.js';
+import { equipmentRepo, mapRepo, messageRepo } from '../../db/repositories/index.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import { AuthRequest, ok } from '../../types/index.js';
+
+/**
+ * Issue #17 (waltervl): the work-records list rendered the raw stringified
+ * area like `298.9381103515625 m²`. Round to 2 decimals so the Novabot app
+ * shows e.g. `298.94 m²` (matches the stock cloud's display precision).
+ */
+function formatWorkArea(m2: number | null | undefined): string {
+  if (m2 == null || !Number.isFinite(m2)) return '';
+  return (Math.round(m2 * 100) / 100).toFixed(2);
+}
+
+/**
+ * Issue #17 (waltervl): selectMap was sent verbatim as the JSON-encoded
+ * canonical-name array (`["map10"]`), so the app rendered the literal
+ * brackets and the firmware-internal `mapN` slot id. Resolve each
+ * canonical to its user alias when one exists, comma-join, and collapse
+ * to "All maps" when the selection covers every work-map for this mower
+ * (the same label the stock cloud uses).
+ */
+function formatSelectMap(rawMapNames: string | null | undefined, sn: string | null): string {
+  if (!rawMapNames) return '';
+  let canonicals: string[];
+  try {
+    const parsed = JSON.parse(rawMapNames);
+    canonicals = Array.isArray(parsed)
+      ? parsed.map(String).filter(s => s.trim() !== '')
+      : [String(parsed)];
+  } catch {
+    // Not JSON — old rows may have stored a plain comma-separated string.
+    canonicals = rawMapNames.split(',').map(s => s.trim()).filter(s => s !== '');
+  }
+  if (canonicals.length === 0) return '';
+
+  const totalWorkMaps = sn ? mapRepo.findWorkMaps(sn).length : 0;
+  if (totalWorkMaps > 0 && canonicals.length >= totalWorkMaps) return 'All maps';
+
+  const labels = canonicals.map(canon => {
+    if (!sn) return canon;
+    const row = mapRepo.findBySnAndCanonical(sn, canon);
+    const alias = row?.map_name?.trim();
+    return alias && alias !== canon ? alias : canon;
+  });
+  return labels.join(', ');
+}
 
 export const messageRouter = Router();
 
@@ -110,15 +154,30 @@ messageRouter.post('/queryCutGrassRecordPageByUserId', authMiddleware, (req: Aut
   const totalCount = messageRepo.countWorkRecords(req.userId!);
   const rows = messageRepo.findWorkRecordsByUserId(req.userId!, pageSize, offset);
 
+  // Resolve equipment_id → mower_sn once per row so formatSelectMap can
+  // look up canonical→alias mappings. Cache per request to avoid redundant
+  // lookups when rows share equipment_id.
+  const snCache = new Map<string, string | null>();
+  const resolveSn = (equipmentId: string | null | undefined): string | null => {
+    if (!equipmentId) return null;
+    if (snCache.has(equipmentId)) return snCache.get(equipmentId)!;
+    const equip = equipmentRepo.findByEquipmentId(equipmentId);
+    // saveCutGrassRecord falls back to equipment_id = sn when no equipment row
+    // exists, so try the id verbatim before giving up.
+    const sn = equip?.mower_sn ?? equipmentId;
+    snCache.set(equipmentId, sn);
+    return sn;
+  };
+
   const pageList = rows.map(r => ({
     id: r.id,
     recordId: r.record_id,
     equipmentId: r.equipment_id,
     workTime: r.work_time ?? 0,
     dateTime: r.date_time ?? r.work_record_date,
-    workArea: r.work_area_m2 != null ? String(r.work_area_m2) : '',
+    workArea: formatWorkArea(r.work_area_m2),
     workStatus: r.work_status ?? '',
-    selectMap: r.map_names ?? '',
+    selectMap: formatSelectMap(r.map_names, resolveSn(r.equipment_id)),
     startWay: r.start_way ?? '',
     cutGrassHeight: r.cut_grass_height ?? 0,
     week: r.week ?? '',

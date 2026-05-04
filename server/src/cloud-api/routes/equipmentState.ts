@@ -156,10 +156,19 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
       // current msg, the actual completion signal lives in Prev work or
       // in cov_ratio approaching 1. Order matters: check finished
       // signals BEFORE the "anything else with a msg" fallback.
+      // Issue #17 round 2 (waltervl, May 2026): Walter ran a normal
+      // multi-map session that finished cleanly + docked, yet was tagged
+      // 'interrupted artificially'. Live mower msg after a clean end +
+      // dock is e.g. "Mode:COVERAGE Work:CANCELLED Prev work:USER_RECHARGE_STOP
+      // Recharge: FINISHED". Add Recharge: FINISHED / WAIT as positive
+      // finished signals — both indicate the dock cycle completed without
+      // an error, even when the leading Work:* tag is CANCELLED.
       const looksFinished =
         msg.includes('Work:FINISHED') ||
         msg.includes('Prev work:FINISHED') ||
         msg.includes('Prev work:USER_RECHARGE_STOP') ||
+        msg.includes('Recharge: FINISHED') ||
+        msg.includes('Recharge: WAIT') ||
         covRatio >= 0.95 ||
         finishedNum > 0;
       if (looksFinished && errorStatus === '0') {
