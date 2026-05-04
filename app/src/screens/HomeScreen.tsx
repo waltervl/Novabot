@@ -1808,33 +1808,36 @@ export default function HomeScreen() {
                   /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(busyMsg)
                   || /Recharge:(MOVING|RUNNING|GOING)/.test(busyMsg);
                 // Issue #30: detect a coverage session that paused for low-
-                // battery (or any USER_RECHARGE_STOP) so the user gets a
-                // Continue button instead of Start. Without this the app
-                // silently dropped the "I had more to mow" context after
-                // dock+charge and a fresh Start would restart from scratch.
-                // Criteria:
-                //   - mower is on the dock (CHARGING or FINISHED)
+                // battery (USER_RECHARGE_STOP / BATTERY_LOW_RECHARGE) so the
+                // user gets a Continue button instead of Start. Without this
+                // the app silently dropped the "I had more to mow" context
+                // after dock+charge and a fresh Start would restart from
+                // scratch.
+                // Criteria — ALL must hold:
+                //   - mower on dock (CHARGING or FINISHED)
                 //   - last task was coverage (prev_task_mode === 1)
                 //   - the mow wasn't actually completed
-                //     (cov_ratio < 0.99 AND cov_remaining_area > 0.5 m²)
-                //   - msg shows the recharge stop pattern (USER_RECHARGE_STOP
-                //     or BATTERY_LOW_RECHARGE) — guards against false positives
-                //     from a fresh dock right after coverage finished cleanly.
+                //     (cov_ratio < 0.95 AND cov_remaining_area > 5 m²)
+                //   - msg ACTIVELY shows the user-initiated recharge-stop
+                //     pattern. Recharge: FINISHED / Recharge: WAIT are NOT
+                //     used here — they linger in msg for hours after a normal
+                //     idle dock and trigger false positives even when the
+                //     previous session ended cleanly. Only the explicit
+                //     USER_RECHARGE_STOP / BATTERY_LOW_RECHARGE strings
+                //     genuinely indicate a paused-mid-coverage state.
                 const sensorsForResume = devices.get(mower.sn)?.sensors;
                 const prevTaskMode = parseInt(sensorsForResume?.prev_task_mode ?? '0', 10);
                 const covRatio = parseFloat(sensorsForResume?.cov_ratio ?? '0');
                 const covRemaining = parseFloat(sensorsForResume?.cov_remaining_area ?? '0');
                 const onDock = (sensorsForResume?.battery_state ?? '').toUpperCase() === 'CHARGING'
                   || (sensorsForResume?.battery_state ?? '').toUpperCase() === 'FINISHED';
-                const recharged =
+                const pausedForRecharge =
                   busyMsg.includes('USER_RECHARGE_STOP') ||
-                  busyMsg.includes('BATTERY_LOW_RECHARGE') ||
-                  busyMsg.includes('Recharge: FINISHED') ||
-                  busyMsg.includes('Recharge: WAIT');
+                  busyMsg.includes('BATTERY_LOW_RECHARGE');
                 const isInterruptedCoverage =
-                  onDock && prevTaskMode === 1 && recharged
-                  && covRatio > 0 && covRatio < 0.99
-                  && covRemaining > 0.5;
+                  onDock && prevTaskMode === 1 && pausedForRecharge
+                  && covRatio > 0 && covRatio < 0.95
+                  && covRemaining > 5;
                 const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy;
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')
                   && mower.online && !mower.hasError && !noMap && !mowerBusy
