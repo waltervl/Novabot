@@ -218,6 +218,8 @@ export default {
   dryAt: 'Droog om ~{{time}}',
   rainWarningTitle: 'Regen verwacht',
   rainWarningDesc: 'Rond {{time}} wordt regen verwacht ({{mm}}mm · {{prob}}%). Toch beginnen met maaien?',
+  ignoreRainSession: 'Negeer regen deze sessie',
+  ignoreRainSessionHint: 'Aan: regen-pauze blijft uit tot deze maai-sessie eindigt. Uit: maaier pauzeert zodra regen valt.',
 
   // ── Settings ──────────────────────────────────────────────────
   settings: 'Instellingen',

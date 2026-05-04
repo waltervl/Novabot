@@ -220,6 +220,8 @@ export default {
   dryAt: 'Dry at ~{{time}}',
   rainWarningTitle: 'Rain Expected',
   rainWarningDesc: 'Rain is forecast around {{time}} ({{mm}}mm · {{prob}}%). Start mowing anyway?',
+  ignoreRainSession: 'Ignore rain this session',
+  ignoreRainSessionHint: 'On: rain-pause stays off until this mowing session ends. Off: mower pauses as soon as rain falls.',
 
   // ── Settings ──────────────────────────────────────────────────
   settings: 'Settings',
