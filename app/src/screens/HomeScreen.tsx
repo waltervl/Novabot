@@ -151,6 +151,12 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
   //       again (retrying triggers a fresh coverage request, which clears
   //       the flag on success).
   const NON_BLOCKING_ERRORS = [8, 113, 118, 120, 122, 123, 124, 125, 126, 132];
+  // Codes the stock Novabot app NEVER surfaces to the user — they fire so
+  // often (LoRa flicker, transient perception/data-loss) and self-recover so
+  // quickly that showing a banner each time becomes noise. Mirror that
+  // suppression so OpenNova matches stock UX. Same set as the server-side
+  // SUPPRESSED_ERROR_CODES in eventDetector.ts that gates ntfy.
+  const HIDDEN_TRANSIENT_ERRORS = [8, 113, 132];
   const errorStatusRaw = parseInt(s.error_status?.match(/\d+/)?.[0] ?? '0', 10);
   const hasError = Boolean(
     errorStatusRaw > 0 && !NON_BLOCKING_ERRORS.includes(errorStatusRaw),
@@ -160,10 +166,12 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
   const STALE_WHEN_CHARGING = [124, 126];
   const isStaleChargeError =
     isChargingNow && STALE_WHEN_CHARGING.includes(errorStatusRaw);
+  const isHiddenTransient = HIDDEN_TRANSIENT_ERRORS.includes(errorStatusRaw);
   const hasSoftWarning =
     errorStatusRaw > 0 &&
     NON_BLOCKING_ERRORS.includes(errorStatusRaw) &&
-    !isStaleChargeError;
+    !isStaleChargeError &&
+    !isHiddenTransient;
 
   // Activity detection based on firmware report_state_robot fields:
   // - battery_state: "CHARGING" (on dock) / "DISCHARGED" (off dock)
