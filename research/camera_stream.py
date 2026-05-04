@@ -73,7 +73,12 @@ CAMERAS = {
     'aruco': {
         'topic': '/aruco/front_image',
         'msg_type': 'raw',
-        'start_service': None,  # altijd actief, geen service nodig
+        # ArucoLocalizationNode publishes /aruco/front_image only when its
+        # `enable_aruco_localization` SetBool service is enabled. By default
+        # the node sits idle (only auto_recharge_server flips it on during
+        # docking). Without this enable call the camera tab would wait 15s
+        # for the first frame, give up, and show "Camera niet beschikbaar".
+        'start_service': '/enable_aruco_localization',
         'label': 'ArUco',
     },
 }
