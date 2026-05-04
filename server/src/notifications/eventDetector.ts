@@ -29,6 +29,7 @@ const TITLE_BY_TYPE: Record<EventType, string> = {
   map_error:            'Mapping issue',
   initialization_error: 'Mower starting up',
   hardware_fault:       'Hardware fault',
+  dock_failed:          'Mower could not dock',
 };
 
 interface SnapshotState {
@@ -179,6 +180,24 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
       'Mower docked',
       `recharge_status=9 (FINISHED on dock), battery=${next.batteryPower}%`,
       { recharge_status: next.rechargeStatus, battery_power: next.batteryPower },
+    ));
+  }
+
+  // ── Dock failed ─────────────────────────────────────────────
+  // Issue #30: ntfy never fired when the mower returned to the dock but
+  // couldn't actually park (typically dark / ArUco-not-detected). The app
+  // popup picked it up but the lockscreen ping never came. Edge-detect
+  // the transition into 'Recharge: FAILED' so a single dock attempt only
+  // produces one notification, not one per report tick.
+  const wasDockFailed = prev.msg.includes('Recharge: FAILED');
+  const nowDockFailed = next.msg.includes('Recharge: FAILED');
+  if (!wasDockFailed && nowDockFailed) {
+    dispatchEvent(makeEvent(
+      sn,
+      'dock_failed',
+      'Mower could not dock',
+      'Mower returned to the charger but failed to dock — typically ArUco not detected (dark / dirty / misaligned). Manually move the mower onto the dock or retry.',
+      { msg: next.msg, battery_power: next.batteryPower },
     ));
   }
 

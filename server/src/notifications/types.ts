@@ -20,7 +20,8 @@ export type EventType =
   | 'gps_weak'               // 0x65/0x69/0x6A/0xCA — GPS signal/quality issue
   | 'map_error'              // 0x70..0x72 charging signal, 0x7A..0x7D mapping/boundary
   | 'initialization_error'   // 0x85 — mower not initialised
-  | 'hardware_fault';        // 0x86/0x88/0x89/0xAA/0xDD/0x1BC — camera, lora, chassis
+  | 'hardware_fault'         // 0x86/0x88/0x89/0xAA/0xDD/0x1BC — camera, lora, chassis
+  | 'dock_failed';           // msg includes 'Recharge: FAILED' — mower returned but couldn't dock (issue #30)
 
 export interface MowerEvent {
   sn: string;

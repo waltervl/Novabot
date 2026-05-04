@@ -190,9 +190,24 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
   // kanoniek waarheid. Behandel dit als een error-situatie zodat de UI uit
   // de "Returning" lus komt.
   const isDockFailed = msg.includes('Recharge: FAILED');
-  const isReturning = (rechargeStatus === 1 || msg.includes('Recharge: GOING') || msg.includes('Work:GO_PILE')
-    || msg.includes('Work:BACK_CHARGER') || msg.includes('Work:DOCKING'))
-    && !isDockFailed;
+  // Issue #31: post-finished return-to-charge slipped through this check
+  // because firmware v5.7.1 emits `Recharge: ALIGN_PILE` / recharge_status
+  // values like 191/193 mid-dock that the original list never covered, so
+  // the mower showed "Idle" while it was driving to the charger. Broaden
+  // both the numeric and the msg-substring matches to all known
+  // "transitional dock states", excluding only the two terminal ones:
+  //    9   = FINISHED (charging complete)
+  //    0   = NONE (not docking)
+  // Anything else with task_mode === 1 (we were running coverage) is a
+  // returning state.
+  const RETURNING_RECHARGE_STATUS = new Set([1, 2, 191, 192, 193]);
+  const isReturning = (
+    RETURNING_RECHARGE_STATUS.has(rechargeStatus)
+    || /Recharge:\s*(GOING|ALIGN_PILE|ALIGNING|MOVING|RUNNING|BACK|DOCKING)/i.test(msg)
+    || msg.includes('Work:GO_PILE')
+    || msg.includes('Work:BACK_CHARGER')
+    || msg.includes('Work:DOCKING')
+  ) && !isDockFailed && !isOnDock;
   // "Sticky" mowing: off dock + coverage mode + work not explicitly stopped/finished
   // Prevents flicker during lane transitions (brief Work:WAIT between lanes)
   // But NOT sticky when returning home or explicitly cancelled/finished
@@ -1792,9 +1807,38 @@ export default function HomeScreen() {
                 const mowerBusy =
                   /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(busyMsg)
                   || /Recharge:(MOVING|RUNNING|GOING)/.test(busyMsg);
+                // Issue #30: detect a coverage session that paused for low-
+                // battery (or any USER_RECHARGE_STOP) so the user gets a
+                // Continue button instead of Start. Without this the app
+                // silently dropped the "I had more to mow" context after
+                // dock+charge and a fresh Start would restart from scratch.
+                // Criteria:
+                //   - mower is on the dock (CHARGING or FINISHED)
+                //   - last task was coverage (prev_task_mode === 1)
+                //   - the mow wasn't actually completed
+                //     (cov_ratio < 0.99 AND cov_remaining_area > 0.5 m²)
+                //   - msg shows the recharge stop pattern (USER_RECHARGE_STOP
+                //     or BATTERY_LOW_RECHARGE) — guards against false positives
+                //     from a fresh dock right after coverage finished cleanly.
+                const sensorsForResume = devices.get(mower.sn)?.sensors;
+                const prevTaskMode = parseInt(sensorsForResume?.prev_task_mode ?? '0', 10);
+                const covRatio = parseFloat(sensorsForResume?.cov_ratio ?? '0');
+                const covRemaining = parseFloat(sensorsForResume?.cov_remaining_area ?? '0');
+                const onDock = (sensorsForResume?.battery_state ?? '').toUpperCase() === 'CHARGING'
+                  || (sensorsForResume?.battery_state ?? '').toUpperCase() === 'FINISHED';
+                const recharged =
+                  busyMsg.includes('USER_RECHARGE_STOP') ||
+                  busyMsg.includes('BATTERY_LOW_RECHARGE') ||
+                  busyMsg.includes('Recharge: FINISHED') ||
+                  busyMsg.includes('Recharge: WAIT');
+                const isInterruptedCoverage =
+                  onDock && prevTaskMode === 1 && recharged
+                  && covRatio > 0 && covRatio < 0.99
+                  && covRemaining > 0.5;
                 const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy;
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')
-                  && mower.online && !mower.hasError && !noMap && !mowerBusy;
+                  && mower.online && !mower.hasError && !noMap && !mowerBusy
+                  && !isInterruptedCoverage;
                 return (
                   <View style={[styles.splitButtonWrap, startDisabled && { opacity: 1 }]}>
                     <TouchableOpacity
@@ -1802,9 +1846,30 @@ export default function HomeScreen() {
                         styles.splitButtonMain,
                         startDisabled ? styles.actionButtonDisabled : styles.actionButtonGreen,
                       ]}
-                      onPress={() => {
+                      onPress={async () => {
                         if (noMap) {
                           (navigation as any).navigate('Map', { screen: 'Mapping' });
+                          return;
+                        }
+                        // Issue #30: an interrupted coverage session continues
+                        // via resume_navigation, NOT a fresh start_navigation
+                        // (the latter would restart from 0% and dump the
+                        // already-mowed cov_path).
+                        if (isInterruptedCoverage) {
+                          try {
+                            setCommandLoading('start');
+                            const url = await getServerUrl();
+                            if (!url) return;
+                            const api = new ApiClient(url);
+                            await api.sendCommand(mower.sn, {
+                              resume_navigation: { cmd_num: ++cmdNumRef.current },
+                            });
+                            setOptimisticActivity('mowing');
+                          } catch (e) {
+                            console.log('[HomeScreen] resume_navigation failed:', e);
+                          } finally {
+                            setCommandLoading(null);
+                          }
                           return;
                         }
                         setStartMowInitialMapId(null);
@@ -1817,13 +1882,25 @@ export default function HomeScreen() {
                         <ActivityIndicator size="small" color={colors.white} />
                       ) : (
                         <>
-                          <Ionicons name="play" size={20} color={startDisabled ? colors.textMuted : colors.white} />
+                          <Ionicons
+                            name={isInterruptedCoverage ? 'play-skip-forward' : 'play'}
+                            size={20}
+                            color={startDisabled ? colors.textMuted : colors.white}
+                          />
                           <Text style={[styles.actionButtonText, startDisabled && { color: colors.textMuted }]}>
                             {/* "Start" i.p.v. "Start Mowing" — korter label
                                 zodat het op smalle schermen blijft passen naast
                                 de chevron. Disabled-states tonen wel de volledige
-                                reden (no map / clear error). */}
-                            {noMap ? t('noMapCreateFirst') : mower.hasError ? t('clearErrorFirst') : t('start')}
+                                reden (no map / clear error). Issue #30:
+                                'Continue' (t('resume')) when an interrupted
+                                coverage session is waiting on the dock. */}
+                            {noMap
+                              ? t('noMapCreateFirst')
+                              : mower.hasError
+                              ? t('clearErrorFirst')
+                              : isInterruptedCoverage
+                              ? t('resume')
+                              : t('start')}
                           </Text>
                         </>
                       )}
