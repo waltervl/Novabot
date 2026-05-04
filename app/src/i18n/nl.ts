@@ -226,6 +226,8 @@ export default {
   mowingNow: 'Maait nu',
   zonesLeft: 'zones over',
   next: 'volgende',
+  mappingSessionDetected: 'Kaart maken bezig',
+  mappingSessionResumeHint: 'De maaier staat nog in kaart-maak-modus. Kies hieronder een type om door te gaan, of stop het via de maaier.',
 
   // ── Settings ──────────────────────────────────────────────────
   settings: 'Instellingen',
