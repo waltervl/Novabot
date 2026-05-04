@@ -63,9 +63,12 @@ PREV_TAG=$(git tag --list 'app-v*' --sort=-v:refname | head -1)
 if [ -n "$PREV_TAG" ]; then
   COMMIT_RANGE="${PREV_TAG}..HEAD"
 else
-  # Fallback: anchor on the most recent app-version-bump commit so we don't
-  # dump the entire repo history into the very first manifest.
-  PREV_BUMP=$(git log --grep='^release(app)' --pretty=%H -1 HEAD~1 2>/dev/null || true)
+  # Fallback: anchor on the SECOND most recent `release(app)` commit. The
+  # current build was preceded by its own bump commit, so the most-recent
+  # match is the bump for THIS release (range would be empty). Skip past
+  # it to the previous version's bump so the range covers everything that
+  # changed since the last shipped APK.
+  PREV_BUMP=$(git log --grep='^release(app)' --pretty=%H | sed -n '2p')
   COMMIT_RANGE="${PREV_BUMP:+${PREV_BUMP}..HEAD}"
 fi
 
