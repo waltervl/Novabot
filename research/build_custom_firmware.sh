@@ -1903,7 +1903,63 @@ SIZE=$(ls -lh "$OUTPUT_DEB" | awk '{print $5}')
 DEB_BASENAME="$(basename "$OUTPUT_DEB")"
 JSON_META="${OUTPUT_DEB%.deb}.json"
 DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL:-https://downloads.ramonvanbruggen.nl}"
-RELEASE_NOTES="- SSH enabled (root/novabot, port 22)\n- mDNS discovery (opennovabot.local)\n- DNS fallback cascade (mDNS → DNS → last-known IP)\n- WiFi AP fallback + watchdog\n- Camera MJPEG stream (port 8000)\n- LED bridge (MQTT → ROS headlight control)\n- Extended MQTT commands (reboot, camera, system info)\n- Open mqtt_bridge (replaces stock mqtt_node, no domain whitelist)\n- Open robot_decision boot hook\n- STM32: stock v3.6.0 (no custom patches)"
+
+# ── Release notes — what's new in THIS build ─────────────────────────────────
+# Earlier the release notes were a static feature list of every custom-firmware
+# capability (SSH, mDNS, camera stream, LED bridge, etc.) which was identical
+# across every build and gave readers no idea what changed in a given version.
+# Build a per-version delta instead: anchor on the previous custom-N-1 .deb
+# file's mtime, pull commits that touched firmware-relevant paths since then,
+# strip conventional-commit prefix, and emit a short bullet list. Falls back
+# to a generic line for the very first build or when no firmware-scoped
+# commits landed in the window.
+PREV_DEB=""
+if [ -d "$OUTPUT_DIR" ]; then
+    # Newest prior .deb that isn't this one — shell glob ordering is unstable,
+    # so use ls -t for mtime sort.
+    PREV_DEB=$(ls -t "$OUTPUT_DIR"/mower_firmware_v*.deb 2>/dev/null \
+        | grep -v "$(basename "$OUTPUT_DEB")$" \
+        | head -1)
+fi
+
+if [ -n "$PREV_DEB" ] && [ -f "$PREV_DEB" ]; then
+    PREV_MTIME=$(stat -f '%m' "$PREV_DEB" 2>/dev/null || stat -c '%Y' "$PREV_DEB" 2>/dev/null || echo "")
+fi
+
+# Firmware-relevant paths whose commits we surface in release notes. Keeps
+# unrelated server/app commits out — only changes that ship in the .deb.
+FW_PATHS=(
+    "research/build_custom_firmware.sh"
+    "research/camera_stream.py"
+    "research/extended_commands.py"
+    "research/discovery_loop.py"
+    "research/led_bridge.py"
+    "research/firmware/STM32"
+    "research/set_server_urls.sh"
+)
+
+if [ -n "${PREV_MTIME:-}" ]; then
+    GIT_LOG_BULLETS=$(git -C "$SCRIPT_DIR/.." log \
+        --since="@${PREV_MTIME}" \
+        --pretty=format:'%s' \
+        -- "${FW_PATHS[@]}" 2>/dev/null \
+        | grep -vE '^(release|chore|test|docs|ci|build|style|refactor)(\(|:)' \
+        | grep -vE '^Merge ' \
+        | sed -E 's/^(fix|feat|perf)\([^)]+\):[[:space:]]+//' \
+        | sed -E 's/^(fix|feat|perf):[[:space:]]+//' \
+        | sed -E 's/[[:space:]]*\(#[0-9]+\)[[:space:]]*$//' \
+        | awk 'NF { sub(/^[[:space:]]+/,""); first=toupper(substr($0,1,1)); rest=substr($0,2); print "- " first rest }' \
+        | head -15)
+fi
+
+if [ -z "${GIT_LOG_BULLETS:-}" ]; then
+    RELEASE_NOTES="- Maintenance build (no user-visible firmware-side changes since the previous version)"
+else
+    RELEASE_NOTES="$GIT_LOG_BULLETS"
+fi
+
+# Replace newlines with literal \n so the JSON below stays one-line valid.
+RELEASE_NOTES=$(printf '%s' "$RELEASE_NOTES" | awk 'BEGIN{ORS="\\n"}1' | sed 's/\\n$//')
 
 cat > "$JSON_META" << METAEOF
 {
