@@ -314,6 +314,7 @@ export function adminPageHtml(): string {
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+          <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
         </div>
       </div>
       <div id="mapRecalStatus" style="font-size:12px;margin-bottom:8px;display:none"></div>
@@ -327,12 +328,17 @@ export function adminPageHtml(): string {
           <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
         </div>
         <div id="mapBackupTree" style="margin-bottom:8px"></div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button onclick="restoreSelection()" style="padding:7px 16px;background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Restore selection to DB</button>
-          <button onclick="restoreAndRealign()" title="Full restore: DB + mower files + GPS update + sync_map MQTT push" style="padding:7px 16px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore + Realign Mower</button>
-          <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:7px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Calibrate Polygon Offset</button>
-          <button onclick="setAllConflicts(true)" style="padding:7px 14px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all conflicts</button>
-          <button onclick="setAllConflicts(false)" style="padding:7px 14px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all conflicts</button>
+        <div id="conflictHelpers" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px">
+          <span style="font-size:11px;color:#fca5a5;font-weight:600">Conflicts found — choose default action:</span>
+          <button onclick="setAllConflicts(true)" style="padding:5px 12px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all</button>
+          <button onclick="setAllConflicts(false)" style="padding:5px 12px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all</button>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button onclick="restoreBackup()" style="padding:7px 18px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore Backup</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer" title="Push restored maps to mower (sync_map MQTT + reload nav stack). Uncheck to update DB only.">
+            <input type="checkbox" id="restoreRealignChk" checked style="cursor:pointer">
+            Also push to mower (realign)
+          </label>
         </div>
         <div id="mapRecoveryStatus" style="font-size:12px;margin-top:6px;display:none"></div>
       </div>
@@ -2263,6 +2269,7 @@ async function loadBackupContents() {
 
     if (!html) html = '<div style="font-size:11px;color:#666">No areas found in this backup.</div>';
     tree.innerHTML = html;
+    updateConflictHelpersVisibility();
   } catch(e) {
     status.style.display = 'block';
     status.style.color = '#f87171';
@@ -2275,6 +2282,7 @@ function toggleBackupGroup(checkbox) {
   var checked = checkbox.checked;
   var items = document.querySelectorAll('.backup-item-chk[data-type="' + type + '"]');
   items.forEach(function(cb) { toggleConflictRadio(cb, checked); cb.checked = checked; });
+  updateConflictHelpersVisibility();
 }
 
 /** Show or hide the conflict radio pair next to a backup-item-chk */
@@ -2288,12 +2296,39 @@ function toggleConflictRadio(cb, show) {
 /** Called from inline onchange on each .backup-item-chk */
 function onBackupItemChange(cb) {
   toggleConflictRadio(cb, cb.checked);
+  updateConflictHelpersVisibility();
 }
 
 /** Bulk-set all conflict radios to overwrite (true) or skip (false) */
 function setAllConflicts(doOverwrite) {
   var radios = document.querySelectorAll('.conflict-radio[value="' + (doOverwrite ? 'overwrite' : 'skip') + '"]');
   radios.forEach(function(r) { r.checked = true; });
+}
+
+/** Show "Overwrite/Skip all" helpers only when at least one selected backup
+ *  item conflicts with an existing DB row. */
+function updateConflictHelpersVisibility() {
+  var helpers = document.getElementById('conflictHelpers');
+  if (!helpers) return;
+  // A conflict-radio pair is rendered only for items that exist in the DB,
+  // and shown only when its parent checkbox is checked. Use that visibility
+  // as the trigger.
+  var visiblePairs = 0;
+  document.querySelectorAll('[id^="conflict_"]').forEach(function(el) {
+    if (el.style.display && el.style.display !== 'none') visiblePairs++;
+  });
+  helpers.style.display = visiblePairs > 0 ? 'flex' : 'none';
+}
+
+/** Single restore entry point — branches on the "Also push to mower" checkbox.
+ *  Checked = full restore-and-realign (DB + sync_map MQTT push + GPS update).
+ *  Unchecked = DB-only restore. */
+async function restoreBackup() {
+  var realign = document.getElementById('restoreRealignChk').checked;
+  if (realign) {
+    return restoreAndRealign();
+  }
+  return restoreSelection();
 }
 
 async function restoreSelection() {
