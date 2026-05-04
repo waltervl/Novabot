@@ -28,16 +28,25 @@ const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.jso
 
 /**
  * Issue #26: the published manifest still references the legacy host
- * `download.ramonvanbruggen.nl` (singular). DNS only resolves the plural
- * `downloads.ramonvanbruggen.nl`, so the Download-firmware button failed
- * with `getaddrinfo ENOTFOUND`. Rewrite defensively at the server boundary
- * so the URL works regardless of when the manifest is regenerated.
+ * `download.ramonvanbruggen.nl/file/...` — both wrong:
+ *   - `download.` (singular) host doesn't resolve DNS — must be plural
+ *     `downloads.ramonvanbruggen.nl`.
+ *   - The `/file/` path segment was a Backblaze public-bucket artifact;
+ *     the live host serves files at the root (`/<filename>.deb`).
+ *
+ * Rewrite both at the server boundary so the URL works regardless of when
+ * the manifest is regenerated.
  */
 function normaliseFirmwareDownloadUrl(url: string): string {
-  return url.replace(
-    /https?:\/\/download\.ramonvanbruggen\.nl/gi,
-    'https://downloads.ramonvanbruggen.nl',
-  );
+  return url
+    .replace(
+      /https?:\/\/download\.ramonvanbruggen\.nl/gi,
+      'https://downloads.ramonvanbruggen.nl',
+    )
+    .replace(
+      /https:\/\/downloads\.ramonvanbruggen\.nl\/file\//gi,
+      'https://downloads.ramonvanbruggen.nl/',
+    );
 }
 
 export const adminStatusRouter = Router();
