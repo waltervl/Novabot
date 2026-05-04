@@ -305,20 +305,87 @@ Calibration parameters:
 
 ### POST `/api/dashboard/command/:sn`
 
-Send an arbitrary MQTT command to a device.
+Send an arbitrary MQTT command to a device. The `command` object is encrypted
+(AES-128-CBC, key = `"abcdabcd1234" + SN[-4:]`) when the SN starts with `LFI`
+and then published to `Dart/Send_mqtt/<SN>`. Stock firmware v6+ expects this
+encryption; for stock v5.x mowers add `"encrypt": false` at the top level of
+the request body to disable it.
 
-```json title="Request"
-{
-  "command": {
-    "start_run": {
-      "mapName": "map0",
-      "cutGrassHeight": 5
-    }
-  }
-}
+The five mowing actions below are taken straight from `mowingService.ts` and
+match exactly what the OpenNova app and the dashboard send.
+
+#### Start mowing (full coverage on map0)
+
+```bash
+curl -X POST http://<server>/api/dashboard/command/<SN> \
+  -H 'Content-Type: application/json' \
+  -d '{"command":{"start_navigation":{"mapName":"test","cutterhigh":3,"area":1,"cmd_num":12345}}}'
 ```
 
-The `command` object is published directly to `Dart/Send_mqtt/<SN>`.
+| Field | Notes |
+|-------|-------|
+| `mapName` | Required, literal string `"test"` (firmware ignores the value but rejects when missing). |
+| `cutterhigh` | Wire enum, range `0..7`. Formula: `user_cm − 2`. So 5 cm → `3`, 6 cm → `4`. |
+| `area` | Map enum: `1` = map0, `10` = map1, `200` = map2. Firmware only knows three slots. |
+| `cmd_num` | Must be unique per call — the firmware ignores duplicates. Use `$(date +%s)` or `$RANDOM`. |
+
+#### Stop
+
+```bash
+curl -X POST http://<server>/api/dashboard/command/<SN> \
+  -H 'Content-Type: application/json' \
+  -d '{"command":{"stop_navigation":{"cmd_num":12346}}}'
+```
+
+The key is `stop_navigation`, **not** `stop_task` or `stop_run`.
+
+#### Pause
+
+```bash
+curl -X POST http://<server>/api/dashboard/command/<SN> \
+  -H 'Content-Type: application/json' \
+  -d '{"command":{"pause_navigation":{"cmd_num":12347}}}'
+```
+
+#### Resume
+
+```bash
+curl -X POST http://<server>/api/dashboard/command/<SN> \
+  -H 'Content-Type: application/json' \
+  -d '{"command":{"resume_navigation":{"cmd_num":12348}}}'
+```
+
+The keys are `pause_navigation` / `resume_navigation`, **not** `pause_run` /
+`resume_run` (those exist as legacy LoRa commands but the navigation stack
+uses the `*_navigation` variants).
+
+#### Go home (back to charger)
+
+This is a two-step sequence with a 500 ms gap — the app does the same:
+
+```bash
+curl -X POST http://<server>/api/dashboard/command/<SN> \
+  -H 'Content-Type: application/json' \
+  -d '{"command":{"go_pile":{}}}'
+
+sleep 0.5
+
+curl -X POST http://<server>/api/dashboard/command/<SN> \
+  -H 'Content-Type: application/json' \
+  -d '{"command":{"go_to_charge":{"cmd_num":12349,"chargerpile":{"latitude":200,"longitude":200}}}}'
+```
+
+The `chargerpile:{latitude:200, longitude:200}` is required — those are
+sentinel values; the mower computes the actual dock pose from its own
+saved map state.
+
+#### Disabling encryption (stock v5.x firmware only)
+
+```bash
+curl -X POST http://<server>/api/dashboard/command/<SN> \
+  -H 'Content-Type: application/json' \
+  -d '{"encrypt":false,"command":{"start_navigation":{"mapName":"test","cutterhigh":3,"area":1,"cmd_num":12345}}}'
+```
 
 ---
 
