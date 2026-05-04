@@ -90,6 +90,8 @@ export default {
   rainWarningDesc: 'Gegen {{time}} wird Regen erwartet ({{mm}}mm · {{prob}}%). Trotzdem mähen?',
   ignoreRainSession: 'Regen in dieser Sitzung ignorieren',
   ignoreRainSessionHint: 'Ein: Regen-Pause bleibt aus, bis diese Mähsitzung endet. Aus: Mäher pausiert, sobald es regnet.',
+  mowingHistory: 'Mähverlauf',
+  messages: 'Nachrichten',
   settings: 'Einstellungen', experimentalFeatures: 'Experimentelle Funktionen',
   experimentalSub: 'Beta-Funktionen wie automatische Kartierung aktivieren',
   signOut: 'Abmelden', language: 'Sprache', mowerSettings: 'Mäher-Einstellungen',

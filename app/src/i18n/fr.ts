@@ -90,6 +90,8 @@ export default {
   rainWarningDesc: 'Pluie prévue vers {{time}} ({{mm}}mm · {{prob}}%). Démarrer quand même ?',
   ignoreRainSession: 'Ignorer la pluie cette session',
   ignoreRainSessionHint: 'Activé : la pause-pluie reste désactivée jusqu\'à la fin de cette session. Désactivé : la tondeuse s\'arrête dès qu\'il pleut.',
+  mowingHistory: 'Historique de tonte',
+  messages: 'Messages',
   settings: 'Réglages', experimentalFeatures: 'Fonctions expérimentales',
   experimentalSub: 'Activer les fonctions bêta comme la cartographie automatique',
   signOut: 'Déconnexion', language: 'Langue', mowerSettings: 'Réglages tondeuse',

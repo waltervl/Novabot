@@ -220,6 +220,8 @@ export default {
   rainWarningDesc: 'Rond {{time}} wordt regen verwacht ({{mm}}mm · {{prob}}%). Toch beginnen met maaien?',
   ignoreRainSession: 'Negeer regen deze sessie',
   ignoreRainSessionHint: 'Aan: regen-pauze blijft uit tot deze maai-sessie eindigt. Uit: maaier pauzeert zodra regen valt.',
+  mowingHistory: 'Maaihistorie',
+  messages: 'Berichten',
 
   // ── Settings ──────────────────────────────────────────────────
   settings: 'Instellingen',
