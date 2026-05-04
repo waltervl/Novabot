@@ -1902,7 +1902,7 @@ SIZE=$(ls -lh "$OUTPUT_DEB" | awk '{print $5}')
 # Schrijf metadata JSON naast de .deb
 DEB_BASENAME="$(basename "$OUTPUT_DEB")"
 JSON_META="${OUTPUT_DEB%.deb}.json"
-DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL:-https://download.ramonvanbruggen.nl/file}"
+DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL:-https://downloads.ramonvanbruggen.nl/file}"
 RELEASE_NOTES="- SSH enabled (root/novabot, port 22)\n- mDNS discovery (opennovabot.local)\n- DNS fallback cascade (mDNS → DNS → last-known IP)\n- WiFi AP fallback + watchdog\n- Camera MJPEG stream (port 8000)\n- LED bridge (MQTT → ROS headlight control)\n- Extended MQTT commands (reboot, camera, system info)\n- Open mqtt_bridge (replaces stock mqtt_node, no domain whitelist)\n- Open robot_decision boot hook\n- STM32: stock v3.6.0 (no custom patches)"
 
 cat > "$JSON_META" << METAEOF
