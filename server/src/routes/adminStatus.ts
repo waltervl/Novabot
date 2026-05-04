@@ -26,6 +26,20 @@ import https from 'https';
 
 const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.json';
 
+/**
+ * Issue #26: the published manifest still references the legacy host
+ * `download.ramonvanbruggen.nl` (singular). DNS only resolves the plural
+ * `downloads.ramonvanbruggen.nl`, so the Download-firmware button failed
+ * with `getaddrinfo ENOTFOUND`. Rewrite defensively at the server boundary
+ * so the URL works regardless of when the manifest is regenerated.
+ */
+function normaliseFirmwareDownloadUrl(url: string): string {
+  return url.replace(
+    /https?:\/\/download\.ramonvanbruggen\.nl/gi,
+    'https://downloads.ramonvanbruggen.nl',
+  );
+}
+
 export const adminStatusRouter = Router();
 
 // Multer for ZIP upload (temp directory)
@@ -645,6 +659,12 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
 
     const available = remoteFirmwares.map(fw => ({
       ...fw,
+      // Issue #26: the published manifest still references the old
+      // `download.ramonvanbruggen.nl` host (singular) which fails DNS
+      // resolution; the live host is `downloads.ramonvanbruggen.nl`.
+      // Defensive rewrite here so the Download button works regardless of
+      // when the manifest is fixed.
+      url: normaliseFirmwareDownloadUrl(fw.url),
       filename: fw.filename || fw.url.split('/').pop() || `firmware_${fw.version}`,
       installed: localVersionSet.has(fw.version),
     }));
@@ -661,14 +681,16 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
 
 // POST /api/admin-status/download-firmware — download firmware from remote URL and register locally
 adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Response) => {
-  const { url, filename, version, device_type, md5, description } = req.body as {
+  const { url: rawUrl, filename, version, device_type, md5, description } = req.body as {
     url?: string; filename?: string; version?: string; device_type?: string; md5?: string; description?: string;
   };
 
-  if (!url || !filename || !version || !device_type) {
+  if (!rawUrl || !filename || !version || !device_type) {
     res.status(400).json({ error: 'url, filename, version, and device_type are required' });
     return;
   }
+  // Defensive rewrite (issue #26) — see normaliseFirmwareDownloadUrl.
+  const url = normaliseFirmwareDownloadUrl(rawUrl);
 
   // Resolve firmware directory (same as dashboard.ts)
   const firmwareDir = process.env.FIRMWARE_PATH ?? path.resolve(process.cwd(), 'firmware');

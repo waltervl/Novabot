@@ -85,6 +85,14 @@ export function MowQueueProvider({ children }: { children: React.ReactNode }) {
   // the next start_navigation actually running.
   const advanceLockRef = useRef(false);
 
+  // Issue #34: queues persisted in SecureStore stayed forever — if a user
+  // ever started a multi-map run and the app/mower never reached
+  // Work:FINISHED (force-quit, mower error, network, cold reload) the
+  // banner reappeared on every cold-start regardless of mower state. Drop
+  // any persisted queue that's older than this threshold; a real session
+  // never legitimately spans this long.
+  const MAX_QUEUE_AGE_MS = 6 * 60 * 60 * 1000; // 6h
+
   // ── Hydration: load persisted queue when active SN changes ────────
   useEffect(() => {
     if (!sn) {
@@ -101,6 +109,14 @@ export function MowQueueProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         const parsed = JSON.parse(raw) as QueueState;
+        const ageMs = Date.now() - (parsed.startedAt ?? 0);
+        if (ageMs > MAX_QUEUE_AGE_MS) {
+          // Stale — never resurrect. Drop the persisted entry too so the
+          // next reload starts truly clean.
+          SecureStore.deleteItemAsync(storageKey(sn)).catch(() => {});
+          setQueue(null);
+          return;
+        }
         if (parsed.sn === sn && Array.isArray(parsed.remaining) && parsed.remaining.length > 0) {
           setQueue(parsed);
           // Reset edge-detect refs on hydrate so we don't immediately fire.
@@ -113,6 +129,45 @@ export function MowQueueProvider({ children }: { children: React.ReactNode }) {
     })();
     return () => { cancelled = true; };
   }, [sn]);
+
+  // ── Auto-clear stale queue when mower is idle on dock ─────────────
+  // Even within MAX_QUEUE_AGE_MS, a queue is meaningless once the mower
+  // has been parked + idle for a sustained window. Without this guard a
+  // brief restart mid-queue (force-quit, mower error after first map)
+  // left the banner stuck until the timestamp aged out. Detect "idle on
+  // dock" — battery_state=CHARGING/FINISHED, task_mode=0, no Work:* mowing
+  // substring — for 60 seconds and self-clear.
+  const idleClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sensors = activeMower?.sensors ?? {};
+  const batteryState = String(sensors.battery_state ?? '').toUpperCase();
+  const taskMode = parseInt(String(sensors.task_mode ?? '0'), 10);
+  const liveMsg = String(sensors.msg ?? '');
+  const onDockIdle = (batteryState === 'CHARGING' || batteryState === 'FINISHED')
+    && taskMode === 0
+    && !isMowingMsg(liveMsg);
+
+  useEffect(() => {
+    if (!queue || queue.sn !== sn) return;
+    if (!onDockIdle) {
+      if (idleClearTimer.current) {
+        clearTimeout(idleClearTimer.current);
+        idleClearTimer.current = null;
+      }
+      return;
+    }
+    if (idleClearTimer.current) return; // already armed
+    idleClearTimer.current = setTimeout(() => {
+      console.log('[MowQueue] idle on dock 60s — clearing stale queue');
+      setQueue(null);
+      idleClearTimer.current = null;
+    }, 60_000);
+    return () => {
+      if (idleClearTimer.current) {
+        clearTimeout(idleClearTimer.current);
+        idleClearTimer.current = null;
+      }
+    };
+  }, [queue, sn, onDockIdle]);
 
   // ── Persist on every mutation ─────────────────────────────────────
   useEffect(() => {

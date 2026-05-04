@@ -460,7 +460,7 @@ export default function HomeScreen() {
   const { devices, connected } = useMowerState();
   const { activeMower, activeMowerSn, setActiveMowerSn } = useActiveMower();
   const { activeMowerSn: pickedMowerSn, hydrated: activePickHydrated } = useActiveMowerContext();
-  const { queue: mowQueue } = useMowQueue();
+  const { queue: mowQueue, clear: clearMowQueue } = useMowQueue();
   const { t } = useI18n();
   const { colorScheme, colors } = useTheme();
   const styles = useStyles(makeStyles);
@@ -1490,6 +1490,16 @@ export default function HomeScreen() {
                     {upcoming ? ` (${(t('next', undefined) || 'next')}: ${upcoming})` : ''}
                   </Text>
                 </View>
+                {/* Issue #34: explicit Cancel so a stuck banner can always be
+                    dismissed manually, even when the auto-clear heuristics
+                    (idle-on-dock 60s, max-age 6h) haven't kicked in yet. */}
+                <TouchableOpacity
+                  onPress={() => { clearMowQueue(); }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityLabel={t('cancel', undefined) || 'Cancel'}
+                >
+                  <Ionicons name="close" size={18} color={colors.textDim} />
+                </TouchableOpacity>
               </View>
             );
           })()}
