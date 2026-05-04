@@ -2,6 +2,27 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-04 — Work records: area precision, selectMap formatting, finished detection (issue #17 round 2)
+
+- `routes/message.ts`: `POST /api/novabot-message/message/queryCutGrassRecordPageByUserId`
+  three bug-fixes after waltervl follow-up screenshots:
+
+  1. **workArea displayed with full float precision** (`298.9381103515625 m²`).
+     Now rounded to 2 decimals (`298.94`) via `formatWorkArea()` — matches
+     stock cloud display.
+
+  2. **selectMap returned raw JSON** (`["map10"]` rendered literally in app).
+     New `formatSelectMap()` parses the JSON, resolves canonical `mapN` slot
+     ids to user aliases via `mapRepo.findBySnAndCanonical`, and collapses
+     to `"All maps"` when the selection covers every work-map for the SN.
+     Equipment_id → mower_sn lookup is cached per request.
+
+- `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
+  broaden `looksFinished` signal set so a normally-completed multi-map
+  session that ends with `Work:CANCELLED ... Recharge: FINISHED` is no
+  longer mis-tagged as `interrupted artificially`. Also accept
+  `Recharge: FINISHED` and `Recharge: WAIT` as finished signals.
+
 ## 2026-05-01 — Work records: cutting-height, workTime unit, dateTime format (issue #17)
 
 - `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
