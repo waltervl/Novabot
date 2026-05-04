@@ -2226,8 +2226,9 @@ export default function HomeScreen() {
       <Modal visible={showHistory} animationType="slide" presentationStyle="pageSheet">
         <View style={styles.modalHeader}>
           <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.modalClose}>
-            <Ionicons name="arrow-back" size={24} color={colors.text} />
+            <Ionicons name="arrow-back" size={28} color={colors.text} />
           </TouchableOpacity>
+          <Text style={styles.modalTitle}>{t('mowingHistory') || 'Mowing History'}</Text>
         </View>
         <HistoryScreen />
       </Modal>
@@ -2446,8 +2447,9 @@ export default function HomeScreen() {
       <Modal visible={showAlerts} animationType="slide" presentationStyle="pageSheet">
         <View style={styles.modalHeader}>
           <TouchableOpacity onPress={() => setShowAlerts(false)} style={styles.modalClose}>
-            <Ionicons name="arrow-back" size={24} color={colors.text} />
+            <Ionicons name="arrow-back" size={28} color={colors.text} />
           </TouchableOpacity>
+          <Text style={styles.modalTitle}>{t('messages') || 'Messages'}</Text>
         </View>
         <MessagesScreen />
       </Modal>
@@ -2497,17 +2499,19 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   modalHeader: {
     backgroundColor: c.card,
     flexDirection: 'row',
-    justifyContent: 'flex-start',
+    alignItems: 'center',
+    gap: 12,
     paddingHorizontal: 16,
     paddingTop: 12,
+    paddingBottom: 12,
   },
   modalClose: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    padding: 4,
+  },
+  modalTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: c.text,
   },
   connectionRow: {
     flexDirection: 'row',

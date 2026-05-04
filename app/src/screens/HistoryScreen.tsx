@@ -87,8 +87,6 @@ export default function HistoryScreen() {
         }
       >
 
-        <Text style={styles.title}>Mowing History</Text>
-
         {loading && (
           <ActivityIndicator size="small" color={colors.emerald} style={{ marginTop: 32 }} />
         )}

@@ -177,8 +177,6 @@ export default function MessagesScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.title}>Messages</Text>
-
         {!connected && (
           <View style={styles.disconnectedBanner}>
             <Ionicons name="cloud-offline" size={16} color={colors.red} />

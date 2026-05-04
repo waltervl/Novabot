@@ -230,14 +230,7 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     width: '100%',
     marginBottom: 16,
   },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  backBtn: { padding: 4 },
   title: { fontSize: 20, fontWeight: '700', color: c.text },
   speedChip: {
     flexDirection: 'row',
