@@ -24,6 +24,7 @@ import {
   clearPersistedActiveMowerSn,
 } from './src/context/ActiveMowerContext';
 import { MowQueueProvider } from './src/context/MowQueueContext';
+import { AppAlertProvider } from './src/context/AppAlertContext';
 import { PushRegistrar } from './src/components/PushRegistrar';
 import { I18nProvider, useI18n } from './src/i18n';
 import type {
@@ -456,6 +457,7 @@ export default function App() {
     <I18nProvider>
     <ExperimentalProvider>
     <PatternProvider>
+    <AppAlertProvider>
     <GestureHandlerRootView style={{ flex: 1 }} onLayout={onLayoutRootView}>
       <ThemedApp
         navigationRef={navigationRef}
@@ -466,6 +468,7 @@ export default function App() {
       />
       <StatusBarThemed />
     </GestureHandlerRootView>
+    </AppAlertProvider>
     </PatternProvider>
     </ExperimentalProvider>
     </I18nProvider>

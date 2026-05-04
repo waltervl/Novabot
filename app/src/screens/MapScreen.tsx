@@ -15,6 +15,7 @@ import {
   Modal,
   ScrollView,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -540,7 +541,7 @@ export default function MapScreen() {
     if (!mower?.sn || maps.length === 0) return;
 
     if (demo.enabled) {
-      Alert.alert('Demo Mode', 'Export is not available in demo mode.');
+      appAlertCompat.alert('Demo Mode', 'Export is not available in demo mode.');
       return;
     }
 
@@ -550,7 +551,7 @@ export default function MapScreen() {
       const downloadUrl = `${serverUrl}/api/dashboard/maps/${encodeURIComponent(mower.sn)}/download-zip`;
       await Linking.openURL(downloadUrl);
     } catch (e) {
-      Alert.alert(t('error'), e instanceof Error ? e.message : 'Export failed');
+      appAlertCompat.alert(t('error'), e instanceof Error ? e.message : 'Export failed');
     }
   };
 
@@ -575,14 +576,14 @@ export default function MapScreen() {
               const bodyText = await res.text().catch(() => '<no body>');
               console.log(`[deleteMap] HTTP ${res.status} body=${bodyText.slice(0, 200)}`);
               if (!res.ok) {
-                Alert.alert(t('error'), `Delete failed: HTTP ${res.status}\n${bodyText.slice(0, 200)}`);
+                appAlertCompat.alert(t('error'), `Delete failed: HTTP ${res.status}\n${bodyText.slice(0, 200)}`);
                 return;
               }
               fetchData();
             } catch (e) {
               const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
               console.warn('[deleteMap] threw:', msg);
-              Alert.alert(t('error'), `Delete failed: ${msg}`);
+              appAlertCompat.alert(t('error'), `Delete failed: ${msg}`);
             }
           },
         },
@@ -617,7 +618,7 @@ export default function MapScreen() {
                     body: JSON.stringify({ mapName: newName.trim() }),
                   });
                   fetchData();
-                } catch { Alert.alert(t('error'), 'Rename failed'); }
+                } catch { appAlertCompat.alert(t('error'), 'Rename failed'); }
               },
               'plain-text',
               map.mapName || '',
@@ -642,7 +643,7 @@ export default function MapScreen() {
       const serverUrl = await getServerUrl();
       const token = await (await import('../services/auth')).getToken();
       if (!serverUrl || !token) {
-        Alert.alert(t('error'), 'Not authenticated');
+        appAlertCompat.alert(t('error'), 'Not authenticated');
         setCloudImporting(false);
         return;
       }
@@ -656,7 +657,7 @@ export default function MapScreen() {
       const data = json?.value?.data;
 
       if (!data) {
-        Alert.alert(t('cloudImport'), t('noCloudMaps'));
+        appAlertCompat.alert(t('cloudImport'), t('noCloudMaps'));
         setCloudImporting(false);
         return;
       }
@@ -666,7 +667,7 @@ export default function MapScreen() {
       const unicomItems = data.unicom ?? [];
 
       if (workItems.length === 0 && unicomItems.length === 0) {
-        Alert.alert(t('cloudImport'), t('noCloudMaps'));
+        appAlertCompat.alert(t('cloudImport'), t('noCloudMaps'));
         setCloudImporting(false);
         return;
       }
@@ -718,26 +719,26 @@ export default function MapScreen() {
           });
         } catch { /* ignore push failure */ }
 
-        Alert.alert(t('cloudImport'), `${imported} map(s) imported from cloud.`);
+        appAlertCompat.alert(t('cloudImport'), `${imported} map(s) imported from cloud.`);
         fetchData();
       } else {
-        Alert.alert(t('importFailed'), 'Could not import any maps from cloud data.');
+        appAlertCompat.alert(t('importFailed'), 'Could not import any maps from cloud data.');
       }
     } catch (e) {
-      Alert.alert(t('error'), e instanceof Error ? e.message : 'Cloud import failed');
+      appAlertCompat.alert(t('error'), e instanceof Error ? e.message : 'Cloud import failed');
     }
     setCloudImporting(false);
   };
 
   const handleImport = async () => {
     if (!mower?.sn) {
-      Alert.alert(t('noMowerFound'), t('connectMower'));
+      appAlertCompat.alert(t('noMowerFound'), t('connectMower'));
       return;
     }
 
     // Demo mode: just show a success message and add a fake imported map
     if (demo.enabled) {
-      Alert.alert('Demo Mode', 'In demo mode, a sample imported map has been added.');
+      appAlertCompat.alert('Demo Mode', 'In demo mode, a sample imported map has been added.');
       setMaps((prev) => [
         ...prev,
         {
@@ -766,7 +767,7 @@ export default function MapScreen() {
       // Warn if maps already exist (prevent duplicate imports)
       if (maps.length > 0) {
         const confirmed = await new Promise<boolean>(resolve => {
-          Alert.alert(
+          appAlertCompat.alert(
             t('mapsAlreadyExist'),
             t('mapsAlreadyExistMsg'),
             [
@@ -841,17 +842,17 @@ export default function MapScreen() {
         );
         fetchData(); // refresh map
       } else {
-        Alert.alert(t('importFailed'), json.error ?? 'Unknown error');
+        appAlertCompat.alert(t('importFailed'), json.error ?? 'Unknown error');
       }
     } catch (e) {
-      Alert.alert(t('error'), e instanceof Error ? e.message : 'Import failed');
+      appAlertCompat.alert(t('error'), e instanceof Error ? e.message : 'Import failed');
     } finally {
       setImporting(false);
     }
   };
 
   const showImportOptions = useCallback(() => {
-    Alert.alert(t('importMap'), undefined, [
+    appAlertCompat.alert(t('importMap'), undefined, [
       { text: t('fromFile'), onPress: handleImport },
       { text: t('fromCloud'), onPress: handleCloudImport },
       { text: t('cancel'), style: 'cancel' },

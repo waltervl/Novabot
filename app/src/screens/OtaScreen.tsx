@@ -10,10 +10,10 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  Alert,
   Image,
   Modal,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -135,7 +135,7 @@ export default function OtaScreen() {
       ? mower?.sensors.sw_version ?? mower?.sensors.mower_version ?? '?'
       : charger?.sensors.charger_version ?? charger?.sensors.sw_version ?? '?';
 
-    Alert.alert(
+    appAlertCompat.alert(
       'Firmware Update',
       `Update ${deviceLabel} from v${currentVersion} to ${version.version}?\n\nThis will restart the device.`,
       [

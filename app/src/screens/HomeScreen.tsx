@@ -9,12 +9,13 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
-  Alert,
   ActivityIndicator,
   Animated,
   Image,
   Modal,
+  Alert,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Path as SvgPath } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -737,7 +738,7 @@ export default function HomeScreen() {
           await api.sendCommand(mower.sn, { stop_navigation: { cmd_num: Date.now() % 100000 } });
           await new Promise(r => setTimeout(r, 300));
           await api.sendCommand(mower.sn, { clear_error: {} });
-          Alert.alert(
+          appAlertCompat.alert(
             'Safety stop',
             'Mower went outside the map after a long pause. Automatically stopped before the coverage planner crashed. Move the mower back inside the work area to continue.',
             [{ text: 'OK' }],
@@ -868,7 +869,7 @@ export default function HomeScreen() {
     // Display as `wire + 2` cm. Allow 1 unit tolerance for firmware rounding.
     if (Math.abs(reportedHeight - mowSettings.cuttingHeight) > 1) {
       heightCheckDone.current = true;
-      Alert.alert(
+      appAlertCompat.alert(
         'Cutting Height Mismatch!',
         `Expected ${mowSettings.cuttingHeight + 2}cm but mower reports ${reportedHeight + 2}cm. Stop mowing for safety?`,
         [
@@ -1076,7 +1077,7 @@ export default function HomeScreen() {
   };
 
   const handleDeleteDevice = (sn: string, label: string) => {
-    Alert.alert(
+    appAlertCompat.alert(
       `Remove ${label}?`,
       `Remove ${sn} from the server. You can re-provision it later.`,
       [
@@ -1104,7 +1105,7 @@ export default function HomeScreen() {
     // Find chargers that have LoRa addresses (already provisioned)
     const chargersWithLora = deviceSets.filter(s => s.charger && s.loraAddress != null);
     if (chargersWithLora.length === 0) {
-      Alert.alert(t('noChargerFound'), t('provisionCharger'));
+      appAlertCompat.alert(t('noChargerFound'), t('provisionCharger'));
       return;
     }
 
@@ -1118,7 +1119,7 @@ export default function HomeScreen() {
         // 1. Get charger's LoRa config
         const chargerLora = await api.getChargerLora(chargerSn);
         if (!chargerLora) {
-          Alert.alert(t('error'), 'Could not read charger LoRa config');
+          appAlertCompat.alert(t('error'), 'Could not read charger LoRa config');
           return;
         }
 
@@ -1135,7 +1136,7 @@ export default function HomeScreen() {
         // working-lora-pair 22 apr 2026, addr=718 ch=17 beide devices).
         const mowerChannel = chargerLora.channel;
         if (mowerLora.addr !== chargerLora.address || mowerLora.channel !== mowerChannel) {
-          Alert.alert(
+          appAlertCompat.alert(
             t('loraMismatch'),
             `Mower LoRa: addr=${mowerLora.addr ?? '?'} ch=${mowerLora.channel ?? '?'}\n` +
             `Charger LoRa: addr=${chargerLora.address} ch=${chargerLora.channel}\n\n` +
@@ -1150,9 +1151,9 @@ export default function HomeScreen() {
                     await api.pairMower(mowerSn, chargerSn);
                     const res = await api.getDeviceSets();
                     setDeviceSets(res.sets ?? []);
-                    Alert.alert(t('paired'), `Mower paired with charger.\nLoRa updated to addr=${chargerLora.address} ch=${mowerChannel}`);
+                    appAlertCompat.alert(t('paired'), `Mower paired with charger.\nLoRa updated to addr=${chargerLora.address} ch=${mowerChannel}`);
                   } catch (e: any) {
-                    Alert.alert(t('error'), e.message ?? 'Pairing failed');
+                    appAlertCompat.alert(t('error'), e.message ?? 'Pairing failed');
                   }
                 },
               },
@@ -1165,9 +1166,9 @@ export default function HomeScreen() {
         await api.pairMower(mowerSn, chargerSn);
         const res = await api.getDeviceSets();
         setDeviceSets(res.sets ?? []);
-        Alert.alert(t('paired'), `Mower paired with charger (LoRa addr=${chargerLora.address})`);
+        appAlertCompat.alert(t('paired'), `Mower paired with charger (LoRa addr=${chargerLora.address})`);
       } catch (e: any) {
-        Alert.alert(t('error'), e.message ?? 'Pairing failed');
+        appAlertCompat.alert(t('error'), e.message ?? 'Pairing failed');
       }
     };
 
@@ -1175,7 +1176,7 @@ export default function HomeScreen() {
       doPair(chargersWithLora[0].charger!.sn);
     } else {
       // Multiple chargers — let user pick
-      Alert.alert(
+      appAlertCompat.alert(
         t('selectCharger'),
         t('whichCharger'),
         chargersWithLora.map(s => ({
@@ -1972,7 +1973,7 @@ export default function HomeScreen() {
               <TouchableOpacity
                 style={[styles.actionButton, styles.actionButtonBlue]}
                 onPress={() => {
-                  Alert.alert(
+                  appAlertCompat.alert(
                     t('returnHome') || 'Return Home',
                     t('returnHomeDesc') || 'How should the mower return to the charging station?',
                     [
@@ -2104,7 +2105,7 @@ export default function HomeScreen() {
                     ]}
                     onPress={() => {
                       if (isLongPause) {
-                        Alert.alert(
+                        appAlertCompat.alert(
                           `Paused for ${pausedLabel}`,
                           'Long pauses can cause localization drift. The mower may drive outside the map on resume. Continue anyway?',
                           [

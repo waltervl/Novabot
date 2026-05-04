@@ -10,8 +10,8 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
-  Alert,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -277,7 +277,7 @@ export default function MowerSettingsScreen() {
 
   const handleRecalibrateChargingPose = useCallback(async () => {
     if (!mowerSn) return;
-    Alert.alert(
+    appAlertCompat.alert(
       'Recalibrate Charging Pose?',
       'This overwrites map_info.json (charger x/y/θ) on the mower with the CURRENT pose. The mower MUST be physically on its dock and charging, otherwise the mower will place the charger at the wrong spot and future coverage tasks will drift.',
       [
@@ -292,7 +292,7 @@ export default function MowerSettingsScreen() {
             try {
               let resp = await api.recalibrateChargingPose(mowerSn);
               if (!resp.ok && (resp.batteryState ?? '').toUpperCase() !== 'CHARGING') {
-                Alert.alert(
+                appAlertCompat.alert(
                   'Mower not charging',
                   `Battery state is "${resp.batteryState ?? 'unknown'}" — expected CHARGING. Put the mower on its dock and try again, or override the safety check?`,
                   [
@@ -303,12 +303,12 @@ export default function MowerSettingsScreen() {
                       onPress: async () => {
                         const forced = await api.recalibrateChargingPose(mowerSn, { force: true });
                         if (forced.ok && forced.pose) {
-                          Alert.alert(
+                          appAlertCompat.alert(
                             'Recalibrated',
                             `New charging pose:\nx=${forced.pose.x.toFixed(3)} y=${forced.pose.y.toFixed(3)} θ=${forced.pose.theta.toFixed(3)}`,
                           );
                         } else {
-                          Alert.alert('Recalibrate failed', forced.error ?? 'unknown error');
+                          appAlertCompat.alert('Recalibrate failed', forced.error ?? 'unknown error');
                         }
                       },
                     },
@@ -317,15 +317,15 @@ export default function MowerSettingsScreen() {
                 return;
               }
               if (resp.ok && resp.pose) {
-                Alert.alert(
+                appAlertCompat.alert(
                   'Recalibrated',
                   `New charging pose:\nx=${resp.pose.x.toFixed(3)} y=${resp.pose.y.toFixed(3)} θ=${resp.pose.theta.toFixed(3)}`,
                 );
               } else {
-                Alert.alert('Recalibrate failed', resp.error ?? 'unknown error');
+                appAlertCompat.alert('Recalibrate failed', resp.error ?? 'unknown error');
               }
             } catch (e) {
-              Alert.alert('Recalibrate failed', e instanceof Error ? e.message : String(e));
+              appAlertCompat.alert('Recalibrate failed', e instanceof Error ? e.message : String(e));
             }
           },
         },

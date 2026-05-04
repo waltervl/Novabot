@@ -17,7 +17,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
   Dimensions,
   Platform,
@@ -25,6 +24,7 @@ import {
   Modal,
   BackHandler,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -558,7 +558,7 @@ export default function MappingScreen() {
     if (candidates.length === 0) {
       setBleConnecting(false);
       setBleStatus(null);
-      Alert.alert(
+      appAlertCompat.alert(
         'BLE — mower not found',
         targetMac
           ? `Active mower (${mower?.sn ?? '?'}) not found via BLE. Make sure Bluetooth is enabled and the correct mower is nearby. ` +
@@ -581,7 +581,7 @@ export default function MappingScreen() {
         .join('\n');
       setBleConnecting(false);
       setBleStatus(null);
-      Alert.alert(
+      appAlertCompat.alert(
         'Multiple mowers detected',
         `Found ${candidates.length} Novabot mowers within Bluetooth range:\n\n${list}\n\n` +
           'iOS does not expose MAC addresses, so the app cannot tell them apart. Move the OTHER mower further away ' +
@@ -597,7 +597,7 @@ export default function MappingScreen() {
     setBleConnecting(false);
     setBleStatus(null);
     if (!ok) {
-      Alert.alert('BLE', 'Failed to connect to mower via BLE.');
+      appAlertCompat.alert('BLE', 'Failed to connect to mower via BLE.');
       return 'connect-failed';
     }
     return 'connected';
@@ -707,7 +707,7 @@ export default function MappingScreen() {
 
   // ── Start mapping ──
   const handleStartManual = () => {
-    Alert.alert(
+    appAlertCompat.alert(
       t('manualMapping', undefined) || 'Manual Mapping',
       'Step 1: Drive OFF the charger to the starting point of your boundary.\n\nStep 2: Drive along the entire perimeter of your garden until you return to the start.\n\nStep 3: Tap "Stop & Save" when done. The mower will return to the charger automatically.',
       [
@@ -741,7 +741,7 @@ export default function MappingScreen() {
   };
 
   const handleStartAutonomous = () => {
-    Alert.alert(
+    appAlertCompat.alert(
       t('autoMapping', undefined) || 'Autonomous Mapping',
       'The mower will drive around autonomously to create a map of your garden. Make sure the area is clear of obstacles.',
       [
@@ -788,7 +788,7 @@ export default function MappingScreen() {
     //   0 = work map, 2 = obstacle, 4 = map-to-map unicom, 8 = charge unicom.
     // Non-work modes require at least one existing work map.
     if (existingWorkMapCount === 0 && mapBuildType !== 'work') {
-      Alert.alert(
+      appAlertCompat.alert(
         'First map must be a work area',
         'Create a work map first before drawing obstacles or channels.',
       );
@@ -849,7 +849,7 @@ export default function MappingScreen() {
   //          → user positions mower near charger → auto_recharge
   //          → wait for MQTT dock state → save_recharge_pos → DONE
   const handleStop = () => {
-    Alert.alert(
+    appAlertCompat.alert(
       t('stopMapping', undefined) || 'Stop Mapping',
       closedCycleSeen
         ? 'Boundary is closed. Stop mapping and save?'
@@ -1063,7 +1063,7 @@ export default function MappingScreen() {
       `(task_mode=${taskMode}, work_status=${workStatus}, recharge_status=${rechargeStatus}, ` +
       `error_status=${errorStatus}, battery_state=${batteryState}, msg="${rawMowerMsg}")`,
     );
-    Alert.alert(
+    appAlertCompat.alert(
       'Auto Dock Failed',
       'Returning to the charging station failed. Retry Auto Dock or save the charger position manually.',
     );
@@ -1164,7 +1164,7 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
 
   // ── Cancel / Discard ──
   const handleCancel = () => {
-    Alert.alert(
+    appAlertCompat.alert(
       t('cancelMapping', undefined) || 'Cancel Mapping',
       t('discardConfirm', undefined) || 'Discard the current map? This cannot be undone.',
       [
@@ -1237,7 +1237,7 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
           <TouchableOpacity
             onPress={() => {
               if (mustCreateChannel) {
-                Alert.alert(
+                appAlertCompat.alert(
                   'Channel required',
                   `You have multiple work maps. Create the channel from ${missingMapChannels[0].from} to ${missingMapChannels[0].to} before leaving.`,
                 );
@@ -1949,7 +1949,7 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
                       await connectBleJoystick();
                       setBleConnecting(false);
                       if (!isBleJoystickConnected()) {
-                        Alert.alert('BLE', 'BLE not connected — check Bluetooth and proximity.');
+                        appAlertCompat.alert('BLE', 'BLE not connected — check Bluetooth and proximity.');
                         setMappingState('idle');
                         return;
                       }

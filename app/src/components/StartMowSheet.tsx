@@ -13,10 +13,10 @@ import {
   Modal,
   ActivityIndicator,
   ScrollView,
-  Alert,
   Platform,
   Switch,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polygon, Line, G, Defs, ClipPath } from 'react-native-svg';
 import { useStyles, useTheme, type Colors } from '../theme';
@@ -86,7 +86,7 @@ export function StartMowSheet({
   const [patternCenter, setPatternCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [edgeOffset, setEdgeOffset] = useState(0); // meters: negative=shrink, positive=expand
   const [previewing, setPreviewing] = useState(false);
-  // Rain confirmation modal — replaces the prior Alert.alert so we can host a
+  // Rain confirmation modal — replaces the prior appAlertCompat.alert so we can host a
   // Switch ("Negeer regen deze sessie") inside the prompt itself.
   const [rainPrompt, setRainPrompt] = useState<{ mm: number; prob: number; atMs: number } | null>(null);
   const [rainIgnoreToggle, setRainIgnoreToggle] = useState(false);
@@ -179,7 +179,7 @@ export function StartMowSheet({
 
     // 1. lowBatteryIntercept: battery < 20%
     if (battery != null && battery < 20) {
-      Alert.alert(
+      appAlertCompat.alert(
         t('lowBattery') || 'Low Battery',
         `${t('lowBatteryDesc') || 'Battery is at'} ${battery}%. ${t('pleaseCharge') || 'Please wait for charging to complete.'}`,
       );
@@ -188,7 +188,7 @@ export function StartMowSheet({
 
     // 2. noMap0Intercept: no work map
     if (maps.length === 0) {
-      Alert.alert(
+      appAlertCompat.alert(
         t('noMap') || 'No Map',
         t('noMapDesc') || 'No work area found. Please create a map first.',
         [
@@ -204,7 +204,7 @@ export function StartMowSheet({
 
     // 3. noCharingUnicomIntercept: no channel (warning, not blocking)
     if (!hasUnicom) {
-      Alert.alert(
+      appAlertCompat.alert(
         t('channelRequired') || 'Channel Required',
         t('channelRequiredDesc') || 'The distance from your charging station to the lawn exceeds 1.5m, or it is not directly facing the lawn. You need to create a channel.',
         [
@@ -221,7 +221,7 @@ export function StartMowSheet({
 
     // 4. workingIntercept: mower already working
     if (isWorking) {
-      Alert.alert(t('mowerBusy') || 'Mower Busy', t('mowerBusyDesc') || 'The mower is currently working.');
+      appAlertCompat.alert(t('mowerBusy') || 'Mower Busy', t('mowerBusyDesc') || 'The mower is currently working.');
       return;
     }
 
@@ -738,7 +738,7 @@ export function StartMowSheet({
         </View>
       </View>
 
-      {/* Rain forecast confirmation modal — replaces the old Alert.alert so we
+      {/* Rain forecast confirmation modal — replaces the old appAlertCompat.alert so we
           can host an inline "Negeer regen deze sessie" Switch. */}
       <Modal
         visible={!!rainPrompt}

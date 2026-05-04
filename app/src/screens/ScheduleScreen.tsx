@@ -14,8 +14,8 @@ import {
   Switch,
   Modal,
   TextInput,
-  Alert,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import { Swipeable } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -130,7 +130,7 @@ export default function ScheduleScreen() {
 
     // Multi-day schedule: ask to remove just this day or all
     if (weekdays.length > 1 && dayIdx != null) {
-      Alert.alert(
+      appAlertCompat.alert(
         t('delete'),
         `Delete ${time} schedule for ${DAYS_FULL[dayIdx]} only, or all days?`,
         [
@@ -166,7 +166,7 @@ export default function ScheduleScreen() {
       return;
     }
 
-    Alert.alert(
+    appAlertCompat.alert(
       t('delete'),
       `Delete ${time} schedule?`,
       [
@@ -552,7 +552,7 @@ function ScheduleEditor({
       };
 
       if (selectedDays.length === 0) {
-        Alert.alert('Error', 'Select at least one day');
+        appAlertCompat.alert('Error', 'Select at least one day');
         return;
       }
 
@@ -566,7 +566,7 @@ function ScheduleEditor({
       onSaved();
     } catch (e) {
       console.error('[Schedule] Save failed:', e);
-      Alert.alert('Error', e instanceof Error ? e.message : 'Save failed');
+      appAlertCompat.alert('Error', e instanceof Error ? e.message : 'Save failed');
     } finally {
       setSaving(false);
     }

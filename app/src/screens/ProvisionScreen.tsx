@@ -9,8 +9,8 @@ import {
   Animated,
   ActivityIndicator,
   Platform,
-  Alert,
 } from 'react-native';
+import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useStyles, useTheme, type Colors } from '../theme';
@@ -183,7 +183,7 @@ export default function ProvisionScreen({ navigation, route }: Props) {
       `acknowledgedConflict=${acknowledgedConflict}`,
     );
     if (manualAddr != null && loraConflict && loraConflict.length > 0 && !acknowledgedConflict) {
-      Alert.alert(
+      appAlertCompat.alert(
         'LoRa address already in use',
         `Address ${manualAddr}${manualChannel != null ? ` / channel ${manualChannel}` : ''} is assigned to: ${loraConflict.map(c => c.sn).join(', ')}\n\nProvisioning will overwrite the LoRa parameters on the target device and break its existing pair. Tap the warning badge to acknowledge and continue.`,
       );
@@ -827,7 +827,7 @@ export default function ProvisionScreen({ navigation, route }: Props) {
                   `(state.addr="${loraAddrOverride}" state.channel="${loraChannelOverride}")`,
                 );
                 if (manualAddrStr && loraConflict && loraConflict.length > 0 && !acknowledgedConflict) {
-                  Alert.alert(
+                  appAlertCompat.alert(
                     'LoRa address already in use',
                     `Tap the warning above to acknowledge before starting provisioning.`,
                   );

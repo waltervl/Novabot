@@ -6,7 +6,7 @@
  */
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import { Alert } from 'react-native';
+import { appAlertCompat } from './AppAlertContext';
 
 const STORE_KEY = 'opennova_dev_mode';
 
@@ -66,7 +66,7 @@ export function DevModeProvider({ children }: { children: React.ReactNode }) {
       setUnlocked(newState);
       SecureStore.setItemAsync(STORE_KEY, newState ? 'true' : 'false').catch(() => {});
 
-      Alert.alert(
+      appAlertCompat.alert(
         newState ? 'Developer Mode Enabled' : 'Developer Mode Disabled',
         newState
           ? 'All app features are now visible.'
