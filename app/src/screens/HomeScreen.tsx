@@ -2219,7 +2219,7 @@ export default function HomeScreen() {
       <Modal visible={showHistory} animationType="slide" presentationStyle="pageSheet">
         <View style={styles.modalHeader}>
           <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.modalClose}>
-            <Ionicons name="close" size={24} color={colors.textDim} />
+            <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
         </View>
         <HistoryScreen />
@@ -2439,7 +2439,7 @@ export default function HomeScreen() {
       <Modal visible={showAlerts} animationType="slide" presentationStyle="pageSheet">
         <View style={styles.modalHeader}>
           <TouchableOpacity onPress={() => setShowAlerts(false)} style={styles.modalClose}>
-            <Ionicons name="close" size={24} color={colors.textDim} />
+            <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
         </View>
         <MessagesScreen />
@@ -2490,15 +2490,15 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   modalHeader: {
     backgroundColor: c.card,
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-start',
     paddingHorizontal: 16,
     paddingTop: 12,
   },
   modalClose: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.08)',
     alignItems: 'center',
     justifyContent: 'center',
   },

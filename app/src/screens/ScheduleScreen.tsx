@@ -577,10 +577,10 @@ function ScheduleEditor({
       <View style={editorStyles.overlay}>
         <View style={editorStyles.sheet}>
           <View style={editorStyles.header}>
-            <Text style={editorStyles.title}>{isEdit ? t('editSchedule') : t('newSchedule')}</Text>
-            <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="close" size={24} color={colors.textDim} />
+            <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={editorStyles.backBtn}>
+              <Ionicons name="arrow-back" size={24} color={colors.text} />
             </TouchableOpacity>
+            <Text style={editorStyles.title}>{isEdit ? t('editSchedule') : t('newSchedule')}</Text>
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false}>
@@ -838,7 +838,15 @@ const makeEditorStyles = (c: Colors) => StyleSheet.create({
     borderTopWidth: 1, borderColor: c.cardBorder,
     padding: 24, paddingBottom: 40, maxHeight: '90%',
   },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 24 },
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   title: { fontSize: 20, fontWeight: '700', color: c.text },
   label: { fontSize: 13, fontWeight: '600', color: c.textDim, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8, marginTop: 16 },
   dayRow: { flexDirection: 'row', marginBottom: 8 },
