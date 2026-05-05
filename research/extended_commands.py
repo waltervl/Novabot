@@ -2199,13 +2199,36 @@ def _sn_from_config():
 
 
 def _server_from_config():
+    """Resolve `<host>:<port>` for the OpenNova HTTP server.
+
+    Source of truth = `/userdata/lfi/http_address.txt` (written by
+    set_server_urls.sh at every boot — already contains the user-chosen
+    HTTP port from their docker compose. Don't hard-code 8080 here:
+    different operators run the container on different ports (80 if free,
+    8080 if Caddy/NPM owns 80, etc.).
+
+    Fallback: when http_address.txt is missing or empty, derive the host
+    from json_config.json's MQTT addr and assume port 8080 — the most
+    common production default. Logged so the operator can spot the
+    fallback if a download fails.
+    """
+    try:
+        with open("/userdata/lfi/http_address.txt") as f:
+            line = f.read().strip()
+        if line:
+            # Tolerate optional http:// prefix (firmware prepends it itself)
+            if line.startswith("http://"):
+                line = line[len("http://"):]
+            elif line.startswith("https://"):
+                line = line[len("https://"):]
+            return line.rstrip("/")
+    except Exception:
+        pass
+
     try:
         with open("/userdata/lfi/json_config.json") as f:
             cfg = json.load(f)
         addr = cfg.get("mqtt", {}).get("value", {}).get("addr")
-        # MQTT broker = server; HTTP on same host, port 8080 (Docker production)
-        # or 3000 (dev). Port 80 is wrong — Caddy on the NAS doesn't proxy
-        # /api/dashboard/maps/* and returns 404. Confirmed live 2026-05-03.
         return f"{addr}:8080" if addr else None
     except Exception:
         return None
