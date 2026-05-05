@@ -13,6 +13,18 @@ body:
         - **Server version** — open the admin panel (`http://<server-ip>/admin`); shown at the top of the page.
         - **Mower firmware** — admin panel → Devices, or OpenNova app → home screen (under "Charging station"), or Novabot stock app → Settings → Mower info.
 
+  - type: checkboxes
+    id: surfaces
+    attributes:
+      label: Which surface(s) does this affect?
+      description: Select all that apply. Used for auto-labeling so triage can filter quickly.
+      options:
+        - label: Web dashboard
+        - label: OpenNova mobile app (Android/iOS)
+        - label: Novabot stock app (Flutter, third-party)
+        - label: Admin page
+        - label: Server backend (MQTT, DB, API)
+
   - type: dropdown
     id: app
     attributes:

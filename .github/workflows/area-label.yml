@@ -1,0 +1,41 @@
+name: Auto-label by surface
+
+# Reads the "Which surface(s) does this affect?" checkboxes block from
+# bug_report.yml / feature_request.yml and applies the matching `area:*`
+# label. Re-runs on edit so labels stay in sync if the reporter ticks
+# more boxes after submitting.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+            const map = [
+              ['Web dashboard',                                  'area:dashboard'],
+              ['OpenNova mobile app (Android/iOS)',              'area:opennova-app'],
+              ['Novabot stock app (Flutter, third-party)',       'area:novabot-app'],
+              ['Admin page',                                     'area:admin'],
+              ['Server backend (MQTT, DB, API)',                 'area:server'],
+            ];
+            const labels = map
+              .filter(([key]) =>
+                body.includes(`- [x] ${key}`) || body.includes(`- [X] ${key}`),
+              )
+              .map(([, label]) => label);
+            if (labels.length === 0) return;
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels,
+            });
