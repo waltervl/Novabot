@@ -594,10 +594,11 @@ export default function HomeScreen() {
   // can never appear "outside" the visible boundary just because we picked
   // the wrong slot. Active polygon (above) renders highlighted; the rest
   // render dimmed underneath.
-  const [allWorkPolygons, setAllWorkPolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
+  const [allWorkPolygons, setAllWorkPolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }>; label?: string | null }>>([]);
+  const [activeMapLabel, setActiveMapLabel] = useState<string | null>(null);
   const [mowingTrail, setMowingTrail] = useState<Array<{ x: number; y: number }>>([]);
   const [plannedPaths, setPlannedPaths] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
-  const [obstaclePolygons, setObstaclePolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
+  const [obstaclePolygons, setObstaclePolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }>; label?: string | null }>>([]);
   // Track mowing settings for safety check + display
   const [mowSettings, setMowSettings] = useState<{ cuttingHeight: number; pathDirection: number } | null>(null);
   const demo = useDemo();
@@ -831,7 +832,10 @@ export default function HomeScreen() {
               return m2 ? parseInt(m2[1], 10) === activeCanonicalIdx : false;
             });
         const activeWork = matchByCanonical ?? workMaps[0];
-        if (activeWork) setActiveMapPolygon(activeWork.mapArea);
+        if (activeWork) {
+          setActiveMapPolygon(activeWork.mapArea);
+          setActiveMapLabel(activeWork.mapName ?? activeWork.canonicalName ?? null);
+        }
         // Stash the OTHER polygons so the canvas can render them dimmed
         // beneath the active one. Without this the mower icon (plotted in
         // the global map frame) drifts outside the visible polygon when
@@ -839,10 +843,18 @@ export default function HomeScreen() {
         setAllWorkPolygons(
           workMaps
             .filter((m: any) => m.mapId !== activeWork?.mapId)
-            .map((m: any) => ({ id: m.mapId, points: m.mapArea })),
+            .map((m: any) => ({
+              id: m.mapId,
+              points: m.mapArea,
+              label: m.mapName ?? m.canonicalName ?? null,
+            })),
         );
         const obs = (res.maps ?? []).filter((m: any) => m.mapType === 'obstacle' && m.mapArea?.length >= 3);
-        setObstaclePolygons(obs.map((m: any) => ({ id: m.mapId, points: m.mapArea })));
+        setObstaclePolygons(obs.map((m: any) => ({
+          id: m.mapId,
+          points: m.mapArea,
+          label: m.mapName ?? m.canonicalName ?? null,
+        })));
       } catch { /* ignore */ }
     })();
   }, [mower?.sn, demo.enabled, liveCoverMapId, liveCurrentMapIds]);
@@ -1525,6 +1537,7 @@ export default function HomeScreen() {
             <View style={styles.mowingMapPanel}>
               <MowingProgressMap
                 polygon={activeMapPolygon}
+                activeLabel={activeMapLabel}
                 progress={mower.mowingProgress}
                 pathDirection={mowSettings?.pathDirection ?? mower.pathDirection}
                 fill

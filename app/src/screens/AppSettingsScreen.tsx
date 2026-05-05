@@ -32,6 +32,7 @@ import { useActiveMower } from '../hooks/useActiveMower';
 import { ApiClient } from '../services/api';
 import { useDevMode } from '../context/DevModeContext';
 import { useExperimental } from '../context/ExperimentalContext';
+import { useMapLabels } from '../context/MapLabelsContext';
 import { useI18n, LANGUAGES } from '../i18n';
 import * as Application from 'expo-application';
 
@@ -67,6 +68,7 @@ export default function AppSettingsScreen({
   const isCustomUpdateUrl = updateUrl !== defaultUpdateUrl;
   const devMode = useDevMode();
   const experimental = useExperimental();
+  const mapLabels = useMapLabels();
   const { language, setLanguage, t } = useI18n();
 
   const { activeMower: mower } = useActiveMower();
@@ -457,6 +459,19 @@ export default function AppSettingsScreen({
               onValueChange={experimental.toggle}
               trackColor={{ false: 'rgba(255,255,255,0.1)', true: 'rgba(168,85,247,0.4)' }}
               thumbColor={experimental.enabled ? '#a855f7' : '#666'}
+            />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 4 }}>
+            <Ionicons name="text" size={22} color={mapLabels.enabled ? colors.emerald : colors.textMuted} style={{ marginRight: 12 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.white, fontSize: 15, fontWeight: '600' }}>Map labels</Text>
+              <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 4, lineHeight: 16 }}>Show zone + obstacle names and area on the home map</Text>
+            </View>
+            <Switch
+              value={mapLabels.enabled}
+              onValueChange={mapLabels.toggle}
+              trackColor={{ false: 'rgba(255,255,255,0.1)', true: 'rgba(16,185,129,0.4)' }}
+              thumbColor={mapLabels.enabled ? colors.emerald : '#666'}
             />
           </View>
         </Section>

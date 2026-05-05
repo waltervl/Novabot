@@ -21,7 +21,9 @@ import Svg, {
   Circle,
   Path,
   Image as SvgImage,
+  Text as SvgText,
 } from 'react-native-svg';
+import { useMapLabels } from '../context/MapLabelsContext';
 import { useTheme, useStyles, type Colors } from '../theme';
 
 type MapScheme = 'light' | 'dark';
@@ -80,6 +82,9 @@ interface LocalPoint {
 
 interface Props {
   polygon: LocalPoint[];
+  /** Optional friendly name for the active polygon — drawn at its
+   *  centroid when the global Map Labels toggle is enabled. */
+  activeLabel?: string | null;
   progress: number;         // 0-100 (cov_ratio)
   pathDirection: number;    // degrees
   size?: number;            // If omitted the map fills its parent (onLayout).
@@ -91,11 +96,13 @@ interface Props {
   activeAreaId?: string;    // ID of the planned path currently being mowed (from covering_area.area_id)
   activeAreaPoints?: number; // # points of the active sub-path already mowed (from covering_area.points)
   liveCoverSegment?: LocalPoint[]; // recent cover_path.covered.covering points
-  obstacles?: Array<{ id: string; points: LocalPoint[] }>;    // obstacle polygons
+  /** Obstacle polygons. `label` is the user-set alias (e.g. "Boom",
+   *  "Trampoline"). Drawn at the centroid when Map Labels is on. */
+  obstacles?: Array<{ id: string; points: LocalPoint[]; label?: string | null }>;
   /** Other work polygons that aren't the active one — drawn dimmed beneath
    *  the active polygon so the mower icon never sits "outside" the visible
    *  boundary when we picked the wrong active slot (#14). */
-  inactivePolygons?: Array<{ id: string; points: LocalPoint[] }>;
+  inactivePolygons?: Array<{ id: string; points: LocalPoint[]; label?: string | null }>;
   mowerPos?: LocalPoint | null;  // mower position in local meters
   mowerHeading?: number;    // radians
   showProgressOverlay?: boolean; // show big percentage overlay (default: true)
@@ -137,6 +144,35 @@ function computeBounds(points: LocalPoint[], extra: LocalPoint[]): { minX: numbe
   }
   const pad = Math.max(maxX - minX, maxY - minY) * 0.1 || 0.5;
   return { minX: minX - pad, maxX: maxX + pad, minY: minY - pad, maxY: maxY + pad };
+}
+
+/** Polygon centroid via the area-weighted formula. Returns the geometric
+ *  center (not the bbox midpoint) so labels land inside concave shapes. */
+function polygonCentroid(pts: LocalPoint[]): LocalPoint | null {
+  if (pts.length < 3) return null;
+  let twiceArea = 0, cx = 0, cy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const cross = a.x * b.y - b.x * a.y;
+    twiceArea += cross;
+    cx += (a.x + b.x) * cross;
+    cy += (a.y + b.y) * cross;
+  }
+  if (Math.abs(twiceArea) < 1e-9) return null;
+  return { x: cx / (3 * twiceArea), y: cy / (3 * twiceArea) };
+}
+
+/** Polygon surface area (m²) via the shoelace formula. */
+function polygonArea(pts: LocalPoint[]): number {
+  if (pts.length < 3) return 0;
+  let twiceArea = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    twiceArea += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(twiceArea) / 2;
 }
 
 function generateStripes(
@@ -195,6 +231,7 @@ const makeStyles = (_c: Colors) => StyleSheet.create({
 
 export function MowingProgressMap({
   polygon,
+  activeLabel,
   progress,
   pathDirection,
   size,
@@ -216,6 +253,7 @@ export function MowingProgressMap({
   const { colorScheme } = useTheme();
   const mapPalette = MAP_PALETTE[colorScheme];
   const styles = useStyles(makeStyles);
+  const { enabled: showLabels } = useMapLabels();
 
   const finishedSet = useMemo(
     () => new Set(finishedAreas ?? []),
@@ -339,16 +377,30 @@ export function MowingProgressMap({
       {inactivePolygons && inactivePolygons.map((poly) => {
         if (!poly.points || poly.points.length < 3) return null;
         const ipSvg = poly.points.map(p => toSvg(p, bounds, renderSize, padding));
+        const centroidLocal = showLabels ? polygonCentroid(poly.points) : null;
+        const centroidSvg = centroidLocal ? toSvg(centroidLocal, bounds, renderSize, padding) : null;
+        const area = showLabels ? polygonArea(poly.points) : 0;
         return (
-          <SvgPolygon
-            key={`inactive-${poly.id}`}
-            points={ipSvg.map(p => `${p.x},${p.y}`).join(' ')}
-            fill="rgba(120,120,120,0.10)"
-            stroke="rgba(160,160,160,0.55)"
-            strokeWidth={1}
-            strokeLinejoin="round"
-            strokeDasharray="4,3"
-          />
+          <G key={`inactive-${poly.id}`}>
+            <SvgPolygon
+              points={ipSvg.map(p => `${p.x},${p.y}`).join(' ')}
+              fill="rgba(120,120,120,0.10)"
+              stroke="rgba(160,160,160,0.55)"
+              strokeWidth={1}
+              strokeLinejoin="round"
+              strokeDasharray="4,3"
+            />
+            {centroidSvg && poly.label && (
+              <>
+                <SvgText x={centroidSvg.x} y={centroidSvg.y - 1} fill="rgba(220,220,220,0.85)"
+                  fontSize={10} fontWeight="600" textAnchor="middle">{poly.label}</SvgText>
+                {area > 0 && (
+                  <SvgText x={centroidSvg.x} y={centroidSvg.y + 9} fill="rgba(180,180,180,0.7)"
+                    fontSize={8} textAnchor="middle">{area.toFixed(1)} m²</SvgText>
+                )}
+              </>
+            )}
+          </G>
         );
       })}
 
@@ -463,17 +515,49 @@ export function MowingProgressMap({
       {/* Obstacles */}
       {obstacles && obstacles.map((obs) => {
         const obsSvg = obs.points.map(p => toSvg(p, bounds, renderSize, padding));
+        const centroidLocal = showLabels ? polygonCentroid(obs.points) : null;
+        const centroidSvg = centroidLocal ? toSvg(centroidLocal, bounds, renderSize, padding) : null;
+        const area = showLabels ? polygonArea(obs.points) : 0;
         return (
-          <SvgPolygon
-            key={`obs-${obs.id}`}
-            points={obsSvg.map(p => `${p.x},${p.y}`).join(' ')}
-            fill={mapPalette.obstacleFill} stroke={mapPalette.obstacleStroke} strokeWidth={1} strokeLinejoin="round" strokeDasharray="3,2"
-          />
+          <G key={`obs-${obs.id}`}>
+            <SvgPolygon
+              points={obsSvg.map(p => `${p.x},${p.y}`).join(' ')}
+              fill={mapPalette.obstacleFill} stroke={mapPalette.obstacleStroke} strokeWidth={1} strokeLinejoin="round" strokeDasharray="3,2"
+            />
+            {centroidSvg && obs.label && (
+              <>
+                <SvgText x={centroidSvg.x} y={centroidSvg.y - 1} fill="rgba(252,165,165,0.95)"
+                  fontSize={9} fontWeight="600" textAnchor="middle">{obs.label}</SvgText>
+                {area > 0 && (
+                  <SvgText x={centroidSvg.x} y={centroidSvg.y + 8} fill="rgba(200,160,160,0.8)"
+                    fontSize={7} textAnchor="middle">{area.toFixed(1)} m²</SvgText>
+                )}
+              </>
+            )}
+          </G>
         );
       })}
 
       {/* Outline on top */}
       <SvgPolygon points={pointsStr} fill="none" stroke={mapPalette.polygonStroke} strokeWidth={1.5} strokeLinejoin="round" />
+
+      {/* Active polygon label (drawn last so it's above any stripe overlay). */}
+      {showLabels && activeLabel && (() => {
+        const cLocal = polygonCentroid(polygon);
+        if (!cLocal) return null;
+        const cSvg = toSvg(cLocal, bounds, renderSize, padding);
+        const area = polygonArea(polygon);
+        return (
+          <>
+            <SvgText x={cSvg.x} y={cSvg.y - 1} fill={mapPalette.progressTextColor}
+              fontSize={11} fontWeight="700" textAnchor="middle">{activeLabel}</SvgText>
+            {area > 0 && (
+              <SvgText x={cSvg.x} y={cSvg.y + 11} fill="rgba(200,200,200,0.75)"
+                fontSize={9} textAnchor="middle">{area.toFixed(1)} m²</SvgText>
+            )}
+          </>
+        );
+      })()}
     </Svg>
   );
 

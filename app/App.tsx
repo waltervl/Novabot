@@ -19,6 +19,7 @@ import { DemoProvider } from './src/context/DemoContext';
 import { DevModeProvider, useDevMode } from './src/context/DevModeContext';
 import { PatternProvider } from './src/context/PatternContext';
 import { ExperimentalProvider } from './src/context/ExperimentalContext';
+import { MapLabelsProvider } from './src/context/MapLabelsContext';
 import {
   ActiveMowerProvider,
   clearPersistedActiveMowerSn,
@@ -456,6 +457,7 @@ export default function App() {
     <DemoProvider>
     <I18nProvider>
     <ExperimentalProvider>
+    <MapLabelsProvider>
     <PatternProvider>
     <AppAlertProvider>
     <GestureHandlerRootView style={{ flex: 1 }} onLayout={onLayoutRootView}>
@@ -470,6 +472,7 @@ export default function App() {
     </GestureHandlerRootView>
     </AppAlertProvider>
     </PatternProvider>
+    </MapLabelsProvider>
     </ExperimentalProvider>
     </I18nProvider>
     </DemoProvider>
