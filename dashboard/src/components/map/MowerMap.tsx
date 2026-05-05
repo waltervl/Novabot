@@ -1278,10 +1278,7 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
           </button>
           {polygonMaps.length > 0 && (() => {
             const counts = { work: 0, obstacle: 0, unicom: 0, other: 0 };
-            // Issue #28: count unicoms over the FULL gpsMaps set (path lines
-            // can have just 2 points and were excluded by the polygon-only
-            // filter, which made the badge show 1/2 channels). Work +
-            // obstacle still need 3+ points to be a real polygon.
+            // Work + obstacle still need 3+ points to be a real polygon.
             for (const m of polygonMaps) {
               const s = getAreaStyle(m.mapType, m.mapId, m.mapName);
               if (s === AREA_STYLES.work) counts.work++;
@@ -1289,10 +1286,17 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
               else if (s === AREA_STYLES.unicom) counts.unicom++;
               else counts.other++;
             }
-            for (const m of gpsMaps) {
-              if (m.mapArea.length >= 2 && m.mapArea.length < 3) {
-                const s = getAreaStyle(m.mapType, m.mapId, m.mapName);
-                if (s === AREA_STYLES.unicom) counts.unicom++;
+            // Issue #28 round 2: LFI cloud stores inter-map channels as
+            // metadata-only (empty CSV by design — see setup.ts line 396),
+            // so they have mapArea.length === 0 and were dropped by both
+            // the polygon-only filter AND the previous "2-point lines"
+            // fallback. Count any DB row of mapType === 'unicom' as a
+            // channel regardless of point count, dedup against polygons
+            // already counted by mapId.
+            const polygonUnicomIds = new Set(polygonMaps.filter(m => m.mapType === 'unicom').map(m => m.mapId));
+            for (const m of maps) {
+              if (m.mapType === 'unicom' && !polygonUnicomIds.has(m.mapId)) {
+                counts.unicom++;
               }
             }
             const parts: string[] = [];
