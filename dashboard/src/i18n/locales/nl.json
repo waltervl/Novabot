@@ -159,6 +159,7 @@
     "edgeOffset": "Rand-offset",
     "edgeOffsetShrink": "Inkrimpen",
     "edgeOffsetExpand": "Uitbreiden",
+    "startEdgeCut": "Randmaaien",
     "mapping": "Karteren",
     "startMapping": "Start karteren",
     "startAutonomousMapping": "Start autonoom karteren",

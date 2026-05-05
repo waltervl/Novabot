@@ -117,6 +117,7 @@
     "edgeOffset": "Edge offset",
     "edgeOffsetShrink": "Shrink",
     "edgeOffsetExpand": "Expand",
+    "startEdgeCut": "Start edge cut",
     "mapping": "Mapping",
     "startMapping": "Start Mapping",
     "startAutonomousMapping": "Start Autonomous Mapping",

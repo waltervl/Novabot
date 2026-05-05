@@ -122,13 +122,19 @@ function toSvg(
   size: number,
   padding: number,
 ) {
+  // North-up rendering — must match MapScreen.localToSvg + LiveMapView so all
+  // map surfaces (Home preview, dedicated Map screen, mapping live view)
+  // share one orientation. X grows left→right (east), Y grows bottom→top
+  // (north) by inverting via (maxY - point.y). The previous version flipped
+  // X instead of Y, which put south at the top of the home preview while
+  // the dedicated Map screen showed north at top — issue #45 / #44.
   const drawSize = size - padding * 2;
   const xRange = bounds.maxX - bounds.minX || 0.1;
   const yRange = bounds.maxY - bounds.minY || 0.1;
   const scale = Math.min(drawSize / xRange, drawSize / yRange);
   return {
-    x: padding + (bounds.maxX - point.x) * scale + (drawSize - xRange * scale) / 2,
-    y: padding + (point.y - bounds.minY) * scale + (drawSize - yRange * scale) / 2,
+    x: padding + (point.x - bounds.minX) * scale + (drawSize - xRange * scale) / 2,
+    y: padding + (bounds.maxY - point.y) * scale + (drawSize - yRange * scale) / 2,
   };
 }
 
@@ -184,10 +190,10 @@ function generateStripes(
   const cx = (bounds.minX + bounds.maxX) / 2;
   const cy = (bounds.minY + bounds.maxY) / 2;
   const diagonal = Math.sqrt((bounds.maxX - bounds.minX) ** 2 + (bounds.maxY - bounds.minY) ** 2);
-  // Stripes run ALONG the path direction, spacing perpendicular
-  // toSvg flips both axes, so add 180° to compensate
-  const rad = ((direction + 180) * Math.PI) / 180;
-  const perpRad = ((direction + 270) * Math.PI) / 180;
+  // Stripes run ALONG the path direction, spacing perpendicular. toSvg now
+  // matches MapScreen (Y-flipped, X direct) so direction maps without offset.
+  const rad = (direction * Math.PI) / 180;
+  const perpRad = ((direction + 90) * Math.PI) / 180;
   const dx = Math.cos(rad), dy = Math.sin(rad);
   const px = Math.cos(perpRad), py = Math.sin(perpRad);
   const totalStripes = Math.ceil(diagonal / spacing);
@@ -332,11 +338,13 @@ export function MowingProgressMap({
     [polygon, bounds, renderSize],
   );
   const pointsStr = svgPoints.map(p => `${p.x},${p.y}`).join(' ');
-  // Add 180° to compensate for both-axes-flipped rendering in toSvg
+  // toSvg now mirrors MapScreen — only Y is flipped, X is direct — so the
+  // 180° compensation that the previous "flip both axes" version needed is
+  // gone. pathDirection (0° = north) maps directly into stripe rotation.
   const stripes = useMemo(
     () => generateStripes(
       { minX: padding, maxX: renderSize - padding, minY: padding, maxY: renderSize - padding },
-      pathDirection + 180,
+      pathDirection,
       progress,
       5,
     ),
@@ -496,8 +504,10 @@ export function MowingProgressMap({
 
       {/* Mower icon + heading */}
       {mowerSvg && (() => {
-        // Icon points RIGHT at 0°; flipped X-axis → negate heading; +360 offset
-        const degHeading = mowerHeading != null ? -(mowerHeading * 180 / Math.PI) + 180 : 0;
+        // toSvg now matches MapScreen / LiveMapView (Y-flipped, X direct).
+        // Mower icon SVG points right (0° = east). map_position_orientation
+        // is in radians from +X. Negate to convert math-CCW → SVG-CW.
+        const degHeading = mowerHeading != null ? -(mowerHeading * 180 / Math.PI) : 0;
         const mowerSize = 16;
         return (
           <G transform={`translate(${mowerSvg.x}, ${mowerSvg.y}) rotate(${degHeading})`}>

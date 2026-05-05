@@ -12,6 +12,17 @@ body {
   outline: none;
 }
 
+/* Issue #42: gray seams between satellite tiles after switch to Esri.
+   Leaflet sub-pixel rounding leaves a 0.5-1px gap between adjacent tile
+   <img> elements at non-integer zoom or DPR. The canonical mitigation is
+   to grow each tile by ~0.5px so they overlap and the seam disappears.
+   Fixed-px override is fine — Leaflet sets exact 256x256 inline and we
+   only need to mask the seam, not change projection. */
+.leaflet-tile-container .leaflet-tile {
+  width: 256.5px !important;
+  height: 256.5px !important;
+}
+
 /* Mobile drawer slide-in animation */
 @keyframes slide-in-right {
   from { transform: translateX(100%); }

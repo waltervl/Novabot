@@ -380,7 +380,17 @@ export default function MapScreen() {
   const covRatioRaw = parseFloat(mower?.sensors.cov_ratio ?? '0') || 0;
   const covRatio = covRatioRaw <= 1 ? Math.round(covRatioRaw * 100) : Math.round(covRatioRaw);
   const mowingProgress = parseInt(mower?.sensors.mowing_progress ?? '0', 10) || 0;
-  const pathDir = parseInt(mower?.sensors.path_direction ?? '0', 10) || 0;
+  // Issue #44: stripes appeared horizontal at 105° because we were reading
+  // `path_direction` (the user-setting echo) which can lag or stay "0" while
+  // a coverage task is running. The mower's live mowing angle is published
+  // as `cov_direction` (Mow Direction) — read that first when available.
+  const covDirRaw = mower?.sensors.cov_direction;
+  const pathDirRaw = mower?.sensors.path_direction;
+  const covDirNum = covDirRaw != null ? parseInt(covDirRaw, 10) : NaN;
+  const pathDirNum = pathDirRaw != null ? parseInt(pathDirRaw, 10) : NaN;
+  const pathDir = Number.isFinite(covDirNum) && covDirNum > 0
+    ? covDirNum
+    : (Number.isFinite(pathDirNum) ? pathDirNum : 0);
 
   const fetchData = useCallback(async () => {
     if (demo.enabled) {

@@ -2,7 +2,7 @@
  * Mower settings — cutting height, obstacle sensitivity, path direction.
  * Ported from dashboard SettingsPanel + Novabot app advanced settings.
  */
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -51,6 +51,15 @@ export default function MowerSettingsScreen() {
   const [cuttingHeight, setCuttingHeight] = useState(50);
   const [sensitivity, setSensitivity] = useState(2);
   const [pathDirection, setPathDirection] = useState(0);
+  // Issue #41: when the user steps direction (e.g. 180 → 165 with the −15
+  // button) we POST `path_direction` to the server, but the next inbound
+  // MQTT sensor frame still carries the OLD value (the mower hasn't echoed
+  // the new one yet). Without a guard, the sensor-sync useEffect below
+  // overwrites the just-set local state and the slider snaps back — the
+  // exact "stuck at 180" symptom Automate1 reported. Track when the user
+  // last touched the slider so we can ignore stale sensor echoes for a
+  // short window (longer than the round-trip).
+  const lastPathDirEditAtRef = useRef<number>(0);
   const [joystickSpeed, setJoystickSpeed] = useState(300);
   const [joystickHandling, setJoystickHandling] = useState(300);
   const [headlight, setHeadlight] = useState(false);
@@ -118,7 +127,12 @@ export default function MowerSettingsScreen() {
     }
     if (s.path_direction) {
       const a = parseInt(s.path_direction, 10);
-      if (a >= 0 && a <= 180) setPathDirection(a);
+      if (a >= 0 && a <= 180) {
+        // Skip sensor-sync within 3 s of a local edit so a stale echo from
+        // the broker can't snap the slider back to its previous value.
+        const sinceLocalEdit = Date.now() - lastPathDirEditAtRef.current;
+        if (sinceLocalEdit > 3000) setPathDirection(a);
+      }
     }
     if (s.manual_controller_v) {
       const v = parseInt(s.manual_controller_v, 10);
@@ -251,6 +265,7 @@ export default function MowerSettingsScreen() {
   };
 
   const handlePathDirection = (angle: number) => {
+    lastPathDirEditAtRef.current = Date.now();
     setPathDirection(angle);
     sendSingle({ path_direction: angle });
   };

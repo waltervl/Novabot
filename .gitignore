@@ -85,3 +85,4 @@ app/node_modules
 *.db
 .beads-credential-key
 .superpowers/
+research/ghidra_output/chassis_control_node_decompiled.c

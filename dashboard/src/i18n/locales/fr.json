@@ -113,6 +113,7 @@
     "edgeOffset": "Décalage de bordure",
     "edgeOffsetShrink": "Réduire",
     "edgeOffsetExpand": "Agrandir",
+    "startEdgeCut": "Coupe de bordure",
     "mapping": "Cartographie",
     "startMapping": "Démarrer la cartographie",
     "startAutonomousMapping": "Cartographie autonome",

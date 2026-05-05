@@ -113,6 +113,7 @@
     "edgeOffset": "Randversatz",
     "edgeOffsetShrink": "Verkleinern",
     "edgeOffsetExpand": "Vergrößern",
+    "startEdgeCut": "Kantenmähen",
     "mapping": "Kartierung",
     "startMapping": "Kartierung starten",
     "startAutonomousMapping": "Autonome Kartierung starten",
