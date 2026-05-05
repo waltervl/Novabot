@@ -1319,7 +1319,76 @@ function dismissServerUpdate() {
 }
 
 function showServerUpdateHint() {
-  alert('Pull + restart the OpenNova container on your host:\\n\\n  docker compose pull\\n  docker compose up -d\\n\\nOr if running on a NAS Portainer / Synology setup, trigger an image refresh from the UI.');
+  appModal({
+    title: 'How to update',
+    bodyHtml: 'Pull + restart the OpenNova container on your host:'
+      + '<pre style="margin:10px 0;padding:10px 12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#86efac;font-family:monospace;font-size:12px;overflow-x:auto">docker compose pull\\ndocker compose up -d</pre>'
+      + '<div style="font-size:12px;color:#cbd5e1;margin-top:8px">Or if running on a NAS Portainer / Synology setup, trigger an image refresh from the UI.</div>',
+    accent: 'info',
+    buttons: [{ text: 'OK', primary: true }],
+  });
+}
+
+// ── Reusable themed modal — replaces native alert() / confirm() so
+//    confirmation + info dialogs match the rest of the admin theme.
+function appModal(opts) {
+  const accent = opts.accent || 'info';
+  const accentColors = {
+    info: { bg: 'rgba(59,130,246,0.15)', border: 'rgba(59,130,246,0.5)', fg: '#93c5fd' },
+    warning: { bg: 'rgba(245,158,11,0.15)', border: 'rgba(245,158,11,0.5)', fg: '#fbbf24' },
+    danger: { bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.5)', fg: '#fca5a5' },
+    success: { bg: 'rgba(34,197,94,0.15)', border: 'rgba(34,197,94,0.5)', fg: '#86efac' },
+  };
+  const c = accentColors[accent] || accentColors.info;
+
+  return new Promise(function(resolve) {
+    var backdrop = document.createElement('div');
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:24px';
+
+    var card = document.createElement('div');
+    card.style.cssText = 'max-width:440px;width:100%;background:#0f0f23;border:1px solid ' + c.border + ';border-radius:14px;padding:22px;box-shadow:0 10px 40px rgba(0,0,0,0.5)';
+
+    var title = document.createElement('div');
+    title.style.cssText = 'font-size:16px;font-weight:700;color:' + c.fg + ';margin-bottom:10px';
+    title.textContent = opts.title || '';
+    card.appendChild(title);
+
+    var body = document.createElement('div');
+    body.style.cssText = 'font-size:13px;color:#e5e7eb;line-height:1.5;margin-bottom:16px';
+    if (opts.bodyHtml) body.innerHTML = opts.bodyHtml;
+    else if (opts.body) body.textContent = opts.body;
+    card.appendChild(body);
+
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap';
+    var buttons = (opts.buttons && opts.buttons.length) ? opts.buttons : [{ text: 'OK', primary: true }];
+    buttons.forEach(function(b) {
+      var btn = document.createElement('button');
+      btn.textContent = b.text;
+      var primary = !!b.primary;
+      var destructive = b.style === 'destructive';
+      var bg = destructive ? '#ef4444' : (primary ? c.fg : 'rgba(255,255,255,0.06)');
+      var fg = (destructive || primary) ? '#0f0f23' : '#e5e7eb';
+      var borderColor = destructive ? '#ef4444' : (primary ? c.fg : 'rgba(255,255,255,0.12)');
+      btn.style.cssText = 'padding:8px 18px;border-radius:8px;border:1px solid ' + borderColor + ';background:' + bg + ';color:' + fg + ';font-size:13px;font-weight:600;cursor:pointer';
+      btn.addEventListener('click', function() {
+        document.body.removeChild(backdrop);
+        if (b.onClick) b.onClick();
+        resolve(b.value !== undefined ? b.value : b.text);
+      });
+      btnRow.appendChild(btn);
+    });
+    card.appendChild(btnRow);
+
+    backdrop.appendChild(card);
+    backdrop.addEventListener('click', function(e) {
+      if (e.target === backdrop && opts.dismissOnBackdrop !== false) {
+        document.body.removeChild(backdrop);
+        resolve(null);
+      }
+    });
+    document.body.appendChild(backdrop);
+  });
 }
 
 async function loadAccount() {
