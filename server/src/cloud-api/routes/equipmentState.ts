@@ -88,16 +88,21 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
     return null;
   }
 
-  // Normalise any ISO-8601 timestamp (e.g. "2026-04-29T18:13:10.94Z") to the
-  // SQL-friendly format "2026-04-29 18:13:10" that the app and dashboard expect.
-  // An already-normalised string (no 'T') is passed through unchanged.
+  // Normalise the timestamp to a UTC ISO-8601 string with the 'Z' suffix
+  // (e.g. "2026-04-29T18:13:10Z"). The app + dashboard parse this with
+  // `new Date(str)` and then format via toLocaleString, which respects
+  // the user's device timezone + locale automatically.
+  //
+  // Earlier rounds stored the SQL-style "2026-04-29 18:13:10" form. Most
+  // browsers parse that as LOCAL time, so a UTC timestamp came out 2h
+  // early in CEST (waltervl issue #17 round 3). Keeping the explicit UTC
+  // marker means clients see the correct wall-clock time everywhere.
   function normaliseDateTime(raw: string): string {
-    if (!raw.includes('T')) return raw; // already SQL/display format
     try {
-      return new Date(raw).toISOString().replace('T', ' ').slice(0, 19);
-    } catch {
-      return raw; // keep original on parse failure
-    }
+      const d = new Date(raw);
+      if (!isNaN(d.getTime())) return d.toISOString().slice(0, 19) + 'Z';
+    } catch { /* fall through */ }
+    return raw;
   }
 
   const rawDateTime = pickStr('dateTime', 'date_time', 'startTime', 'time')

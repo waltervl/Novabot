@@ -198,15 +198,20 @@ describe('POST /api/nova-data/equipmentState/saveCutGrassRecord — issue #17 re
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Bug 3: dateTime format — ISO → SQL
+  // Bug 3: dateTime format — keep UTC marker so clients render local time
+  //
+  // Original Bug 3 fix stripped the 'Z' suffix and stored "2026-04-29
+  // 18:13:10". Browsers / mobile parsed that as LOCAL, so a UTC source
+  // came out 2h early in CEST (waltervl issue #17 round 3). We now keep
+  // the explicit UTC marker — clients parse it correctly and render in
+  // the user's locale.
   // ──────────────────────────────────────────────────────────────────────────
 
-  it('[Bug 3] normalises ISO dateTime with fractional seconds and Z to SQL format', async () => {
+  it('[Bug 3] preserves UTC marker for clients to render local time', async () => {
     const app = buildTestApp();
     const user = seedUser();
     seedEquipment({ user, snMower: SN });
 
-    // Mower v5.7.1 sends this exact format.
     const resp = await request(app)
       .post('/api/nova-data/equipmentState/saveCutGrassRecord')
       .field('sn', SN)
@@ -217,43 +222,10 @@ describe('POST /api/nova-data/equipmentState/saveCutGrassRecord — issue #17 re
 
     const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
     expect(rows).toHaveLength(1);
-    // Must be "2026-04-29 18:13:10" — no T, no Z, no fractional seconds.
-    expect(rows[0].date_time).toBe('2026-04-29 18:13:10');
+    expect(rows[0].date_time).toBe('2026-04-29T18:13:10Z');
   });
 
-  it('[Bug 3] normalises ISO dateTime without fractional seconds', async () => {
-    const app = buildTestApp();
-    const user = seedUser();
-    seedEquipment({ user, snMower: SN });
-
-    await request(app)
-      .post('/api/nova-data/equipmentState/saveCutGrassRecord')
-      .field('sn', SN)
-      .field('dateTime', '2026-04-29T18:13:10Z')
-      .field('workTime', '5');
-
-    const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
-    expect(rows[0].date_time).toBe('2026-04-29 18:13:10');
-  });
-
-  it('[Bug 3] passes through already-normalised SQL format unchanged', async () => {
-    const app = buildTestApp();
-    const user = seedUser();
-    seedEquipment({ user, snMower: SN });
-
-    await request(app)
-      .post('/api/nova-data/equipmentState/saveCutGrassRecord')
-      .field('sn', SN)
-      .field('dateTime', '2026-04-29 18:13:10')
-      .field('workTime', '5');
-
-    const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
-    expect(rows[0].date_time).toBe('2026-04-29 18:13:10');
-  });
-
-  it('[Bug 3] regression: old code would store "2026-04-29T18:13:10.94Z" verbatim', async () => {
-    // Same as Bug 3 normalisation test — just labels it explicitly as a
-    // regression guard. The stored value must never contain 'T' or 'Z'.
+  it('[Bug 3] strips fractional seconds while keeping UTC marker', async () => {
     const app = buildTestApp();
     const user = seedUser();
     seedEquipment({ user, snMower: SN });
@@ -266,10 +238,25 @@ describe('POST /api/nova-data/equipmentState/saveCutGrassRecord — issue #17 re
 
     const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
     const dt = rows[0].date_time ?? '';
-    expect(dt).not.toMatch(/T/);
-    expect(dt).not.toMatch(/Z/);
     expect(dt).not.toMatch(/\./);
-    expect(dt).toBe('2026-04-29 18:13:10');
+    expect(dt.endsWith('Z')).toBe(true);
+  });
+
+  it('[Bug 3] SQL-format input is upgraded to ISO+Z', async () => {
+    const app = buildTestApp();
+    const user = seedUser();
+    seedEquipment({ user, snMower: SN });
+
+    await request(app)
+      .post('/api/nova-data/equipmentState/saveCutGrassRecord')
+      .field('sn', SN)
+      .field('dateTime', '2026-04-29 18:13:10')
+      .field('workTime', '5');
+
+    const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
+    // Server interprets the SQL form as UTC and re-emits with explicit
+    // marker so the client side sees an unambiguous timestamp.
+    expect(rows[0].date_time).toMatch(/^2026-04-29T\d{2}:\d{2}:\d{2}Z$/);
   });
 
   // ──────────────────────────────────────────────────────────────────────────
