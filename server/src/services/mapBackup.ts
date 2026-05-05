@@ -170,10 +170,19 @@ function _bootstrapBackup(sn: string): void {
  * Build and persist a snapshot immediately (no debounce).
  * Returns the absolute path of the saved ZIP, or null on failure.
  */
+// Per-process monotonic counter so back-to-back snapshot calls within the
+// same millisecond produce distinct filenames. Without this, fast CI runners
+// observed three _snapshotNow() calls collapsing into a single zip on disk
+// (the second + third overwrite the first). Counter resets are fine — the
+// timestamp prefix already keeps things globally unique across runs.
+let _snapshotCounter = 0;
+
 function _fireSnapshot(sn: string): string | null {
   try {
     // ISO timestamp with colons replaced so the filename is FS-safe everywhere
-    const filename = `${new Date().toISOString().replace(/:/g, '-')}.zip`;
+    const stamp = new Date().toISOString().replace(/:/g, '-');
+    const seq = (++_snapshotCounter).toString().padStart(4, '0');
+    const filename = `${stamp}-${seq}.zip`;
     const target = path.join(backupDir(sn), filename);
 
     const tmp = generateMapZipFromDb(sn, 0);
