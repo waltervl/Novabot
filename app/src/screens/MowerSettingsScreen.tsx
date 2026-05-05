@@ -96,9 +96,21 @@ export default function MowerSettingsScreen() {
   useEffect(() => {
     if (!mower) return;
     const s = mower.sensors;
+    // Issue #23: previously only honoured defaultCuttingHeight (mm 20..90).
+    // On a fresh install that field is empty, so the slider stayed at the
+    // hardcoded 5cm default while the firmware was actually configured at
+    // a different blade height. The Start sheet read target_height as a
+    // fallback (correct), so the two screens disagreed. Mirror the Start
+    // sheet's fallback chain: defaultCuttingHeight (mm) first, then
+    // target_height (wire enum 0..7 where physical_mm = (wire + 2) * 10).
     if (s.defaultCuttingHeight) {
       const h = parseInt(s.defaultCuttingHeight, 10);
       if (h >= 20 && h <= 90) setCuttingHeight(h);
+      else if (h >= 0 && h <= 7) setCuttingHeight((h + 2) * 10);   // wire stored as defaultCuttingHeight
+      else if (h >= 2 && h <= 9) setCuttingHeight(h * 10);         // user cm stored as defaultCuttingHeight
+    } else if (s.target_height) {
+      const t = parseInt(s.target_height, 10);
+      if (Number.isFinite(t) && t >= 0 && t <= 7) setCuttingHeight((t + 2) * 10);
     }
     if (s.obstacle_avoidance_sensitivity) {
       const v = parseInt(s.obstacle_avoidance_sensitivity, 10);
