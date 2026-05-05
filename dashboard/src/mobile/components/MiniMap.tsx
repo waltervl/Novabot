@@ -22,11 +22,12 @@ L.Icon.Default.mergeOptions({
 
 const DEFAULT_CENTER: [number, number] = [52.1409, 6.231];
 
+// Issue #36: Esri World Imagery for global satellite coverage (PDOK was NL-only).
 const TILE_LAYERS = {
   satellite: {
-    url: 'https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg',
-    attribution: '&copy; <a href="https://www.pdok.nl">PDOK</a>',
-    maxNativeZoom: 21,
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles &copy; Esri',
+    maxNativeZoom: 19,
     maxZoom: 23,
   },
   street: {

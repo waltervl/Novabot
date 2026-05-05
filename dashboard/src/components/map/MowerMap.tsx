@@ -374,11 +374,17 @@ function UserInteractionTracker({ onInteract }: { onInteract: () => void }) {
   return null;
 }
 
+// Issue #36: PDOK Luchtfoto only covers the Netherlands, so users outside
+// NL saw white tiles. Switch to Esri World Imagery — global coverage, free
+// for low-traffic use, no API key. Resolution is slightly lower than PDOK
+// for NL parcels but it's the only sane global default. A future setting
+// could let the operator paste a custom XYZ template (Mapbox, Google,
+// regional aerial provider) if they want better resolution.
 const TILE_LAYERS = {
   satellite: {
-    url: 'https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg',
-    attribution: '&copy; <a href="https://www.pdok.nl">PDOK</a> Luchtfoto',
-    maxNativeZoom: 21,
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+    maxNativeZoom: 19,
     maxZoom: 23,
   },
   street: {
