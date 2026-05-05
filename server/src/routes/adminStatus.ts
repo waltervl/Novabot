@@ -666,17 +666,39 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
     const localVersions = otaVersionRepo.listAll();
     const localVersionSet = new Set(localVersions.map(v => v.version));
 
-    const available = remoteFirmwares.map(fw => ({
-      ...fw,
-      // Issue #26: the published manifest still references the old
-      // `download.ramonvanbruggen.nl` host (singular) which fails DNS
-      // resolution; the live host is `downloads.ramonvanbruggen.nl`.
-      // Defensive rewrite here so the Download button works regardless of
-      // when the manifest is fixed.
-      url: normaliseFirmwareDownloadUrl(fw.url),
-      filename: fw.filename || fw.url.split('/').pop() || `firmware_${fw.version}`,
-      installed: localVersionSet.has(fw.version),
-    }));
+    // Per-device highest installed version. The Available Firmware panel
+    // should only surface remote entries that are STRICTLY newer than
+    // whatever is already on disk for that device — otherwise every
+    // refresh listed every legacy entry (v6.0.2-custom-23, -24, -25, ...)
+    // even after the operator had only kept the newest one locally.
+    // Natural-sort comparator handles both `vX.Y.Z` semver (charger) and
+    // `vX.Y.Z-custom-N` suffixes (mower).
+    const cmp = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    const maxInstalledByType = new Map<string, string>();
+    for (const v of localVersions) {
+      const cur = maxInstalledByType.get(v.device_type);
+      if (!cur || cmp.compare(v.version, cur) > 0) {
+        maxInstalledByType.set(v.device_type, v.version);
+      }
+    }
+
+    const available = remoteFirmwares
+      .filter(fw => {
+        const localMax = maxInstalledByType.get(fw.device_type);
+        if (!localMax) return true; // no local copy at all → show everything
+        return cmp.compare(fw.version, localMax) > 0;
+      })
+      .map(fw => ({
+        ...fw,
+        // Issue #26: the published manifest still references the old
+        // `download.ramonvanbruggen.nl` host (singular) which fails DNS
+        // resolution; the live host is `downloads.ramonvanbruggen.nl`.
+        // Defensive rewrite here so the Download button works regardless of
+        // when the manifest is fixed.
+        url: normaliseFirmwareDownloadUrl(fw.url),
+        filename: fw.filename || fw.url.split('/').pop() || `firmware_${fw.version}`,
+        installed: localVersionSet.has(fw.version),
+      }));
 
     res.json({
       available,
