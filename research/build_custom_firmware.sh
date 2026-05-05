@@ -1913,23 +1913,34 @@ DOWNLOAD_BASE_URL="${DOWNLOAD_BASE_URL:-https://downloads.ramonvanbruggen.nl}"
 # strip conventional-commit prefix, and emit a short bullet list. Falls back
 # to a generic line for the very first build or when no firmware-scoped
 # commits landed in the window.
-PREV_DEB=""
-if [ -d "$OUTPUT_DIR" ]; then
-    # Newest prior .deb that isn't this one — shell glob ordering is unstable,
-    # so use ls -t for mtime sort.
-    PREV_DEB=$(ls -t "$OUTPUT_DIR"/mower_firmware_v*.deb 2>/dev/null \
-        | grep -v "$(basename "$OUTPUT_DEB")$" \
-        | head -1)
-fi
-
-if [ -n "$PREV_DEB" ] && [ -f "$PREV_DEB" ]; then
-    PREV_MTIME=$(stat -f '%m' "$PREV_DEB" 2>/dev/null || stat -c '%Y' "$PREV_DEB" 2>/dev/null || echo "")
+# Anchor on the LATEST commit that touched a firmware-shipped file in any
+# version OLDER than this one. Earlier the anchor was the previous .deb's
+# mtime, which broke when the previous build was a maintenance rebuild
+# in the same session — readers got "no changes" even though plenty had
+# happened since the version they actually run on the mower.
+#
+# Strategy: find the latest commit ON OR BEFORE the second-newest .deb's
+# mtime, then anchor BEFORE that commit. That way back-to-back rebuilds
+# don't collapse the diff window to zero.
+PREV_DEBS=$(ls -t "$OUTPUT_DIR"/mower_firmware_v*.deb 2>/dev/null \
+    | grep -v "$(basename "$OUTPUT_DEB")$" \
+    || true)
+SECOND_PREV_DEB=$(echo "$PREV_DEBS" | sed -n '2p')
+if [ -n "$SECOND_PREV_DEB" ] && [ -f "$SECOND_PREV_DEB" ]; then
+    PREV_MTIME=$(stat -f '%m' "$SECOND_PREV_DEB" 2>/dev/null || stat -c '%Y' "$SECOND_PREV_DEB" 2>/dev/null || echo "")
+else
+    # Only one prior build exists — fall back to its mtime so the very
+    # first maintenance build still picks up any commits made between
+    # the previous build and now.
+    FIRST_PREV_DEB=$(echo "$PREV_DEBS" | head -1)
+    if [ -n "$FIRST_PREV_DEB" ] && [ -f "$FIRST_PREV_DEB" ]; then
+        PREV_MTIME=$(stat -f '%m' "$FIRST_PREV_DEB" 2>/dev/null || stat -c '%Y' "$FIRST_PREV_DEB" 2>/dev/null || echo "")
+    fi
 fi
 
 # Firmware-relevant paths whose commits we surface in release notes. Keeps
 # unrelated server/app commits out — only changes that ship in the .deb.
 FW_PATHS=(
-    "research/build_custom_firmware.sh"
     "research/camera_stream.py"
     "research/extended_commands.py"
     "research/discovery_loop.py"
@@ -1953,7 +1964,7 @@ if [ -n "${PREV_MTIME:-}" ]; then
 fi
 
 if [ -z "${GIT_LOG_BULLETS:-}" ]; then
-    RELEASE_NOTES="- Maintenance build (no user-visible firmware-side changes since the previous version)"
+    RELEASE_NOTES="- Maintenance build (tooling-only changes; identical firmware behaviour to the previous version)"
 else
     RELEASE_NOTES="$GIT_LOG_BULLETS"
 fi
