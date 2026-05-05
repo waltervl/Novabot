@@ -4,6 +4,7 @@ import {
   Linking,
   Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -71,7 +72,20 @@ export function UpdatePromptModal({ latest, onClose }: Props) {
           </Text>
 
           {latest.releaseNotes ? (
-            <Text style={styles.releaseNotes}>{latest.releaseNotes}</Text>
+            // Long bullet lists previously pushed the action buttons off
+            // the bottom of the screen so the user couldn't dismiss the
+            // dialog. Wrap the notes in a bounded ScrollView so the
+            // buttons always stay visible regardless of release-note
+            // length.
+            <ScrollView
+              style={styles.releaseNotesScroll}
+              contentContainerStyle={styles.releaseNotesContent}
+              showsVerticalScrollIndicator
+              persistentScrollbar
+              nestedScrollEnabled
+            >
+              <Text style={styles.releaseNotes}>{latest.releaseNotes}</Text>
+            </ScrollView>
           ) : null}
 
           {error ? (
@@ -141,6 +155,7 @@ const makeStyles = (c: Colors) =>
     card: {
       width: '100%',
       maxWidth: 420,
+      maxHeight: '85%',
       backgroundColor: c.card,
       borderRadius: 16,
       borderWidth: 1,
@@ -157,6 +172,12 @@ const makeStyles = (c: Colors) =>
       fontSize: 14,
       fontWeight: '600',
       color: c.emerald,
+    },
+    releaseNotesScroll: {
+      maxHeight: 280,
+    },
+    releaseNotesContent: {
+      paddingRight: 4,
     },
     releaseNotes: {
       fontSize: 13,
