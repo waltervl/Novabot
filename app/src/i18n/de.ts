@@ -37,6 +37,7 @@ export default {
   startMowTitle: 'Mähen starten', workArea: 'Arbeitsbereich', allAreas: 'Alle Bereiche',
   cuttingHeight: 'Schnitthöhe', pathDirection: 'Mährichtung', edgeOffset: 'Randabstand',
   noOffset: 'Kein Offset', shrink: 'Verkleinern', expand: 'Vergrößern', preview: 'Vorschau',
+  previewNoArea: 'Wähle einen Arbeitsbereich für die Vorschau',
   tapToPlacePattern: 'Tippen um Muster zu platzieren', mowPattern: 'Mähmuster',
   patternSize: 'Größe', patternRotation: 'Rot',
   tapPreviewToPlace: 'Tippen Sie auf die Vorschaukarte um das Muster zu platzieren',

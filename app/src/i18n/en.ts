@@ -92,6 +92,7 @@ export default {
   shrink: 'Shrink',
   expand: 'Expand',
   preview: 'Preview',
+  previewNoArea: 'Select a work area to preview',
   tapToPlacePattern: 'Tap to place pattern',
   mowPattern: 'Mow Pattern',
   patternSize: 'Size',

@@ -90,6 +90,7 @@ export default {
   shrink: 'Inkrimpen',
   expand: 'Uitbreiden',
   preview: 'Voorbeeld',
+  previewNoArea: 'Selecteer een werkgebied om te previewen',
   tapToPlacePattern: 'Tik om patroon te plaatsen',
   mowPattern: 'Maaipatroon',
   patternSize: 'Grootte',

@@ -555,10 +555,28 @@ export function StartMowSheet({
                 .filter(m => selectedMapIds.has(m.mapId))
                 .map(m => m.mapArea)
                 .filter(p => p && p.length >= 3);
-              const fallback = (selectedPolys.length === 0 && maps[0]?.mapArea && maps[0].mapArea.length >= 3)
-                ? [maps[0].mapArea]
-                : selectedPolys;
-              if (fallback.length === 0) return null;
+              // Issue #46.3: when nothing is selected we used to fall back
+              // to maps[0] so the preview frame stayed visible — but that
+              // showed a polygon the user hadn't picked, with stripes
+              // running through it, which is confusing. Show a placeholder
+              // hint instead so the user knows they need to tap a zone.
+              if (selectedPolys.length === 0) {
+                return (
+                  <View style={styles.section}>
+                    <Text style={styles.label}>{t('preview')}</Text>
+                    <View
+                      style={{ alignItems: 'center', justifyContent: 'center',
+                        backgroundColor: colors.inputBg, borderRadius: 12,
+                        padding: 24, minHeight: 120 }}
+                    >
+                      <Text style={{ color: colors.textMuted, fontSize: 13 }}>
+                        {t('previewNoArea') ?? 'Select a work area to preview'}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }
+              const fallback = selectedPolys;
 
               // Compute edge-offset variant of each selected polygon (for
               // the dashed inner/outer ring overlay).
@@ -581,9 +599,16 @@ export function StartMowSheet({
               const draw = SIZE - PAD * 2;
               const sc = Math.min(draw / xRange, draw / yRange);
 
+              // Issue #46 + #18: align with MapScreen / LiveMapView /
+              // MowingProgressMap so the inline preview is north-up like
+              // every other map surface in the app. The previous version
+              // flipped X and left Y direct, which mirrored the polygon
+              // and put south at the top of the preview — exactly what
+              // dir26738 reported when path-direction changes failed to
+              // match the selected map.
               const toSvg = (p: { x: number; y: number }) => ({
-                x: PAD + (maxX - p.x) * sc + (draw - xRange * sc) / 2,
-                y: PAD + (p.y - minY) * sc + (draw - yRange * sc) / 2,
+                x: PAD + (p.x - minX) * sc + (draw - xRange * sc) / 2,
+                y: PAD + (maxY - p.y) * sc + (draw - yRange * sc) / 2,
               });
 
               const origPolys = fallback.map(p => p.map(toSvg).map(pt => `${pt.x},${pt.y}`).join(' '));
@@ -632,13 +657,17 @@ export function StartMowSheet({
                 });
               }
 
-              // Tap handler: convert SVG coords back to local meters for pattern placement
+              // Tap handler — inverse of toSvg. After the X/Y flip switch
+              // the formulae are the mirror of the forward transform: X
+              // goes back via (tx → minX + ...) and Y inverts again so a
+              // tap near the top of the preview lands on a high local Y
+              // (north), matching where the polygon actually is.
               const handlePreviewTap = (evt: { nativeEvent: { locationX: number; locationY: number } }) => {
                 if (!patternId) return;
                 const tx = evt.nativeEvent.locationX - 8;
                 const ty = evt.nativeEvent.locationY - 8;
-                const localX = maxX - (tx - PAD - (draw - xRange * sc) / 2) / sc;
-                const localY = minY + (ty - PAD - (draw - yRange * sc) / 2) / sc;
+                const localX = minX + (tx - PAD - (draw - xRange * sc) / 2) / sc;
+                const localY = maxY - (ty - PAD - (draw - yRange * sc) / 2) / sc;
                 setPatternCenter({ lat: localY, lng: localX });
               };
 

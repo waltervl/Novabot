@@ -37,6 +37,7 @@ export default {
   startMowTitle: 'Démarrer la tonte', workArea: 'Zone de travail', allAreas: 'Toutes les zones',
   cuttingHeight: 'Hauteur de coupe', pathDirection: 'Direction de tonte', edgeOffset: 'Décalage bord',
   noOffset: 'Pas de décalage', shrink: 'Réduire', expand: 'Agrandir', preview: 'Aperçu',
+  previewNoArea: 'Sélectionnez une zone pour l\'aperçu',
   tapToPlacePattern: 'Appuyez pour placer le motif', mowPattern: 'Motif de tonte',
   patternSize: 'Taille', patternRotation: 'Rot',
   tapPreviewToPlace: 'Appuyez sur la carte pour placer le motif',
