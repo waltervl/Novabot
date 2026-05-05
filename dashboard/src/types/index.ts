@@ -45,6 +45,14 @@ export interface MapData {
   mapArea: LocalPoint[];
   mapMaxMin: { minX: number; maxX: number; minY: number; maxY: number } | null;
   createdAt: string;
+  /** Firmware-canonical slot identifier (`map0`, `map0_3_obstacle`,
+   *  `map0tomap1_0_unicom`, `map0tocharge_unicom`). Server sets this from
+   *  file_name; needed by the dashboard to distinguish charge-route
+   *  unicoms from inter-map channels in the count badge (issue #28). */
+  canonicalName: string | null;
+  /** Original CSV filename as stored on disk. Useful as a fallback when
+   *  canonicalName couldn't be derived (legacy rows pre-auto-derive). */
+  fileName: string | null;
 }
 
 /** Response from /maps/:sn includes charger GPS for local→GPS conversion */

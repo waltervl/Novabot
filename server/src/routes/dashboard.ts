@@ -564,6 +564,11 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
       // correct firmware `area` enum (map0=1, map1=10, map2=200) — sorting by
       // updated_at and using array index causes "select front, mow trampo".
       canonicalName: r.canonical_name ?? null,
+      // fileName surfaces to the dashboard for charge-vs-inter-map unicom
+      // detection in the channel-count badge (issue #28). Falls back to
+      // canonicalName when canonical_name is populated but the legacy row
+      // never had a separate file_name.
+      fileName: r.file_name ?? null,
       mapArea,
       mapMaxMin,
       createdAt: r.created_at,
