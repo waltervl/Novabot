@@ -29,6 +29,12 @@ const PROBE_TIMEOUT = 2000;
 
 const HOSTNAMES = ['opennova.local', 'opennovabot.local'];
 
+// HTTP ports to try per host. Earlier the scanner assumed port 80; many
+// users now run the docker container on 8080 (NAS where Caddy / NPM owns
+// 80) and the dev server on 3000. Probing each in parallel costs little
+// extra time because the request runs concurrently anyway.
+const PORTS = [80, 8080, 3000];
+
 const SUBNETS = ['192.168.0', '192.168.1', '192.168.2', '192.168.178', '10.0.0', '10.0.1'];
 
 // Wider sweep — covers Mac DHCP-assigned ranges (.200-.230 typical for
@@ -38,6 +44,11 @@ const HOST_IPS = [
   90, 100, 110, 120, 150, 177, 200,
   210, 220, 222, 230, 240, 247, 250, 254,
 ];
+
+/** Compose a host:port pair, omitting the port when it's the HTTP default. */
+function hostWithPort(host: string, port: number): string {
+  return port === 80 ? host : `${host}:${port}`;
+}
 
 /**
  * Probe a single URL. Returns the best-effort identifier for the server
@@ -66,16 +77,21 @@ async function probeUrl(url: string, fallbackHost: string): Promise<{ id: string
     const lanIp =
       reported && /^192\.168\.|^10\.\d{1,3}\./.test(reported) ? reported : null;
 
-    const urlHost = new URL(url).hostname;
+    const parsed = new URL(url);
+    const urlHost = parsed.hostname;
+    // Append explicit :port back onto the id so the caller can use it
+    // verbatim as a server URL (`http://${id}`). Standard 80 stays bare.
+    const port = parsed.port ? parseInt(parsed.port, 10) : 80;
+    const idHost = hostWithPort(urlHost, port);
     const isIpProbe = /^\d+\.\d+\.\d+\.\d+$/.test(urlHost);
 
     if (isIpProbe) {
       // Probed by IP — that IP IS the LAN address.
-      return { id: urlHost, lanIp: urlHost };
+      return { id: idHost, lanIp: urlHost };
     }
     // Probed by hostname (.local) — keep hostname as the id, expose the
     // LAN IP separately for the UI.
-    return { id: fallbackHost, lanIp };
+    return { id: hostWithPort(fallbackHost, port), lanIp };
   } catch {
     return null;
   }
@@ -92,12 +108,14 @@ export async function discoverServers(
     }
   };
 
-  // 1. Hostname resolve — fast path. Race both hostnames in parallel.
+  // 1. Hostname resolve — fast path. Race both hostnames × all PORTS.
   await Promise.all(
-    HOSTNAMES.map(async (host) => {
-      const result = await probeUrl(`http://${host}/api/setup/health`, host);
-      if (result) fire(result);
-    }),
+    HOSTNAMES.flatMap((host) =>
+      PORTS.map(async (port) => {
+        const result = await probeUrl(`http://${hostWithPort(host, port)}/api/setup/health`, host);
+        if (result) fire(result);
+      }),
+    ),
   );
 
   // If we already found something, don't bother sweeping the subnets.
@@ -116,10 +134,12 @@ export async function discoverServers(
   for (let i = 0; i < all.length; i += batchSize) {
     const batch = all.slice(i, i + batchSize);
     await Promise.all(
-      batch.map(async (ip) => {
-        const result = await probeUrl(`http://${ip}/api/setup/health`, ip);
-        if (result) fire(result);
-      }),
+      batch.flatMap((ip) =>
+        PORTS.map(async (port) => {
+          const result = await probeUrl(`http://${hostWithPort(ip, port)}/api/setup/health`, ip);
+          if (result) fire(result);
+        }),
+      ),
     );
   }
 }
