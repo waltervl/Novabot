@@ -2,64 +2,48 @@
  * Discover OpenNova servers on the local network.
  *
  * Strategy ladder (each fires onFound as soon as it confirms a server):
- *   1. Hostname resolve — try opennova.local and opennovabot.local. iOS/macOS
- *      resolve .local via mDNSResponder; Android with NSD does too. Fast,
- *      no native deps.
- *   2. (skipped — no UDP socket dep available in current bundle)
- *   3. Subnet probe fallback — common subnets + a wider host suffix list.
+ *   1. mDNS Bonjour / NSD via react-native-zeroconf — looks for the
+ *      `_opennova-http._tcp` service the server advertises (services/
+ *      mdnsAdvertiser.ts). Returns host + port directly so we never have
+ *      to hardcode HTTP ports.
+ *   2. Hostname resolve fallback — try opennova.local / opennovabot.local
+ *      on a small set of common HTTP ports. Used when zeroconf fails
+ *      (Wi-Fi without multicast, missing entitlements on iOS, etc.).
+ *   3. Subnet probe fallback — last resort, sweeps known LAN ranges.
  */
 
+import Zeroconf from 'react-native-zeroconf';
+
 export interface DiscoveredServer {
-  /**
-   * Best-effort identifier the device should use to reach the server.
-   * For hostname-based finds this is e.g. `opennova.local`; for IP-based
-   * sweeps it's the dotted-quad. Stored verbatim so future requests reuse
-   * whatever the device proved it can resolve.
-   */
+  /** `host:port` (or just `host` if HTTP default 80) the device should
+   *  use to reach the server. The LoginScreen prefixes `http://`. */
   ip: string;
-  /**
-   * The non-loopback LAN IP reported by the server's health endpoint, when
-   * available. UI shows this next to the hostname so the user can tell two
-   * `opennova.local` candidates apart on a multi-homed network.
-   */
+  /** Optional non-loopback LAN IP reported by the server's health
+   *  endpoint, shown next to the hostname so the user can disambiguate. */
   lanIp?: string | null;
 }
 
 const PROBE_TIMEOUT = 2000;
+const ZEROCONF_TIMEOUT = 4000;
 
 const HOSTNAMES = ['opennova.local', 'opennovabot.local'];
 
-// HTTP ports to try per host. Earlier the scanner assumed port 80; many
-// users now run the docker container on 8080 (NAS where Caddy / NPM owns
-// 80) and the dev server on 3000. Probing each in parallel costs little
-// extra time because the request runs concurrently anyway.
-const PORTS = [80, 8080, 3000];
+// Hostname-fallback ports. Used only when zeroconf produced nothing.
+// These cover the common operator setups (80 stand-alone, 8080 NAS,
+// 3000 dev). Rare custom ports still work via the manual URL field.
+const FALLBACK_PORTS = [80, 8080, 3000];
 
 const SUBNETS = ['192.168.0', '192.168.1', '192.168.2', '192.168.178', '10.0.0', '10.0.1'];
-
-// Wider sweep — covers Mac DHCP-assigned ranges (.200-.230 typical for
-// dynamic leases on consumer routers).
 const HOST_IPS = [
   1, 2, 3, 4, 5, 10, 20, 30, 50,
   90, 100, 110, 120, 150, 177, 200,
   210, 220, 222, 230, 240, 247, 250, 254,
 ];
 
-/** Compose a host:port pair, omitting the port when it's the HTTP default. */
 function hostWithPort(host: string, port: number): string {
   return port === 80 ? host : `${host}:${port}`;
 }
 
-/**
- * Probe a single URL. Returns the best-effort identifier for the server
- * (LAN IP when available, or fallbackHost when the serverIp in the response
- * looks like a Docker-internal/container address).
- *
- * fallbackHost should be:
- *   - the .local hostname when probing by hostname (device can already
- *     resolve it so storing the hostname lets future requests skip IP-pinning)
- *   - the IP itself when probing by IP
- */
 async function probeUrl(url: string, fallbackHost: string): Promise<{ id: string; lanIp: string | null } | null> {
   try {
     const controller = new AbortController();
@@ -71,30 +55,77 @@ async function probeUrl(url: string, fallbackHost: string): Promise<{ id: string
     if (body?.server !== 'running') return null;
 
     const reported = body.serverIp ?? null;
-    // Docker bridge networks live in 172.17-21; treat those as
-    // unreachable-from-LAN so the LAN-IP shown next to the hostname is
-    // correct (or null when only Docker IP is known).
     const lanIp =
       reported && /^192\.168\.|^10\.\d{1,3}\./.test(reported) ? reported : null;
 
     const parsed = new URL(url);
     const urlHost = parsed.hostname;
-    // Append explicit :port back onto the id so the caller can use it
-    // verbatim as a server URL (`http://${id}`). Standard 80 stays bare.
     const port = parsed.port ? parseInt(parsed.port, 10) : 80;
     const idHost = hostWithPort(urlHost, port);
     const isIpProbe = /^\d+\.\d+\.\d+\.\d+$/.test(urlHost);
 
-    if (isIpProbe) {
-      // Probed by IP — that IP IS the LAN address.
-      return { id: idHost, lanIp: urlHost };
-    }
-    // Probed by hostname (.local) — keep hostname as the id, expose the
-    // LAN IP separately for the UI.
+    if (isIpProbe) return { id: idHost, lanIp: urlHost };
     return { id: hostWithPort(fallbackHost, port), lanIp };
   } catch {
     return null;
   }
+}
+
+/**
+ * Run a one-shot Bonjour / NSD scan for `_opennova-http._tcp` and verify
+ * each candidate via /api/setup/health. Resolves with the count of unique
+ * servers fired so the caller can decide whether to also kick off the
+ * fallback HTTP sweeps.
+ */
+async function discoverViaZeroconf(
+  fire: (entry: { id: string; lanIp: string | null }) => void,
+): Promise<number> {
+  return new Promise((resolve) => {
+    let firedCount = 0;
+    let stopped = false;
+    let zc: Zeroconf | null = null;
+    try {
+      zc = new Zeroconf();
+    } catch {
+      resolve(0);
+      return;
+    }
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      try { zc?.stop(); } catch { /* ignore */ }
+      try { zc?.removeDeviceListeners(); } catch { /* ignore */ }
+      resolve(firedCount);
+    };
+
+    // resolved fires once the SRV + A records are joined into a single
+    // record with `host` + `port` populated. `found` fires earlier with
+    // just the service name and is not actionable yet.
+    zc.on('resolved', async (service: { host?: string; port?: number; name?: string }) => {
+      const host = service.host ?? service.name ?? null;
+      const port = service.port ?? null;
+      if (!host || !port) return;
+      // Confirm the service is actually our server by hitting the same
+      // health endpoint we use elsewhere — guards against unrelated
+      // services that happen to use the same advertisement name.
+      const cleanHost = host.replace(/\.$/, '');
+      const result = await probeUrl(`http://${hostWithPort(cleanHost, port)}/api/setup/health`, cleanHost);
+      if (result) {
+        firedCount++;
+        fire(result);
+      }
+    });
+    zc.on('error', () => { /* swallow — fall back to HTTP sweep */ });
+
+    try {
+      zc.scan('opennova-http', 'tcp', 'local.');
+    } catch {
+      stop();
+      return;
+    }
+    setTimeout(stop, ZEROCONF_TIMEOUT);
+  });
 }
 
 export async function discoverServers(
@@ -108,20 +139,24 @@ export async function discoverServers(
     }
   };
 
-  // 1. Hostname resolve — fast path. Race both hostnames × all PORTS.
+  // 1. mDNS service discovery — port-agnostic, works for any operator
+  // who runs the OpenNova server on any port.
+  await discoverViaZeroconf(fire);
+  if (found.size > 0) return;
+
+  // 2. Hostname fallback — when multicast is blocked or Bonjour
+  // entitlement is missing, race both hostnames × the common ports.
   await Promise.all(
     HOSTNAMES.flatMap((host) =>
-      PORTS.map(async (port) => {
+      FALLBACK_PORTS.map(async (port) => {
         const result = await probeUrl(`http://${hostWithPort(host, port)}/api/setup/health`, host);
         if (result) fire(result);
       }),
     ),
   );
-
-  // If we already found something, don't bother sweeping the subnets.
   if (found.size > 0) return;
 
-  // 3. Subnet probe fallback.
+  // 3. Subnet probe — last-resort sweep.
   const candidates = new Set<string>();
   for (const subnet of SUBNETS) {
     for (const host of HOST_IPS) {
@@ -135,7 +170,7 @@ export async function discoverServers(
     const batch = all.slice(i, i + batchSize);
     await Promise.all(
       batch.flatMap((ip) =>
-        PORTS.map(async (port) => {
+        FALLBACK_PORTS.map(async (port) => {
           const result = await probeUrl(`http://${hostWithPort(ip, port)}/api/setup/health`, ip);
           if (result) fire(result);
         }),
