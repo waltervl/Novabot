@@ -2,6 +2,18 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-05 — Work records: dateTime keeps UTC marker (issue #17 round 3)
+
+- `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
+  the previous Bug-3 fix stripped the `Z` from the ISO timestamp and stored
+  `2026-04-29 18:13:10` as a SQL-style string. Browsers + mobile parsers
+  treat that as LOCAL time, so a UTC source displayed 2 h early in CEST
+  (waltervl). Now stores the explicit UTC marker `2026-04-29T18:13:10Z`
+  via `normaliseDateTime()`. Both the dashboard (already handles `T`-
+  containing strings as ISO) and the app (`new Date(iso)`) parse this
+  correctly and render in the user's device timezone + locale.
+- Contract tests updated to match the new expectation.
+
 ## 2026-05-04 — Work records: area precision, selectMap formatting, finished detection (issue #17 round 2)
 
 - `routes/message.ts`: `POST /api/novabot-message/message/queryCutGrassRecordPageByUserId`
