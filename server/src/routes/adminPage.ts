@@ -164,6 +164,24 @@ export function adminPageHtml(): string {
     </div>
   </div>
 
+  <!-- Server update banner (mirrors the in-app updater). Hidden until
+       /api/admin-status/check-server-update reports a newer Hub tag. -->
+  <div id="serverUpdateBanner" style="display:none;margin-bottom:16px;padding:12px 16px;background:linear-gradient(90deg,rgba(124,58,237,.15),rgba(124,58,237,.05));border:1px solid rgba(124,58,237,.4);border-radius:10px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div style="display:flex;gap:10px;align-items:center;flex:1;min-width:0">
+        <span style="font-size:18px">⬆</span>
+        <div style="min-width:0">
+          <div style="font-weight:600;color:#a78bfa">Server update available</div>
+          <div id="serverUpdateText" style="font-size:12px;color:#cbd5e1;margin-top:2px"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button onclick="dismissServerUpdate()" style="background:rgba(255,255,255,.06);color:#cbd5e1;border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer">Dismiss</button>
+        <button onclick="showServerUpdateHint()" style="background:rgba(124,58,237,.4);color:#fff;border:0;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer">How to update</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" onclick="switchTab('devices')">Devices</button>
@@ -1253,9 +1271,45 @@ async function loadAll() {
   loadMyDevices();
   loadRelayStatus();
   refreshRemoteDevices();
+  checkServerUpdate();
   // Auto-refresh device list every 30s for timestamp updates
   if (_refreshInterval) clearInterval(_refreshInterval);
   _refreshInterval = setInterval(function() { if (token) loadMyDevices(); }, 30000);
+  // Re-check Hub for newer image every 10 minutes (server side caches 5 min)
+  if (_serverUpdateInterval) clearInterval(_serverUpdateInterval);
+  _serverUpdateInterval = setInterval(function() { if (token) checkServerUpdate(); }, 10 * 60 * 1000);
+}
+
+var _serverUpdateInterval = null;
+var _serverUpdateDismissed = '';
+
+async function checkServerUpdate() {
+  try {
+    const d = await api('/check-server-update');
+    if (!d || !d.updateAvailable || d.latest === _serverUpdateDismissed) {
+      document.getElementById('serverUpdateBanner').style.display = 'none';
+      return;
+    }
+    const txt = 'Running v' + d.current + ' — Docker Hub has v' + d.latest +
+      (d.lastUpdatedAt ? ' (pushed ' + new Date(d.lastUpdatedAt).toLocaleString() + ')' : '');
+    document.getElementById('serverUpdateText').textContent = txt;
+    document.getElementById('serverUpdateBanner').style.display = 'block';
+  } catch (e) {
+    // Silent — Hub fetch may fail offline; don't show error to operator.
+    document.getElementById('serverUpdateBanner').style.display = 'none';
+  }
+}
+
+function dismissServerUpdate() {
+  // Hide until a NEWER version than the one shown appears.
+  const txt = document.getElementById('serverUpdateText').textContent || '';
+  const m = txt.match(/Hub has v([^\s(]+)/);
+  if (m) _serverUpdateDismissed = m[1];
+  document.getElementById('serverUpdateBanner').style.display = 'none';
+}
+
+function showServerUpdateHint() {
+  alert('Pull + restart the OpenNova container on your host:\\n\\n  docker compose pull\\n  docker compose up -d\\n\\nOr if running on a NAS Portainer / Synology setup, trigger an image refresh from the UI.');
 }
 
 async function loadAccount() {

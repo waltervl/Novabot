@@ -789,6 +789,46 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
   }
 });
 
+// ── Server self-update check ─────────────────────────────────────────────────
+
+const HUB_TAGS_URL = 'https://hub.docker.com/v2/repositories/rvbcrs/opennova/tags?page_size=25&ordering=last_updated';
+let _serverUpdateCache: { ts: number; payload: { current: string; latest: string | null; updateAvailable: boolean; lastUpdatedAt: string | null } } | null = null;
+
+// GET /api/admin-status/check-server-update — compare running version with newest Docker Hub tag.
+// Cached for 5 minutes so the admin panel polling doesn't hammer Docker Hub.
+adminStatusRouter.get('/check-server-update', async (_req: AuthRequest, res: Response) => {
+  const cmp = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+  if (_serverUpdateCache && Date.now() - _serverUpdateCache.ts < 5 * 60 * 1000) {
+    res.json(_serverUpdateCache.payload);
+    return;
+  }
+
+  try {
+    const data = await fetchJson(HUB_TAGS_URL) as { results?: Array<{ name: string; last_updated: string }> };
+    const tags = data.results ?? [];
+    // Server release.sh writes timestamps like "2026.0505.0821" as the
+    // version tag, plus the rolling "latest" alias. Skip "latest" so we
+    // compare against the actual version tags only.
+    const versionTags = tags.filter(t => t.name && t.name !== 'latest');
+    let latest: string | null = null;
+    let lastUpdatedAt: string | null = null;
+    for (const t of versionTags) {
+      if (!latest || cmp.compare(t.name, latest) > 0) {
+        latest = t.name;
+        lastUpdatedAt = t.last_updated ?? null;
+      }
+    }
+    const updateAvailable = !!(latest && cmp.compare(latest, SERVER_VERSION) > 0);
+    const payload = { current: SERVER_VERSION, latest, updateAvailable, lastUpdatedAt };
+    _serverUpdateCache = { ts: Date.now(), payload };
+    res.json(payload);
+  } catch (err) {
+    console.error('[Admin] Failed to check server update:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to check update' });
+  }
+});
+
 /** Fetch JSON from an HTTPS URL */
 function fetchJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
