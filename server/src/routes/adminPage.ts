@@ -302,64 +302,17 @@ export function adminPageHtml(): string {
   <div id="tab_maps" style="display:none">
     <div class="card">
       <h2>Map Viewer <span class="refresh-btn" onclick="loadMaps()">↻</span></h2>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value)" style="flex:1;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+      <!-- Above the map: only the mower picker + the polygon-offset entry,
+           since polygon offset is the one calibration that overlays the
+           canvas itself (live preview while nudging). Everything else
+           (Import ZIP, Recalibrate Charging Pose, Map Recovery) lives
+           below the map so the canvas is the visual focal point. -->
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value)" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
         </select>
+        <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <input type="file" id="mapZipFile" accept=".zip" style="flex:1;min-width:180px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:12px">
-        <button onclick="uploadMapZip()" style="padding:8px 16px;background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Import ZIP</button>
-      </div>
-      <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-bottom:12px">
-        <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
-          <b style="color:#fca5a5">Recovery — wrong charger pose causes mower to drive off target.</b><br>
-          Stock firmware needs a drive-back cycle to initialize localization
-          before the reported pose is trustworthy. While docked at boot,
-          <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
-          <b>Workflow:</b>
-          <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
-            <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1–2 m)</li>
-            <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
-            <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
-            <li>Then press <b>Recalibrate Charging Pose</b></li>
-          </ol>
-        </div>
-        <!-- Live localization snapshot — refreshes every 2s while panel open -->
-        <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:monospace">
-          <span style="color:#888">Loading localization status...</span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
-          <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
-        </div>
-      </div>
-      <div id="mapRecalStatus" style="font-size:12px;margin-bottom:8px;display:none"></div>
-      <!-- Map Recovery card -->
-      <div style="padding:8px 12px;background:rgba(124,58,237,.05);border:1px solid rgba(124,58,237,.2);border-radius:8px;margin-bottom:12px">
-        <div style="font-size:12px;font-weight:600;color:#a78bfa;margin-bottom:8px">Map Recovery — restore from auto-backup snapshots</div>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-          <select id="mapBackupSelect" onchange="loadBackupContents()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
-            <option value="">Select a backup snapshot...</option>
-          </select>
-          <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
-        </div>
-        <div id="mapBackupTree" style="margin-bottom:8px"></div>
-        <div id="conflictHelpers" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px">
-          <span style="font-size:11px;color:#fca5a5;font-weight:600">Conflicts found — choose default action:</span>
-          <button onclick="setAllConflicts(true)" style="padding:5px 12px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all</button>
-          <button onclick="setAllConflicts(false)" style="padding:5px 12px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all</button>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button onclick="restoreBackup()" style="padding:7px 18px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore Backup</button>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer" title="Push restored maps to mower (sync_map MQTT + reload nav stack). Uncheck to update DB only.">
-            <input type="checkbox" id="restoreRealignChk" checked style="cursor:pointer">
-            Also push to mower (realign)
-          </label>
-        </div>
-        <div id="mapRecoveryStatus" style="font-size:12px;margin-top:6px;display:none"></div>
-      </div>
-      <div id="mapUploadStatus" style="font-size:12px;margin-bottom:8px;display:none"></div>
       <div id="mapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
       <div style="background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;position:relative">
         <canvas id="mapCanvas" width="800" height="600" style="width:100%;display:block;background:#0a0a1a"></canvas>
@@ -395,6 +348,63 @@ export function adminPageHtml(): string {
         <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Charger</span>
       </div>
       <div id="mapList" style="margin-top:12px"></div>
+
+      <!-- Below the map: Import ZIP, Recalibrate Charging Pose, Map Recovery.
+           Order matches expected operator workflow: import a fresh map →
+           recalibrate the charger pose → restore from a snapshot if
+           something went wrong. -->
+      <div style="display:flex;gap:8px;align-items:center;margin-top:20px;flex-wrap:wrap">
+        <input type="file" id="mapZipFile" accept=".zip" style="flex:1;min-width:180px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:12px">
+        <button onclick="uploadMapZip()" style="padding:8px 16px;background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Import ZIP</button>
+      </div>
+      <div id="mapUploadStatus" style="font-size:12px;margin-top:8px;display:none"></div>
+
+      <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-top:16px">
+        <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
+          <b style="color:#fca5a5">Recovery — wrong charger pose causes mower to drive off target.</b><br>
+          Stock firmware needs a drive-back cycle to initialize localization
+          before the reported pose is trustworthy. While docked at boot,
+          <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
+          <b>Workflow:</b>
+          <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
+            <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1–2 m)</li>
+            <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
+            <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
+            <li>Then press <b>Recalibrate Charging Pose</b></li>
+          </ol>
+        </div>
+        <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:monospace">
+          <span style="color:#888">Loading localization status...</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+        </div>
+      </div>
+      <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
+
+      <div style="padding:8px 12px;background:rgba(124,58,237,.05);border:1px solid rgba(124,58,237,.2);border-radius:8px;margin-top:16px">
+        <div style="font-size:12px;font-weight:600;color:#a78bfa;margin-bottom:8px">Map Recovery — restore from auto-backup snapshots</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+          <select id="mapBackupSelect" onchange="loadBackupContents()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
+            <option value="">Select a backup snapshot...</option>
+          </select>
+          <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
+        </div>
+        <div id="mapBackupTree" style="margin-bottom:8px"></div>
+        <div id="conflictHelpers" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px">
+          <span style="font-size:11px;color:#fca5a5;font-weight:600">Conflicts found — choose default action:</span>
+          <button onclick="setAllConflicts(true)" style="padding:5px 12px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all</button>
+          <button onclick="setAllConflicts(false)" style="padding:5px 12px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all</button>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button onclick="restoreBackup()" style="padding:7px 18px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore Backup</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer" title="Push restored maps to mower (sync_map MQTT + reload nav stack). Uncheck to update DB only.">
+            <input type="checkbox" id="restoreRealignChk" checked style="cursor:pointer">
+            Also push to mower (realign)
+          </label>
+        </div>
+        <div id="mapRecoveryStatus" style="font-size:12px;margin-top:6px;display:none"></div>
+      </div>
     </div>
   </div>
 
@@ -2011,13 +2021,18 @@ async function populateMowerDropdown() {
       }
     }
     _mapsDropdownLoaded = true;
-    // Auto-select if only one mower, or restore previous
+    // Auto-select: restore previous if still in list, otherwise pick the
+    // first mower (whether there's 1 or many — saves an extra click).
     if (prev && sel.querySelector('option[value="' + prev + '"]')) {
       sel.value = prev;
-    } else if (sel.options.length === 2) {
+    } else if (sel.options.length > 1) {
       sel.selectedIndex = 1;
     }
-    if (sel.value) loadMaps();
+    if (sel.value) {
+      loadMaps();
+      loadMapBackups(sel.value);
+      startLocalizationPoll(sel.value);
+    }
   } catch(e) {
     document.getElementById('mapInfo').textContent = 'Failed to load devices: ' + e.message;
   }
