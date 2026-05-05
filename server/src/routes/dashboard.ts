@@ -1907,8 +1907,15 @@ dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
     publishRawToDevice(sn, encrypted, (qos === 1 ? 1 : 0) as 0 | 1);
     res.json({ ok: true, command: Object.keys(command)[0], encrypted: true, size: encrypted.length, demo: isDemoMode(sn) });
   } else {
-    publishToDevice(sn, command);
-    res.json({ ok: true, command: Object.keys(command)[0], demo: isDemoMode(sn) });
+    // Issue #16: when the operator passes `encrypt: false`, send raw JSON
+    // bytes directly. Routing through publishToDevice would silently
+    // re-encrypt for any `LFI*` SN (its own LFI auto-encrypt branch),
+    // making the override useless — that's exactly what waltervl hit
+    // when stock v5.x firmware kept seeing AES bytes despite the opt-out.
+    const json = JSON.stringify(command);
+    publishRawToDevice(sn, Buffer.from(json, 'utf8'), (qos === 1 ? 1 : 0) as 0 | 1);
+    console.log(`[DASHBOARD] Raw (unencrypted) command voor ${sn}: ${json}`);
+    res.json({ ok: true, command: Object.keys(command)[0], encrypted: false, demo: isDemoMode(sn) });
   }
 });
 
