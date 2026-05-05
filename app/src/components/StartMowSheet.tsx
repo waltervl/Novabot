@@ -544,16 +544,32 @@ export function StartMowSheet({
               </View>
             </View>
 
-            {/* Inline map preview — preview shows the FIRST selected
-                map (in work-map order). Multi-select: user sees their
-                first choice; the queue handles the rest. */}
+            {/* Inline map preview — issue #18: previously rendered ONLY
+                the first selected polygon (in work-map array order), so
+                changing zone selection didn't update the visible shape
+                when more than one was picked. Render every selected
+                polygon now so the preview always reflects the actual
+                user choice. */}
             {(() => {
-              const previewMap = maps.find(m => selectedMapIds.has(m.mapId)) ?? maps[0];
-              const poly = previewMap?.mapArea;
-              if (!poly || poly.length < 3) return null;
+              const selectedPolys = maps
+                .filter(m => selectedMapIds.has(m.mapId))
+                .map(m => m.mapArea)
+                .filter(p => p && p.length >= 3);
+              const fallback = (selectedPolys.length === 0 && maps[0]?.mapArea && maps[0].mapArea.length >= 3)
+                ? [maps[0].mapArea]
+                : selectedPolys;
+              if (fallback.length === 0) return null;
 
-              const finalPoly = edgeOffset !== 0 ? offsetLocalPolygon(poly, edgeOffset) : poly;
-              const allPts = [...poly, ...finalPoly];
+              // Compute edge-offset variant of each selected polygon (for
+              // the dashed inner/outer ring overlay).
+              const offsetPolys = edgeOffset !== 0
+                ? fallback.map(p => offsetLocalPolygon(p, edgeOffset))
+                : null;
+
+              // Bounding box over EVERY selected polygon + their offsets,
+              // so the preview frames the full selection (not a single
+              // polygon that's then drawn off-centre).
+              const allPts = fallback.flat().concat(offsetPolys ? offsetPolys.flat() : []);
               const minX = Math.min(...allPts.map(p => p.x));
               const maxX = Math.max(...allPts.map(p => p.x));
               const minY = Math.min(...allPts.map(p => p.y));
@@ -570,10 +586,13 @@ export function StartMowSheet({
                 y: PAD + (p.y - minY) * sc + (draw - yRange * sc) / 2,
               });
 
-              const origPts = poly.map(toSvg).map(p => `${p.x},${p.y}`).join(' ');
-              const offsetPts = edgeOffset !== 0
-                ? finalPoly.map(toSvg).map(p => `${p.x},${p.y}`).join(' ')
+              const origPolys = fallback.map(p => p.map(toSvg).map(pt => `${pt.x},${pt.y}`).join(' '));
+              const offsetPolyStrings = offsetPolys
+                ? offsetPolys.map(p => p.map(toSvg).map(pt => `${pt.x},${pt.y}`).join(' '))
                 : null;
+              // Tap-to-place pattern still anchors on the first selected
+              // polygon so the existing pattern flow keeps working.
+              const poly = fallback[0];
 
               // Direction stripes
               // Stripes run ALONG the path direction (mower drives this way)
@@ -633,25 +652,33 @@ export function StartMowSheet({
                   >
                     <Svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
                       <Defs>
-                        <ClipPath id="previewClip">
-                          <Polygon points={origPts} />
-                        </ClipPath>
-                      </Defs>
-                      {/* Original polygon */}
-                      <Polygon points={origPts} fill="rgba(34,197,94,0.15)" stroke="#22c55e" strokeWidth={1.5} />
-                      {/* Direction stripes clipped to polygon */}
-                      <G clipPath="url(#previewClip)">
-                        {stripes.map((s, i) => (
-                          <Line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}
-                            stroke="rgba(34,197,94,0.2)" strokeWidth={6} />
+                        {origPolys.map((pts, i) => (
+                          <ClipPath key={`clip-${i}`} id={`previewClip-${i}`}>
+                            <Polygon points={pts} />
+                          </ClipPath>
                         ))}
-                      </G>
-                      {/* Edge offset polygon */}
-                      {offsetPts && (
-                        <Polygon points={offsetPts} fill="none"
+                      </Defs>
+                      {/* Outline + fill for every selected polygon. */}
+                      {origPolys.map((pts, i) => (
+                        <Polygon key={`poly-${i}`} points={pts} fill="rgba(34,197,94,0.15)"
+                          stroke="#22c55e" strokeWidth={1.5} />
+                      ))}
+                      {/* Direction stripes — drawn once per polygon so each
+                          selected zone shows its own clipped pattern. */}
+                      {origPolys.map((_pts, i) => (
+                        <G key={`stripes-${i}`} clipPath={`url(#previewClip-${i})`}>
+                          {stripes.map((s, j) => (
+                            <Line key={j} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}
+                              stroke="rgba(34,197,94,0.2)" strokeWidth={6} />
+                          ))}
+                        </G>
+                      ))}
+                      {/* Edge offset polygons. */}
+                      {offsetPolyStrings && offsetPolyStrings.map((pts, i) => (
+                        <Polygon key={`off-${i}`} points={pts} fill="none"
                           stroke={edgeOffset > 0 ? '#60a5fa' : '#fb923c'}
                           strokeWidth={1.5} strokeDasharray="4 3" />
-                      )}
+                      ))}
                       {/* Pattern overlay */}
                       {patternSvgPolys.map((pts, i) => (
                         <Polygon key={`pat-${i}`} points={pts}
