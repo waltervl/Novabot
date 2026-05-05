@@ -3479,11 +3479,23 @@ async function firstTimeCloudImport() {
     for (const equip of all) {
       const chargerSn = equip.chargerSn || (equip.sn && equip.sn.startsWith('LFIC') ? equip.sn : null);
       const mowerSn = equip.mowerSn || (equip.sn && equip.sn.startsWith('LFIN') ? equip.sn : null);
+      // Issue #19: only forward a deviceName when it is genuinely the
+      // user-set mower nickname. equipmentNickName on a charger row is
+      // LFI's default "Charging Station", which previously leaked through
+      // and overwrote the pair's display name. Prefer userCustomDeviceName,
+      // accept equipmentNickName ONLY when the entry has a mowerSn (so it
+      // is the mower-side row), and never fall back to a hard-coded
+      // "My Novabot" — better blank + let the user rename than wrong.
+      let pairName = equip.userCustomDeviceName || null;
+      if (!pairName && mowerSn && equip.equipmentNickName
+          && !/^charging[\s_-]?station$/i.test(String(equip.equipmentNickName).trim())) {
+        pairName = equip.equipmentNickName;
+      }
       const applyRes = await fetch('/api/setup/cloud-apply', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           email, password: pass,
-          deviceName: equip.userCustomDeviceName || equip.equipmentNickName || 'My Novabot',
+          deviceName: pairName,
           charger: chargerSn ? { sn: chargerSn, address: equip.chargerAddress, channel: equip.chargerChannel, mac: equip.macAddress } : undefined,
           mower: mowerSn ? { sn: mowerSn, mac: equip.macAddress, version: equip.sysVersion } : undefined
         })

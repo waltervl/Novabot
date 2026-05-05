@@ -8,6 +8,7 @@ import { db } from '../../db/database.js';
 import { getBleMacForType } from '../../ble/bleLogger.js';
 import { deviceCache } from '../../mqtt/sensorData.js';
 import { forwardToDashboard } from '../../dashboard/socketHandler.js';
+import { sanitizeNickName } from '../../utils/sanitizeNickName.js';
 // rowToCloudDto lives in the cloud-api serializer as of 2026-04-23 (Task 9).
 // Behaviour is identical — same defaults, same conditionals, same sentinels.
 // The function was previously defined locally in this file; the local copy has
@@ -346,8 +347,12 @@ equipmentRouter.post('/bindingEquipment', authMiddleware, (req: AuthRequest, res
   const mowerSn        = body.mowerSn;
   const chargerSn      = body.chargerSn;
   const _equipmentTypeH = body.equipmentTypeH;
-  // App stuurt 'userCustomDeviceName'; accepteer ook legacy 'equipmentNickName'
-  const nickName       = body.userCustomDeviceName ?? body.equipmentNickName ?? null;
+  // App stuurt 'userCustomDeviceName'; accepteer ook legacy 'equipmentNickName'.
+  // Issue #19: drop the LFI charger-default ("Charging Station") when a
+  // mower SN is in this bind request — see utils/sanitizeNickName for the
+  // single source of truth across all import / login / bind paths.
+  const rawNickName    = body.userCustomDeviceName ?? body.equipmentNickName ?? null;
+  const nickName       = sanitizeNickName(rawNickName, body.mowerSn ?? body.sn ?? null);
   // chargerChannel wordt gestuurd als het toegewezen LoRa kanaal (uit set_lora_info_respond.value)
   const chargerChannel = body.chargerChannel ?? null;
 

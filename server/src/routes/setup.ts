@@ -127,6 +127,13 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
     return;
   }
 
+  // Issue #19: drop the LFI charger-default nickname so the Novabot app
+  // never shows "Charging Station" as the mower's label. Centralised in
+  // utils/sanitizeNickName so every import / bind / login path applies
+  // identical rules.
+  const { sanitizeNickName } = await import('../utils/sanitizeNickName.js');
+  const sanitizedDeviceName = sanitizeNickName(deviceName, mower?.sn);
+
   try {
     const bcrypt = await import('bcrypt');
     const normalizedEmail = email.trim().toLowerCase();
@@ -187,7 +194,7 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
             user_id: appUserId,
             mower_sn: mower?.sn ?? '',
             charger_sn: charger?.sn ?? null,
-            nick_name: deviceName ?? null,
+            nick_name: sanitizedDeviceName,
             charger_address: charger?.address != null ? String(charger.address) : null,
             charger_channel: charger?.channel != null ? String(charger.channel) : null,
             // Only the mower BLE MAC belongs here — the charger MAC (48:27:E2:*)

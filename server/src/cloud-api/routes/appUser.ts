@@ -6,6 +6,7 @@ import { userRepo, equipmentRepo } from '../../db/repositories/index.js';
 import { authMiddleware, signToken } from '../../middleware/auth.js';
 import { AuthRequest, ok, fail, UserRow } from '../../types/index.js';
 import { callLfiCloud, encryptCloudPassword } from '../../services/lfiCloud.js';
+import { sanitizeNickName } from '../../utils/sanitizeNickName.js';
 
 // De Novabot app versleutelt wachtwoorden met AES-128-CBC voor verzending.
 // key = IV = "1234123412ABCDEF" (16 bytes), output = base64
@@ -75,7 +76,13 @@ appUserRouter.post('/login', async (req, res: Response) => {
                 user_id: appUserId,
                 mower_sn: primarySn,
                 charger_sn: chargerSn ?? null,
-                nick_name: (equip.userCustomDeviceName ?? equip.equipmentNickName ?? null) as string | null,
+                // Issue #19: see utils/sanitizeNickName — drops the LFI
+                // charger-default "Charging Station" from leaking onto a
+                // paired record's display name (mower SN is present here).
+                nick_name: sanitizeNickName(
+                  (equip.userCustomDeviceName ?? equip.equipmentNickName ?? null) as string | null,
+                  primarySn,
+                ),
                 charger_address: (equip.chargerAddress ?? null) as string | null,
                 charger_channel: (equip.chargerChannel ?? null) as string | null,
                 mac_address: (equip.macAddress ?? null) as string | null,
