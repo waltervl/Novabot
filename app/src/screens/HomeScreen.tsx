@@ -778,7 +778,11 @@ export default function HomeScreen() {
     }
   }, [loadHomeMeta]);
 
-  // Fetch first work polygon for mowing progress display
+  // Fetch + select active work polygon for mowing progress display.
+  // Re-runs whenever the firmware reports a new cover_map_id so multi-map
+  // sessions update the highlight as the mower moves between zones.
+  const liveCoverMapId = devices.get(mower?.sn ?? '')?.sensors?.cover_map_id;
+  const liveCurrentMapIds = devices.get(mower?.sn ?? '')?.sensors?.current_map_ids;
   useEffect(() => {
     if (demo.enabled) {
       setActiveMapPolygon([
@@ -794,24 +798,32 @@ export default function HomeScreen() {
         if (!url) return;
         const api = new ApiClient(url);
         const res = await api.fetchMaps(mower.sn);
-        // Show the currently mowing zone, or the first work map as default
         const workMaps = (res.maps ?? []).filter((m: any) => m.mapType === 'work' && m.mapArea?.length >= 3);
-        // current_map_ids encoding mirrors start_navigation.area:
-        //   1   = map0
-        //   10  = map1
-        //   100 = map2 (NOT bit-2 — verified live on dir26738's mower #14)
-        //   200 = "all maps" sentinel during multi-map sessions; in that
-        //         case we don't know which slot is currently being cut, so
-        //         pick the first work map until cov_map_path or another
-        //         signal narrows it down.
-        // Issue #14: the previous heuristic (currentMapIds-1 as array index)
-        // both used the wrong encoding AND assumed the server's update-order
-        // matched the firmware's map order, which broke selection.
-        const currentMapIds = parseInt(devices.get(mower.sn)?.sensors?.current_map_ids ?? '0', 10);
-        const activeCanonicalIdx = currentMapIds === 1 ? 0
-          : currentMapIds === 10 ? 1
-          : currentMapIds === 100 ? 2
-          : null;
+
+        // Issue #14 round 3 (dir26738): user selected the LEFT map (trampo,
+        // canonical map0) but the MIDDLE map (pool, canonical map1) was
+        // highlighted. The earlier heuristic used `current_map_ids` with a
+        // hand-rolled enum (1/10/100/200) AND a stale capture of
+        // `devices.get(...)` from useEffect closure that wasn't in the
+        // deps, so it never updated when the mower moved between zones.
+        //
+        // Prefer cover_map_id from report_state_timer_data — that's the
+        // firmware's actual current map id (string "0"/"1"/"2"), no enum
+        // translation needed. Fall back to current_map_ids (1=map0,
+        // 10=map1, 200=map2 per docs/reference/MOWING-FLOW.md — NOTE: was
+        // wrongly documented as 100 for map2 in the previous comment).
+        let activeCanonicalIdx: number | null = null;
+        const cmId = liveCoverMapId ? parseInt(String(liveCoverMapId), 10) : NaN;
+        if (Number.isFinite(cmId) && cmId >= 0 && cmId <= 9) {
+          activeCanonicalIdx = cmId;
+        } else {
+          const cur = parseInt(String(liveCurrentMapIds ?? '0'), 10);
+          activeCanonicalIdx = cur === 1 ? 0
+            : cur === 10 ? 1
+            : cur === 200 ? 2
+            : null;
+        }
+
         const matchByCanonical = activeCanonicalIdx == null
           ? null
           : workMaps.find((m: any) => {
@@ -833,7 +845,7 @@ export default function HomeScreen() {
         setObstaclePolygons(obs.map((m: any) => ({ id: m.mapId, points: m.mapArea })));
       } catch { /* ignore */ }
     })();
-  }, [mower?.sn, demo.enabled]);
+  }, [mower?.sn, demo.enabled, liveCoverMapId, liveCurrentMapIds]);
 
   // Safety check: verify mower cutting height matches what we set.
   // Firmware echoes cutterhigh verbatim as target_height. Both are the wire
