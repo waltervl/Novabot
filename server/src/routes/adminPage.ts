@@ -2856,10 +2856,19 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   var chargerLx = (chargingPose && typeof chargingPose.x === 'number') ? chargingPose.x : 0;
   var chargerLy = (chargingPose && typeof chargingPose.y === 'number') ? chargingPose.y : 0;
 
-  // Collect all points to find bounds (include charger anchor)
+  // Collect all points to find bounds (include charger anchor).
+  // Bounds source priority: when ghostMaps present (polygon-offset
+  // calibration), anchor bounds on the GHOST so the LIVE (offset-shifted)
+  // polygon visibly translates relative to a stable reference. If we used
+  // the live points, fit-to-bounds would re-center every nudge, making the
+  // live polygon look stationary while the ghost appeared to slide opposite
+  // — confusing the operator about which way they were moving the polygon
+  // in real-world coordinates.
+  var boundSource = (ghostMaps && Array.isArray(ghostMaps) && ghostMaps.length > 0)
+    ? ghostMaps : maps;
   var allX = [chargerLx], allY = [chargerLy];
-  for (var i = 0; i < maps.length; i++) {
-    var pts = maps[i].mapArea || [];
+  for (var i = 0; i < boundSource.length; i++) {
+    var pts = boundSource[i].mapArea || [];
     for (var j = 0; j < pts.length; j++) {
       allX.push(pts[j].x);
       allY.push(pts[j].y);

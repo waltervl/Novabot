@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 vi.mock('../../db/repositories/maps.js', () => ({
   mapRepo: {
     findAllByMowerSnAndType: vi.fn().mockReturnValue([]),
+    getPolygonChargingOrientation: vi.fn().mockReturnValue(null),
   },
 }));
 
@@ -10,6 +11,7 @@ import {
   getPolygonAnchor,
   isLocalizationHealthy,
   resolveOrientation,
+  resolveSavedOrientation,
 } from '../../services/anchor.js';
 import { mapRepo } from '../../db/repositories/maps.js';
 
@@ -34,6 +36,7 @@ function unicomRow(canonical: string, points: Array<{ x: number; y: number }>) {
 
 beforeEach(() => {
   vi.mocked(mapRepo.findAllByMowerSnAndType).mockReset().mockReturnValue([]);
+  vi.mocked(mapRepo.getPolygonChargingOrientation).mockReset().mockReturnValue(null);
 });
 
 describe('getPolygonAnchor', () => {
@@ -184,5 +187,66 @@ describe('resolveOrientation', () => {
       ['map_position_orientation', 'not-a-number'],
     ]);
     expect(resolveOrientation(s)).toEqual({ orientation: 1.5, source: 'default' });
+  });
+});
+
+describe('resolveSavedOrientation (DB-first, then live)', () => {
+  it('returns saved DB value when present (overrides live IMU)', () => {
+    vi.mocked(mapRepo.getPolygonChargingOrientation).mockReturnValue(1.498);
+    const sensors = new Map([
+      ['localization_state', 'RUNNING'],
+      ['map_position_orientation', '1.97'],
+    ]);
+    expect(resolveSavedOrientation(SN, sensors)).toEqual({
+      orientation: 1.498,
+      source: 'saved',
+    });
+  });
+
+  it('falls back to live sensor when DB is null and localization healthy', () => {
+    vi.mocked(mapRepo.getPolygonChargingOrientation).mockReturnValue(null);
+    const sensors = new Map([
+      ['localization_state', 'RUNNING'],
+      ['map_position_orientation', '1.97'],
+    ]);
+    expect(resolveSavedOrientation(SN, sensors)).toEqual({
+      orientation: 1.97,
+      source: 'sensor',
+    });
+  });
+
+  it('falls back to default when DB null + localization unhealthy', () => {
+    vi.mocked(mapRepo.getPolygonChargingOrientation).mockReturnValue(null);
+    const sensors = new Map([
+      ['localization_state', 'NOT_INITIALIZED'],
+      ['map_position_orientation', '0'],
+    ]);
+    expect(resolveSavedOrientation(SN, sensors)).toEqual({
+      orientation: 1.5,
+      source: 'default',
+    });
+  });
+
+  it('rejects non-finite saved value (treats as null)', () => {
+    vi.mocked(mapRepo.getPolygonChargingOrientation).mockReturnValue(NaN);
+    expect(resolveSavedOrientation(SN, null).source).not.toBe('saved');
+  });
+});
+
+describe('getPolygonAnchor with saved theta', () => {
+  it('uses DB-saved orientation regardless of sensor reading', () => {
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([
+      unicomRow('map0tocharge_unicom', [{ x: -1.21, y: 0.48 }]),
+    ]);
+    vi.mocked(mapRepo.getPolygonChargingOrientation).mockReturnValue(1.4979550142618929);
+
+    const sensors = new Map([
+      ['localization_state', 'RUNNING'],
+      ['map_position_orientation', '1.9796'],
+    ]);
+
+    const a = getPolygonAnchor(SN, sensors);
+    expect(a!.orientation).toBeCloseTo(1.4979550142618929);
+    expect(a!.orientationSource).toBe('saved');
   });
 });

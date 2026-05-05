@@ -369,6 +369,16 @@ export function initDb(): void {
     catch { /* kolom bestaat al */ }
   }
 
+  // Saved charging-pose orientation (radians, mower local map frame).
+  // NULL = unknown → getPolygonAnchor MUST NOT auto-derive a theta
+  // from the live IMU (which produces a different value every sync_map
+  // call and overwrites mower charging_station.yaml with garbage). Only
+  // populated when the operator explicitly runs recalibrate-charging-pose
+  // (or restore-and-realign), at which point the mower-reported pose is
+  // saved here so subsequent sync_map calls reuse the same value.
+  try { db.exec(`ALTER TABLE map_calibration ADD COLUMN polygon_charging_orientation REAL`); }
+  catch { /* kolom bestaat al */ }
+
   // Voeg map_type kolom toe aan maps (migratie – work/obstacle/unicom)
   try {
     db.exec(`ALTER TABLE maps ADD COLUMN map_type TEXT NOT NULL DEFAULT 'work'`);

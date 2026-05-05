@@ -2272,12 +2272,19 @@ def _coverage_is_active():
 
 
 def _restart_novabot_mapping():
+    # Both novabot_mapping AND coverage_planner_server cache the polygon CSV
+    # in RAM at startup. Without restarting coverage_planner the mower keeps
+    # using the pre-shift polygon for path generation even after sync_map
+    # rewrote the on-disk CSVs (verified live 2026-05-05 op LFIN1231000211 —
+    # coverage_planner uptime was 2d16h while disk-CSVs were freshly shifted).
     import subprocess
     try:
         cmd = (
             '(pkill -f "novabot_mapping_launch.py" || true) && '
+            '(pkill -f "coverage_planner_server.launch.py" || true) && '
             "sleep 1 && "
             "(killall -9 novabot_mapping 2>/dev/null || true) && "
+            "(killall -9 coverage_planner_server 2>/dev/null || true) && "
             "sleep 1 && "
             ". /opt/ros/galactic/setup.bash && "
             ". /root/novabot/install/setup.bash && "
@@ -2286,7 +2293,9 @@ def _restart_novabot_mapping():
             "export ROS_LOG_DIR=/root/novabot/data/ros2_log && "
             "export ROS_LOCALHOST_ONLY=1 && "
             "nohup ros2 launch novabot_mapping novabot_mapping_launch.py "
-            ">> $ROS_LOG_DIR/novabot_mapping_restart.log 2>&1 </dev/null &"
+            ">> $ROS_LOG_DIR/novabot_mapping_restart.log 2>&1 </dev/null & "
+            "nohup ros2 launch coverage_planner coverage_planner_server.launch.py "
+            ">> $ROS_LOG_DIR/coverage_planner_restart.log 2>&1 </dev/null &"
         )
         rc = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True, timeout=20)
         return rc.returncode == 0

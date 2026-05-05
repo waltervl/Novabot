@@ -230,6 +230,16 @@ export class MapRepository {
   private _getPolygonOffset = db.prepare(
     'SELECT polygon_offset_x_m, polygon_offset_y_m FROM map_calibration WHERE mower_sn = ?',
   );
+  private _getPolygonChargingOrientation = db.prepare(
+    'SELECT polygon_charging_orientation FROM map_calibration WHERE mower_sn = ?',
+  );
+  private _setPolygonChargingOrientation = db.prepare(`
+    INSERT INTO map_calibration (mower_sn, polygon_charging_orientation, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(mower_sn) DO UPDATE SET
+      polygon_charging_orientation = excluded.polygon_charging_orientation,
+      updated_at = datetime('now')
+  `);
 
   // ── Map lookups ──
 
@@ -546,6 +556,30 @@ export class MapRepository {
    */
   setPolygonOffset(mowerSn: string, x: number, y: number): void {
     this._setPolygonOffset.run(mowerSn, x, y);
+  }
+
+  /**
+   * Saved charging-pose orientation (radians). Returns null when the operator
+   * has not yet run recalibrate-charging-pose for this mower — caller falls
+   * back to live IMU / default. Once non-null, getPolygonAnchor uses this
+   * value across all sync_map regenerations so the mower's dock yaml stops
+   * flipping with IMU drift.
+   */
+  getPolygonChargingOrientation(mowerSn: string): number | null {
+    const row = this._getPolygonChargingOrientation.get(mowerSn) as
+      { polygon_charging_orientation: number | null } | undefined;
+    if (!row || row.polygon_charging_orientation == null) return null;
+    return row.polygon_charging_orientation;
+  }
+
+  /**
+   * Persist the charging-pose orientation (radians). Called by
+   * recalibrate-charging-pose when the operator has confirmed the mower is
+   * physically docked; from that point on every sync_map / regenerate uses
+   * this value instead of the (drifting) live IMU heading.
+   */
+  setPolygonChargingOrientation(mowerSn: string, theta: number): void {
+    this._setPolygonChargingOrientation.run(mowerSn, theta);
   }
 }
 

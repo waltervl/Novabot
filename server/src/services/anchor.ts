@@ -37,7 +37,7 @@ export interface PolygonAnchor {
   orientation: number;
   /** Where the orientation came from — useful for callers to log/decide
    *  whether to retry once localization stabilises. */
-  orientationSource: 'sensor' | 'default';
+  orientationSource: 'saved' | 'sensor' | 'default';
 }
 
 const DEFAULT_ORIENTATION = 1.5;
@@ -70,6 +70,32 @@ export function resolveOrientation(
     return { orientation: orientationNum, source: 'sensor' };
   }
   return { orientation: DEFAULT_ORIENTATION, source: 'default' };
+}
+
+/**
+ * Resolve charging-pose orientation with the right source-priority for the
+ * sync-info / regenerate code paths. Order:
+ *   1. DB `polygon_charging_orientation` — written by recalibrate-charging-pose
+ *      (operator-confirmed); persists across sync_map calls so the mower yaml
+ *      stops flipping by ~30° every time the mower's IMU drifts.
+ *   2. Live sensor IMU heading (when localization healthy) — first-time
+ *      bootstrap before any explicit recalibrate has happened.
+ *   3. 1.5 rad default — last-resort fallback.
+ *
+ * The pre-2026-05-05 behaviour was (2) → (3), which silently overwrote the
+ * mower's saved dock orientation on every sync, sending the mower into the
+ * wrong heading at recharge / coverage start. See bug analysis 2026-05-05.
+ */
+export function resolveSavedOrientation(
+  sn: string,
+  sensors: Map<string, string> | null | undefined,
+): { orientation: number; source: 'saved' | 'sensor' | 'default' } {
+  const saved = mapRepo.getPolygonChargingOrientation(sn);
+  if (saved != null && Number.isFinite(saved)) {
+    return { orientation: saved, source: 'saved' };
+  }
+  const live = resolveOrientation(sensors);
+  return live;
 }
 
 /**
@@ -118,6 +144,6 @@ export function getPolygonAnchor(
   const y = Number(first.y);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
 
-  const { orientation, source } = resolveOrientation(sensors);
+  const { orientation, source } = resolveSavedOrientation(sn, sensors);
   return { x, y, orientation, orientationSource: source };
 }

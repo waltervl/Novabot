@@ -1183,7 +1183,12 @@ dashboardRouter.get('/maps/:sn/download-zip', (req: Request, res: Response) => {
 dashboardRouter.get('/maps/:sn/sync-info', async (req: Request, res: Response) => {
   const { sn } = req.params;
   try {
-    const zipPath = generateMapZipFromDb(sn, 0);
+    // Match /sync-zip: prefer the enriched ZIP so the md5 we advertise here
+    // matches the bytes the mower will actually pull. Without this the mower
+    // sees stale-ETag mismatches and downloads twice (or worse, returns 304
+    // when content actually changed).
+    const { regenerateLatestZipFromBackup } = await import('../services/mapBackup.js');
+    const zipPath = regenerateLatestZipFromBackup(sn) ?? generateMapZipFromDb(sn, 0);
     if (!zipPath) { res.status(404).json({ error: 'no maps' }); return; }
 
     const { createHash } = await import('crypto');
@@ -1230,10 +1235,19 @@ dashboardRouter.get('/maps/:sn/sync-info', async (req: Request, res: Response) =
 
 // GET /api/dashboard/maps/:sn/sync-zip — actual ZIP bytes with MD5 ETag.
 // Mower sends If-None-Match to skip download when unchanged.
+//
+// Use the *enriched* ZIP from regenerateLatestZipFromBackup (which writes
+// the polygon-derived charger anchor into csv_file/map_info.json) when
+// available. Falls back to the bare generateMapZipFromDb output (which
+// hard-codes charging_pose to (0, 0, theta) — the legacy "charger is the
+// origin" assumption that breaks novabot_mapping when the actual dock pose
+// is non-zero, e.g. -1.21, 0.48 on LFIN1231000211).
 dashboardRouter.get('/maps/:sn/sync-zip', async (req: Request, res: Response) => {
   const { sn } = req.params;
   try {
-    const zipPath = generateMapZipFromDb(sn, 0);
+    const { regenerateLatestZipFromBackup } = await import('../services/mapBackup.js');
+    const enrichedPath = regenerateLatestZipFromBackup(sn);
+    const zipPath = enrichedPath ?? generateMapZipFromDb(sn, 0);
     if (!zipPath) { res.status(404).json({ error: 'no maps' }); return; }
 
     const { createHash } = await import('crypto');
@@ -1565,6 +1579,16 @@ dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request,
     res.status(504).json({ ok: false, error: 'Mower did not respond within 8s', pose: { x, y, theta } });
     return;
   }
+
+  // Persist the operator-confirmed theta so subsequent sync_map / regenerate
+  // calls do NOT clobber the mower yaml with a freshly-drifted live IMU
+  // reading. Without this, getPolygonAnchor falls back to the live sensor
+  // value, which differs by tens of degrees on every reboot / drive cycle
+  // and makes the mower miss the dock or drive into off-polygon obstacles.
+  if (result.ok) {
+    mapRepo.setPolygonChargingOrientation(sn, theta);
+  }
+
   res.json({ ok: result.ok, pose: { x, y, theta }, respond: result.respond });
 });
 
