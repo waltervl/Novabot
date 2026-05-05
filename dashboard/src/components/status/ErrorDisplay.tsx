@@ -1,22 +1,30 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 
-// Benign error codes that are normal during idle (LoRa timeout, etc.)
-// 151 = PIN lock — handled by PinKeypad overlay, no modal needed
-const BENIGN_CODES = new Set(['132', '151']);
+// Codes the stock Novabot app NEVER surfaces and we hide here too. They
+// fire often, self-recover within seconds, and showing a full-screen
+// modal each time turns the dashboard into noise. Same set as the
+// server-side SUPPRESSED_ERROR_CODES (eventDetector.ts) and the OpenNova
+// app's HIDDEN_TRANSIENT_ERRORS:
+//   8   = LoRa flicker
+//   113 = transient sensor/perception warning, auto-recovers
+//   132 = data transmission loss, auto-recovers
+//   151 = PIN lock — handled by PinKeypad overlay, no modal needed
+const HIDDEN_CODES = new Set(['8', '113', '132', '151']);
 
 interface Props {
   errorCode?: string;
   errorMsg?: string;
   errorStatus?: string;
+  /** Kept for callsite compatibility; no longer consulted by the filter. */
   workStatus?: string;
 }
 
 /**
  * Shows a centered modal overlay when device errors appear.
- * Benign errors (LoRa timeout, PIN lock) are silently ignored.
+ * Hidden transient codes (LoRa flicker, perception/data loss, PIN) skipped.
  */
-export function ErrorDisplay({ errorCode, errorMsg, errorStatus, workStatus }: Props) {
+export function ErrorDisplay({ errorCode, errorMsg, errorStatus }: Props) {
   const [activeError, setActiveError] = useState<{ code: string; message: string } | null>(null);
   const lastErrorRef = useRef<string | null>(null);
 
@@ -26,11 +34,12 @@ export function ErrorDisplay({ errorCode, errorMsg, errorStatus, workStatus }: P
   const hasError = (errorStatus && errorStatus !== 'OK') ||
                    (errorCode && errorCode !== 'None' && errorCode !== '0');
 
-  const isIdle = !workStatus || workStatus === '0';
   // PIN-related errors are handled by PinKeypad overlay, not this modal
   const isPinRelated = errorMsg?.toLowerCase().includes('input pin');
-  const isBenign = isPinRelated ||
-    (isIdle && (BENIGN_CODES.has(rawStatus ?? '') || BENIGN_CODES.has(rawCode ?? '')));
+  // Hide transient noise regardless of work_status — codes 8/113/132 fire
+  // mid-mowing too and the modal would interrupt every coverage cycle.
+  const isHidden = HIDDEN_CODES.has(rawStatus ?? '') || HIDDEN_CODES.has(rawCode ?? '');
+  const isBenign = isPinRelated || isHidden;
 
   useEffect(() => {
     if (!hasError || isBenign) {
