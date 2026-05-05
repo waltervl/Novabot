@@ -1278,12 +1278,21 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
           </button>
           {polygonMaps.length > 0 && (() => {
             const counts = { work: 0, obstacle: 0, unicom: 0, other: 0 };
+            // Channel filename pattern: only inter-map unicoms are user-
+            // visible "channels". `mapXtochargeY_unicom` is the dock-route
+            // helper line and isn't counted (matches dir26738's expectation
+            // in #28: "I have 2 channels" for a mower with 1 charge + 2
+            // inter-map unicoms).
+            const isChannelUnicom = (m: { fileName?: string | null; canonicalName?: string | null; mapName?: string | null }) =>
+              !/tocharge/i.test(`${m.fileName ?? ''} ${m.canonicalName ?? ''} ${m.mapName ?? ''}`);
             // Work + obstacle still need 3+ points to be a real polygon.
             for (const m of polygonMaps) {
               const s = getAreaStyle(m.mapType, m.mapId, m.mapName);
               if (s === AREA_STYLES.work) counts.work++;
               else if (s === AREA_STYLES.obstacle) counts.obstacle++;
-              else if (s === AREA_STYLES.unicom) counts.unicom++;
+              else if (s === AREA_STYLES.unicom) {
+                if (isChannelUnicom(m)) counts.unicom++;
+              }
               else counts.other++;
             }
             // Issue #28 round 2: LFI cloud stores inter-map channels as
@@ -1295,7 +1304,7 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
             // already counted by mapId.
             const polygonUnicomIds = new Set(polygonMaps.filter(m => m.mapType === 'unicom').map(m => m.mapId));
             for (const m of maps) {
-              if (m.mapType === 'unicom' && !polygonUnicomIds.has(m.mapId)) {
+              if (m.mapType === 'unicom' && !polygonUnicomIds.has(m.mapId) && isChannelUnicom(m)) {
                 counts.unicom++;
               }
             }
