@@ -1303,7 +1303,7 @@ async function checkServerUpdate() {
 function dismissServerUpdate() {
   // Hide until a NEWER version than the one shown appears.
   const txt = document.getElementById('serverUpdateText').textContent || '';
-  const m = txt.match(/Hub has v([^\s(]+)/);
+  const m = txt.match(/Hub has v(\\S+)/);
   if (m) _serverUpdateDismissed = m[1];
   document.getElementById('serverUpdateBanner').style.display = 'none';
 }
