@@ -198,20 +198,21 @@ describe('POST /api/nova-data/equipmentState/saveCutGrassRecord — issue #17 re
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Bug 3: dateTime format — keep UTC marker so clients render local time
+  // Bug 3: dateTime in server-local wall clock, SQL format
   //
-  // Original Bug 3 fix stripped the 'Z' suffix and stored "2026-04-29
-  // 18:13:10". Browsers / mobile parsed that as LOCAL, so a UTC source
-  // came out 2h early in CEST (waltervl issue #17 round 3). We now keep
-  // the explicit UTC marker — clients parse it correctly and render in
-  // the user's locale.
+  // Stock Novabot app renders dateTime verbatim (no Date parsing). Server
+  // converts UTC input to the operator's TZ (process.env.TZ, default
+  // Europe/Amsterdam) so the stock app shows correct local time and the
+  // dashboard / OpenNova app (which DO parse) also render correctly.
   // ──────────────────────────────────────────────────────────────────────────
 
-  it('[Bug 3] preserves UTC marker for clients to render local time', async () => {
+  it('[Bug 3] converts UTC input to server TZ wall clock (CEST = +2h)', async () => {
+    process.env.TZ = 'Europe/Amsterdam';
     const app = buildTestApp();
     const user = seedUser();
     seedEquipment({ user, snMower: SN });
 
+    // 18:13 UTC on 2026-04-29 = 20:13 in Amsterdam (CEST = UTC+2)
     const resp = await request(app)
       .post('/api/nova-data/equipmentState/saveCutGrassRecord')
       .field('sn', SN)
@@ -222,10 +223,11 @@ describe('POST /api/nova-data/equipmentState/saveCutGrassRecord — issue #17 re
 
     const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
     expect(rows).toHaveLength(1);
-    expect(rows[0].date_time).toBe('2026-04-29T18:13:10Z');
+    expect(rows[0].date_time).toBe('2026-04-29 20:13:10');
   });
 
-  it('[Bug 3] strips fractional seconds while keeping UTC marker', async () => {
+  it('[Bug 3] strips fractional seconds', async () => {
+    process.env.TZ = 'Europe/Amsterdam';
     const app = buildTestApp();
     const user = seedUser();
     seedEquipment({ user, snMower: SN });
@@ -239,10 +241,11 @@ describe('POST /api/nova-data/equipmentState/saveCutGrassRecord — issue #17 re
     const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
     const dt = rows[0].date_time ?? '';
     expect(dt).not.toMatch(/\./);
-    expect(dt.endsWith('Z')).toBe(true);
+    expect(dt).not.toMatch(/[TZ]/);
   });
 
-  it('[Bug 3] SQL-format input is upgraded to ISO+Z', async () => {
+  it('[Bug 3] SQL-format input is treated as UTC then converted', async () => {
+    process.env.TZ = 'Europe/Amsterdam';
     const app = buildTestApp();
     const user = seedUser();
     seedEquipment({ user, snMower: SN });
@@ -250,13 +253,11 @@ describe('POST /api/nova-data/equipmentState/saveCutGrassRecord — issue #17 re
     await request(app)
       .post('/api/nova-data/equipmentState/saveCutGrassRecord')
       .field('sn', SN)
-      .field('dateTime', '2026-04-29 18:13:10')
+      .field('dateTime', '2026-04-29T18:13:10Z')
       .field('workTime', '5');
 
     const rows = messageRepo.findWorkRecordsByUserId(user.app_user_id, 10, 0);
-    // Server interprets the SQL form as UTC and re-emits with explicit
-    // marker so the client side sees an unambiguous timestamp.
-    expect(rows[0].date_time).toMatch(/^2026-04-29T\d{2}:\d{2}:\d{2}Z$/);
+    expect(rows[0].date_time).toMatch(/^2026-04-29 \d{2}:\d{2}:\d{2}$/);
   });
 
   // ──────────────────────────────────────────────────────────────────────────

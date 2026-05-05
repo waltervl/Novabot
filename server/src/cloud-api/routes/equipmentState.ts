@@ -88,21 +88,41 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
     return null;
   }
 
-  // Normalise the timestamp to a UTC ISO-8601 string with the 'Z' suffix
-  // (e.g. "2026-04-29T18:13:10Z"). The app + dashboard parse this with
-  // `new Date(str)` and then format via toLocaleString, which respects
-  // the user's device timezone + locale automatically.
+  // Convert the timestamp into the server-local wall clock (TZ env var,
+  // defaulting to Europe/Amsterdam) and format as SQL-style
+  // "YYYY-MM-DD HH:MM:SS". The stock Novabot app renders dateTime
+  // verbatim — no Date parsing — so we have to pre-format it in the
+  // operator's locale or it shows the raw UTC string.
   //
-  // Earlier rounds stored the SQL-style "2026-04-29 18:13:10" form. Most
-  // browsers parse that as LOCAL time, so a UTC timestamp came out 2h
-  // early in CEST (waltervl issue #17 round 3). Keeping the explicit UTC
-  // marker means clients see the correct wall-clock time everywhere.
+  // Round history:
+  //   1. Stripped 'Z' but kept UTC value → app showed UTC verbatim, 2h
+  //      early in CEST (waltervl).
+  //   2. Returned ISO+Z → stock app showed "2026-05-04T21:19:19Z" verbatim
+  //      which is uglier and still UTC.
+  //   3. (current) Convert to TZ via Intl.DateTimeFormat → SQL form in
+  //      local wall clock, both stock + dashboard render correctly. The
+  //      OpenNova app uses toLocaleString itself and is timezone-agnostic.
+  const SERVER_TZ = process.env.TZ || 'Europe/Amsterdam';
   function normaliseDateTime(raw: string): string {
     try {
       const d = new Date(raw);
-      if (!isNaN(d.getTime())) return d.toISOString().slice(0, 19) + 'Z';
-    } catch { /* fall through */ }
-    return raw;
+      if (isNaN(d.getTime())) return raw;
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: SERVER_TZ,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+      }).formatToParts(d).reduce<Record<string, string>>((acc, p) => {
+        if (p.type !== 'literal') acc[p.type] = p.value;
+        return acc;
+      }, {});
+      // Intl en-CA: YYYY-MM-DD by default; hour 24h. Re-assemble manually
+      // so the format is identical regardless of CLDR future tweaks.
+      const hh = parts.hour === '24' ? '00' : parts.hour;
+      return `${parts.year}-${parts.month}-${parts.day} ${hh}:${parts.minute}:${parts.second}`;
+    } catch {
+      return raw;
+    }
   }
 
   const rawDateTime = pickStr('dateTime', 'date_time', 'startTime', 'time')

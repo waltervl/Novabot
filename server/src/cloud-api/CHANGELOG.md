@@ -2,17 +2,21 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-05 — Work records: dateTime in server-local wall clock (issue #17 round 4)
+
+- `routes/equipmentState.ts`: previous round stored ISO+Z, but the **stock
+  Novabot app** renders `dateTime` verbatim — no Date parsing — so users
+  saw `2026-05-04T21:19:19Z` literally. Convert UTC input to the server's
+  TZ (`process.env.TZ`, default `Europe/Amsterdam`) via `Intl.DateTimeFormat`
+  and emit the SQL-style `YYYY-MM-DD HH:MM:SS` form so the stock app shows
+  correct local wall-clock time. The OpenNova app + dashboard re-parse via
+  `toLocaleString` and stay timezone-agnostic.
+- Contract tests updated to assert CEST conversion (18:13Z → 20:13).
+
 ## 2026-05-05 — Work records: dateTime keeps UTC marker (issue #17 round 3)
 
-- `routes/equipmentState.ts`: `POST /api/nova-data/equipmentState/saveCutGrassRecord`
-  the previous Bug-3 fix stripped the `Z` from the ISO timestamp and stored
-  `2026-04-29 18:13:10` as a SQL-style string. Browsers + mobile parsers
-  treat that as LOCAL time, so a UTC source displayed 2 h early in CEST
-  (waltervl). Now stores the explicit UTC marker `2026-04-29T18:13:10Z`
-  via `normaliseDateTime()`. Both the dashboard (already handles `T`-
-  containing strings as ISO) and the app (`new Date(iso)`) parse this
-  correctly and render in the user's device timezone + locale.
-- Contract tests updated to match the new expectation.
+- Earlier attempt at the round-3 fix that stored ISO+Z. Superseded by
+  round-4 above because the stock Novabot app doesn't parse it.
 
 ## 2026-05-04 — Work records: area precision, selectMap formatting, finished detection (issue #17 round 2)
 
