@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeAnchorRebase, exportBundle } from '../../services/portableMap.js';
+import { computeAnchorRebase, exportBundle, parseBundle, BundleValidationError, type ExportInput } from '../../services/portableMap.js';
 import { ZipReader, BlobReader, TextWriter, type FileEntry } from '@zip.js/zip.js';
 
 describe('computeAnchorRebase', () => {
@@ -116,5 +116,88 @@ describe('exportBundle', () => {
     expect(polygon.areaM2).toBeCloseTo(5.9 * 15.32, 1);
 
     await reader.close();
+  });
+});
+
+describe('parseBundle', () => {
+  async function makeFixtureZip() {
+    const baseInput: ExportInput = {
+      sn: 'LFIN1231000211',
+      chargerLat: 52.14, chargerLng: 6.23, rtkQuality: 100,
+      chargingPose: { x: 0, y: 0, orientation: 0 },
+      workMap: { canonical: 'map0', alias: 'Tuin', points: [{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 2 }, { x: 0, y: 2 }] },
+      obstacles: [],
+      unicom: [],
+    };
+    return await exportBundle(baseInput);
+  }
+
+  it('round-trips a freshly-exported bundle', async () => {
+    const zip = await makeFixtureZip();
+    const parsed = await parseBundle(zip);
+    expect(parsed.metadata.sourceSn).toBe('LFIN1231000211');
+    expect(parsed.polygon.points).toHaveLength(4);
+    expect(parsed.obstacles).toEqual([]);
+    expect(parsed.unicom).toEqual([]);
+  });
+
+  it('rejects a non-zip blob', async () => {
+    await expect(parseBundle(Buffer.from('not a zip'))).rejects.toBeInstanceOf(BundleValidationError);
+  });
+
+  it('rejects bundle missing metadata.json', async () => {
+    const archiver = (await import('archiver')).default;
+    const { PassThrough } = await import('node:stream');
+    const buf: Buffer = await new Promise((res, rej) => {
+      const chunks: Buffer[] = [];
+      const sink = new PassThrough();
+      sink.on('data', (c) => chunks.push(c as Buffer));
+      sink.on('end', () => res(Buffer.concat(chunks)));
+      const a = archiver('zip');
+      a.on('error', rej);
+      a.pipe(sink);
+      a.append('{}', { name: 'polygon.json' });
+      void a.finalize();
+    });
+    await expect(parseBundle(buf)).rejects.toThrow(/metadata\.json/);
+  });
+
+  it('rejects polygon < 5 m^2', async () => {
+    const tiny: ExportInput = {
+      sn: 'X', chargerLat: 0, chargerLng: 0, rtkQuality: null,
+      chargingPose: { x: 0, y: 0, orientation: 0 },
+      workMap: { canonical: 'map0', alias: 'Tiny', points: [{ x: 0, y: 0 }, { x: 0.5, y: 0 }, { x: 0.5, y: 0.5 }, { x: 0, y: 0.5 }] },
+      obstacles: [], unicom: [],
+    };
+    const z = await exportBundle(tiny);
+    await expect(parseBundle(z)).rejects.toThrow(/area/);
+  });
+
+  it('rejects schemaVersion mismatch', async () => {
+    const valid = await makeFixtureZip();
+    const reader = new ZipReader(new BlobReader(new Blob([valid])));
+    const entries = await reader.getEntries();
+    const text = await (entries.find((e) => e.filename === 'metadata.json') as FileEntry).getData(new TextWriter());
+    await reader.close();
+    const meta = JSON.parse(text);
+    meta.schemaVersion = 999;
+
+    const archiver = (await import('archiver')).default;
+    const { PassThrough } = await import('node:stream');
+    const buf: Buffer = await new Promise((res, rej) => {
+      const chunks: Buffer[] = [];
+      const sink = new PassThrough();
+      sink.on('data', (c) => chunks.push(c as Buffer));
+      sink.on('end', () => res(Buffer.concat(chunks)));
+      const a = archiver('zip');
+      a.on('error', rej);
+      a.pipe(sink);
+      a.append(JSON.stringify(meta), { name: 'metadata.json' });
+      a.append('{"name":"map0","alias":"x","areaM2":100,"points":[{"x":0,"y":0},{"x":10,"y":0},{"x":10,"y":10},{"x":0,"y":10}]}', { name: 'polygon.json' });
+      a.append('[]', { name: 'obstacles.json' });
+      a.append('[]', { name: 'unicom.json' });
+      void a.finalize();
+    });
+    await expect(parseBundle(buf)).rejects.toThrow(/schemaVersion/);
   });
 });

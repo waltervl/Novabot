@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import archiver from 'archiver';
 import { PassThrough } from 'node:stream';
+import unzipper from 'unzipper';
 
 export interface XY {
   x: number;
@@ -200,4 +201,118 @@ export async function exportBundle(input: ExportInput): Promise<Buffer> {
 
     void archive.finalize();
   });
+}
+
+// ---------------------------------------------------------------------------
+// parseBundle — Task 4
+// ---------------------------------------------------------------------------
+
+export class BundleValidationError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'BundleValidationError';
+  }
+}
+
+export interface ParsedBundle {
+  metadata: {
+    schemaVersion: number;
+    exportedAt: string;
+    sourceSn: string;
+    sourceCharger: { lat: number; lng: number; rtkQualityAtExport: number | null };
+    originalChargingPose: { x: number; y: number; orientation: number };
+    originalMapAreaName: string;
+    userAliases: Record<string, string>;
+    checksum: string;
+  };
+  polygon: { name: string; alias: string; areaM2: number; points: XY[] };
+  obstacles: Array<{ name: string; alias: string; areaM2: number; points: XY[] }>;
+  unicom: Array<{ name: string; targetMapName: string; points: XY[] }>;
+}
+
+const REQUIRED_FILES = ['metadata.json', 'polygon.json', 'obstacles.json', 'unicom.json'];
+const MIN_AREA_M2 = 5;
+
+function assertObject(v: unknown, where: string): asserts v is Record<string, unknown> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    throw new BundleValidationError(`${where}: expected object`);
+  }
+}
+
+function assertNumber(v: unknown, where: string): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    throw new BundleValidationError(`${where}: expected finite number, got ${String(v)}`);
+  }
+  return v;
+}
+
+function assertPoints(v: unknown, where: string): XY[] {
+  if (!Array.isArray(v)) throw new BundleValidationError(`${where}: expected array`);
+  return v.map((p, i) => {
+    assertObject(p, `${where}[${i}]`);
+    return { x: assertNumber(p.x, `${where}[${i}].x`), y: assertNumber(p.y, `${where}[${i}].y`) };
+  });
+}
+
+export async function parseBundle(buf: Buffer): Promise<ParsedBundle> {
+  let entries: Map<string, string>;
+  try {
+    const dir = await unzipper.Open.buffer(buf);
+    entries = new Map();
+    for (const f of dir.files) {
+      if (f.type === 'File') entries.set(f.path, (await f.buffer()).toString('utf8'));
+    }
+  } catch (e) {
+    throw new BundleValidationError(`not a valid ZIP: ${(e as Error).message}`);
+  }
+
+  for (const r of REQUIRED_FILES) {
+    if (!entries.has(r)) throw new BundleValidationError(`missing ${r} in bundle`);
+  }
+
+  const metaRaw = JSON.parse(entries.get('metadata.json')!) as unknown;
+  assertObject(metaRaw, 'metadata.json');
+  if (metaRaw.schemaVersion !== 1) {
+    throw new BundleValidationError(`unsupported schemaVersion ${String(metaRaw.schemaVersion)}, expected 1`);
+  }
+
+  const polygonRaw = JSON.parse(entries.get('polygon.json')!) as unknown;
+  assertObject(polygonRaw, 'polygon.json');
+  const polygon = {
+    name: String(polygonRaw.name ?? ''),
+    alias: String(polygonRaw.alias ?? ''),
+    areaM2: assertNumber(polygonRaw.areaM2, 'polygon.areaM2'),
+    points: assertPoints(polygonRaw.points, 'polygon.points'),
+  };
+  if (polygon.areaM2 < MIN_AREA_M2) {
+    throw new BundleValidationError(`polygon area ${polygon.areaM2.toFixed(2)} m^2 below ${MIN_AREA_M2} m^2 minimum`);
+  }
+
+  const obstaclesRaw = JSON.parse(entries.get('obstacles.json')!) as unknown;
+  if (!Array.isArray(obstaclesRaw)) throw new BundleValidationError('obstacles.json: expected array');
+  const obstacles = obstaclesRaw.map((o: unknown, i: number) => {
+    assertObject(o, `obstacles[${i}]`);
+    return {
+      name: String(o.name ?? ''),
+      alias: String(o.alias ?? ''),
+      areaM2: assertNumber(o.areaM2, `obstacles[${i}].areaM2`),
+      points: assertPoints(o.points, `obstacles[${i}].points`),
+    };
+  });
+
+  const unicomRaw = JSON.parse(entries.get('unicom.json')!) as unknown;
+  if (!Array.isArray(unicomRaw)) throw new BundleValidationError('unicom.json: expected array');
+  const unicom = unicomRaw.map((u: unknown, i: number) => {
+    assertObject(u, `unicom[${i}]`);
+    return {
+      name: String(u.name ?? ''),
+      targetMapName: String(u.targetMapName ?? ''),
+      points: assertPoints(u.points, `unicom[${i}].points`),
+    };
+  });
+
+  return {
+    metadata: metaRaw as ParsedBundle['metadata'],
+    polygon, obstacles, unicom,
+  };
 }
