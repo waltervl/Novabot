@@ -15,13 +15,14 @@ import {
   Platform,
   useWindowDimensions,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useStyles, useTheme, type Colors } from '../theme';
 import { useActiveMower } from '../hooks/useActiveMower';
+import { useMowerState } from '../hooks/useMowerState';
 import { getServerUrl } from '../services/auth';
 import { useI18n } from '../i18n';
 
@@ -57,6 +58,17 @@ export default function CameraScreen() {
   const { activeMower } = useActiveMower();
   const mower = activeMower && activeMower.online ? activeMower : null;
   const sn = mower?.sn ?? '';
+
+  // Live sensor readout for the on-stream overlay chips. Mirrors the chips
+  // rendered on HomeScreen so the user gets the same vitals while watching
+  // the camera feed.
+  const { devices } = useMowerState();
+  const sensors = sn ? devices.get(sn)?.sensors : undefined;
+  const battery = sensors ? parseInt(sensors.battery_power ?? sensors.battery_capacity ?? '', 10) : NaN;
+  const wifiRssi = sensors?.wifi_rssi ?? null;
+  const rtkSat = sensors?.rtk_sat ?? null;
+  const cpuTemp = sensors?.cpu_temperature ?? null;
+  const bladeSpeed = parseInt(sensors?.blade_speed ?? '0', 10) || 0;
 
   const [selectedTopic, setSelectedTopic] = useState('front');
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
@@ -188,6 +200,40 @@ img{max-width:100%;max-height:100%;object-fit:contain}
               mixedContentMode="always"
               allowsInlineMediaPlayback
             />
+            {/* Sensor chips overlaid on the stream — pointerEvents="none"
+                lets touches pass through to the WebView underneath. */}
+            <View style={styles.chipOverlay} pointerEvents="none">
+              {!Number.isNaN(battery) && (
+                <View style={styles.overlayChip}>
+                  <Ionicons name="battery-half" size={12} color="#fff" />
+                  <Text style={styles.overlayChipText}>{battery}%</Text>
+                </View>
+              )}
+              {wifiRssi != null && (
+                <View style={styles.overlayChip}>
+                  <Ionicons name="wifi" size={12} color="#fff" />
+                  <Text style={styles.overlayChipText}>{wifiRssi}</Text>
+                </View>
+              )}
+              {rtkSat != null && (
+                <View style={styles.overlayChip}>
+                  <Ionicons name="navigate" size={12} color="#fff" />
+                  <Text style={styles.overlayChipText}>{rtkSat} sat</Text>
+                </View>
+              )}
+              {cpuTemp != null && (
+                <View style={styles.overlayChip}>
+                  <Ionicons name="thermometer" size={12} color="#fff" />
+                  <Text style={styles.overlayChipText}>{cpuTemp}°</Text>
+                </View>
+              )}
+              {bladeSpeed > 0 && (
+                <View style={styles.overlayChip}>
+                  <MaterialCommunityIcons name="saw-blade" size={12} color="#fff" />
+                  <Text style={styles.overlayChipText}>{bladeSpeed} rpm</Text>
+                </View>
+              )}
+            </View>
             {loading && (
               <View style={styles.loadingOverlay}>
                 <ActivityIndicator size="large" color={colors.emerald} />
@@ -261,6 +307,32 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     gap: 8,
   },
   loadingText: { fontSize: 12, color: c.textMuted },
+  chipOverlay: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    right: 10,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  overlayChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  overlayChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#fff',
+    fontVariant: ['tabular-nums'],
+  },
   infoBar: {
     flexDirection: 'row', justifyContent: 'space-between',
     paddingHorizontal: 12, paddingVertical: 6,
