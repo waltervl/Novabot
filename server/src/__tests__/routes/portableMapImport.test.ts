@@ -438,3 +438,48 @@ describe('POST /confirm', () => {
     expect(res.status).toBe(409);
   });
 });
+
+// ── Task 15: POST /cancel + GET /active ───────────────────────────────────
+
+describe('POST /cancel and GET /active', () => {
+  it('cancel wipes session; /active returns null after', async () => {
+    const sn = 'LFIN_T15A';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await uploadBundle(sn);
+
+    // Active should reflect the uploaded session
+    const active1 = await request(app)
+      .get(`/api/admin-status/maps/${sn}/import-portable/active`);
+    expect(active1.status).toBe(200);
+    expect(active1.body.stagingId).toBe(stagingId);
+    expect(active1.body.state).toBe('UPLOADED');
+
+    // Cancel the session
+    const cancel = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/cancel`);
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.ok).toBe(true);
+
+    // Active should now return null
+    const active2 = await request(app)
+      .get(`/api/admin-status/maps/${sn}/import-portable/active`);
+    expect(active2.status).toBe(200);
+    expect(active2.body.stagingId).toBeNull();
+    expect(active2.body.state).toBeNull();
+  });
+
+  it('cancel is idempotent — returns 200 for unknown stagingId', async () => {
+    const res = await request(app)
+      .post(`/api/admin-status/maps/LFIN_T15B/import-portable/nonexistent-id/cancel`);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it('/active returns null when no session exists for SN', async () => {
+    const res = await request(app)
+      .get(`/api/admin-status/maps/LFIN_T15C/import-portable/active`);
+    expect(res.status).toBe(200);
+    expect(res.body.stagingId).toBeNull();
+  });
+});
