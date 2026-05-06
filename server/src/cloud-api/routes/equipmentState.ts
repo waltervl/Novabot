@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { equipmentRepo, messageRepo } from '../../db/repositories/index.js';
-import { deviceCache } from '../../mqtt/sensorData.js';
+import { deviceCache, getMowingSession, clearMowingSession } from '../../mqtt/sensorData.js';
 import { ok } from '../../types/index.js';
 
 export const equipmentStateRouter = Router();
@@ -154,7 +154,7 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
       const a = parseFloat(cache.get('cov_area') ?? '');
       if (Number.isFinite(a)) workArea = a;
     }
-    if (workTime === null) {
+    if (workTime === null || workTime === 0) {
       // valid_cov_work_time is already in minutes; cov_work_time is in seconds.
       // Try the minutes field first, fall back to seconds ÷ 60.
       const tMin = parseFloat(cache.get('valid_cov_work_time') ?? '');
@@ -163,6 +163,19 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
       } else {
         const tSec = parseFloat(cache.get('cov_work_time') ?? '');
         if (Number.isFinite(tSec) && tSec > 0) workTime = Math.round(tSec / 60);
+      }
+    }
+    // Issue #17 round 3: stock v5.7.1 firmware ships saveCutGrassRecord
+    // with workTime=0 and resets cov_work_time / valid_cov_work_time
+    // before the POST is built — both fallbacks above end up at 0 even
+    // though the mower actually ran for many minutes. Compute the session
+    // length server-side from the work_status timer maintained by
+    // sensorData.processSensors instead.
+    if (workTime === null || workTime === 0) {
+      const session = getMowingSession(sn);
+      if (session && session.lastActiveAt > session.startedAt) {
+        const elapsedMin = Math.round((session.lastActiveAt - session.startedAt) / 60000);
+        if (elapsedMin > 0) workTime = elapsedMin;
       }
     }
     if (mapNames === null) {
@@ -234,5 +247,11 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
   );
 
   console.log(`[STATE] Werkrecord opgeslagen: ${recordId} voor ${sn}`);
+
+  // Issue #17: drop the in-memory mowing-session timer so the next
+  // coverage task starts fresh. Without this, a follow-up task would
+  // inherit the previous session's startedAt and overstate its duration.
+  clearMowingSession(sn);
+
   res.json(ok(null));
 });

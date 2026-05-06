@@ -229,6 +229,55 @@ function translateWorkStatus(raw: string): string {
   return WORK_STATUS_LABELS[n] ?? `State ${n}`;
 }
 
+// ── Mowing session timer (issue #17) ────────────────────────────────────────
+// Stock v5.x firmware emits cov_work_time / valid_cov_work_time inconsistently:
+// they read 0 in the cache by the time the mower POSTs saveCutGrassRecord,
+// so the work-record row landed with `mowed minutes = 0`. Track sessions
+// server-side from the work_status sensor stream — any active task status
+// (100..150) starts/refreshes the session, and saveCutGrassRecord computes
+// the duration from start → last-active when the body field is missing.
+
+export interface MowingSession {
+  startedAt: number;     // ms epoch when the SN first entered a mowing status
+  lastActiveAt: number;  // ms epoch of the most recent mowing-status ping
+}
+
+const ACTIVE_MOWING_STATUSES = new Set<number>([100, 101, 102, 103, 150]);
+
+const mowingSessions = new Map<string, MowingSession>();
+
+function isActiveMowingStatus(value: string | null | undefined): boolean {
+  if (value == null) return false;
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && ACTIVE_MOWING_STATUSES.has(n);
+}
+
+/** Returns the live session timer for a mower, or undefined when no
+ *  mowing status has been observed since the last `clearMowingSession` call.
+ *  Used by the cloud-API `saveCutGrassRecord` fallback to compute duration
+ *  when the firmware POST omits / zeroes the workTime field. */
+export function getMowingSession(sn: string): MowingSession | undefined {
+  return mowingSessions.get(sn);
+}
+
+/** Drop the session after a work record is persisted so the next coverage
+ *  task starts fresh. Idempotent. */
+export function clearMowingSession(sn: string): void {
+  mowingSessions.delete(sn);
+}
+
+/** Internal — called from processSensors when work_status changes. Exported
+ *  for unit testing the transition rules in isolation. */
+export function _updateMowingSession(sn: string, newWorkStatus: string, now = Date.now()): void {
+  if (!isActiveMowingStatus(newWorkStatus)) return; // leaving mowing leaves the session intact
+  const existing = mowingSessions.get(sn);
+  if (existing) {
+    existing.lastActiveAt = now;
+  } else {
+    mowingSessions.set(sn, { startedAt: now, lastActiveAt: now });
+  }
+}
+
 export function translateValue(field: string, rawValue: string): string {
   switch (field) {
     case 'charger_status': {
@@ -554,6 +603,10 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
 
     snValues.set(field, strValue);
     changes.set(field, translateValue(field, strValue));
+
+    // Issue #17: refresh the in-memory mowing-session timer whenever
+    // work_status passes through an active task value (100..150).
+    if (field === 'work_status') _updateMowingSession(sn, strValue);
   }
 
   // Extraheer geneste GPS data uit report_state_timer_data → localization.gps_position
