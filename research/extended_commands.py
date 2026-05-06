@@ -2277,27 +2277,55 @@ def _restart_novabot_mapping():
     # using the pre-shift polygon for path generation even after sync_map
     # rewrote the on-disk CSVs (verified live 2026-05-05 op LFIN1231000211 —
     # coverage_planner uptime was 2d16h while disk-CSVs were freshly shifted).
+    #
+    # subprocess.run + nohup-in-string LOOKS detached but isn't: when the
+    # bash parent exits, the kernel can deliver SIGHUP to the entire process
+    # group and the just-started ros2 launch dies silently. Verified live
+    # 2026-05-06: novabot_mapping died ~1h after sync_map, restart-log mtime
+    # was the previous day, robot_decision then raised Error 140.
+    #
+    # Fix: detach via setsid + Popen(start_new_session=True) so the spawned
+    # ros2 launch lives in its own session and survives Python's exit.
+    import os
     import subprocess
     try:
         cmd = (
-            '(pkill -f "novabot_mapping_launch.py" || true) && '
-            '(pkill -f "coverage_planner_server.launch.py" || true) && '
-            "sleep 1 && "
-            "(killall -9 novabot_mapping 2>/dev/null || true) && "
-            "(killall -9 coverage_planner_server 2>/dev/null || true) && "
-            "sleep 1 && "
-            ". /opt/ros/galactic/setup.bash && "
-            ". /root/novabot/install/setup.bash && "
-            "export LD_LIBRARY_PATH=/usr/lib/hbmedia/:/usr/lib/hbbpu/:/usr/lib/sensorlib:$LD_LIBRARY_PATH && "
-            "export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu:/usr/bpu:/usr/opencv_world_4.6/lib:$LD_LIBRARY_PATH && "
-            "export ROS_LOG_DIR=/root/novabot/data/ros2_log && "
-            "export ROS_LOCALHOST_ONLY=1 && "
-            "nohup ros2 launch novabot_mapping novabot_mapping_launch.py "
+            '(pkill -f "novabot_mapping_launch.py" || true); '
+            '(pkill -f "coverage_planner_server.launch.py" || true); '
+            "sleep 1; "
+            "(killall -9 novabot_mapping 2>/dev/null || true); "
+            "(killall -9 coverage_planner_server 2>/dev/null || true); "
+            "sleep 1; "
+            ". /opt/ros/galactic/setup.bash; "
+            ". /root/novabot/install/setup.bash; "
+            "export LD_LIBRARY_PATH=/usr/lib/hbmedia/:/usr/lib/hbbpu/:/usr/lib/sensorlib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:/usr/bpu:/usr/opencv_world_4.6/lib:$LD_LIBRARY_PATH; "
+            "export ROS_LOG_DIR=/root/novabot/data/ros2_log; "
+            "export ROS_LOCALHOST_ONLY=1; "
+            "setsid nohup ros2 launch novabot_mapping novabot_mapping_launch.py "
             ">> $ROS_LOG_DIR/novabot_mapping_restart.log 2>&1 </dev/null & "
-            "nohup ros2 launch coverage_planner coverage_planner_server.launch.py "
-            ">> $ROS_LOG_DIR/coverage_planner_restart.log 2>&1 </dev/null &"
+            "setsid nohup ros2 launch coverage_planner coverage_planner_server.launch.py "
+            ">> $ROS_LOG_DIR/coverage_planner_restart.log 2>&1 </dev/null & "
+            "disown -a; "
+            "exit 0"
         )
-        rc = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True, timeout=20)
+        subprocess.Popen(
+            ["bash", "-lc", cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        # Give the kills + setsid'd launches time to settle before returning,
+        # but don't wait for the launches themselves (they keep running).
+        import time
+        time.sleep(3)
+        # Verify at least the novabot_mapping binary respawned. coverage_planner
+        # is checked by sync_map's downstream verification.
+        rc = subprocess.run(
+            ["pgrep", "-f", "novabot_mapping/novabot_mapping"],
+            capture_output=True, text=True, timeout=5,
+        )
         return rc.returncode == 0
     except Exception:
         return False
