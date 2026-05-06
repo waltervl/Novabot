@@ -2015,6 +2015,52 @@ dashboardRouter.get('/work-records/:sn', (req: Request, res: Response) => {
   const total = messageRepo.countWorkRecordsByEquipmentId(equipmentId);
   const rows = messageRepo.findWorkRecordsByEquipmentId(equipmentId, limit, offset) as WorkRecordRow[];
 
+  // Resolve `mapNames` (firmware slot index, e.g. "1") to the user's
+  // alias from the maps table (e.g. "Achtertuin"). The mower posts
+  // either a single index, a comma/space-separated list (multi-map
+  // session), or a JSON array — handle all three so future firmware
+  // tweaks don't silently break the display. Falls back to the raw
+  // value when no DB row matches the slot.
+  const workMaps = mapRepo.findByMowerSnAndType(sn, 'work');
+  const aliasByCanonical = new Map<string, string>();
+  for (const m of workMaps) {
+    if (m.canonical_name && m.map_name) {
+      aliasByCanonical.set(m.canonical_name, m.map_name);
+    }
+  }
+  // Firmware encodes the per-task map selection as a 3-slot enum (per
+  // docs/reference/MOWING-FLOW.md): 1 = map0, 10 = map1, 200 = map2.
+  // saveCutGrassRecord stores that enum verbatim in `map_names`. The
+  // stock Novabot app translates it to the user's alias for display
+  // (e.g. "1" → "Achtertuin"); mirror that here so OpenNova matches.
+  const SLOT_BY_ENUM: Record<string, number> = { '1': 0, '10': 1, '200': 2 };
+  function resolveMapNames(raw: string | null | undefined): string | null {
+    if (raw == null || raw === '') return null;
+    const tokens = (() => {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.map(String);
+      } catch { /* not JSON, fall through */ }
+      return String(raw).split(/[\s,]+/).filter(Boolean);
+    })();
+    const friendly = tokens.map(tok => {
+      // Token shapes we accept:
+      //   "1"/"10"/"200"  → firmware enum, look up via SLOT_BY_ENUM
+      //   "map0"/"map1"   → already canonical
+      //   "Achtertuin"    → already an alias (older rows may store this)
+      let canonical: string | null = null;
+      if (Object.prototype.hasOwnProperty.call(SLOT_BY_ENUM, tok)) {
+        canonical = `map${SLOT_BY_ENUM[tok]}`;
+      } else if (/^map\d+$/i.test(tok)) {
+        canonical = tok.toLowerCase();
+      }
+      return (canonical && aliasByCanonical.get(canonical))
+        ?? aliasByCanonical.get(tok)
+        ?? tok;
+    });
+    return friendly.join(', ');
+  }
+
   res.json({
     records: rows.map(r => ({
       recordId: r.record_id,
@@ -2022,7 +2068,7 @@ dashboardRouter.get('/work-records/:sn', (req: Request, res: Response) => {
       workTime: r.work_time,
       workArea: r.work_area_m2,
       cutGrassHeight: r.cut_grass_height,
-      mapNames: r.map_names,
+      mapNames: resolveMapNames(r.map_names),
       workStatus: r.work_status,
       startWay: r.start_way,
       workRecordDate: r.work_record_date,
