@@ -82,11 +82,12 @@ const DEMO_SCHEDULES: Schedule[] = [
   { id: '904', scheduleId: '904', sn: DEMO_SN, day_of_week: 0, weekdays: [0], start_hour: 14, start_minute: 0, startTime: '14:00', duration_minutes: 45, enabled: false, cuttingHeight: 40, pathDirection: 180, created_at: '2026-03-28' },
 ];
 
+const isoNow = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString();
 const DEMO_HISTORY: WorkRecord[] = [
-  { id: 801, sn: DEMO_SN, start_time: new Date(Date.now() - 3600000 * 2).toISOString(), end_time: new Date(Date.now() - 3600000).toISOString(), duration_seconds: 3420, area_m2: 245, status: 'completed', map_name: 'Front Yard' },
-  { id: 802, sn: DEMO_SN, start_time: new Date(Date.now() - 86400000).toISOString(), end_time: new Date(Date.now() - 86400000 + 5400000).toISOString(), duration_seconds: 5280, area_m2: 380, status: 'completed', map_name: 'Back Garden' },
-  { id: 803, sn: DEMO_SN, start_time: new Date(Date.now() - 86400000 * 2).toISOString(), end_time: new Date(Date.now() - 86400000 * 2 + 1800000).toISOString(), duration_seconds: 1740, area_m2: 120, status: 'interrupted', map_name: 'Front Yard' },
-  { id: 804, sn: DEMO_SN, start_time: new Date(Date.now() - 86400000 * 4).toISOString(), end_time: new Date(Date.now() - 86400000 * 4 + 7200000).toISOString(), duration_seconds: 7080, area_m2: 510, status: 'completed', map_name: 'Full Property' },
+  { recordId: '801', dateTime: isoNow(-3600000),         workTime: 57, workArea: 245, cutGrassHeight: 1, mapNames: 'Front Yard',   workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-3600000) },
+  { recordId: '802', dateTime: isoNow(-86400000),        workTime: 88, workArea: 380, cutGrassHeight: 1, mapNames: 'Back Garden',  workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-86400000) },
+  { recordId: '803', dateTime: isoNow(-86400000 * 2),    workTime: 29, workArea: 120, cutGrassHeight: 2, mapNames: 'Front Yard',   workStatus: 'interrupted artificially', startWay: 'app', workRecordDate: isoNow(-86400000 * 2) },
+  { recordId: '804', dateTime: isoNow(-86400000 * 4),    workTime: 118, workArea: 510, cutGrassHeight: 1, mapNames: 'Full Property',workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-86400000 * 4) },
 ];
 
 const DemoContext = createContext<DemoState>({

@@ -79,15 +79,22 @@ export interface Schedule {
   updatedAt?: string;
 }
 
+/** Shape returned by `GET /api/dashboard/work-records/:sn`. Server side
+ *  comes from `messageRepo.findWorkRecordsByEquipmentId` (see
+ *  `dashboard.ts`); fields are camelCase via the JSON serializer. */
 export interface WorkRecord {
-  id: number;
-  sn: string;
-  start_time: string;
-  end_time: string | null;
-  duration_seconds: number;
-  area_m2: number;
-  status: string;
-  map_name: string | null;
+  recordId: string;
+  /** Mower-supplied timestamp ('05/06 12:09' or 'YYYY-MM-DD HH:MM:SS'). */
+  dateTime: string | null;
+  /** Coverage minutes — server uses #17 round 6 jsonBody parse. */
+  workTime: number | null;
+  workArea: number | null;
+  cutGrassHeight: number | null;
+  mapNames: string | null;
+  workStatus: string | null;
+  startWay: string | null;
+  /** Server-side wall-clock when the row landed. */
+  workRecordDate: string | null;
 }
 
 export interface TrailPoint {

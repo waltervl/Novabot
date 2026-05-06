@@ -105,31 +105,39 @@ export default function HistoryScreen() {
           </View>
         )}
 
-        {records.map((r) => (
-          <View key={r.id} style={styles.recordCard}>
-            <View style={styles.recordHeader}>
-              <View style={[styles.statusDot, { backgroundColor: statusColor(r.status, colors) }]} />
-              <Text style={styles.recordDate}>{formatDate(r.start_time)}</Text>
-              <Text style={[styles.recordStatus, { color: statusColor(r.status, colors) }]}>
-                {r.status}
-              </Text>
-            </View>
+        {records.map((r) => {
+          // Mower POSTs dateTime as 'MM/DD HH:MM' (no year), server stores
+          // workRecordDate as 'YYYY-MM-DD HH:MM:SS' wall-clock. Prefer the
+          // server timestamp because Date() parses it deterministically; fall
+          // back to mower-supplied dateTime for legacy rows.
+          const tsRaw = r.workRecordDate ?? r.dateTime ?? '';
+          const minutes = r.workTime ?? 0;
+          const areaM2 = r.workArea ?? 0;
+          const status = r.workStatus ?? '';
+          return (
+            <View key={r.recordId} style={styles.recordCard}>
+              <View style={styles.recordHeader}>
+                <View style={[styles.statusDot, { backgroundColor: statusColor(status, colors) }]} />
+                <Text style={styles.recordDate}>{formatDate(tsRaw)}</Text>
+                <Text style={[styles.recordStatus, { color: statusColor(status, colors) }]}>
+                  {status || '—'}
+                </Text>
+              </View>
 
-            <View style={styles.recordStats}>
-              <StatChip icon="time-outline" value={formatDuration(r.duration_seconds)} />
-              <StatChip icon="resize-outline" value={`${r.area_m2.toFixed(0)} m²`} />
-              {r.map_name && (
-                <StatChip icon="map-outline" value={r.map_name} />
-              )}
-            </View>
+              <View style={styles.recordStats}>
+                <StatChip icon="time-outline" value={`${minutes} min`} />
+                <StatChip icon="resize-outline" value={`${areaM2.toFixed(2)} m²`} />
+                {r.mapNames && (
+                  <StatChip icon="map-outline" value={r.mapNames} />
+                )}
+              </View>
 
-            {r.end_time && (
               <Text style={styles.recordTimeRange}>
-                {formatTime(r.start_time)} — {formatTime(r.end_time)}
+                {formatTime(tsRaw)}
               </Text>
-            )}
-          </View>
-        ))}
+            </View>
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -146,12 +154,19 @@ function StatChip({ icon, value }: { icon: React.ComponentProps<typeof Ionicons>
   );
 }
 
-function statusColor(status: string, c: Colors): string {
-  switch (status.toLowerCase()) {
-    case 'completed': return c.green;
-    case 'interrupted': return c.amber;
-    case 'error': return c.red;
-    default: return c.textDim;
+function statusColor(status: string | null | undefined, c: Colors): string {
+  switch ((status ?? '').toLowerCase()) {
+    case 'completed':
+    case 'finished':
+      return c.green;
+    case 'interrupted':
+    case 'interrupted artificially':
+    case 'interrupted abnormally':
+      return c.amber;
+    case 'error':
+      return c.red;
+    default:
+      return c.textDim;
   }
 }
 
