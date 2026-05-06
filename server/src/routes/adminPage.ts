@@ -338,6 +338,13 @@ export function adminPageHtml(): string {
             <button onclick="cancelPolygonCalibration()" style="flex:1;padding:6px;background:#374151;border:0;border-radius:6px;color:#fff;cursor:pointer">Cancel</button>
             <button id="polygonCalApplyBtn" onclick="applyPolygonOffset()" style="flex:1.2;padding:6px;background:#10b981;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600">Apply</button>
           </div>
+          <a href="javascript:void(0)" onclick="document.getElementById('infoPolygonOffset').style.display=document.getElementById('infoPolygonOffset').style.display==='block'?'none':'block'" style="font-size:10px;color:#94a3b8;text-decoration:underline;cursor:pointer;display:inline-block;margin-top:6px">What does Apply do?</a>
+          <div id="infoPolygonOffset" style="display:none;margin-top:6px;padding:8px 10px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:10px;color:#cbd5e1;line-height:1.55">
+            <div><b>Persists the offset in DB and triggers a full sync_map.</b></div>
+            <div style="margin-top:4px">Same files as Restore + Realign — wipes mower's <code>csv_file/</code> + <code>x3_csv_file/</code>, reloads polygon CSVs with shifted coords, regenerates <code>_latest.zip</code>, restarts <code>novabot_mapping</code> + <code>coverage_planner_server</code>.</div>
+            <div style="margin-top:4px"><b style="color:#86efac">charging_pose theta</b> uses the saved DB value, not live IMU drift.</div>
+            <div style="margin-top:4px"><b style="color:#fca5a5">Cannot un-do</b> on the mower without another Apply (or Reset to 0,0 + Apply).</div>
+          </div>
           <div id="polygonCalStatus" style="margin-top:8px;font-size:11px;color:#9ca3af;min-height:14px"></div>
         </div>
       </div>
@@ -378,6 +385,14 @@ export function adminPageHtml(): string {
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+          <a href="javascript:void(0)" onclick="document.getElementById('infoRecal').style.display=document.getElementById('infoRecal').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
+        </div>
+        <div id="infoRecal" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
+          <div><b>Snaps the dock pose to where the mower currently sits.</b></div>
+          <div style="margin-top:6px"><b style="color:#86efac">Updates:</b> <code>charging_station.yaml</code> + <code>map_info.json</code> in <code>csv_file/</code> and <code>x3_csv_file/</code> on the mower (3 files). Saves the new theta in DB so subsequent <code>sync_map</code> calls reuse it.</div>
+          <div style="margin-top:6px"><b style="color:#fca5a5">Does NOT touch:</b> polygon CSVs, the <code>_latest.zip</code>, charger GPS, or the mower's coverage planner state.</div>
+          <div style="margin-top:6px"><b style="color:#93c5fd">Use when:</b> mower drifted after heading discovery or theta is wrong but the polygon shape itself is fine.</div>
+          <div style="margin-top:6px"><b style="color:#fbbf24">Required:</b> mower on dock + <code>battery_state == CHARGING</code> + RTK FIX + non-zero <code>map_position</code>.</div>
         </div>
       </div>
       <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
@@ -404,8 +419,20 @@ export function adminPageHtml(): string {
             <input type="checkbox" id="restoreRealignChk" checked style="cursor:pointer">
             Also push to mower (realign)
           </label>
+          <a href="javascript:void(0)" onclick="document.getElementById('infoRestore').style.display=document.getElementById('infoRestore').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
         </div>
-        <div id="mapRecoveryStatus" style="font-size:12px;margin-top:6px;display:none"></div>
+        <div id="infoRestore" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
+          <div><b style="color:#86efac">Without "push to mower" — DB-only restore:</b><br>
+            Replaces the selected polygon rows in the server DB. Mower keeps whatever it already has on disk until something else triggers a sync.</div>
+          <div style="margin-top:8px"><b style="color:#fca5a5">With "push to mower" — full realign:</b><br>
+            1) DB restore (overwrites all polygon rows from this backup ZIP)<br>
+            2) <code>map_calibration.charger_lat/lng</code> updated from mower's live RTK GPS<br>
+            3) <code>_latest.zip</code> regenerated with embedded charger pose<br>
+            4) Mower wipes <code>csv_file/</code> + <code>x3_csv_file/</code>, downloads fresh ZIP, rewrites <code>charging_station.yaml</code> and 4 mirror copies of <code>map_info.json</code> (5 files total)<br>
+            5) Mower restarts <code>novabot_mapping</code>, <code>coverage_planner_server</code>, and <code>auto_recharge_server</code></div>
+          <div style="margin-top:8px"><b style="color:#93c5fd">Use when:</b> polygon corruption, post-mapping rollback, or after admin map edits that need to land on the mower.</div>
+          <div style="margin-top:8px"><b style="color:#fbbf24">Required for realign:</b> mower online + RTK FIX + on dock (for the GPS update step).</div>
+        </div>
       </div>
     </div>
   </div>
