@@ -416,6 +416,19 @@ export function adminPageHtml(): string {
       </div>
       <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
 
+      <div style="padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px;margin-top:16px">
+        <div style="font-size:12px;font-weight:600;color:#67e8f9;margin-bottom:8px">Portable Map Bundle</div>
+        <div style="font-size:11px;color:#94a3b8;line-height:1.6;margin-bottom:8px">
+          Export the active polygon as a portable .novabotmap bundle. Re-import on this mower or another to anchor the polygon at a new charger position via a 1m calibration drive.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button onclick="exportPortableBundle()" style="padding:7px 18px;background:rgba(34,211,238,.2);color:#67e8f9;border:1px solid rgba(34,211,238,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Export bundle</button>
+          <input id="portableImportFile" type="file" accept=".novabotmap,.zip" style="display:none" onchange="startPortableImport()">
+          <button onclick="document.getElementById('portableImportFile').click()" style="padding:7px 18px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import bundle...</button>
+        </div>
+        <div id="portableImportPanel" style="display:none;margin-top:10px"></div>
+      </div>
+
       <div style="padding:8px 12px;background:rgba(124,58,237,.05);border:1px solid rgba(124,58,237,.2);border-radius:8px;margin-top:16px">
         <div style="font-size:12px;font-weight:600;color:#a78bfa;margin-bottom:8px">Map Recovery — restore from auto-backup snapshots</div>
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
@@ -2521,6 +2534,23 @@ async function recalibrateChargingPose() {
     status.style.color = '#f87171';
     status.textContent = 'Recalibrate failed: ' + e.message;
   }
+}
+
+// ── Portable Map Bundle functions ─────────────────────────────────────────────
+
+async function exportPortableBundle() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) { alert('Select a mower first'); return; }
+  var url = '/api/admin-status/maps/' + encodeURIComponent(sn) + '/export-portable';
+  var r = await fetch(url, { headers: { 'Authorization': token } });
+  if (!r.ok) { alert('Export failed: HTTP ' + r.status); return; }
+  var blob = await r.blob();
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  var ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+  a.download = sn + '-' + ts + '-portable.novabotmap';
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── Map Recovery functions ────────────────────────────────────────────────────
