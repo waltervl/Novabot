@@ -420,7 +420,16 @@ export class ApiClient {
   // ── Work History ─────────────────────────────────────────────────────
 
   async getWorkRecords(sn: string): Promise<WorkRecord[]> {
-    return this.request<WorkRecord[]>('GET', `/api/dashboard/work-records/${enc(sn)}`);
+    // Server returns `{ records, total }`. Extract the array so callers can
+    // keep treating the result as a flat WorkRecord[]. The HistoryScreen
+    // showed "No mowing sessions yet" because we used to assume the body
+    // *was* an array — Array.isArray fell through to [] and the user saw
+    // nothing even when 1300+ rows existed in the DB.
+    const body = await this.request<{ records?: WorkRecord[] } | WorkRecord[]>(
+      'GET', `/api/dashboard/work-records/${enc(sn)}`,
+    );
+    if (Array.isArray(body)) return body;
+    return Array.isArray(body?.records) ? body.records : [];
   }
 
   // ── GPS Trail ────────────────────────────────────────────────────────
