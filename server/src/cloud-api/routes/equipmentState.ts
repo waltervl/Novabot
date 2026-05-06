@@ -37,7 +37,36 @@ function toJsonField(v: unknown): string | null {
 
 equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, res: Response) => {
   const srcIp = req.ip || req.socket.remoteAddress || '?';
-  const body = req.body as Record<string, unknown>;
+  const rawBody = req.body as Record<string, unknown>;
+
+  // Issue #17 round 6: live capture 2026-05-06 on LFIN1231000211 (custom-24
+  // firmware) showed the mower POSTing only `sn` + `jsonBody` as multipart
+  // text fields, where `jsonBody` is itself a JSON-encoded string carrying
+  // every real field (cutGrassHeight, dateTime, workTime, mapNames, ...).
+  // Earlier rounds of pickNum / pickStr looked at the top-level body only
+  // and so always found nothing — the work_records column for `work_time`
+  // landed null on every row. Merge the parsed jsonBody back onto the
+  // body before extraction so all the existing variant-name matching
+  // continues to work without a per-field special case.
+  const body: Record<string, unknown> = { ...rawBody };
+  if (typeof body.jsonBody === 'string') {
+    try {
+      const parsed = JSON.parse(body.jsonBody);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          // Don't let the nested copy overwrite top-level fields the
+          // operator may have set explicitly (e.g. test fixtures).
+          if (body[k] === undefined) body[k] = v;
+        }
+      }
+    } catch {
+      // Malformed jsonBody — log + fall through; existing top-level
+      // fields remain intact, work_time may still land null but the
+      // sn-only row is preserved.
+      console.log('[STATE] saveCutGrassRecord: jsonBody is not valid JSON, ignoring');
+    }
+  }
+
   const sn = typeof body.sn === 'string' ? body.sn : undefined;
 
   // Log every incoming key so we can spot field-name mismatches
@@ -50,7 +79,7 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
   console.log(`[STATE] saveCutGrassRecord raw body keys: ${keys.join(',') || '∅'}`);
   for (const k of keys) {
     const v = body[k];
-    const preview = typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v).slice(0, 80);
+    const preview = typeof v === 'string' ? v.slice(0, 1000) : JSON.stringify(v).slice(0, 1000);
     console.log(`[STATE]   ${k} (${typeof v}) = ${preview}`);
   }
 
