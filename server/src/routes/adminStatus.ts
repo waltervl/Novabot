@@ -19,7 +19,7 @@ import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
-import { exportBundle, parseBundle, BundleValidationError } from '../services/portableMap.js';
+import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase } from '../services/portableMap.js';
 import { ImportStagingStore } from '../services/importStaging.js';
 import { importAuditRepo } from '../db/repositories/importAudit.js';
 import { deriveHeading } from '../services/driveCalibration.js';
@@ -1630,7 +1630,6 @@ adminStatusRouter.post(
     const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
     const theta = session.context.derivedHeadingRad ?? 0;
     const anchor = session.context.newCharger!;
-    const cp = parsed.metadata.originalChargingPose;
 
     // Update charger anchor + orientation in DB
     mapRepo.setChargerGps(sn, anchor.lat, anchor.lng);
@@ -1638,14 +1637,10 @@ adminStatusRouter.post(
     mapRepo.setPolygonOffset(sn, 0, 0);
 
     // Rebase polygon points using derived heading
-    const rebase = (pts: { x: number; y: number }[]): { x: number; y: number }[] =>
-      pts.map((p) => ({
-        x: p.x * Math.cos(theta) + p.y * Math.sin(theta) + cp.x,
-        y: -p.x * Math.sin(theta) + p.y * Math.cos(theta) + cp.y,
-      }));
+    const rebase = (pts: { x: number; y: number }[]) => computeAnchorRebase(pts, theta);
 
     // Replace all polygon rows for this SN
-    db.exec(`DELETE FROM maps WHERE mower_sn='${sn}'`);
+    db.prepare(`DELETE FROM maps WHERE mower_sn = ?`).run(sn);
     const ins = db.prepare(
       `INSERT INTO maps (mower_sn, map_id, map_name, map_type, file_name, map_area, canonical_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
