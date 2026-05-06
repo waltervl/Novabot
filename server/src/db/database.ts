@@ -379,6 +379,22 @@ export function initDb(): void {
   try { db.exec(`ALTER TABLE map_calibration ADD COLUMN polygon_charging_orientation REAL`); }
   catch { /* kolom bestaat al */ }
 
+  // Portable map import audit log
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS import_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sn TEXT NOT NULL,
+        staging_id TEXT NOT NULL,
+        from_state TEXT NOT NULL,
+        to_state TEXT NOT NULL,
+        reason TEXT,
+        ts INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_import_audit_sn ON import_audit(sn, ts DESC)`);
+  } catch {}
+
   // Voeg map_type kolom toe aan maps (migratie – work/obstacle/unicom)
   try {
     db.exec(`ALTER TABLE maps ADD COLUMN map_type TEXT NOT NULL DEFAULT 'work'`);
