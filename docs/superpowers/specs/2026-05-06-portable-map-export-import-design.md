@@ -179,7 +179,7 @@ for each point p in bundle:
 dbCharging = { x: 0, y: 0, orientation: derivedTheta }
 ```
 
-`map_calibration.charger_lat/lng` updated to `newAnchor`. `mapNtocharge_unicom` first point is set to (0, 0) — the canonical charger anchor — so existing `getPolygonAnchor()` reads zero and `auto_recharge_server` docks correctly.
+`map_calibration.charger_lat/lng` updated to `newAnchor`. `mapNtocharge_unicom` first point is preserved from the bundle's `originalChargingPose` (NOT hard-coded to (0, 0)) so the dock pose used by `auto_recharge_server` matches what the original mapping captured during ArUco docking. Stock app's mapping flow records this via the `save_recharge_pos` → ArUco-driven docking sequence (decoded in `research/documents/novabot-app-mapping-end-flow.md`); we preserve it from the bundle rather than re-running ArUco.
 
 ## Mower-side pos.json alignment (critical pre-condition)
 
