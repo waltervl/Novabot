@@ -1942,9 +1942,14 @@ export default function HomeScreen() {
                 const taskMode = parseInt(sensorsForResume?.task_mode ?? '0', 10);
                 const onDock = (sensorsForResume?.battery_state ?? '').toUpperCase() === 'CHARGING'
                   || (sensorsForResume?.battery_state ?? '').toUpperCase() === 'FINISHED';
+                // Match the CURRENT Work field only — 'Prev work:USER_RECHARGE_STOP'
+                // lingers after the firmware cancels the coverage task (e.g.
+                // rain timeout) and would otherwise keep Resume alive even
+                // though robot_decision then rejects it with "No need to
+                // continue coverage task" (verified live 2026-05-06).
                 const pausedForRecharge =
-                  busyMsg.includes('USER_RECHARGE_STOP') ||
-                  busyMsg.includes('BATTERY_LOW_RECHARGE');
+                  /Work:USER_RECHARGE_STOP\b/.test(busyMsg) ||
+                  /Work:BATTERY_LOW_RECHARGE\b/.test(busyMsg);
                 const isInterruptedCoverage =
                   onDock && taskMode === 1 && pausedForRecharge;
                 const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy;
