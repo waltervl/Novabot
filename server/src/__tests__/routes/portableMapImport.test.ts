@@ -230,6 +230,13 @@ function getSensorMap(sn: string): Map<string, string> {
   return (sensorDataMock.deviceCache as Map<string, Map<string, string>>).get(sn)!;
 }
 
+/** Drive through set-anchor for a given SN (sensors already seeded). */
+async function runSetAnchor(sn: string, stagingId: string): Promise<void> {
+  const res = await request(app)
+    .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/set-anchor`);
+  expect(res.status).toBe(200);
+}
+
 // ── Task 11: POST /set-anchor ──────────────────────────────────────────────
 
 describe('POST /set-anchor', () => {
@@ -264,5 +271,59 @@ describe('POST /set-anchor', () => {
     const res = await request(app)
       .post(`/api/admin-status/maps/LFIN_T11C/import-portable/nonexistent-id/set-anchor`);
     expect(res.status).toBe(404);
+  });
+});
+
+// ── Task 12: POST /start-drive ────────────────────────────────────────────
+
+describe('POST /start-drive', () => {
+  it('fires calibration_drive and derives heading on success', async () => {
+    const sn = 'LFIN_T12A';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await uploadBundle(sn);
+    seedSensorCache(sn, '52.140888', '6.231036');
+    await runSetAnchor(sn, stagingId);
+
+    const sensorMap = getSensorMap(sn);
+
+    // Configure onExtendedResponse mock to capture the listener
+    let capturedListener: ((data: Record<string, unknown>) => void) | null = null;
+    vi.mocked(mapSyncMock.onExtendedResponse).mockImplementation((_sn: string, fn: (data: Record<string, unknown>) => void) => {
+      capturedListener = fn;
+    });
+
+    // Configure publishToExtended to simulate the mower driving 1m east then firing respond
+    vi.mocked(mapSyncMock.publishToExtended).mockImplementation((_sn: string, _cmd: unknown) => {
+      setTimeout(() => {
+        // Move the sensor cache position 1m east
+        const cosLat = Math.cos((52.140888 * Math.PI) / 180);
+        const dEast = 1.0 / (cosLat * 111320);
+        sensorMap.set('longitude', String(6.231036 + dEast));
+        capturedListener?.({ calibration_drive_respond: { result: 0, duration_s: 5 } });
+      }, 30);
+    });
+
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/start-drive`);
+
+    vi.mocked(mapSyncMock.publishToExtended).mockReset();
+    vi.mocked(mapSyncMock.onExtendedResponse).mockReset();
+
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('DRIVE_COMPLETE');
+    expect(res.body.derivedHeadingRad).toBeCloseTo(0, 2);
+    expect(res.body.distanceM).toBeCloseTo(1, 2);
+  });
+
+  it('returns 409 when session is not in ANCHOR_SET state', async () => {
+    const sn = 'LFIN_T12B';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await uploadBundle(sn);
+    // Still in UPLOADED state, not ANCHOR_SET
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/start-drive`);
+    expect(res.status).toBe(409);
   });
 });

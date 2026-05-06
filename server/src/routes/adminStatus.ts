@@ -22,6 +22,7 @@ import { getPolygonAnchor } from '../services/anchor.js';
 import { exportBundle, parseBundle, BundleValidationError } from '../services/portableMap.js';
 import { ImportStagingStore } from '../services/importStaging.js';
 import { importAuditRepo } from '../db/repositories/importAudit.js';
+import { deriveHeading } from '../services/driveCalibration.js';
 import {
   deviceCache,
   getValidationTrail,
@@ -1484,6 +1485,204 @@ adminStatusRouter.post(
     const updated = importStaging.transition(stagingId, 'ANCHOR_SET', { newCharger: { lat, lng } });
     importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'UPLOADED', to_state: 'ANCHOR_SET', reason: null });
     res.json({ ok: true, state: updated.state, newCharger: updated.context.newCharger });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/import-portable/:stagingId/start-drive
+// Snapshot start pose, fire calibration_drive on mower, await respond, derive heading.
+adminStatusRouter.post(
+  '/maps/:sn/import-portable/:stagingId/start-drive',
+  async (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown staging session' });
+      return;
+    }
+    if (session.state !== 'ANCHOR_SET') {
+      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
+      return;
+    }
+
+    const sensors = deviceCache.get(sn);
+    const startLat = parseFloat(sensors?.get('latitude') ?? '');
+    const startLng = parseFloat(sensors?.get('longitude') ?? '');
+    if (!Number.isFinite(startLat) || !Number.isFinite(startLng)) {
+      res.status(409).json({ ok: false, error: 'no GPS for start_pose' });
+      return;
+    }
+
+    importStaging.transition(stagingId, 'DRIVE_REQUESTED', { driveStart: { lat: startLat, lng: startLng } });
+    importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'ANCHOR_SET', to_state: 'DRIVE_REQUESTED', reason: null });
+
+    const driveOk = await new Promise<boolean>((resolve) => {
+      const listener = (data: Record<string, unknown>) => {
+        const r = data.calibration_drive_respond as Record<string, unknown> | undefined;
+        if (!r) return;
+        clearTimeout(tmo);
+        offExtendedResponse(sn, listener);
+        resolve(Number(r.result) === 0);
+      };
+      const tmo = setTimeout(() => {
+        offExtendedResponse(sn, listener);
+        resolve(false);
+      }, 30_000);
+      onExtendedResponse(sn, listener);
+      publishToExtended(sn, { calibration_drive: { distance_m: 1.0, max_speed: 0.2 } });
+    });
+
+    if (!driveOk) {
+      importStaging.cancel(stagingId, 'drive failed/timeout');
+      importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'DRIVE_REQUESTED', to_state: 'CANCELLED', reason: 'timeout' });
+      res.status(504).json({ ok: false, error: 'calibration drive failed or timed out' });
+      return;
+    }
+
+    // Read end_pose from sensor cache (updated while mower was driving)
+    const endLat = parseFloat(sensors?.get('latitude') ?? '');
+    const endLng = parseFloat(sensors?.get('longitude') ?? '');
+    const heading = deriveHeading({ lat: startLat, lng: startLng }, { lat: endLat, lng: endLng });
+    if (heading.shortDistance) {
+      importStaging.cancel(stagingId, 'short distance');
+      importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'DRIVE_REQUESTED', to_state: 'CANCELLED', reason: 'short distance' });
+      res.status(409).json({ ok: false, error: `drive distance ${heading.distanceM.toFixed(2)}m below threshold` });
+      return;
+    }
+
+    const updated = importStaging.transition(stagingId, 'DRIVE_COMPLETE', {
+      driveEnd: { lat: endLat, lng: endLng },
+      derivedHeadingRad: heading.headingRad,
+    });
+    importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'DRIVE_REQUESTED', to_state: 'DRIVE_COMPLETE', reason: null });
+    res.json({
+      ok: true, state: updated.state,
+      derivedHeadingRad: heading.headingRad, distanceM: heading.distanceM,
+    });
+  },
+);
+
+// GET /api/admin-status/maps/:sn/import-portable/:stagingId/preview
+// Returns a GeoJSON FeatureCollection of the rebased polygon for Leaflet overlay.
+adminStatusRouter.get(
+  '/maps/:sn/import-portable/:stagingId/preview',
+  (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown' });
+      return;
+    }
+    if (session.state !== 'DRIVE_COMPLETE' && session.state !== 'PREVIEW_SHOWN') {
+      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
+      return;
+    }
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
+    const theta = session.context.derivedHeadingRad ?? 0;
+    const anchor = session.context.newCharger!;
+    const cosLat = Math.cos((anchor.lat * Math.PI) / 180);
+    const METERS_PER_DEG = 111320;
+    const project = (pts: { x: number; y: number }[]): [number, number][] => {
+      return pts.map((p) => {
+        const rx = p.x * Math.cos(theta) + p.y * Math.sin(theta);
+        const ry = -p.x * Math.sin(theta) + p.y * Math.cos(theta);
+        return [anchor.lng + rx / (cosLat * METERS_PER_DEG), anchor.lat + ry / METERS_PER_DEG];
+      });
+    };
+    const features: unknown[] = [];
+    const workRing = project(parsed.polygon.points);
+    workRing.push(workRing[0]);
+    features.push({ type: 'Feature', properties: { name: parsed.polygon.alias, kind: 'work' }, geometry: { type: 'Polygon', coordinates: [workRing] } });
+    for (const o of parsed.obstacles) {
+      const ring = project(o.points);
+      ring.push(ring[0]);
+      features.push({ type: 'Feature', properties: { name: o.alias, kind: 'obstacle' }, geometry: { type: 'Polygon', coordinates: [ring] } });
+    }
+    for (const u of parsed.unicom) {
+      features.push({ type: 'Feature', properties: { name: u.targetMapName, kind: 'unicom' }, geometry: { type: 'LineString', coordinates: project(u.points) } });
+    }
+    importStaging.transition(stagingId, 'PREVIEW_SHOWN', {});
+    importAuditRepo.append({ sn, staging_id: stagingId, from_state: session.state, to_state: 'PREVIEW_SHOWN', reason: null });
+    res.json({ type: 'FeatureCollection', features });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/import-portable/:stagingId/confirm
+// Final commit: write polygon to DB, push set_pos_origin + sync_map to mower.
+adminStatusRouter.post(
+  '/maps/:sn/import-portable/:stagingId/confirm',
+  async (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown' });
+      return;
+    }
+    if (session.state !== 'PREVIEW_SHOWN') {
+      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
+      return;
+    }
+
+    importStaging.transition(stagingId, 'USER_CONFIRMED', {});
+    importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'PREVIEW_SHOWN', to_state: 'USER_CONFIRMED', reason: null });
+
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
+    const theta = session.context.derivedHeadingRad ?? 0;
+    const anchor = session.context.newCharger!;
+    const cp = parsed.metadata.originalChargingPose;
+
+    // Update charger anchor + orientation in DB
+    mapRepo.setChargerGps(sn, anchor.lat, anchor.lng);
+    mapRepo.setPolygonChargingOrientation(sn, theta);
+    mapRepo.setPolygonOffset(sn, 0, 0);
+
+    // Rebase polygon points using derived heading
+    const rebase = (pts: { x: number; y: number }[]): { x: number; y: number }[] =>
+      pts.map((p) => ({
+        x: p.x * Math.cos(theta) + p.y * Math.sin(theta) + cp.x,
+        y: -p.x * Math.sin(theta) + p.y * Math.cos(theta) + cp.y,
+      }));
+
+    // Replace all polygon rows for this SN
+    db.exec(`DELETE FROM maps WHERE mower_sn='${sn}'`);
+    const ins = db.prepare(
+      `INSERT INTO maps (mower_sn, map_id, map_name, map_type, file_name, map_area, canonical_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    ins.run(sn, 'imp_work', parsed.polygon.alias, 'work', parsed.polygon.name + '.csv', JSON.stringify(rebase(parsed.polygon.points)), parsed.polygon.name);
+    for (let i = 0; i < parsed.obstacles.length; i++) {
+      const o = parsed.obstacles[i];
+      ins.run(sn, `imp_obs_${i}`, o.alias, 'obstacle', o.name + '.csv', JSON.stringify(rebase(o.points)), o.name);
+    }
+    for (let i = 0; i < parsed.unicom.length; i++) {
+      const u = parsed.unicom[i];
+      ins.run(sn, `imp_uni_${i}`, u.targetMapName, 'unicom', u.name + '.csv', JSON.stringify(rebase(u.points)), u.name);
+    }
+
+    // Push new origin to mower then trigger sync_map
+    publishToExtended(sn, { set_pos_origin: { lat: anchor.lat, lng: anchor.lng } });
+    publishToExtended(sn, { sync_map: {} });
+
+    importStaging.transition(stagingId, 'APPLIED', { applyResult: {} });
+    importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'USER_CONFIRMED', to_state: 'APPLIED', reason: null });
+    res.json({ ok: true, state: 'APPLIED' });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/import-portable/:stagingId/cancel
+// Idempotent: returns 200 even if session is already gone.
+adminStatusRouter.post(
+  '/maps/:sn/import-portable/:stagingId/cancel',
+  (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.json({ ok: true });
+      return;
+    }
+    importAuditRepo.append({ sn, staging_id: stagingId, from_state: session.state, to_state: 'CANCELLED', reason: 'user cancel' });
+    importStaging.cancel(stagingId, 'user cancel');
+    res.json({ ok: true });
   },
 );
 
