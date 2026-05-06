@@ -1737,6 +1737,12 @@ export default function HomeScreen() {
                   <Text style={styles.chipText}>{devices.get(mower.sn)?.sensors?.cpu_temperature}°</Text>
                 </View>
               )}
+              {mower.bladeSpeed > 0 && (
+                <View style={styles.chip}>
+                  <MaterialCommunityIcons name="saw-blade" size={11} color={colors.textDim} />
+                  <Text style={styles.chipText}>{mower.bladeSpeed} rpm</Text>
+                </View>
+              )}
             </View>
 
             {nextSchedule && (displayActivity === 'idle' || displayActivity === 'charging') && (
