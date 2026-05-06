@@ -2005,8 +2005,15 @@ dashboardRouter.get('/work-records/:sn', (req: Request, res: Response) => {
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
   const offset = parseInt(req.query.offset as string) || 0;
 
-  const total = messageRepo.countWorkRecordsByEquipmentId(sn);
-  const rows = messageRepo.findWorkRecordsByEquipmentId(sn, limit, offset) as WorkRecordRow[];
+  // saveCutGrassRecord stores rows under equipment.equipment_id (UUID) when
+  // a paired equipment row exists, otherwise falls back to the SN literal.
+  // The OpenNova app passes the SN here directly, so resolve to UUID first
+  // and keep the SN as a fallback for charger-only / unbound mowers.
+  const equip = equipmentRepo.findByMowerSn(sn);
+  const equipmentId = equip?.equipment_id ?? sn;
+
+  const total = messageRepo.countWorkRecordsByEquipmentId(equipmentId);
+  const rows = messageRepo.findWorkRecordsByEquipmentId(equipmentId, limit, offset) as WorkRecordRow[];
 
   res.json({
     records: rows.map(r => ({
