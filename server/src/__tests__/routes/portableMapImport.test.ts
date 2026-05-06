@@ -327,3 +327,59 @@ describe('POST /start-drive', () => {
     expect(res.status).toBe(409);
   });
 });
+
+// ── Task 13: GET /preview ─────────────────────────────────────────────────
+
+/** Helper: upload → set-anchor → start-drive for a given SN. Returns stagingId in DRIVE_COMPLETE. */
+async function runThroughDrive(sn: string): Promise<string> {
+  db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+    .run(sn, 52.14, 6.23);
+  const stagingId = await uploadBundle(sn);
+  seedSensorCache(sn, '52.140888', '6.231036');
+  await runSetAnchor(sn, stagingId);
+
+  const sensorMap = getSensorMap(sn);
+  let capturedListener: ((data: Record<string, unknown>) => void) | null = null;
+  vi.mocked(mapSyncMock.onExtendedResponse).mockImplementationOnce((_sn: string, fn: (data: Record<string, unknown>) => void) => {
+    capturedListener = fn;
+  });
+  vi.mocked(mapSyncMock.publishToExtended).mockImplementationOnce(() => {
+    setTimeout(() => {
+      const cosLat = Math.cos((52.140888 * Math.PI) / 180);
+      sensorMap.set('longitude', String(6.231036 + 1.0 / (cosLat * 111320)));
+      capturedListener?.({ calibration_drive_respond: { result: 0, duration_s: 5 } });
+    }, 30);
+  });
+  const driveRes = await request(app)
+    .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/start-drive`);
+  expect(driveRes.status).toBe(200);
+  return stagingId;
+}
+
+describe('GET /preview', () => {
+  it('returns GeoJSON FeatureCollection in DRIVE_COMPLETE state', async () => {
+    const sn = 'LFIN_T13A';
+    const stagingId = await runThroughDrive(sn);
+
+    const res = await request(app)
+      .get(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/preview`);
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe('FeatureCollection');
+    expect(Array.isArray(res.body.features)).toBe(true);
+    expect(res.body.features.length).toBeGreaterThan(0);
+    // The first feature should be the work polygon
+    expect(res.body.features[0].properties.kind).toBe('work');
+    expect(res.body.features[0].geometry.type).toBe('Polygon');
+  });
+
+  it('returns 409 when session is not in DRIVE_COMPLETE or PREVIEW_SHOWN state', async () => {
+    const sn = 'LFIN_T13B';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await uploadBundle(sn);
+    // Still in UPLOADED state
+    const res = await request(app)
+      .get(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/preview`);
+    expect(res.status).toBe(409);
+  });
+});
