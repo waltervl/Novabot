@@ -11,6 +11,8 @@ export function adminPageHtml(): string {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenNova Admin</title>
 <link rel="icon" type="image/png" href="/assets/OpenNova.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:system-ui,-apple-system,sans-serif;background:#030712;color:#e0e0e0;min-height:100vh}
@@ -2551,6 +2553,110 @@ async function exportPortableBundle() {
   a.download = sn + '-' + ts + '-portable.novabotmap';
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+var portableStagingId = null;
+async function startPortableImport() {
+  var fi = document.getElementById('portableImportFile');
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn || !fi.files.length) return;
+  var fd = new FormData();
+  fd.append('bundle', fi.files[0]);
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable', {
+    method: 'POST', headers: { 'Authorization': token }, body: fd,
+  });
+  var j = await r.json();
+  if (!j.ok) { alert('Import failed: ' + j.error); return; }
+  portableStagingId = j.stagingId;
+  renderPortableImportWizard(sn, 'UPLOADED');
+}
+
+function renderPortableImportWizard(sn, state) {
+  var panel = document.getElementById('portableImportPanel');
+  panel.style.display = 'block';
+  var html = '<div style="padding:10px;background:#0d0d20;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.7">';
+  html += '<div><b>Staging:</b> <code>' + portableStagingId + '</code></div>';
+  html += '<div><b>State:</b> <span style="color:#67e8f9">' + state + '</span></div>';
+  html += '</div>';
+  html += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
+  if (state === 'UPLOADED') html += '<button onclick="portableSetAnchor()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Set anchor (mower MUST be on dock + RTK FIX)</button>';
+  if (state === 'ANCHOR_SET') html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">2. Start 1m calibration drive</button>';
+  if (state === 'DRIVE_COMPLETE' || state === 'PREVIEW_SHOWN') {
+    html += '<button onclick="portableShowPreview()" style="padding:6px 12px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">3. Show preview overlay</button>';
+    if (state === 'PREVIEW_SHOWN') html += '<button onclick="portableConfirm()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">4. Confirm + apply</button>';
+  }
+  html += '<button onclick="portableCancel()" style="padding:6px 12px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;cursor:pointer">Cancel</button>';
+  html += '</div>';
+  html += '<div id="portablePreviewBox" style="margin-top:8px;display:none;height:300px;border:1px solid #2a2a3a;border-radius:6px"></div>';
+  panel.innerHTML = html;
+}
+
+async function portableSetAnchor() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/set-anchor', {
+    method: 'POST', headers: { 'Authorization': token },
+  });
+  var j = await r.json();
+  if (!j.ok) { alert('Set anchor failed: ' + j.error); return; }
+  renderPortableImportWizard(sn, j.state);
+}
+
+async function portableStartDrive() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!confirm('Mower will drive 1m forward. Ensure clear path. Continue?')) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/start-drive', {
+    method: 'POST', headers: { 'Authorization': token },
+  });
+  var j = await r.json();
+  if (!j.ok) { alert('Drive failed: ' + j.error); return; }
+  alert('Drive complete. Heading derived: ' + (j.derivedHeadingRad * 180 / Math.PI).toFixed(2) + ' deg, distance ' + j.distanceM.toFixed(2) + ' m');
+  renderPortableImportWizard(sn, j.state);
+}
+
+async function portableShowPreview() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/preview', {
+    headers: { 'Authorization': token },
+  });
+  var geo = await r.json();
+  var box = document.getElementById('portablePreviewBox');
+  box.style.display = 'block';
+  if (!window.L) { box.innerHTML = '<div style="color:#fca5a5;padding:8px">Leaflet not loaded</div>'; renderPortableImportWizard(sn, 'PREVIEW_SHOWN'); return; }
+  if (box.__map) box.__map.remove();
+  var center = geo.features[0]?.geometry?.coordinates?.[0]?.[0] || [6.23, 52.14];
+  var map = L.map(box).setView([center[1], center[0]], 19);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').addTo(map);
+  L.geoJSON(geo, {
+    style: function(f) {
+      var k = f.properties.kind;
+      return k === 'work' ? { color: '#10b981', weight: 2 } : k === 'obstacle' ? { color: '#ef4444', weight: 2 } : { color: '#3b82f6', weight: 2 };
+    },
+  }).addTo(map);
+  box.__map = map;
+  renderPortableImportWizard(sn, 'PREVIEW_SHOWN');
+}
+
+async function portableConfirm() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!confirm('Apply imported polygon? This wipes existing maps for this SN and triggers sync_map.')) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/confirm', {
+    method: 'POST', headers: { 'Authorization': token },
+  });
+  var j = await r.json();
+  if (!j.ok) { alert('Confirm failed: ' + j.error); return; }
+  alert('Applied. Sync_map triggered.');
+  document.getElementById('portableImportPanel').style.display = 'none';
+  portableStagingId = null;
+  loadMaps();
+}
+
+async function portableCancel() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/cancel', {
+    method: 'POST', headers: { 'Authorization': token },
+  });
+  document.getElementById('portableImportPanel').style.display = 'none';
+  portableStagingId = null;
 }
 
 // ── Map Recovery functions ────────────────────────────────────────────────────
