@@ -447,3 +447,205 @@ describe('POST /map-backups/:sn/:filename/restore-and-realign', () => {
     expect(res.body.error).toContain('regenerate');
   });
 });
+
+// ── /polygons endpoint — full geometry for ghost preview ─────────────────────
+describe('GET /map-backups/:sn/:filename/polygons', () => {
+  beforeEach(() => {
+    existsSpy.mockReturnValue(true);
+  });
+
+  it('returns full polygon points + chargingPose for a valid backup', async () => {
+    const work: MapArea = {
+      type: 'work',
+      mapIndex: 0,
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    } as MapArea;
+    mockParseMapZip.mockReturnValueOnce({
+      areas: [work],
+      chargingPose: { x: -1.21, y: 0.48, orientation: 1.498 },
+    });
+
+    const res = await request(app)
+      .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/polygons`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.maps).toHaveLength(1);
+    expect(res.body.maps[0].mapType).toBe('work');
+    expect(res.body.maps[0].canonicalName).toBe('map0');
+    expect(res.body.maps[0].mapArea).toHaveLength(4);
+    expect(res.body.maps[0].mapArea[0]).toEqual({ x: 0, y: 0 });
+    expect(res.body.chargingPose).toEqual({ x: -1.21, y: 0.48, orientation: 1.498 });
+  });
+
+  it('returns 404 when the backup file is missing', async () => {
+    existsSpy.mockReturnValue(false);
+
+    const res = await request(app)
+      .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/polygons`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain('backup not found');
+  });
+
+  it('returns 400 when parseMapZip rejects the file', async () => {
+    mockParseMapZip.mockReturnValueOnce(null);
+
+    const res = await request(app)
+      .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/polygons`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('failed to parse');
+  });
+
+  it('skips polygons with fewer than 2 points', async () => {
+    const work: MapArea = {
+      type: 'work', mapIndex: 0,
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
+    } as MapArea;
+    const obstacle: MapArea = {
+      type: 'obstacle', mapIndex: 0, subIndex: 0,
+      points: [{ x: 0, y: 0 }], // single point — should be filtered
+    } as MapArea;
+    mockParseMapZip.mockReturnValueOnce({
+      areas: [work, obstacle],
+      chargingPose: null as unknown as { x: number; y: number; orientation: number },
+    });
+
+    const res = await request(app)
+      .get(`/api/admin-status/map-backups/${SN}/${FILENAME}/polygons`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.maps).toHaveLength(1);
+    expect(res.body.maps[0].mapType).toBe('work');
+    expect(res.body.chargingPose).toBeNull();
+  });
+});
+
+// ── /upload endpoint — external ZIP import with structural guards ────────────
+describe('POST /map-backups/:sn/upload', () => {
+  beforeEach(() => {
+    existsSpy.mockReturnValue(true);
+  });
+
+  it('accepts a structurally-valid Novabot map ZIP', async () => {
+    const work: MapArea = {
+      type: 'work', mapIndex: 0,
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    } as MapArea;
+    mockParseMapZip.mockReturnValueOnce({
+      areas: [work],
+      chargingPose: { x: -1.21, y: 0.48, orientation: 1.498 },
+    });
+    // copyFileSync is called server-side to drop the upload into the
+    // backup dir. Stub it so tests don't touch disk.
+    const copySpy = vi.spyOn(fs, 'copyFileSync').mockImplementation(() => undefined);
+    const mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => undefined as unknown as string);
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/upload`)
+      .attach('zip', Buffer.from('PK\x03\x04fake-zip-bytes'), 'mybackup.zip');
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.work).toBe(1);
+    expect(res.body.filename).toMatch(/^imported_\d+\.zip$/);
+    expect(copySpy).toHaveBeenCalled();
+    expect(mkdirSpy).toHaveBeenCalled();
+
+    copySpy.mockRestore();
+    mkdirSpy.mockRestore();
+  });
+
+  it('rejects non-.zip filenames before parseMapZip runs', async () => {
+    mockParseMapZip.mockClear();
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/upload`)
+      .attach('zip', Buffer.from('whatever'), 'photo.jpg');
+
+    // multer's fileFilter throws -> express surfaces it as 500 by default,
+    // but the file is not stored either way. We assert the upload did not
+    // result in a parsed backup.
+    expect([400, 500]).toContain(res.status);
+    expect(mockParseMapZip).not.toHaveBeenCalled();
+  });
+
+  it('rejects ZIPs that parseMapZip cannot understand', async () => {
+    mockParseMapZip.mockReturnValueOnce(null);
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/upload`)
+      .attach('zip', Buffer.from('not a real zip'), 'bogus.zip');
+
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toContain('parseMapZip');
+  });
+
+  it('rejects ZIPs with a (0,0,0) chargingPose stub', async () => {
+    const work: MapArea = {
+      type: 'work', mapIndex: 0,
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    } as MapArea;
+    mockParseMapZip.mockReturnValueOnce({
+      areas: [work],
+      chargingPose: { x: 0, y: 0, orientation: 0 },
+    });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/upload`)
+      .attach('zip', Buffer.from('zip'), 'stub.zip');
+
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toContain('(0,0,0)');
+  });
+
+  it('rejects ZIPs with a missing chargingPose', async () => {
+    const work: MapArea = {
+      type: 'work', mapIndex: 0,
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    } as MapArea;
+    mockParseMapZip.mockReturnValueOnce({
+      areas: [work],
+      chargingPose: null as unknown as { x: number; y: number; orientation: number },
+    });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/upload`)
+      .attach('zip', Buffer.from('zip'), 'nopose.zip');
+
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatch(/charging[Pp]ose/);
+  });
+
+  it('rejects ZIPs without a work polygon', async () => {
+    const obstacle: MapArea = {
+      type: 'obstacle', mapIndex: 0, subIndex: 0,
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
+    } as MapArea;
+    mockParseMapZip.mockReturnValueOnce({
+      areas: [obstacle],
+      chargingPose: { x: -1.21, y: 0.48, orientation: 1.498 },
+    });
+
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/upload`)
+      .attach('zip', Buffer.from('zip'), 'obstacleonly.zip');
+
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toContain('work polygon');
+  });
+
+  it('returns 400 when no file is attached', async () => {
+    const res = await request(app)
+      .post(`/api/admin-status/map-backups/${SN}/upload`)
+      .send();
+
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toContain('No file');
+  });
+});

@@ -385,10 +385,12 @@ export function adminPageHtml(): string {
       <div style="padding:8px 12px;background:rgba(124,58,237,.05);border:1px solid rgba(124,58,237,.2);border-radius:8px;margin-top:16px">
         <div style="font-size:12px;font-weight:600;color:#a78bfa;margin-bottom:8px">Map Recovery — restore from auto-backup snapshots</div>
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-          <select id="mapBackupSelect" onchange="loadBackupContents()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
+          <select id="mapBackupSelect" onchange="loadBackupContents();previewBackupGhost()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
             <option value="">Select a backup snapshot...</option>
           </select>
           <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
+          <input id="mapBackupUploadFile" type="file" accept=".zip" style="display:none" onchange="uploadExternalBackup()">
+          <button onclick="document.getElementById('mapBackupUploadFile').click()" title="Upload an external Novabot map ZIP — server validates structure before accepting" style="padding:6px 12px;background:rgba(59,130,246,.15);color:#93c5fd;border:1px solid rgba(59,130,246,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">+ Import ZIP</button>
         </div>
         <div id="mapBackupTree" style="margin-bottom:8px"></div>
         <div id="conflictHelpers" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px">
@@ -2349,6 +2351,111 @@ async function loadMapBackups(sn) {
   }
 }
 
+/** Render the selected backup as a dashed ghost overlay on top of the
+ *  current live polygons, so the operator sees what they would get BEFORE
+ *  hitting Restore. Called from the dropdown's onchange.
+ *  Empty selection → clear the ghost (re-render live only). */
+async function previewBackupGhost() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var filename = document.getElementById('mapBackupSelect').value;
+  var canvas = document.getElementById('mapCanvas');
+  if (!canvas || !canvas.__mapState) return;
+
+  if (!sn || !filename) {
+    // Clear ghost — re-render with live maps + no overlay.
+    var st = canvas.__mapState;
+    renderMapCanvas(canvas, st.maps || [], st.chargingPose || null);
+    return;
+  }
+
+  try {
+    var r = await fetch('/api/admin-status/map-backups/' + encodeURIComponent(sn)
+                        + '/' + encodeURIComponent(filename) + '/polygons', {
+      headers: { 'Authorization': token },
+    });
+    if (!r.ok) {
+      var err = await r.json().catch(function(){return{};});
+      console.warn('Backup polygon fetch failed:', err);
+      return;
+    }
+    var data = await r.json();
+    var ghostMaps = data.maps || [];
+    var st = canvas.__mapState;
+    // Render LIVE on top, BACKUP as ghost. renderMapCanvas already draws
+    // ghosts as white dashed outlines underneath the live layer (added for
+    // polygon-offset calibration; reused here without changes).
+    renderMapCanvas(canvas, st.maps || [], st.chargingPose || null, ghostMaps);
+  } catch(e) {
+    console.warn('previewBackupGhost: ' + e.message);
+  }
+}
+
+/** External ZIP upload — POSTs a user-picked file to the server's import
+ *  endpoint, which validates structure (parseMapZip + non-zero charging
+ *  pose + at least one work polygon) before placing the ZIP into the
+ *  backup directory. On success the dropdown is reloaded and the new
+ *  filename is auto-selected so the ghost preview shows it immediately. */
+async function uploadExternalBackup() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var input = document.getElementById('mapBackupUploadFile');
+  var file = input.files && input.files[0];
+  var status = document.getElementById('mapRecoveryStatus');
+  status.style.display = 'block';
+
+  if (!sn) {
+    status.style.color = '#f87171';
+    status.textContent = 'Pick a mower first.';
+    input.value = '';
+    return;
+  }
+  if (!file) {
+    status.style.display = 'none';
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    status.style.color = '#f87171';
+    status.textContent = 'Only .zip files are accepted.';
+    input.value = '';
+    return;
+  }
+
+  status.style.color = '#a78bfa';
+  status.textContent = 'Uploading and validating ' + file.name + '...';
+
+  var fd = new FormData();
+  fd.append('zip', file);
+
+  try {
+    var r = await fetch('/api/admin-status/map-backups/' + encodeURIComponent(sn) + '/upload', {
+      method: 'POST',
+      headers: { 'Authorization': token },
+      body: fd,
+    });
+    var data = await r.json().catch(function(){return{};});
+    if (!r.ok || !data.ok) {
+      status.style.color = '#f87171';
+      status.textContent = 'Import rejected: ' + (data.error || 'HTTP ' + r.status);
+      input.value = '';
+      return;
+    }
+    status.style.color = '#86efac';
+    status.textContent = 'Imported as ' + data.filename + ' — '
+      + data.work + ' work / ' + data.obstacles + ' obstacle / ' + data.unicoms + ' unicom polygons.';
+
+    // Reload dropdown so the new entry shows up + auto-select it.
+    await loadMapBackups(sn);
+    var sel = document.getElementById('mapBackupSelect');
+    sel.value = data.filename;
+    loadBackupContents();
+    previewBackupGhost();
+  } catch(e) {
+    status.style.color = '#f87171';
+    status.textContent = 'Upload failed: ' + e.message;
+  } finally {
+    input.value = ''; // allow re-select of the same file later
+  }
+}
+
 async function loadBackupContents() {
   var sn = document.getElementById('mapMowerSelect').value;
   var filename = document.getElementById('mapBackupSelect').value;
@@ -3488,7 +3595,7 @@ async function firstTimeCloudImport() {
       // "My Novabot" — better blank + let the user rename than wrong.
       let pairName = equip.userCustomDeviceName || null;
       if (!pairName && mowerSn && equip.equipmentNickName
-          && !/^charging[\s_-]?station$/i.test(String(equip.equipmentNickName).trim())) {
+          && !/^charging[ _-]?station$/i.test(String(equip.equipmentNickName).trim())) {
         pairName = equip.equipmentNickName;
       }
       const applyRes = await fetch('/api/setup/cloud-apply', {

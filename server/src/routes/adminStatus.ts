@@ -54,6 +54,19 @@ export const adminStatusRouter = Router();
 // Multer for ZIP upload (temp directory)
 const MAPS_STORAGE = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
 const upload = multer({ dest: os.tmpdir() });
+// Dedicated uploader for /map-backups/:sn/upload — extension filter + size cap
+// stop the obviously-wrong cases before parseMapZip even runs.
+const uploadZip = multer({
+  dest: os.tmpdir(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!/\.zip$/i.test(file.originalname)) {
+      cb(new Error('Only .zip files are accepted'));
+      return;
+    }
+    cb(null, true);
+  },
+});
 
 // Read version once at startup
 import fs from 'fs';
@@ -974,6 +987,123 @@ adminStatusRouter.get('/map-backups/:sn/:filename/contents', (req: AuthRequest, 
     res.status(500).json({ error: err instanceof Error ? err.message : 'unknown error' });
   }
 });
+
+// GET /api/admin-status/map-backups/:sn/:filename/polygons — full polygon geometry
+//
+// Same source data as /contents but returns the full {x, y} arrays so the
+// admin map canvas can render the backup as a ghost overlay BEFORE the
+// operator commits to a restore. /contents intentionally only returns
+// metadata (point counts) so the dropdown UX stays cheap; this endpoint
+// is hit on demand when a snapshot is selected for preview.
+adminStatusRouter.get('/map-backups/:sn/:filename/polygons', (req: AuthRequest, res: Response) => {
+  const { sn, filename } = req.params;
+  try {
+    const p = backupPath(sn, filename);
+    if (!fs.existsSync(p)) {
+      res.status(404).json({ error: 'backup not found' });
+      return;
+    }
+    const parsed = parseMapZip(p);
+    if (!parsed) {
+      res.status(400).json({ error: 'failed to parse backup ZIP' });
+      return;
+    }
+
+    const maps = parsed.areas
+      .filter(a => Array.isArray(a.points) && a.points.length >= 2)
+      .map(a => ({
+        mapName: areaCanonicalName(a),
+        canonicalName: areaCanonicalName(a),
+        mapType: a.type,
+        mapArea: a.points.map(pt => ({ x: pt.x, y: pt.y })),
+      }));
+
+    res.json({
+      maps,
+      chargingPose: parsed.chargingPose ?? null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'unknown error' });
+  }
+});
+
+// POST /api/admin-status/map-backups/:sn/upload — import an external ZIP
+//
+// Accepts a single multipart field `zip` (max 50 MB). The upload is run
+// through `parseMapZip` and a small set of structural guards before being
+// stored in the backup directory; on success the new entry shows up in
+// the standard backup list and can be ghost-previewed + restored like any
+// auto-snapshot.
+//
+// Guards (each rejected with a descriptive message):
+//   - .zip extension on filename
+//   - parseMapZip returns truthy
+//   - chargingPose present AND not (0,0,0) — that's the corrupted-stub
+//     pattern from the maps recovery playbook
+//   - at least one work polygon with >= 3 points
+adminStatusRouter.post(
+  '/map-backups/:sn/upload',
+  uploadZip.single('zip'),
+  (req: AuthRequest, res: Response) => {
+    const { sn } = req.params;
+    const file = (req as unknown as { file?: Express.Multer.File }).file;
+
+    if (!file) {
+      res.status(400).json({ ok: false, error: 'No file uploaded (expected multipart field "zip")' });
+      return;
+    }
+
+    const tmpPath = file.path;
+    try {
+      const parsed = parseMapZip(tmpPath);
+      if (!parsed) {
+        res.status(400).json({ ok: false, error: 'Not a valid Novabot map ZIP — parseMapZip rejected the file' });
+        return;
+      }
+
+      const cp = parsed.chargingPose;
+      const cpZeroed = !cp || (cp.x === 0 && cp.y === 0 && cp.orientation === 0);
+      if (cpZeroed) {
+        res.status(400).json({
+          ok: false,
+          error: 'ZIP has missing or (0,0,0) chargingPose — that is the corrupted-stub pattern, refusing to import',
+        });
+        return;
+      }
+
+      const workCount = parsed.areas.filter(a => a.type === 'work' && a.points.length >= 3).length;
+      if (workCount === 0) {
+        res.status(400).json({ ok: false, error: 'ZIP contains no work polygon with >= 3 points' });
+        return;
+      }
+
+      // Stash into the backup directory under a deterministic, sortable name
+      // so the existing list-backups path picks it up automatically.
+      const dir = path.dirname(backupPath(sn, 'placeholder'));
+      fs.mkdirSync(dir, { recursive: true });
+      const ts = Date.now();
+      const finalName = `imported_${ts}.zip`;
+      const finalPath = path.join(dir, finalName);
+      fs.copyFileSync(tmpPath, finalPath);
+
+      console.log(`[Admin] map-backup uploaded for ${sn}: ${finalName} (${file.size}B, ${workCount} work polygons)`);
+
+      res.json({
+        ok: true,
+        filename: finalName,
+        sizeBytes: file.size,
+        work: workCount,
+        obstacles: parsed.areas.filter(a => a.type === 'obstacle').length,
+        unicoms: parsed.areas.filter(a => a.type === 'unicom').length,
+        chargingPose: cp,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'unknown error' });
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
+  },
+);
 
 // POST /api/admin-status/map-backups/:sn/:filename/restore — selective DB restore
 //
