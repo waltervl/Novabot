@@ -163,3 +163,33 @@ describe('GET /export-portable', () => {
     expect((res.body as Buffer).length).toBeGreaterThan(200);
   });
 });
+
+describe('POST /import-portable', () => {
+  it('accepts a valid bundle and returns staging_id', async () => {
+    const expRes = await request(app)
+      .get(`/api/admin-status/maps/${SN}/export-portable`)
+      .buffer()
+      .parse((r, cb) => {
+        const chunks: Buffer[] = [];
+        r.on('data', (c: Buffer) => chunks.push(c));
+        r.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+    const zip = expRes.body as Buffer;
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${SN}/import-portable`)
+      .attach('bundle', zip, 'fixture.novabotmap');
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.stagingId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.body.state).toBe('UPLOADED');
+  });
+
+  it('rejects garbage bundle with 400', async () => {
+    // Use a different SN so there is no active session from the previous test
+    const res = await request(app)
+      .post(`/api/admin-status/maps/LFIN_TEST_GARBAGE/import-portable`)
+      .attach('bundle', Buffer.from('not a zip'), 'bad.novabotmap');
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+  });
+});

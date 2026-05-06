@@ -19,7 +19,9 @@ import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
-import { exportBundle } from '../services/portableMap.js';
+import { exportBundle, parseBundle, BundleValidationError } from '../services/portableMap.js';
+import { ImportStagingStore } from '../services/importStaging.js';
+import { importAuditRepo } from '../db/repositories/importAudit.js';
 import {
   deviceCache,
   getValidationTrail,
@@ -57,6 +59,11 @@ function normaliseFirmwareDownloadUrl(url: string): string {
 }
 
 export const adminStatusRouter = Router();
+
+const importStaging = new ImportStagingStore(
+  path.resolve(process.env.STORAGE_PATH ?? './storage', 'imports'),
+);
+const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // Multer for ZIP upload (temp directory)
 const MAPS_STORAGE = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
@@ -1404,6 +1411,36 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
   res.send(zip);
 });
+
+// POST /api/admin-status/maps/:sn/import-portable
+adminStatusRouter.post(
+  '/maps/:sn/import-portable',
+  bundleUpload.single('bundle'),
+  async (req: AuthRequest, res: Response) => {
+    const sn = req.params.sn;
+    if (!req.file) { res.status(400).json({ ok: false, error: 'bundle file required' }); return; }
+    const active = importStaging.getActive(sn);
+    if (active) {
+      res.status(409).json({ ok: false, error: 'active import already in progress', stagingId: active.stagingId });
+      return;
+    }
+    let parsed;
+    try { parsed = await parseBundle(req.file.buffer); }
+    catch (e) {
+      if (e instanceof BundleValidationError) { res.status(400).json({ ok: false, error: e.message }); return; }
+      throw e;
+    }
+    const session = importStaging.create(sn, {
+      sourceSn: parsed.metadata.sourceSn,
+      polygonAreaM2: parsed.polygon.areaM2,
+    });
+    // Persist the parsed bundle alongside state.json for later steps
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, session.stagingId);
+    fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
+    importAuditRepo.append({ sn, staging_id: session.stagingId, from_state: '_NONE_', to_state: 'UPLOADED', reason: null });
+    res.json({ ok: true, stagingId: session.stagingId, state: session.state });
+  },
+);
 
 // ── Polygon-offset calibration endpoints ────────────────────────────────────
 // These allow operators to nudge the mower's work polygon overlay without
