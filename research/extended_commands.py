@@ -2362,6 +2362,77 @@ def _rerun_set_server_urls():
         return False
 
 
+# ── Blade-speed telemetry relay (issue #17 follow-up) ─────────────────────
+#
+# The mower's chassis publishes the live blade RPM on the ROS topic
+# `/blade_speed_get` (std_msgs/Int16). Stock mqtt_node never forwards this
+# to the cloud, so the OpenNova app cannot tell whether the mower is
+# physically cutting (blades spinning) or just driving — the difference
+# matters because Mode:COVERAGE / Work:COVERING is reported even when the
+# blades have been auto-stopped (e.g. mid-avoid backup, or low-battery).
+#
+# Bridge it through the existing extended_commands process so we don't
+# need a second daemon: subscribe to /blade_speed_get in a background
+# thread, publish a small JSON message to MQTT topic
+# `novabot/sensor/<SN>` whenever the value CHANGES (no per-tick spam).
+# The OpenNova server's broker subscribes to `novabot/sensor/+` and
+# merges the field into deviceCache like any other sensor, so the app
+# reads it through the standard /api/dashboard/devices/:sn endpoint.
+
+def start_blade_telemetry_relay(sn, mqtt_ref):
+    """Spin up a daemon thread that bridges /blade_speed_get → MQTT."""
+    try:
+        import rclpy  # type: ignore
+        from rclpy.node import Node  # type: ignore
+        from std_msgs.msg import Int16  # type: ignore
+    except ImportError as ex:
+        log(f"[BladeRelay] rclpy import failed, telemetry disabled: {ex}")
+        return
+
+    def _spin():
+        try:
+            # Don't shut down if a previous rclpy.init was already done — the
+            # main extended_commands process doesn't init rclpy itself, so
+            # the first call here owns it.
+            try:
+                rclpy.init()
+            except RuntimeError:
+                pass  # already initialised
+
+            class _BladeRelay(Node):
+                def __init__(self):
+                    super().__init__('blade_telemetry_relay')
+                    self._topic = f'novabot/sensor/{sn}'
+                    self._last_value = None
+                    self.create_subscription(
+                        Int16, '/blade_speed_get', self._on_msg, 10,
+                    )
+                    log(f"[BladeRelay] subscribed /blade_speed_get → MQTT {self._topic}")
+
+                def _on_msg(self, msg):
+                    value = int(msg.data)
+                    if value == self._last_value:
+                        return  # debounce — only publish on change
+                    self._last_value = value
+                    if mqtt_ref[0] is None:
+                        return  # MQTT not yet connected
+                    try:
+                        mqtt_ref[0].publish(
+                            self._topic,
+                            json.dumps({'blade_speed': value}),
+                        )
+                    except Exception as ex:
+                        log(f"[BladeRelay] publish failed: {ex}")
+
+            node = _BladeRelay()
+            rclpy.spin(node)
+        except Exception as ex:
+            log(f"[BladeRelay] crashed: {ex}")
+
+    t = threading.Thread(target=_spin, daemon=True, name='blade-relay')
+    t.start()
+
+
 # ── Hoofdprogramma ─────────────────────────────────────────────────────────
 def main():
     log("=== Novabot Extended Commands ===")
@@ -2383,6 +2454,11 @@ def main():
 
     # Reference to current MQTT client (for publishing responses)
     mqtt_ref = [None]
+
+    # Spin up the ROS → MQTT blade-RPM relay in a background thread. It uses
+    # mqtt_ref so it auto-picks-up the most recent connected client across
+    # reconnects without needing its own MQTT loop.
+    start_blade_telemetry_relay(sn, mqtt_ref)
 
     def respond(cmd_name, data):
         """Publiceer een response naar de server."""

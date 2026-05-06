@@ -16,7 +16,7 @@ import {
   Alert,
 } from 'react-native';
 import { appAlertCompat } from '../context/AppAlertContext';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Path as SvgPath } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
@@ -54,6 +54,8 @@ interface MowerDerived {
   batteryCharging: boolean;
   mowingProgress: number;
   pathDirection: number;
+  /** Blade RPM relayed via novabot/sensor/<SN> from /blade_speed_get. */
+  bladeSpeed: number;
   wifiRssi: string | undefined;
   rtkSat: string | undefined;
   errorStatus: string | undefined;
@@ -275,6 +277,13 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
     })(),
     pathDirection:
       parseInt(s.path_direction ?? '0', 10) || 0,
+    // Blade RPM relayed by extended_commands.py from /blade_speed_get ROS
+    // topic. > 0 means the cutting disc is physically spinning. Used by the
+    // status card to switch the icon from a static mower body to a spinning
+    // saw-blade glyph so the user can tell at a glance whether the mower is
+    // actually cutting (blades on) versus driving (blades stopped during
+    // an avoid manoeuvre or lane transition).
+    bladeSpeed: parseInt(s.blade_speed ?? '0', 10) || 0,
     wifiRssi: s.wifi_rssi,
     rtkSat: s.rtk_sat,
     errorStatus: s.error_status,
@@ -389,6 +398,57 @@ function MowerIcon({ size, color }: { size: number; color: string }) {
     <Svg width={size} height={size} viewBox="0 0 32 32">
       <SvgPath d={MOWER_SVG_PATH} fill={color} />
     </Svg>
+  );
+}
+
+/**
+ * Spinning saw-blade icon — animates a 360° rotation when blade RPM is
+ * non-zero. Used in the activity card so the operator can tell at a glance
+ * whether the mower is physically cutting (blades on, icon spinning) or
+ * just driving (blades stopped, no spin even when activity = 'mowing').
+ *
+ * Uses the existing react-native Animated driver so no extra dependency.
+ * Spin period scales loosely with RPM: 0 = static (no animation), > 0
+ * spins at a sensible visual rate (~700 ms / revolution) regardless of
+ * absolute value. Showing the *exact* RPM as a rotation period would
+ * either be too slow at low RPM or unwatchable at high RPM, so this
+ * trades fidelity for legibility — the on/off semantic is what the user
+ * actually needs.
+ */
+function BladeIcon({
+  size,
+  color,
+  spinning,
+}: { size: number; color: string; spinning: boolean }) {
+  const rotation = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!spinning) {
+      rotation.stopAnimation();
+      rotation.setValue(0);
+      return;
+    }
+    rotation.setValue(0);
+    const loop = Animated.loop(
+      Animated.timing(rotation, {
+        toValue: 1,
+        duration: 700,
+        useNativeDriver: true,
+        isInteraction: false,
+      }),
+    );
+    loop.start();
+    return () => { loop.stop(); };
+  }, [spinning, rotation]);
+
+  const spin = rotation.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  return (
+    <Animated.View style={{ transform: [{ rotate: spin }] }}>
+      <MaterialCommunityIcons name="saw-blade" size={size} color={color} />
+    </Animated.View>
   );
 }
 
@@ -1462,9 +1522,13 @@ export default function HomeScreen() {
 
         {/* Status card */}
         <View style={styles.statusCard}>
-          {/* Activity header */}
+          {/* Activity header — saw-blade spins when blades are physically
+              turning (chassis-published RPM > 0), MowerIcon during mowing
+              when blades are paused, Ionicons for everything else. */}
           <View style={styles.activityRow}>
-            {displayActivity === 'mowing' || displayActivity === 'edge_cutting' ? (
+            {(displayActivity === 'mowing' || displayActivity === 'edge_cutting') && mower.bladeSpeed > 0 ? (
+              <BladeIcon size={24} color={activityColor} spinning={true} />
+            ) : displayActivity === 'mowing' || displayActivity === 'edge_cutting' ? (
               <MowerIcon size={24} color={activityColor} />
             ) : (
               <Ionicons

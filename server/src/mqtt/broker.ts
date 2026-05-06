@@ -1039,6 +1039,38 @@ export async function startMqttBroker(): Promise<void> {
       }
     }
 
+    // novabot/sensor/<SN> — auxiliary sensor stream from extended_commands.py.
+    // Used today only for blade RPM (`/blade_speed_get` ROS topic relayed by
+    // start_blade_telemetry_relay), but generic enough that any future
+    // chassis-side telemetry the firmware does not surface via mqtt_node can
+    // be added without a second handler. Payload is a flat JSON object whose
+    // keys merge straight into deviceCache and are forwarded to the dashboard
+    // socket like every other sensor field.
+    if (packet.topic.startsWith('novabot/sensor/')) {
+      const sensorSn = packet.topic.split('/').pop() ?? '';
+      if (sensorSn) {
+        try {
+          const parsed = JSON.parse(payloadBuf.toString());
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            if (!deviceCache.has(sensorSn)) deviceCache.set(sensorSn, new Map());
+            const cache = deviceCache.get(sensorSn)!;
+            const changes = new Map<string, string>();
+            for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+              if (v == null) continue;
+              const sv = String(v);
+              if (cache.get(k) === sv) continue; // unchanged
+              cache.set(k, sv);
+              changes.set(k, sv);
+            }
+            if (changes.size > 0) forwardToDashboard(sensorSn, changes);
+          }
+        } catch {
+          // Malformed payload — drop silently. Don't taint cache.
+        }
+      }
+      return;
+    }
+
     // Forward extended_commands.py responses naar dashboard via Socket.io
     if (packet.topic.startsWith('novabot/extended_response/')) {
       const extSn = packet.topic.split('/').pop() ?? '';

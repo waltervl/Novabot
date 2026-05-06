@@ -73,6 +73,9 @@ export const SENSORS: SensorDef[] = [
   { field: 'sw_version',       name: 'Firmware Version',  component: 'sensor', icon: 'mdi:tag',                  entity_category: 'diagnostic' },
   { field: 'loc_quality',      name: 'Location Quality',  component: 'sensor', icon: 'mdi:crosshairs-gps', state_class: 'measurement', unit: '%' },
   { field: 'mow_blade_work_time', name: 'Blade Work Time', component: 'sensor', icon: 'mdi:fan', device_class: 'duration', state_class: 'total_increasing', unit: 's' },
+  // Blade RPM relayed by extended_commands.py from /blade_speed_get ROS topic.
+  // Lets the OpenNova app distinguish 'cutting' from 'driving without blades'.
+  { field: 'blade_speed',      name: 'Blade RPM',         component: 'sensor', icon: 'mdi:saw-blade', state_class: 'measurement', unit: 'rpm' },
   { field: 'mow_speed',        name: 'Mow Speed',         component: 'sensor', icon: 'mdi:speedometer', state_class: 'measurement' },
   { field: 'working_hours',    name: 'Working Hours',     component: 'sensor', icon: 'mdi:timer', device_class: 'duration', state_class: 'total_increasing', unit: 'h' },
   { field: 'covering_area',    name: 'Covering Area',     component: 'sensor', icon: 'mdi:texture-box', state_class: 'measurement' },
