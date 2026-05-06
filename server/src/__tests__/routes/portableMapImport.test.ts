@@ -383,3 +383,58 @@ describe('GET /preview', () => {
     expect(res.status).toBe(409);
   });
 });
+
+// ── Task 14: POST /confirm ────────────────────────────────────────────────
+
+/** Helper: upload → set-anchor → start-drive → preview. Returns stagingId in PREVIEW_SHOWN. */
+async function runThroughPreview(sn: string): Promise<string> {
+  const stagingId = await runThroughDrive(sn);
+  // reset publishToExtended mock so it doesn't fire the drive response again
+  vi.mocked(mapSyncMock.publishToExtended).mockReset();
+  const prevRes = await request(app)
+    .get(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/preview`);
+  expect(prevRes.status).toBe(200);
+  return stagingId;
+}
+
+describe('POST /confirm', () => {
+  it('writes polygon to DB, triggers set_pos_origin and sync_map, returns APPLIED', async () => {
+    const sn = 'LFIN_T14A';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await runThroughPreview(sn);
+
+    const publishCalls: unknown[] = [];
+    vi.mocked(mapSyncMock.publishToExtended).mockImplementation((_sn: string, cmd: unknown) => {
+      publishCalls.push(cmd);
+    });
+
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/confirm`);
+
+    vi.mocked(mapSyncMock.publishToExtended).mockReset();
+
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('APPLIED');
+
+    // Verify sync_map was triggered
+    const hasSyncMap = publishCalls.some((c) => (c as any).sync_map !== undefined);
+    expect(hasSyncMap).toBe(true);
+
+    // Verify polygon was written to DB
+    const maps = db.prepare(`SELECT * FROM maps WHERE mower_sn = ?`).all(sn);
+    expect(maps.length).toBeGreaterThan(0);
+    expect((maps as any[]).some((m) => m.map_type === 'work')).toBe(true);
+  });
+
+  it('returns 409 when session is not in PREVIEW_SHOWN state', async () => {
+    const sn = 'LFIN_T14B';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await uploadBundle(sn);
+    // Still UPLOADED, not PREVIEW_SHOWN
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/confirm`);
+    expect(res.status).toBe(409);
+  });
+});
