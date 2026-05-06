@@ -1962,6 +1962,92 @@ def handle_blade_height(params, respond):
     respond("blade_height_respond", {"result": 0 if not err else 1, "level": level, "error": err})
 
 
+def handle_set_pos_origin(params, respond):
+    """Overwrite /userdata/pos.json wgs84_origin (lat/lng) and chmod 0444 so
+    the next reboot's GPS-fix-derived write cannot stomp on it. Also restart
+    robot_combination_localization so the new origin takes effect without a
+    full mower reboot.
+
+    Payload: {"lat": float, "lng": float}
+    """
+    import json as _json
+    import os as _os
+    import math as _math
+    import subprocess as _sp
+
+    lat = params.get("lat")
+    lng = params.get("lng")
+    if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
+        respond("set_pos_origin_respond", {"result": 1, "error": "lat/lng required"})
+        return
+
+    # WGS84 -> UTM zone 32 (Europe). Hard-code matches local dev mowers; if
+    # you deploy elsewhere, derive the zone from longitude.
+    zone = int((lng + 180) / 6) + 1
+    # Keep the existing time_stamp if pos.json already exists, else 0.
+    ts = 0
+    try:
+        with open("/userdata/pos.json") as f:
+            ts = float(_json.load(f).get("time_stamp", 0))
+    except Exception:
+        pass
+
+    # Approximate UTM x/y via simple cylindrical projection — robot_combination
+    # _localization recomputes from the lat/lng on first GPS fix, so this only
+    # needs to be a coarse seed.
+    METERS_PER_DEG = 111320.0
+    cos_lat = _math.cos(_math.radians(lat))
+    # central meridian for zone N is (-180 + 6N - 3)
+    central_meridian = -180 + 6 * zone - 3
+    x = 500000.0 + (lng - central_meridian) * cos_lat * METERS_PER_DEG
+    y = lat * METERS_PER_DEG
+
+    payload = {
+        "time_stamp": ts,
+        "utm_origin": {"utm_zone": zone, "x": x, "y": y, "z": 0},
+        "wgs84_origin": {"latitude": lat, "longitude": lng},
+    }
+
+    try:
+        _os.chmod("/userdata/pos.json", 0o644)
+    except Exception:
+        pass
+    try:
+        with open("/userdata/pos.json", "w") as f:
+            _json.dump(payload, f)
+        _os.chmod("/userdata/pos.json", 0o444)
+    except Exception as e:
+        respond("set_pos_origin_respond", {"result": 1, "error": f"write failed: {e}"})
+        return
+
+    # Restart robot_combination_localization so it re-reads pos.json. The
+    # node has no respawn=True flag in novabot_system.launch.py — kill +
+    # detached relaunch via setsid (same pattern as _restart_novabot_mapping
+    # post-2026-05-06 fix).
+    try:
+        _sp.Popen(
+            ["bash", "-lc",
+             "(killall -9 robot_combination_localization 2>/dev/null || true); "
+             "sleep 1; "
+             ". /opt/ros/galactic/setup.bash; "
+             ". /root/novabot/install/setup.bash; "
+             "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; "
+             "export ROS_LOCALHOST_ONLY=1; "
+             "export ROS_LOG_DIR=/root/novabot/data/ros2_log; "
+             "export LD_LIBRARY_PATH=/usr/lib/hbmedia/:/usr/lib/hbbpu/:/usr/lib/sensorlib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:/usr/bpu:/usr/opencv_world_4.6/lib:$LD_LIBRARY_PATH; "
+             "setsid nohup ros2 run robot_combination_localization robot_combination_localization "
+             "--ros-args --params-file /root/novabot/install/robot_combination_localization/share/robot_combination_localization/params/combination_localization.yaml "
+             ">> $ROS_LOG_DIR/loc_restart.log 2>&1 </dev/null &"],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, stdin=_sp.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+    except Exception as e:
+        respond("set_pos_origin_respond", {"result": 1, "error": f"relaunch failed: {e}"})
+        return
+
+    respond("set_pos_origin_respond", {"result": 0, "lat": lat, "lng": lng, "utm_zone": zone})
+
+
 COMMANDS = {
     "is_opennova": handle_is_opennova,
     "set_robot_reboot": handle_reboot,
@@ -1991,6 +2077,7 @@ COMMANDS = {
     "blade_off": handle_blade_off,
     "blade_speed": handle_blade_speed,
     "blade_height": handle_blade_height,
+    "set_pos_origin": lambda p, r: handle_set_pos_origin(p, r),
     "sync_map": lambda p, r: handle_sync_map(p, r),
 }
 
