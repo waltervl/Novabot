@@ -19,6 +19,7 @@ import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
+import { exportBundle } from '../services/portableMap.js';
 import {
   deviceCache,
   getValidationTrail,
@@ -1354,6 +1355,54 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (
     gps: { lat, lng },
     syncResult: syncResult.respond ?? null,
   });
+});
+
+// ── Portable map export ──────────────────────────────────────────────────────
+
+// GET /api/admin-status/maps/:sn/export-portable
+adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res: Response) => {
+  const sn = req.params.sn;
+  const cal = mapRepo.getCalibration(sn);
+  if (!cal?.charger_lat || !cal?.charger_lng) {
+    res.status(409).json({ ok: false, error: 'no charger anchor in DB — sync_map first' });
+    return;
+  }
+  const work = mapRepo.findAllByMowerSnAndType(sn, 'work')[0];
+  if (!work?.map_area) { res.status(404).json({ ok: false, error: 'no work polygon' }); return; }
+  const obstacles = mapRepo.findAllByMowerSnAndType(sn, 'obstacle');
+  const unicom = mapRepo.findAllByMowerSnAndType(sn, 'unicom');
+  const cp = mapRepo.getPolygonChargingOrientation(sn);
+
+  const zip = await exportBundle({
+    sn,
+    chargerLat: cal.charger_lat,
+    chargerLng: cal.charger_lng,
+    rtkQuality: null,
+    chargingPose: { x: 0, y: 0, orientation: cp ?? 0 },
+    workMap: {
+      canonical: work.canonical_name ?? 'map0',
+      alias: work.map_name ?? 'work',
+      points: JSON.parse(work.map_area as string),
+    },
+    obstacles: obstacles.filter((o) => o.map_area).map((o) => ({
+      canonical: o.canonical_name ?? '',
+      alias: o.map_name ?? '',
+      points: JSON.parse(o.map_area as string),
+    })),
+    unicom: unicom.filter((u) => u.map_area).map((u) => {
+      const m = (u.canonical_name ?? '').match(/^map\d+to(.+?)_?unicom$/);
+      return {
+        canonical: u.canonical_name ?? '',
+        targetMapName: m?.[1] ?? 'charge',
+        points: JSON.parse(u.map_area as string),
+      };
+    }),
+  });
+
+  const fname = `${sn}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16)}-portable.novabotmap`;
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+  res.send(zip);
 });
 
 // ── Polygon-offset calibration endpoints ────────────────────────────────────
