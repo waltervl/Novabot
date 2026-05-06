@@ -2,6 +2,19 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-06 — Work records: server-side mowing-session timer (issue #17 round 5)
+
+- `routes/equipmentState.ts` + `mqtt/sensorData.ts`: stock and custom
+  firmware both ship `saveCutGrassRecord` with `workTime` either omitted
+  or zeroed out, and `cov_work_time` / `valid_cov_work_time` read 0 in
+  the cache even mid-session — so the existing fallback chain always
+  landed at `work_time = 0`. Track sessions server-side via
+  `work_status` transitions (`100`/`101`/`102`/`103`/`150` start /
+  refresh, non-mowing values leave the session intact). Compute
+  `round((lastActiveAt - startedAt) / 60000)` minutes when the body +
+  cache chain yields zero. Cleared after the work record is persisted.
+- 11 new unit tests in `__tests__/mqtt/mowingSession.test.ts`.
+
 ## 2026-05-05 — Work records: dateTime in server-local wall clock (issue #17 round 4)
 
 - `routes/equipmentState.ts`: previous round stored ISO+Z, but the **stock
