@@ -363,6 +363,15 @@ export function adminPageHtml(): string {
         <span><span style="display:inline-block;width:12px;height:12px;background:rgba(239,68,68,.3);border:2px solid #991b1b;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Obstacle</span>
         <span><span style="display:inline-block;width:12px;height:12px;background:transparent;border:2px solid #3b82f6;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Channel</span>
         <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Charger</span>
+        <span><span style="display:inline-block;width:14px;height:2px;background:#22d3ee;vertical-align:middle;margin-right:4px"></span>Mower trail</span>
+        <span><span style="display:inline-block;width:14px;height:2px;background:#84cc16;vertical-align:middle;margin-right:4px"></span>RTK GPS trail</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#22d3ee;border:2px solid #0e7490;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Live mower</span>
+      </div>
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
+        <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
+        <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:monospace">
+          <span style="color:#888">Select a mower to start validation polling.</span>
+        </div>
       </div>
       <div id="mapList" style="margin-top:12px"></div>
 
@@ -2290,6 +2299,171 @@ function startLocalizationPoll(sn) {
   if (el) el.innerHTML = '<span style="color:#888">Loading localization status for ' + sn + '...</span>';
   __pollLocOnce(sn);
   __mapLocPollTimer = setInterval(function() { __pollLocOnce(sn); }, 2000);
+  startPositionTrailPoll(sn);
+}
+
+// ── Live position + validation trail polling ─────────────────────────────
+// Polls /api/admin-status/live-position every 1.5s for the live mower-dot
+// and /api/admin-status/position-trail every 5s for the dual trail + offset
+// suggestion. Updates canvas.__mapState in place + re-renders so the user
+// can validate that the firmware-frame position matches the RTK-derived
+// position while the mower is mowing.
+var __posLivePollTimer = null;
+var __posTrailPollTimer = null;
+
+function startPositionTrailPoll(sn) {
+  if (__posLivePollTimer) { clearInterval(__posLivePollTimer); __posLivePollTimer = null; }
+  if (__posTrailPollTimer) { clearInterval(__posTrailPollTimer); __posTrailPollTimer = null; }
+  if (!sn) return;
+  __pollLivePosOnce(sn);
+  __pollTrailOnce(sn);
+  __posLivePollTimer = setInterval(function() { __pollLivePosOnce(sn); }, 1500);
+  __posTrailPollTimer = setInterval(function() { __pollTrailOnce(sn); }, 5000);
+}
+
+async function __pollLivePosOnce(sn) {
+  var canvas = document.getElementById('mapCanvas');
+  if (!canvas || !canvas.__mapState || !canvas.__mapState.maps) return;
+  try {
+    var r = await fetch('/api/admin-status/live-position/' + encodeURIComponent(sn), {
+      headers: { 'Authorization': token }
+    });
+    if (!r.ok) return;
+    var data = await r.json();
+    canvas.__mapState.livePose = data.pose;
+    canvas.__mapState.mowerTrail = (data.recentTrail || []).map(function(p) {
+      return { x: p.x, y: p.y };
+    });
+    if (typeof polygonCal !== 'undefined' && polygonCal) {
+      rerenderWithGhost();
+    } else {
+      renderMapCanvas(canvas, canvas.__mapState.maps, canvas.__mapState.chargingPose || null);
+    }
+  } catch (e) { /* swallow — next tick retries */ }
+}
+
+async function __pollTrailOnce(sn) {
+  var canvas = document.getElementById('mapCanvas');
+  if (!canvas || !canvas.__mapState || !canvas.__mapState.maps) return;
+  try {
+    var r = await fetch('/api/admin-status/position-trail/' + encodeURIComponent(sn) + '?duration=600', {
+      headers: { 'Authorization': token }
+    });
+    if (!r.ok) return;
+    var data = await r.json();
+    canvas.__mapState.gpsTrail = (data.gpsLocal || []).map(function(p) {
+      return { x: p.x, y: p.y };
+    });
+    canvas.__mapState.suggestion = data.suggestion;
+    canvas.__mapState.haveAnchor = data.haveAnchor;
+    renderValidationPanel(data);
+  } catch (e) { /* swallow */ }
+}
+
+function renderValidationPanel(data) {
+  var el = document.getElementById('positionValidationPanel');
+  if (!el) return;
+  function debugHtml(d) {
+    if (!d) return '';
+    var anchor = (d.chargerLat != null && d.chargerLng != null)
+      ? d.chargerLat.toFixed(7) + ', ' + d.chargerLng.toFixed(7)
+      : '<span style="color:#fca5a5">null</span>';
+    var chargerMap = d.chargerInMap
+      ? '(' + d.chargerInMap.x.toFixed(3) + ', ' + d.chargerInMap.y.toFixed(3) + ')'
+      : '<span style="color:#fca5a5">null</span>';
+    var savedTheta = d.savedThetaDeg != null ? d.savedThetaDeg.toFixed(2) + '°' : '<span style="color:#fca5a5">null</span>';
+    var derived = d.derivedThetaDeg != null ? d.derivedThetaDeg.toFixed(2) + '°' : '<span style="color:#888">need ≥10 samples</span>';
+    var sourceColor = d.thetaSource === 'data-fit' ? '#86efac' : d.thetaSource === 'saved' ? '#fbbf24' : '#fca5a5';
+    var latest = d.latestSample
+      ? '(' + d.latestSample.lat.toFixed(7) + ', ' + d.latestSample.lng.toFixed(7) + ') → map(' + d.latestSample.mx.toFixed(2) + ',' + d.latestSample.my.toFixed(2) + ')'
+      : '<span style="color:#888">none yet</span>';
+    return '<details style="margin-top:8px;font-size:10px;color:#94a3b8">'
+      + '<summary style="cursor:pointer;color:#cbd5e1">Debug info</summary>'
+      + '<div style="margin-top:6px;padding:6px 8px;background:#0a0a14;border-radius:4px;line-height:1.6">'
+      + '<div>Charger GPS: ' + anchor + '</div>'
+      + '<div>Charger in map frame: ' + chargerMap + '</div>'
+      + '<div>Saved θ (dock heading): ' + savedTheta + '</div>'
+      + '<div>Derived θ (from data): <b style="color:' + sourceColor + '">' + derived + '</b></div>'
+      + '<div>Active rotation source: <b style="color:' + sourceColor + '">' + (d.thetaSource || '?') + '</b></div>'
+      + '<div>Total RTK samples: ' + d.totalSamples + '</div>'
+      + '<div>Latest sample: ' + latest + '</div>'
+      + '</div></details>';
+  }
+  if (!data.haveAnchor) {
+    el.innerHTML = '<span style="color:#fca5a5">No charger anchor in DB — sync_map first to populate <code>map_calibration.charger_lat/lng</code>.</span>'
+      + debugHtml(data.debug);
+    return;
+  }
+  if (!data.suggestion) {
+    var n = (data.gpsLocal || []).length;
+    el.innerHTML = '<span style="color:#888">Waiting for RTK FIX samples while mowing... (' + n + '/5)</span>'
+      + debugHtml(data.debug);
+    return;
+  }
+  var s = data.suggestion;
+  var dxCm = (s.dx * 100).toFixed(1);
+  var dyCm = (s.dy * 100).toFixed(1);
+  var stdMax = Math.max(s.stdevX, s.stdevY);
+  var stdColor = stdMax < 0.05 ? '#86efac' : stdMax < 0.15 ? '#fbbf24' : '#fca5a5';
+  // Big offset combined with high noise = anchor / orientation problem,
+  // not a real polygon-drift signal. Warn the operator before they apply.
+  var totalOffsetCm = Math.sqrt(s.dx * s.dx + s.dy * s.dy) * 100;
+  var suspectAnchor = stdMax > 0.15 || totalOffsetCm > 50;
+  var warning = suspectAnchor
+    ? '<div style="margin-top:6px;padding:6px 8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:4px;color:#fca5a5;font-size:10px;line-height:1.5">'
+      + '<b>Suspect: anchor or orientation wrong.</b> Real RTK noise is &lt;5 cm and polygon drift &lt;50 cm. '
+      + 'Verify <code>charger_lat/lng</code> matches the physical charger GPS and <code>polygon_charging_orientation</code> matches the heading at mapping time before applying.'
+      + '</div>'
+    : '';
+  el.innerHTML =
+    '<div style="font-size:11px;color:#cbd5e1;line-height:1.6">'
+    + '<div><b style="color:#22d3ee">Cyan trail</b> = firmware <code>map_position</code></div>'
+    + '<div><b style="color:#84cc16">Lime trail</b> = RTK GPS via charger anchor</div>'
+    + '<div style="margin-top:6px"><b>Suggested offset:</b> dx=<b>' + dxCm + ' cm</b>, dy=<b>' + dyCm + ' cm</b> (|d|=' + totalOffsetCm.toFixed(1) + ' cm)</div>'
+    + '<div style="color:' + stdColor + '">noise σ: x=' + (s.stdevX * 100).toFixed(1) + ' cm, y=' + (s.stdevY * 100).toFixed(1) + ' cm  (n=' + s.samples + ')</div>'
+    + '</div>'
+    + warning
+    + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+    + '<button onclick="applySuggestedOffset(' + s.dx + ',' + s.dy + ')" '
+    + 'style="padding:6px 12px;background:' + (suspectAnchor ? 'rgba(100,116,139,.15)' : 'rgba(16,185,129,.2)') + ';color:' + (suspectAnchor ? '#94a3b8' : '#86efac') + ';border:1px solid ' + (suspectAnchor ? 'rgba(100,116,139,.3)' : 'rgba(16,185,129,.5)') + ';border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Apply suggested offset</button>'
+    + '<button onclick="clearValidationTrail()" style="padding:6px 12px;background:rgba(100,116,139,.15);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;cursor:pointer">Clear trail</button>'
+    + '</div>'
+    + debugHtml(data.debug);
+}
+
+async function applySuggestedOffset(dx, dy) {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) return;
+  if (!confirm('Apply suggested offset dx=' + (dx * 100).toFixed(1) + ' cm, dy=' + (dy * 100).toFixed(1) + ' cm to ' + sn + '?\\n\\nThis runs a full sync_map (same as the manual nudge panel).')) return;
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/apply-polygon-offset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': token },
+      body: JSON.stringify({ dx_m: dx, dy_m: dy })
+    });
+    var json = await r.json();
+    alert(r.ok ? 'Offset applied. Mower will resync.' : ('Failed: ' + (json.error || r.status)));
+  } catch (e) {
+    alert('Apply failed: ' + e.message);
+  }
+}
+
+async function clearValidationTrail() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) return;
+  try {
+    await fetch('/api/admin-status/position-trail/' + encodeURIComponent(sn) + '/clear', {
+      method: 'POST',
+      headers: { 'Authorization': token }
+    });
+    var canvas = document.getElementById('mapCanvas');
+    if (canvas && canvas.__mapState) {
+      canvas.__mapState.gpsTrail = [];
+      canvas.__mapState.mowerTrail = [];
+      canvas.__mapState.suggestion = null;
+    }
+    __pollTrailOnce(sn);
+  } catch (e) { /* swallow */ }
 }
 
 async function recalibrateChargingPose() {
@@ -3177,6 +3351,65 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   ctx.font = '10px system-ui';
   ctx.textAlign = 'center';
   ctx.fillText('Charger', chargerX, chargerY - 10);
+
+  // ── Validation overlay: live mower position + dual trail (firmware vs RTK)
+  // Read from canvas.__mapState so the polling loop can refresh the data
+  // without re-running the polygon render path (cheaper, no fit-to-bounds
+  // jitter). Each piece is optional — the polygon canvas works fine when
+  // none of them are set yet.
+  var st = canvas.__mapState || {};
+  var mowerTrail = st.mowerTrail || [];
+  var gpsTrail = st.gpsTrail || [];
+  var livePose = st.livePose || null;
+
+  function drawTrail(points, color) {
+    if (!Array.isArray(points) || points.length < 2) return;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      var sx = tx(p.x);
+      var sy = ty(p.y);
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  // Firmware-frame trail in cyan (mower's reported map_position over time).
+  drawTrail(mowerTrail, 'rgba(34,211,238,0.85)');
+  // RTK-derived trail in lime (GPS projected via charger anchor).
+  drawTrail(gpsTrail, 'rgba(132,204,22,0.85)');
+
+  if (livePose && Number.isFinite(livePose.x) && Number.isFinite(livePose.y)) {
+    var px = tx(livePose.x);
+    var py = ty(livePose.y);
+    // Mower body
+    ctx.save();
+    ctx.fillStyle = '#22d3ee';
+    ctx.strokeStyle = '#0e7490';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(px, py, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    // Heading arrow — orientation is in radians, the local-frame Y axis
+    // is north so we rotate clockwise from north for the canvas (where
+    // Y grows downward).
+    var theta = Number.isFinite(livePose.orientation) ? livePose.orientation : 0;
+    var arrowLen = 16;
+    var ax = px + arrowLen * Math.cos(theta);
+    var ay = py - arrowLen * Math.sin(theta);
+    ctx.strokeStyle = '#22d3ee';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(ax, ay);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function renderMapList(container, maps, sn) {

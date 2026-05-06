@@ -392,6 +392,65 @@ export function clearLocalTrail(sn: string): void {
   localTrails.delete(sn);
 }
 
+// ── Validation trail (RTK-FIX paired GPS + map_position samples) ────────────
+//
+// Captured ONLY while the mower is reporting both:
+//   - latitude/longitude with non-zero values
+//   - map_position_x/y with non-zero values
+//   - loc_quality === 100 (RTK FIX)
+//
+// Used by the admin map's "validate position" view to overlay a green GPS-
+// derived trail on top of the blue firmware-frame trail and surface the
+// median offset as a suggested polygon-offset calibration.
+
+export interface ValidationSample {
+  ts: number;
+  lat: number;
+  lng: number;
+  mx: number;
+  my: number;
+}
+
+const MAX_VALIDATION_POINTS = 2000;
+const validationTrails = new Map<string, ValidationSample[]>();
+
+function appendValidationSample(
+  sn: string,
+  lat: number,
+  lng: number,
+  mx: number,
+  my: number,
+): void {
+  if (
+    !Number.isFinite(lat) || !Number.isFinite(lng) ||
+    !Number.isFinite(mx) || !Number.isFinite(my) ||
+    lat === 0 || lng === 0 || (mx === 0 && my === 0)
+  ) return;
+  if (!validationTrails.has(sn)) validationTrails.set(sn, []);
+  const trail = validationTrails.get(sn)!;
+  // Dedup: skip if last sample is < 5cm away in map frame
+  if (trail.length > 0) {
+    const last = trail[trail.length - 1];
+    const dx = mx - last.mx, dy = my - last.my;
+    if (dx * dx + dy * dy < 0.0025) return;
+  }
+  trail.push({ ts: Date.now(), lat, lng, mx, my });
+  if (trail.length > MAX_VALIDATION_POINTS) {
+    trail.splice(0, trail.length - MAX_VALIDATION_POINTS);
+  }
+}
+
+export function getValidationTrail(sn: string, sinceMs?: number): ValidationSample[] {
+  const trail = validationTrails.get(sn) ?? [];
+  if (sinceMs == null) return trail;
+  const cutoff = Date.now() - sinceMs;
+  return trail.filter((p) => p.ts >= cutoff);
+}
+
+export function clearValidationTrail(sn: string): void {
+  validationTrails.delete(sn);
+}
+
 /**
  * Wis alle gecachte sensor data voor een apparaat (bij disconnect).
  * Hierdoor toont het dashboard geen stale waarden voor offline apparaten.
@@ -799,6 +858,17 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
       const mx = parseFloat(snValues.get('map_position_x') ?? '');
       const my = parseFloat(snValues.get('map_position_y') ?? '');
       if (!isNaN(mx) && !isNaN(my)) appendLocalTrailPoint(sn, mx, my);
+    }
+    // Validation trail — paired GPS + map_position samples, RTK FIX only.
+    // Sampled on every active frame because we need a stream of pairs for
+    // the offset-suggestion median, not just on changes.
+    const locQuality = parseInt(snValues.get('loc_quality') ?? '', 10);
+    if (locQuality === 100) {
+      const lat = parseFloat(snValues.get('latitude') ?? '');
+      const lng = parseFloat(snValues.get('longitude') ?? '');
+      const mx = parseFloat(snValues.get('map_position_x') ?? '');
+      const my = parseFloat(snValues.get('map_position_y') ?? '');
+      appendValidationSample(sn, lat, lng, mx, my);
     }
   }
 

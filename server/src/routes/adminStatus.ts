@@ -19,7 +19,13 @@ import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
-import { deviceCache } from '../mqtt/sensorData.js';
+import {
+  deviceCache,
+  getValidationTrail,
+  clearValidationTrail,
+  getLocalTrail,
+} from '../mqtt/sensorData.js';
+import { gpsToLocal } from '../mqtt/mapConverter.js';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
@@ -1361,6 +1367,218 @@ const MAX_OFFSET_M = 1.0;
 adminStatusRouter.get('/maps/:sn/polygon-offset', (req: AuthRequest, res: Response) => {
   const off = mapRepo.getPolygonOffset(req.params.sn);
   res.json({ dx_m: off.x, dy_m: off.y });
+});
+
+/**
+ * GET /api/admin-status/position-trail/:sn
+ *
+ * Returns paired GPS + map_position samples (RTK FIX only) for the
+ * polygon-offset validation overlay on the admin map.
+ *
+ * Query params:
+ *   duration  — window in seconds (default 600 = last 10 min)
+ *
+ * Response:
+ *   - mowerLocal:  array of {x, y, ts} from sensors.map_position_x/y
+ *   - gpsLocal:    array of {x, y, ts} — GPS samples projected into the
+ *                  same local frame using the map_calibration anchor +
+ *                  the saved charging-pose orientation. Empty when no
+ *                  charger anchor exists.
+ *   - paired:      time-aligned pairs used for the offset suggestion
+ *   - suggestion:  median (mowerLocal − gpsLocal) and sample stats
+ */
+adminStatusRouter.get('/position-trail/:sn', (req: AuthRequest, res: Response) => {
+  const sn = req.params.sn;
+  const durationSec = Math.max(
+    10,
+    Math.min(3600, parseInt(String(req.query.duration ?? ''), 10) || 600),
+  );
+  const samples = getValidationTrail(sn, durationSec * 1000);
+
+  // Anchor + map-frame charger pose. The unicom CSV's first point is the
+  // charger position in MAP FRAME (e.g. (-1.21, 0.48) for Achtertuin),
+  // distinct from charger_lat/lng which is the charger's GPS location.
+  // Both are needed to relate the two reference frames.
+  const cal = mapRepo.getCalibration(sn);
+  const chargerLat = cal?.charger_lat ?? null;
+  const chargerLng = cal?.charger_lng ?? null;
+  const polygonAnchor = getPolygonAnchor(sn);
+  const chargerInMapX = polygonAnchor?.x ?? 0;
+  const chargerInMapY = polygonAnchor?.y ?? 0;
+
+  const mowerLocal = samples.map((p) => ({ x: p.mx, y: p.my, ts: p.ts }));
+
+  // Step 1: project every GPS sample to UNROTATED metres relative to the
+  // charger anchor (east, north). At this point the lime trail still lives
+  // in GPS frame — it has the right shape but is rotated relative to the
+  // map frame.
+  const haveAnchor =
+    chargerLat != null && chargerLng != null
+    && Number.isFinite(chargerLat) && Number.isFinite(chargerLng);
+
+  type UnrotPoint = { ex: number; ny: number; ts: number };
+  const gpsUnrot: UnrotPoint[] = haveAnchor
+    ? samples.map((p) => {
+      const local = gpsToLocal(
+        { lat: p.lat, lng: p.lng },
+        { lat: chargerLat as number, lng: chargerLng as number },
+        0, // unrotated — rotation is derived below
+      );
+      return { ex: local.x, ny: local.y, ts: p.ts };
+    })
+    : [];
+
+  // Step 2: derive the GPS→map rotation from the data instead of trusting
+  // the saved charging-pose theta (which is the dock heading, not the
+  // mapping-start heading). The two frames differ only by a rotation
+  // around the charger anchor PLUS the charger's position in map frame
+  // (chargerInMap*). We solve:
+  //
+  //   R · (gps_unrot − mean_gps) ≈ (map − chargerInMap) − mean_mapAtCharger
+  //
+  // via the closed-form Kabsch / Wahba 2-D solution: given paired
+  // centred vectors (u_i, v_i), the optimal rotation θ satisfies
+  //   tan(θ) = Σ(u.x·v.y − u.y·v.x) / Σ(u.x·v.x + u.y·v.y)
+  // (sum-of-cross-products vs sum-of-dot-products).
+  let derivedTheta: number | null = null;
+  let derivedThetaDeg: number | null = null;
+  if (haveAnchor && gpsUnrot.length >= 10) {
+    // Centre both clouds at their respective means so the rotation isn't
+    // contaminated by translation error.
+    const mapInChargerFrame = mowerLocal.map((p) => ({
+      x: p.x - chargerInMapX,
+      y: p.y - chargerInMapY,
+    }));
+    const meanGps = gpsUnrot.reduce(
+      (a, b) => ({ ex: a.ex + b.ex, ny: a.ny + b.ny }),
+      { ex: 0, ny: 0 },
+    );
+    meanGps.ex /= gpsUnrot.length;
+    meanGps.ny /= gpsUnrot.length;
+    const meanMap = mapInChargerFrame.reduce(
+      (a, b) => ({ x: a.x + b.x, y: a.y + b.y }),
+      { x: 0, y: 0 },
+    );
+    meanMap.x /= mapInChargerFrame.length;
+    meanMap.y /= mapInChargerFrame.length;
+
+    let sumCross = 0;
+    let sumDot = 0;
+    for (let i = 0; i < gpsUnrot.length; i++) {
+      const u = { x: gpsUnrot[i].ex - meanGps.ex, y: gpsUnrot[i].ny - meanGps.ny };
+      const v = { x: mapInChargerFrame[i].x - meanMap.x, y: mapInChargerFrame[i].y - meanMap.y };
+      sumCross += u.x * v.y - u.y * v.x;
+      sumDot   += u.x * v.x + u.y * v.y;
+    }
+    if (Math.abs(sumDot) + Math.abs(sumCross) > 1e-9) {
+      derivedTheta = Math.atan2(sumCross, sumDot);
+      derivedThetaDeg = derivedTheta * 180 / Math.PI;
+    }
+  }
+
+  // Step 3: project gpsUnrot into MAP FRAME using either the data-derived
+  // rotation or — when we don't have enough samples yet — falling back
+  // to the saved charging-pose orientation (better than identity).
+  const savedTheta = mapRepo.getPolygonChargingOrientation(sn);
+  const projectionTheta = derivedTheta ?? (savedTheta ?? 0);
+  const cos = Math.cos(projectionTheta);
+  const sin = Math.sin(projectionTheta);
+  const gpsLocal = gpsUnrot.map((p) => ({
+    // R(θ) · (ex, ny) + (chargerInMapX, chargerInMapY)
+    x: p.ex * cos - p.ny * sin + chargerInMapX,
+    y: p.ex * sin + p.ny * cos + chargerInMapY,
+    ts: p.ts,
+  }));
+
+  // Step 4: residuals after rotation+translation = real polygon drift
+  // suggestion. With a correct rotation the median should drop close to
+  // zero; the std-dev becomes a true RTK noise estimate (cm-scale).
+  const paired = samples.map((p, i) => ({
+    ts: p.ts,
+    map: { x: mowerLocal[i].x, y: mowerLocal[i].y },
+    gps: gpsLocal[i] ?? null,
+  })).filter((row) => row.gps != null) as {
+    ts: number;
+    map: { x: number; y: number };
+    gps: { x: number; y: number; ts: number };
+  }[];
+
+  let suggestion: {
+    dx: number;
+    dy: number;
+    samples: number;
+    stdevX: number;
+    stdevY: number;
+  } | null = null;
+
+  if (paired.length >= 5) {
+    const dxs = paired.map((p) => p.map.x - p.gps.x).sort((a, b) => a - b);
+    const dys = paired.map((p) => p.map.y - p.gps.y).sort((a, b) => a - b);
+    const median = (arr: number[]) => arr[Math.floor(arr.length / 2)];
+    const dx = median(dxs);
+    const dy = median(dys);
+    const meanX = dxs.reduce((s, v) => s + v, 0) / dxs.length;
+    const meanY = dys.reduce((s, v) => s + v, 0) / dys.length;
+    const stdevX = Math.sqrt(dxs.reduce((s, v) => s + (v - meanX) ** 2, 0) / dxs.length);
+    const stdevY = Math.sqrt(dys.reduce((s, v) => s + (v - meanY) ** 2, 0) / dys.length);
+    suggestion = { dx, dy, samples: paired.length, stdevX, stdevY };
+  }
+
+  res.json({
+    sn,
+    durationSec,
+    haveAnchor,
+    mowerLocal,
+    gpsLocal,
+    suggestion,
+    debug: {
+      chargerLat,
+      chargerLng,
+      chargerInMap: { x: chargerInMapX, y: chargerInMapY },
+      savedTheta,
+      savedThetaDeg: savedTheta != null ? (savedTheta * 180 / Math.PI) : null,
+      derivedTheta,
+      derivedThetaDeg,
+      projectionThetaDeg: projectionTheta * 180 / Math.PI,
+      thetaSource: derivedTheta != null ? 'data-fit' : (savedTheta != null ? 'saved' : 'identity'),
+      totalSamples: samples.length,
+      firstSampleTs: samples.length ? samples[0].ts : null,
+      lastSampleTs: samples.length ? samples[samples.length - 1].ts : null,
+      latestSample: samples.length ? samples[samples.length - 1] : null,
+    },
+  });
+});
+
+/** Wipe the in-memory validation trail for a SN (admin "Clear" button). */
+adminStatusRouter.post('/position-trail/:sn/clear', (req: AuthRequest, res: Response) => {
+  clearValidationTrail(req.params.sn);
+  res.json({ ok: true });
+});
+
+/**
+ * GET /api/admin-status/live-position/:sn
+ *
+ * Lightweight endpoint for the admin map's live mower-dot tick. Returns
+ * the latest reported map_position from the sensor cache plus the most
+ * recent localTrail tail, so a polling client can plot the dot + recent
+ * track without pulling the full validation set.
+ */
+adminStatusRouter.get('/live-position/:sn', (req: AuthRequest, res: Response) => {
+  const sn = req.params.sn;
+  const sensors = deviceCache.get(sn);
+  const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+  const my = parseFloat(sensors?.get('map_position_y') ?? '');
+  const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+  const recentTrail = getLocalTrail(sn).slice(-200);
+  res.json({
+    sn,
+    pose: (Number.isFinite(mx) && Number.isFinite(my))
+      ? { x: mx, y: my, orientation: Number.isFinite(mo) ? mo : 0 }
+      : null,
+    workStatus: sensors?.get('work_status') ?? null,
+    locQuality: sensors?.get('loc_quality') ?? null,
+    recentTrail,
+  });
 });
 
 // POST /api/admin-status/maps/:sn/apply-polygon-offset
