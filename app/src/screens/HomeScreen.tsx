@@ -1791,7 +1791,18 @@ export default function HomeScreen() {
                   const url = await getServerUrl();
                   if (!url || !mower.sn) return;
                   const api = new ApiClient(url);
+                  // Earlier revisions only sent clear_error + quit_mapping_mode,
+                  // which never recovered Error 2 / "Already in running task":
+                  // the underlying coverage task was still flagged active so
+                  // the firmware re-emitted the same error_status the next
+                  // tick. Verified live 2026-05-06 — the only sequence that
+                  // actually recovers a stuck error is stop_navigation FIRST,
+                  // then clear_error, then quit_mapping_mode. Each step is
+                  // independently idempotent.
+                  await api.sendCommand(mower.sn, { stop_navigation: { cmd_num: Date.now() % 100000 } });
+                  await new Promise((r) => setTimeout(r, 600));
                   await api.clearError(mower.sn);
+                  await new Promise((r) => setTimeout(r, 300));
                   await api.sendCommand(mower.sn, { quit_mapping_mode: { value: 1, cmd_num: Date.now() % 100000 } });
                 } catch {}
               }}
