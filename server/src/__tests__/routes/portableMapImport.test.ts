@@ -6,7 +6,7 @@
  *   - sets Content-Type: application/zip
  *   - streams a non-trivial ZIP body (> 200 bytes)
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type MockInstance } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 
@@ -112,6 +112,8 @@ vi.mock('../../mqtt/mapConverter.js', () => ({
 import { adminStatusRouter } from '../../routes/adminStatus.js';
 import { db } from '../../db/database.js';
 import { mapRepo } from '../../db/repositories/index.js';
+import * as mapSyncMock from '../../mqtt/mapSync.js';
+import * as sensorDataMock from '../../mqtt/sensorData.js';
 
 // Inject fake userId to bypass auth middleware
 const app = express();
@@ -191,5 +193,76 @@ describe('POST /import-portable', () => {
       .attach('bundle', Buffer.from('not a zip'), 'bad.novabotmap');
     expect(res.status).toBe(400);
     expect(res.body.ok).toBe(false);
+  });
+});
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Export a bundle from SN_ANCHOR then upload it to targetSn; returns stagingId. */
+async function uploadBundle(targetSn: string): Promise<string> {
+  const expRes = await request(app)
+    .get(`/api/admin-status/maps/${SN}/export-portable`)
+    .buffer()
+    .parse((r, cb) => {
+      const chunks: Buffer[] = [];
+      r.on('data', (c: Buffer) => chunks.push(c));
+      r.on('end', () => cb(null, Buffer.concat(chunks)));
+    });
+  const res = await request(app)
+    .post(`/api/admin-status/maps/${targetSn}/import-portable`)
+    .attach('bundle', expRes.body as Buffer, 'b.novabotmap');
+  expect(res.status).toBe(200);
+  return res.body.stagingId as string;
+}
+
+/** Seed deviceCache with GPS + RTK + CHARGING values for SN. */
+function seedSensorCache(sn: string, lat: string, lng: string): void {
+  const m = new Map<string, string>();
+  m.set('latitude', lat);
+  m.set('longitude', lng);
+  m.set('loc_quality', '100');
+  m.set('battery_state', 'CHARGING');
+  (sensorDataMock.deviceCache as Map<string, Map<string, string>>).set(sn, m);
+}
+
+/** Get the shared deviceCache map for a given SN (for mutation in drive tests). */
+function getSensorMap(sn: string): Map<string, string> {
+  return (sensorDataMock.deviceCache as Map<string, Map<string, string>>).get(sn)!;
+}
+
+// ── Task 11: POST /set-anchor ──────────────────────────────────────────────
+
+describe('POST /set-anchor', () => {
+  it('snapshots RTK pose when mower at dock', async () => {
+    const sn = 'LFIN_T11A';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await uploadBundle(sn);
+    seedSensorCache(sn, '52.140888', '6.231036');
+
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/set-anchor`);
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('ANCHOR_SET');
+    expect(res.body.newCharger.lat).toBeCloseTo(52.140888, 6);
+  });
+
+  it('returns 409 when no GPS in sensor cache', async () => {
+    const sn = 'LFIN_T11B';
+    db.prepare(`INSERT OR IGNORE INTO map_calibration (mower_sn, charger_lat, charger_lng) VALUES (?, ?, ?)`)
+      .run(sn, 52.14, 6.23);
+    const stagingId = await uploadBundle(sn);
+    // No cache entry for this SN
+    (sensorDataMock.deviceCache as Map<string, Map<string, string>>).delete(sn);
+
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/set-anchor`);
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 404 for unknown stagingId', async () => {
+    const res = await request(app)
+      .post(`/api/admin-status/maps/LFIN_T11C/import-portable/nonexistent-id/set-anchor`);
+    expect(res.status).toBe(404);
   });
 });

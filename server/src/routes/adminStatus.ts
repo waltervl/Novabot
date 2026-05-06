@@ -1442,6 +1442,51 @@ adminStatusRouter.post(
   },
 );
 
+// ── Portable map import — staged endpoints (Tasks 11-15) ────────────────────
+
+// GET /api/admin-status/maps/:sn/import-portable/active
+// NOTE: must be registered BEFORE /:stagingId/... routes to avoid Express
+// matching "active" as a stagingId.
+adminStatusRouter.get('/maps/:sn/import-portable/active', (req: AuthRequest, res: Response) => {
+  const sn = req.params.sn;
+  const active = importStaging.getActive(sn);
+  res.json({ stagingId: active?.stagingId ?? null, state: active?.state ?? null });
+});
+
+// POST /api/admin-status/maps/:sn/import-portable/:stagingId/set-anchor
+// Snapshot RTK GPS from sensor cache. Mower must be on dock + RTK FIX (loc_quality=100).
+adminStatusRouter.post(
+  '/maps/:sn/import-portable/:stagingId/set-anchor',
+  (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown staging session' });
+      return;
+    }
+    const sensors = deviceCache.get(sn);
+    const lat = parseFloat(sensors?.get('latitude') ?? '');
+    const lng = parseFloat(sensors?.get('longitude') ?? '');
+    const locQ = parseInt(sensors?.get('loc_quality') ?? '', 10);
+    const batt = (sensors?.get('battery_state') ?? '').toUpperCase();
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      res.status(409).json({ ok: false, error: 'no GPS in sensor cache' });
+      return;
+    }
+    if (locQ !== 100) {
+      res.status(409).json({ ok: false, error: `loc_quality=${locQ}, RTK FIX (100) required` });
+      return;
+    }
+    if (!batt.includes('CHARGING') && !batt.includes('FINISHED')) {
+      res.status(409).json({ ok: false, error: 'mower must be on dock (battery_state CHARGING)' });
+      return;
+    }
+    const updated = importStaging.transition(stagingId, 'ANCHOR_SET', { newCharger: { lat, lng } });
+    importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'UPLOADED', to_state: 'ANCHOR_SET', reason: null });
+    res.json({ ok: true, state: updated.state, newCharger: updated.context.newCharger });
+  },
+);
+
 // ── Polygon-offset calibration endpoints ────────────────────────────────────
 // These allow operators to nudge the mower's work polygon overlay without
 // touching the underlying GPS calibration.  The offset is persisted in
