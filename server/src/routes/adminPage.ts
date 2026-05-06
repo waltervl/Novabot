@@ -321,6 +321,16 @@ export function adminPageHtml(): string {
             <span style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#fbbf24;font-weight:600">Polygon Offset</span>
             <span style="cursor:pointer;color:#888" onclick="cancelPolygonCalibration()" title="Cancel">&times;</span>
           </div>
+          <div style="margin-bottom:10px;padding:6px 8px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:10px;color:#cbd5e1;line-height:1.5">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+              <span style="display:inline-block;width:16px;height:8px;background:rgba(255,255,255,.06);border:1.5px dashed rgba(255,255,255,.9);flex-shrink:0"></span>
+              <span><b style="color:#e5e7eb">ORIGINAL</b> — current on mower</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="display:inline-block;width:16px;height:8px;background:rgba(34,197,94,.2);border:1.5px solid #166534;flex-shrink:0"></span>
+              <span><b style="color:#86efac">PREVIEW</b> — after Apply</span>
+            </div>
+          </div>
           <div style="display:grid;grid-template-columns:36px 36px 36px;gap:4px;justify-content:center;margin-bottom:10px">
             <span></span>
             <button class="cal-arrow" onclick="nudgePolygonOffset(0, 0.01, event)" title="North (Shift = 10 cm)">&uarr;</button>
