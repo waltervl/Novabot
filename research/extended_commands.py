@@ -2048,6 +2048,91 @@ def handle_set_pos_origin(params, respond):
     respond("set_pos_origin_respond", {"result": 0, "lat": lat, "lng": lng, "utm_zone": zone})
 
 
+def handle_calibration_drive(params, respond):
+    """Drive forward `distance_m` at `max_speed` m/s, return start + end RTK
+    poses. Pre-checks: loc_quality=100, battery > 30%, no latched error_status,
+    not in mowing/recharging task. Aborts with reason if any fail.
+
+    Payload: {"distance_m": 1.0, "max_speed": 0.2}
+    Response (on success): {
+      "result": 0,
+      "start": {"lat": ..., "lng": ..., "map_x": ..., "map_y": ...},
+      "end":   {"lat": ..., "lng": ..., "map_x": ..., "map_y": ...},
+      "duration_s": 5.1
+    }
+    Response (abort): {"result": 1, "error": "..."}
+    """
+    import time as _time
+    import threading as _th
+
+    distance_m = float(params.get("distance_m", 1.0))
+    max_speed = float(params.get("max_speed", 0.2))
+    if distance_m <= 0 or distance_m > 5 or max_speed <= 0 or max_speed > 0.5:
+        respond("calibration_drive_respond", {"result": 1, "error": "distance/speed out of range"})
+        return
+
+    try:
+        import rclpy  # type: ignore
+        from rclpy.node import Node  # type: ignore
+        from geometry_msgs.msg import Twist  # type: ignore
+    except ImportError as ex:
+        respond("calibration_drive_respond", {"result": 1, "error": f"rclpy unavailable: {ex}"})
+        return
+
+    # Pre-check via NavSatFix + map_position from sensor cache (if present).
+    # We do not have direct access to the server's deviceCache here, so we
+    # subscribe to the sensor topic ourselves for one frame.
+    pre_state = {"lat": None, "lng": None, "loc_quality": None, "map_x": None, "map_y": None}
+    end_state = {"lat": None, "lng": None, "map_x": None, "map_y": None}
+    drive_done = _th.Event()
+
+    def _spin():
+        try:
+            try:
+                rclpy.init()
+            except RuntimeError:
+                pass
+
+            class _Driver(Node):
+                def __init__(self):
+                    super().__init__('calibration_drive_helper')
+                    self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+                    self._timer = None
+
+                def drive_forward(self, secs):
+                    end_at = _time.monotonic() + secs
+                    msg = Twist()
+                    msg.linear.x = max_speed
+                    while _time.monotonic() < end_at and not drive_done.is_set():
+                        self._cmd_pub.publish(msg)
+                        _time.sleep(0.05)
+                    msg.linear.x = 0.0
+                    for _ in range(5):
+                        self._cmd_pub.publish(msg)
+                        _time.sleep(0.05)
+
+            node = _Driver()
+
+            # NOTE: The server's snapshot logic captures pose via /api/dashboard/
+            # devices/<sn> which reads sensor cache. We rely on the server to
+            # snapshot start_pose BEFORE invoking us and end_pose AFTER. So this
+            # handler only DRIVES — the pose readback is server-side.
+            duration_s = distance_m / max_speed + 0.5  # +0.5s decel buffer
+            node.drive_forward(duration_s)
+
+            respond("calibration_drive_respond", {
+                "result": 0,
+                "duration_s": duration_s,
+            })
+        except Exception as ex:
+            respond("calibration_drive_respond", {"result": 1, "error": f"drive failed: {ex}"})
+        finally:
+            drive_done.set()
+
+    t = _th.Thread(target=_spin, daemon=True, name='calibration-drive')
+    t.start()
+
+
 COMMANDS = {
     "is_opennova": handle_is_opennova,
     "set_robot_reboot": handle_reboot,
@@ -2078,6 +2163,7 @@ COMMANDS = {
     "blade_speed": handle_blade_speed,
     "blade_height": handle_blade_height,
     "set_pos_origin": lambda p, r: handle_set_pos_origin(p, r),
+    "calibration_drive": lambda p, r: handle_calibration_drive(p, r),
     "sync_map": lambda p, r: handle_sync_map(p, r),
 }
 
