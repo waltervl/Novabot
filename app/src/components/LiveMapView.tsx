@@ -39,9 +39,15 @@ function LiveMapViewInner({ points, orientation, closed, height = 150, width, ex
   // Verified from blutter decompile: build_map_painter.dart @ 0xa2187c (distanceTo + "m" label
   // at centerPoint of first/last trail points).
   const { svgPoints, cursorX, cursorY, arrowDx, arrowDy, hasPoints, existingSvg, mowerSvg, closingLabel } = useMemo(() => {
-    const allPoints = [...points];
-    for (const m of existingMaps) allPoints.push(...m.points);
-    if (mowerPosition) allPoints.push(mowerPosition);
+    // No rotation — mower local frame ≈ ENU.
+    const points_r = points;
+    const existingMaps_r = existingMaps;
+    const mowerPosition_r = mowerPosition;
+    const orientation_r = orientation;
+
+    const allPoints = [...points_r];
+    for (const m of existingMaps_r) allPoints.push(...m.points);
+    if (mowerPosition_r) allPoints.push(mowerPosition_r);
 
     if (allPoints.length === 0) {
       return { svgPoints: '', cursorX: 0, cursorY: 0, arrowDx: 0, arrowDy: 0, hasPoints: false, existingSvg: [], closingLabel: null };
@@ -81,31 +87,31 @@ function LiveMapViewInner({ points, orientation, closed, height = 150, width, ex
     });
 
     // Project existing maps
-    const existProj = existingMaps.map(m => ({
+    const existProj = existingMaps_r.map(m => ({
       mapId: m.mapId,
       mapType: m.mapType,
       svgPoints: m.points.map(p => project(p.x, p.y)).map(p => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' '),
     }));
 
     // Project current trail
-    const projected = points.map(p => project(p.x, p.y));
+    const projected = points_r.map(p => project(p.x, p.y));
     const svgPts = projected.length > 0
       ? projected.map(p => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' ')
       : '';
 
     const last = projected.length > 0 ? projected[projected.length - 1] : { sx: 0, sy: 0 };
-    const dx = Math.cos(orientation) * ARROW_LEN;
-    const dy = -Math.sin(orientation) * ARROW_LEN;
+    const dx = Math.cos(orientation_r) * ARROW_LEN;
+    const dy = -Math.sin(orientation_r) * ARROW_LEN;
 
     // Project mower position
-    const mowerProj = mowerPosition ? project(mowerPosition.x, mowerPosition.y) : null;
+    const mowerProj = mowerPosition_r ? project(mowerPosition_r.x, mowerPosition_r.y) : null;
 
     // Closing-distance label: straight-line distance (in meters) between first and last trail
     // points, rendered at their midpoint. Matches Novabot's live loop-closure helper.
     let closing: { text: string; sx: number; sy: number } | null = null;
-    if (points.length >= 2) {
-      const first = points[0];
-      const lastPt = points[points.length - 1];
+    if (points_r.length >= 2) {
+      const first = points_r[0];
+      const lastPt = points_r[points_r.length - 1];
       const dxM = first.x - lastPt.x;
       const dyM = first.y - lastPt.y;
       const distM = Math.sqrt(dxM * dxM + dyM * dyM);

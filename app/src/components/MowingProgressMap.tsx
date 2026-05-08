@@ -122,31 +122,34 @@ function toSvg(
   size: number,
   padding: number,
 ) {
-  // North-up rendering — must match MapScreen.localToSvg + LiveMapView so all
-  // map surfaces (Home preview, dedicated Map screen, mapping live view)
-  // share one orientation. X grows left→right (east), Y grows bottom→top
-  // (north) by inverting via (maxY - point.y). The previous version flipped
-  // X instead of Y, which put south at the top of the home preview while
-  // the dedicated Map screen showed north at top — issue #45 / #44.
+  // North-up rendering — must match MapScreen.localToSvg + LiveMapView.
+  // Mower's local frame is approximately ENU-aligned (charging_pose
+  // orientation ≈ π/2 = north), so no extra rotation is needed.
+  // Iterations 2026-05-08 confirmed: 0° matches real world.
+  const rx = point.x;
+  const ry = point.y;
   const drawSize = size - padding * 2;
   const xRange = bounds.maxX - bounds.minX || 0.1;
   const yRange = bounds.maxY - bounds.minY || 0.1;
   const scale = Math.min(drawSize / xRange, drawSize / yRange);
   return {
-    x: padding + (point.x - bounds.minX) * scale + (drawSize - xRange * scale) / 2,
-    y: padding + (bounds.maxY - point.y) * scale + (drawSize - yRange * scale) / 2,
+    x: padding + (rx - bounds.minX) * scale + (drawSize - xRange * scale) / 2,
+    y: padding + (bounds.maxY - ry) * scale + (drawSize - yRange * scale) / 2,
   };
 }
 
 function computeBounds(points: LocalPoint[], extra: LocalPoint[]): { minX: number; maxX: number; minY: number; maxY: number } {
   const all = [...points, ...extra];
   if (all.length === 0) return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
+  // No rotation — map frame is rendered as-is (ENU-aligned).
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of all) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
+    const rx = p.x;
+    const ry = p.y;
+    if (rx < minX) minX = rx;
+    if (rx > maxX) maxX = rx;
+    if (ry < minY) minY = ry;
+    if (ry > maxY) maxY = ry;
   }
   const pad = Math.max(maxX - minX, maxY - minY) * 0.1 || 0.5;
   return { minX: minX - pad, maxX: maxX + pad, minY: minY - pad, maxY: maxY + pad };
@@ -507,6 +510,8 @@ export function MowingProgressMap({
         // toSvg now matches MapScreen / LiveMapView (Y-flipped, X direct).
         // Mower icon SVG points right (0° = east). map_position_orientation
         // is in radians from +X. Negate to convert math-CCW → SVG-CW.
+        // No frame rotation — mower heading maps directly. Mower icon SVG
+        // points right (0° = east); negate to convert math-CCW → SVG-CW.
         const degHeading = mowerHeading != null ? -(mowerHeading * 180 / Math.PI) : 0;
         const mowerSize = 16;
         return (

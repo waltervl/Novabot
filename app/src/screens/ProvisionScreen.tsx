@@ -296,7 +296,7 @@ export default function ProvisionScreen({ navigation, route }: Props) {
         message: 'Starting...',
       }));
 
-      const ok = await provisionDevice(
+      const provResult = await provisionDevice(
         dev.id,
         deviceType,
         { wifiSsid, wifiPassword, mqttAddr, mqttPort, lora: loraForDevice, deviceName: dev.name },
@@ -343,6 +343,30 @@ export default function ProvisionScreen({ navigation, route }: Props) {
       //      drain't de queue zodra een matching SN via MQTT online komt.
       //      Zonder deze queue bleef de DB stale op oude waarden na een
       //      re-provision met override (live bug 2026-04-21).
+      const ok = provResult.ok;
+      // Charger may override the requested channel — see ble.ts comment.
+      // When the device returns its assigned pair, treat THAT as truth and
+      // overwrite the params we registered. Without this the dashboard +
+      // server cache report a value the radio doesn't actually use, which
+      // breaks pair-matching with the partner device. Live bug 2026-05-07.
+      if (provResult.ok && provResult.assignedLora) {
+        const a = provResult.assignedLora;
+        if (deviceType === 'charger' && chargerLoraParams) {
+          if (chargerLoraParams.channel !== a.channel || chargerLoraParams.addr !== a.addr) {
+            bleLog(`[LoRa] Charger reassigned pair: requested ` +
+              `${chargerLoraParams.addr}/${chargerLoraParams.channel} → ` +
+              `device-assigned ${a.addr}/${a.channel}`);
+          }
+          chargerLoraParams = { ...chargerLoraParams, addr: a.addr, channel: a.channel };
+          // The mower we will pair MUST follow the charger's actual pair,
+          // not the operator-input value, otherwise heartbeat fails.
+          if (mowerLoraParams) {
+            mowerLoraParams = { ...mowerLoraParams, addr: a.addr, channel: a.channel };
+          }
+        } else if (deviceType === 'mower' && mowerLoraParams) {
+          mowerLoraParams = { ...mowerLoraParams, addr: a.addr, channel: a.channel };
+        }
+      }
       if (ok) {
         const loraForReg = deviceType === 'charger' ? chargerLoraParams : mowerLoraParams;
         if (loraForReg) {

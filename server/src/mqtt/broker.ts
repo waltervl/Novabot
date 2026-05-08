@@ -1010,6 +1010,24 @@ export async function startMqttBroker(): Promise<void> {
             emitCommandRespond(forwardSn, key, parsed[key]);
             // Wek eventuele awaitCommand() callers in mapSync
             notifyRespond(forwardSn, key, parsed[key]);
+            // Auto-snapshot a portable backup once the mower commits the
+            // dock pose at end-of-mapping. save_recharge_pos_respond fires
+            // BEFORE the post-recharge save_map type:1 — wait briefly so
+            // that final save (and the resulting map_info.json with
+            // charging_pose) is on disk before we read.
+            if (key === 'save_recharge_pos_respond') {
+              const body = parsed[key] as { result?: number } | undefined;
+              if (body?.result === 0) {
+                const sn = forwardSn;
+                setTimeout(() => {
+                  void import('../services/portableBackup.js').then(({ createBackup }) =>
+                    createBackup(sn, 'auto-save_map').catch((e) => {
+                      console.warn(`[portable-backup] auto trigger failed for ${sn}: ${(e as Error)?.message ?? e}`);
+                    }),
+                  );
+                }, 4000);
+              }
+            }
           }
         }
         // Also handle charger-style responds: {"type":"xxx_respond","message":{...}}
