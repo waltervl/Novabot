@@ -28,9 +28,15 @@ describe('ImportStagingStore', () => {
     expect(store.get(s.stagingId)!.state).toBe('ANCHOR_SET');
   });
 
-  it('illegal transition UPLOADED -> APPLIED throws', () => {
+  it('legal transition UPLOADED -> APPLIED (exact-restore one-click path)', () => {
     const s = store.create('SN1', { polygonAreaM2: 100, sourceSn: 'SN1' });
-    expect(() => store.transition(s.stagingId, 'APPLIED', {})).toThrow(IllegalStateTransitionError);
+    store.transition(s.stagingId, 'APPLIED', {});
+    expect(store.get(s.stagingId)!.state).toBe('APPLIED');
+  });
+
+  it('illegal transition UPLOADED -> PREVIEW_SHOWN throws', () => {
+    const s = store.create('SN1', { polygonAreaM2: 100, sourceSn: 'SN1' });
+    expect(() => store.transition(s.stagingId, 'PREVIEW_SHOWN', {})).toThrow(IllegalStateTransitionError);
   });
 
   it('persists state.json + reloads on new instance', () => {
