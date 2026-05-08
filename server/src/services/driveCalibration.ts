@@ -10,7 +10,7 @@ export interface HeadingResult {
 }
 
 const METERS_PER_DEG = 111320;
-const SHORT_DISTANCE_THRESHOLD_M = 0.5;
+const SHORT_DISTANCE_THRESHOLD_M = 0.3;
 
 export function deriveHeading(start: LatLng, end: LatLng): HeadingResult {
   const cosLat = Math.cos((start.lat * Math.PI) / 180);

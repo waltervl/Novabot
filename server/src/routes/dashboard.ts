@@ -4570,26 +4570,40 @@ dashboardRouter.get('/remote-debug/devices', (_req: Request, res: Response) => {
   res.json({ devices });
 });
 
-// GET /remote-debug/logs?sn=X&since=N — logs for a specific SN
+// GET /remote-debug/logs?sn=X&since=N|sinceTs=ms — logs for a specific SN
+//
+// Two cursor modes:
+//   - since=N      : legacy index cursor (caller tracks count). Breaks once
+//                    the server's per-SN ring buffer drops older entries —
+//                    `slice(N)` then walks past array end and returns
+//                    nothing forever after.
+//   - sinceTs=ms   : preferred timestamp cursor; survives buffer drops and
+//                    SN switches. New dashboard polling uses this.
 dashboardRouter.get('/remote-debug/logs', (req: Request, res: Response) => {
   const sn = req.query.sn as string | undefined;
+  const sinceTsRaw = req.query.sinceTs;
+  const sinceTs = sinceTsRaw !== undefined ? parseInt(String(sinceTsRaw), 10) : null;
   const since = parseInt(req.query.since as string || '0', 10);
-  if (sn) {
-    // Retourneer logs van de gevraagde SN + bijbehorende charger + unknown
-    // zodat de console het volledige beeld toont (gefilterd via checkboxen)
+
+  const collect = (): unknown[] => {
     const all: unknown[] = [];
-    for (const [key, buf] of _remoteLogsBySn.entries()) {
-      if (key === sn || key.startsWith('LFIC') || key === 'unknown') {
-        all.push(...buf);
+    if (sn) {
+      for (const [key, buf] of _remoteLogsBySn.entries()) {
+        if (key === sn || key.startsWith('LFIC') || key === 'unknown') {
+          all.push(...buf);
+        }
       }
+    } else {
+      for (const buf of _remoteLogsBySn.values()) all.push(...buf);
     }
-    // Sorteer op timestamp
-    all.sort((a: any, b: any) => (a.ts ?? 0) - (b.ts ?? 0));
-    res.json({ logs: all.slice(since) });
+    all.sort((a: unknown, b: unknown) => ((a as { ts?: number }).ts ?? 0) - ((b as { ts?: number }).ts ?? 0));
+    return all;
+  };
+
+  const all = collect();
+  if (sinceTs !== null && Number.isFinite(sinceTs)) {
+    res.json({ logs: all.filter(e => ((e as { ts?: number }).ts ?? 0) > sinceTs) });
   } else {
-    // Legacy: return all logs combined
-    const all: unknown[] = [];
-    for (const buf of _remoteLogsBySn.values()) all.push(...buf);
     res.json({ logs: all.slice(since) });
   }
 });

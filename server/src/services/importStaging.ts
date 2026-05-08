@@ -5,19 +5,23 @@ import { randomUUID } from 'node:crypto';
 
 export type ImportState =
   | 'UPLOADED'
-  | 'ANCHOR_SET'
-  | 'DRIVE_REQUESTED'
-  | 'DRIVE_COMPLETE'
+  | 'DRIVE_AND_LOCK'  // server is driving the mower backward + waiting for RTK FIX
+  | 'AUTO_DOCK'       // mower is returning to dock via ArUco
+  | 'ANCHOR_SET'      // mower back on dock, RTK + map_position snapshot taken
   | 'PREVIEW_SHOWN'
   | 'USER_CONFIRMED'
   | 'APPLIED'
   | 'CANCELLED';
 
 const LEGAL: Record<ImportState, ImportState[]> = {
-  UPLOADED:        ['ANCHOR_SET', 'CANCELLED'],
-  ANCHOR_SET:      ['DRIVE_REQUESTED', 'CANCELLED'],
-  DRIVE_REQUESTED: ['DRIVE_COMPLETE', 'CANCELLED'],
-  DRIVE_COMPLETE:  ['PREVIEW_SHOWN', 'CANCELLED'],
+  // start-drive: server keeps state UPLOADED while driving; transitions
+  // straight to AUTO_DOCK only when the drive + RTK lock both succeed.
+  // The DRIVE_AND_LOCK state is kept for compatibility but unused on the
+  // happy path.
+  UPLOADED:        ['DRIVE_AND_LOCK', 'AUTO_DOCK', 'ANCHOR_SET', 'APPLIED', 'CANCELLED'],
+  DRIVE_AND_LOCK:  ['AUTO_DOCK', 'UPLOADED', 'CANCELLED'],
+  AUTO_DOCK:       ['ANCHOR_SET', 'CANCELLED'],
+  ANCHOR_SET:      ['PREVIEW_SHOWN', 'CANCELLED'],
   PREVIEW_SHOWN:   ['USER_CONFIRMED', 'CANCELLED'],
   USER_CONFIRMED:  ['APPLIED', 'CANCELLED'],
   APPLIED:         [],
@@ -28,6 +32,13 @@ export interface StagingContext {
   sourceSn: string;
   polygonAreaM2: number;
   newCharger?: { lat: number; lng: number };
+  // Live mower map_position when the dock anchor was snapshotted. The
+  // /confirm step uses this to translate the rebased polygon so that the
+  // unicom anchor lines up with where the mower physically reports the
+  // dock — without it the polygon is rotated but offset from reality by
+  // whatever displacement the original mapping had between map-origin
+  // and dock.
+  newDockMapPosition?: { x: number; y: number; orientation: number };
   driveStart?: { lat: number; lng: number };
   driveEnd?: { lat: number; lng: number };
   derivedHeadingRad?: number;

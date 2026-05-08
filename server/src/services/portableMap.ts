@@ -47,6 +47,14 @@ export interface ExportInput {
   workMap: ExportPolygon;
   obstacles: ExportPolygon[];
   unicom: ExportUnicom[];
+  /** Verbatim CSVs from /userdata/lfi/maps/home0/csv_file/ on the mower at
+   * export time. Captured via MQTT extended `read_map_files`. Keyed by
+   * filename (e.g. `map0_work.csv`, `map_info.json`, etc). Restoring these
+   * back to disk on the same mower preserves exact firmware state. */
+  csvFilesRaw?: Record<string, string>;
+  /** Verbatim contents of /userdata/lfi/charging_station_file/charging_station.yaml
+   * at export time. Single line: `charging_pose: [x, y, theta]`. */
+  chargingStationYaml?: string;
 }
 
 const SCHEMA_VERSION = 1;
@@ -199,6 +207,18 @@ export async function exportBundle(input: ExportInput): Promise<Buffer> {
     archive.append(JSON.stringify(obsGeo, null, 2), { name: 'geojson/obstacles.geojson' });
     archive.append(JSON.stringify(uniGeo, null, 2), { name: 'geojson/unicom.geojson' });
 
+    // Verbatim mower files — when present, an exact-restore import skips
+    // the rebuild-from-DB path and ships these straight back to the mower
+    // (with rotation+translation derived from charging_pose delta applied).
+    if (input.csvFilesRaw) {
+      for (const [fname, content] of Object.entries(input.csvFilesRaw)) {
+        archive.append(content, { name: `mower/csv_file/${fname}` });
+      }
+    }
+    if (input.chargingStationYaml) {
+      archive.append(input.chargingStationYaml, { name: 'mower/charging_station.yaml' });
+    }
+
     void archive.finalize();
   });
 }
@@ -228,6 +248,12 @@ export interface ParsedBundle {
   polygon: { name: string; alias: string; areaM2: number; points: XY[] };
   obstacles: Array<{ name: string; alias: string; areaM2: number; points: XY[] }>;
   unicom: Array<{ name: string; targetMapName: string; points: XY[] }>;
+  /** Verbatim mower files captured at export. Optional — older bundles
+   * without these fall back to DB-reconstructed CSVs. */
+  mowerFiles?: {
+    csvFiles: Record<string, string>;
+    chargingStationYaml: string | null;
+  };
 }
 
 const REQUIRED_FILES = ['metadata.json', 'polygon.json', 'obstacles.json', 'unicom.json'];
@@ -311,8 +337,27 @@ export async function parseBundle(buf: Buffer): Promise<ParsedBundle> {
     };
   });
 
+  // Optional verbatim mower files — present in bundles exported with
+  // exact-restore data captured live from the mower. Older bundles omit
+  // these; downstream import handles the absence by falling back to
+  // DB-reconstructed CSVs.
+  const csvFiles: Record<string, string> = {};
+  let chargingStationYaml: string | null = null;
+  for (const [path, content] of entries.entries()) {
+    if (path.startsWith('mower/csv_file/')) {
+      const fname = path.slice('mower/csv_file/'.length);
+      if (fname && !fname.includes('/')) csvFiles[fname] = content;
+    } else if (path === 'mower/charging_station.yaml') {
+      chargingStationYaml = content;
+    }
+  }
+  const mowerFiles = Object.keys(csvFiles).length > 0 || chargingStationYaml !== null
+    ? { csvFiles, chargingStationYaml }
+    : undefined;
+
   return {
     metadata: metaRaw as ParsedBundle['metadata'],
     polygon, obstacles, unicom,
+    mowerFiles,
   };
 }

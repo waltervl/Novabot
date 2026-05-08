@@ -430,9 +430,16 @@ export default function MappingScreen() {
   // LFIN1231000211: msg=COVERAGE Work:WAIT yet flag=1, indefinitely).
   // The mower's authoritative human-visible state is the msg string from
   // RobotStatus.
+  //
+  // Stock firmware lingers in `Mode:MAPPING Work:FINISHED` for ~10-60 s
+  // after save_map type:1 before transitioning to COVERAGE/IDLE. Treat
+  // post-save echo as NOT active mapping, otherwise the "Resume" banner
+  // sticks long after the mower returned to idle. Verified live
+  // LFIN1231000211 2026-05-08.
   const robotMsg = String(sensors.msg ?? '');
-  const isMappingActive = sensors.task_mode === '3'
-    || robotMsg.includes('Mode:MAPPING');
+  const inMappingMode = sensors.task_mode === '3' || robotMsg.includes('Mode:MAPPING');
+  const postSaveEcho = robotMsg.includes('Work:FINISHED') || robotMsg.includes('Work:WAIT');
+  const isMappingActive = inMappingMode && !postSaveEcho;
 
   // ── Elapsed timer ──
   useEffect(() => {

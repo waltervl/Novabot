@@ -308,12 +308,21 @@ async function sendCommand(
   });
 }
 
+export interface ProvisionResult {
+  ok: boolean;
+  /** Actual LoRa pair as assigned by the device. The charger may pick its
+   * own channel (returns result:1 with `value.channel` ≠ requested) — that
+   * value, not the input, is what ends up in NVS. Null when the device
+   * didn't return a parseable pair. */
+  assignedLora?: { addr: number; channel: number } | null;
+}
+
 export async function provisionDevice(
   deviceId: string,
   deviceType: DeviceType,
   params: ProvisionParams,
   onProgress: ProgressCallback,
-): Promise<boolean> {
+): Promise<ProvisionResult> {
   const mgr = getBleManager();
 
   try {
@@ -455,7 +464,27 @@ export async function provisionDevice(
     // Use provided LoRa params (from server) or fallback
     const lora = params.lora ?? LORA_FALLBACK;
     onProgress('lora', `Configuring LoRa (addr=${lora.addr}, ch=${lora.channel})...`);
-    await cmd(JSON.stringify({ set_lora_info: lora }), 'set_lora_info', 15000);
+    const loraResp = await cmd(JSON.stringify({ set_lora_info: lora }), 'set_lora_info', 15000);
+    // Charger replies with `result:1` and the channel/addr it ACTUALLY assigned —
+    // it can override the requested channel (verified live on LFIC2231000724
+    // 2026-05-07: requested ch=16, charger picked ch=20). Parse the response so
+    // we can persist what's really in the device's NVS, not what we asked for.
+    let assignedLora: { addr: number; channel: number } | null = null;
+    try {
+      const m = loraResp.response.match(/\{"result":\s*[01]\s*,\s*"value":\s*\{([^}]+)\}/);
+      if (m) {
+        const inner = m[1];
+        const addrM = inner.match(/"addr"\s*:\s*(\d+)/);
+        const chM = inner.match(/"channel"\s*:\s*(\d+)/);
+        if (addrM && chM) {
+          assignedLora = { addr: parseInt(addrM[1], 10), channel: parseInt(chM[1], 10) };
+          bleLog(`[BLE] set_lora_info assigned by device: addr=${assignedLora.addr} ch=${assignedLora.channel}` +
+            (assignedLora.channel !== lora.channel ? ` (requested ch=${lora.channel} — device picked different)` : ''));
+        }
+      }
+    } catch (e) {
+      bleLog(`[BLE] failed to parse set_lora_info response: ${(e as Error)?.message ?? e}`);
+    }
     await sleep(1000);
 
     onProgress('mqtt', `Setting MQTT (${params.mqttAddr})...`);
@@ -490,11 +519,11 @@ export async function provisionDevice(
     try { await device.cancelConnection(); } catch {}
 
     onProgress('done', 'Settings saved! Device reconnecting...');
-    return true;
+    return { ok: true, assignedLora };
   } catch (err: any) {
     console.error('[BLE] Provision error:', err.message);
     onProgress('error', err.message);
-    return false;
+    return { ok: false, assignedLora: null };
   }
 }
 

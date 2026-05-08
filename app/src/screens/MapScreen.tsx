@@ -88,12 +88,15 @@ function gpsToLocal(point: GpsPoint, origin: GpsPoint): LocalPoint {
 
 function computeLocalBounds(points: LocalPoint[]): LocalBounds | null {
   if (points.length === 0) return null;
+  // No rotation — bounds in raw local frame.
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of points) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
+    const rx = p.x;
+    const ry = p.y;
+    if (rx < minX) minX = rx;
+    if (rx > maxX) maxX = rx;
+    if (ry < minY) minY = ry;
+    if (ry > maxY) maxY = ry;
   }
   return { minX, maxX, minY, maxY };
 }
@@ -119,12 +122,15 @@ function rotatePoint(p: LocalPoint, angle: number): LocalPoint {
  *  Novabot stock app orientation (LiveMapView.project / earlier this
  *  view rotated 180° vs Novabot — now aligned). */
 function localToSvg(point: LocalPoint, bounds: LocalBounds, size: number, padding: number) {
+  // No rotation — map frame is rendered as-is (ENU-aligned).
+  const rx = point.x;
+  const ry = point.y;
   const drawSize = size - padding * 2;
   const xRange = bounds.maxX - bounds.minX || 0.1;
   const yRange = bounds.maxY - bounds.minY || 0.1;
   const scale = Math.min(drawSize / xRange, drawSize / yRange);
-  const x = padding + (point.x - bounds.minX) * scale + (drawSize - xRange * scale) / 2;
-  const y = padding + (bounds.maxY - point.y) * scale + (drawSize - yRange * scale) / 2;
+  const x = padding + (rx - bounds.minX) * scale + (drawSize - xRange * scale) / 2;
+  const y = padding + (bounds.maxY - ry) * scale + (drawSize - yRange * scale) / 2;
   return { x, y };
 }
 
@@ -353,8 +359,15 @@ export default function MapScreen() {
   // stay set after a failed save sequence even though the mower has long
   // returned to COVERAGE/WAIT state). msg is the authoritative human-
   // visible state from RobotStatus and updates immediately.
+  //
+  // Stock firmware lingers in `Mode:MAPPING Work:FINISHED` for tens of
+  // seconds after save_map type:1 — treat the echo as NOT active so the
+  // Start-Mowing button doesn't stay disabled with "Mapping in progress"
+  // when the mower has actually returned to idle.
   const taskModeRaw = mower?.sensors.task_mode ?? '0';
-  const isMapping = taskModeRaw === '3' || msg.includes('Mode:MAPPING');
+  const isMapping = (taskModeRaw === '3' || msg.includes('Mode:MAPPING'))
+    && !msg.includes('Work:FINISHED')
+    && !msg.includes('Work:WAIT');
   const showTrail = isMowing || isMapping;
   const showCoverPath = isMowing;
   // Voortgangs-state uit report_state_timer_data.cover_path.covered — elke
@@ -944,11 +957,9 @@ export default function MapScreen() {
     const mapScale = Math.min(drawSize / xRange, drawSize / yRange);
     const xOffset = (drawSize - xRange * mapScale) / 2;
     const yOffset = (drawSize - yRange * mapScale) / 2;
-    // Inverse of localToSvg (which flips both axes):
-    // svgX = padding + (maxX - localX) * scale + xOffset → localX = maxX - (svgX - padding - xOffset) / scale
-    // svgY = padding + (localY - minY) * scale + yOffset → localY = minY + (svgY - padding - yOffset) / scale
-    const localX = bounds.maxX - (x - INNER_PADDING - xOffset) / mapScale;
-    const localY = bounds.minY + (y - INNER_PADDING - yOffset) / mapScale;
+    // Inverse of localToSvg (no rotation, just Y flip).
+    const localX = (x - INNER_PADDING - xOffset) / mapScale + bounds.minX;
+    const localY = bounds.maxY - (y - INNER_PADDING - yOffset) / mapScale;
     // Convert to GPS if chargerGpsOrigin available, otherwise use local coords directly
     if (chargerGpsOrigin) {
       const metersPerDegreeLat = 111320;
@@ -1735,7 +1746,9 @@ export default function MapScreen() {
                                   // returned to idle and trigger a phantom 'Mapping in
                                   // progress' on the Start button.
                                   const taskModeForBtn = mower?.sensors.task_mode ?? '0';
-                                  const isMapping = taskModeForBtn === '3' || msg.includes('Mode:MAPPING');
+                                  const isMapping = (taskModeForBtn === '3' || msg.includes('Mode:MAPPING'))
+                                    && !msg.includes('Work:FINISHED')
+                                    && !msg.includes('Work:WAIT');
                                   // Firmware zet Work:USER_STOP bij pause via app — zie HomeScreen comment.
                                   const isPaused = msg.includes('Work:PAUSED') || msg.includes('Work:USER_STOP');
 

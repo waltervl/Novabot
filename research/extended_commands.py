@@ -1429,6 +1429,297 @@ def handle_recalibrate_charging_pose(params, respond):
         respond("recalibrate_charging_pose_respond", {"result": 1, "error": str(e)})
 
 
+def handle_read_map_files(params, respond):
+    """Return raw contents of all map files in home0/csv_file/ + charging_station.yaml.
+
+    Used by the server-side portable export bundle: instead of reconstructing
+    polygon points from DB.maps.map_area (which can drift relative to what's
+    actually on disk), we ship verbatim the firmware-written CSVs along with
+    the firmware-written charging_pose. That way an import-side restore can
+    apply the polygon back to the same mower with rotation+translation
+    derived from the bundle's stored charging_pose vs the mower's live one.
+
+    Optional params:
+      home: str — home dir under /userdata/lfi/maps. Default "home0".
+
+    Response:
+      result:0, csv_files: {filename: content_string}, charging_station_yaml: string
+    """
+    home = params.get("home", "home0") if isinstance(params, dict) else "home0"
+    base = f"/userdata/lfi/maps/{home}/csv_file"
+    files = {}
+    try:
+        if not os.path.isdir(base):
+            respond("read_map_files_respond", {"result": 1, "error": f"csv_file dir missing: {base}"})
+            return
+        for fname in sorted(os.listdir(base)):
+            full = os.path.join(base, fname)
+            if not os.path.isfile(full):
+                continue
+            with open(full) as f:
+                files[fname] = f.read()
+        yaml_path = "/userdata/lfi/charging_station_file/charging_station.yaml"
+        cs_yaml = ""
+        if os.path.exists(yaml_path):
+            with open(yaml_path) as f:
+                cs_yaml = f.read()
+        log(f"read_map_files: {len(files)} csv files, charging_station.yaml={'yes' if cs_yaml else 'no'}")
+        respond("read_map_files_respond", {
+            "result": 0,
+            "home": home,
+            "csv_files": files,
+            "charging_station_yaml": cs_yaml,
+        })
+    except Exception as e:
+        log(f"read_map_files error: {e}")
+        respond("read_map_files_respond", {"result": 1, "error": str(e)})
+
+
+def handle_write_map_files(params, respond):
+    """Write provided map files to home0/csv_file + x3_csv_file (+ charging_station.yaml).
+
+    Mirror of read_map_files. The server transforms polygon points (Δ rotation
+    + translation) on its side then ships the resulting CSVs verbatim back to
+    the mower so what's on disk matches the new local frame exactly. We write
+    to BOTH csv_file/ AND x3_csv_file/ because firmware reads from both
+    depending on the code path.
+
+    Existing charging_station.yaml is backed up to .bak.<timestamp> before
+    overwriting so user can recover if needed.
+
+    Required params:
+      csv_files: object {filename: content_string}
+
+    Optional:
+      home: str — default "home0"
+      charging_station_yaml: string — single-line yaml content. Skipped if absent.
+
+    Response:
+      result:0, written: [paths], home
+    """
+    home = params.get("home", "home0") if isinstance(params, dict) else "home0"
+    csv_files = (params or {}).get("csv_files", {})
+    cs_yaml = (params or {}).get("charging_station_yaml")
+
+    if not isinstance(csv_files, dict) or not csv_files:
+        respond("write_map_files_respond", {"result": 1, "error": "csv_files object required"})
+        return
+
+    base = f"/userdata/lfi/maps/{home}"
+    written = []
+    try:
+        # Whitelist filenames — must match firmware's expected pattern.
+        # Allow alphanum + underscore + dot; reject anything path-like to
+        # prevent traversal.
+        for fname in csv_files.keys():
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", fname):
+                respond("write_map_files_respond", {"result": 1, "error": f"invalid filename: {fname}"})
+                return
+            if ".." in fname or fname.startswith("/"):
+                respond("write_map_files_respond", {"result": 1, "error": f"invalid filename: {fname}"})
+                return
+
+        for sub in ("csv_file", "x3_csv_file"):
+            d = f"{base}/{sub}"
+            os.makedirs(d, exist_ok=True)
+            # Wipe existing files in this dir so old polygon data doesn't
+            # bleed into new state (e.g. obsolete obstacles staying behind).
+            for old in os.listdir(d):
+                old_path = os.path.join(d, old)
+                if os.path.isfile(old_path):
+                    os.remove(old_path)
+            for fname, content in csv_files.items():
+                full = os.path.join(d, fname)
+                with open(full, "w") as f:
+                    f.write(content)
+                written.append(full)
+
+        if isinstance(cs_yaml, str) and cs_yaml.strip():
+            yaml_dir = "/userdata/lfi/charging_station_file"
+            os.makedirs(yaml_dir, exist_ok=True)
+            yaml_path = os.path.join(yaml_dir, "charging_station.yaml")
+            if os.path.exists(yaml_path):
+                ts = int(time.time())
+                bak = f"{yaml_path}.bak.{ts}"
+                try:
+                    import shutil as _shutil
+                    _shutil.copyfile(yaml_path, bak)
+                except Exception as e:
+                    log(f"write_map_files: charging_station backup failed (continuing): {e}")
+            with open(yaml_path, "w") as f:
+                f.write(cs_yaml)
+            written.append(yaml_path)
+
+        # Restart novabot_mapping so the freshly-written CSVs are loaded
+        # into memory. Without this, coverage_planner reads the previously
+        # cached polygon and the new map only takes effect on next mower
+        # boot. Same pattern as sync_map's _restart_novabot_mapping.
+        restart_ok = None
+        if (params or {}).get("restart_mapping", True):
+            try:
+                restart_ok = _restart_novabot_mapping()
+            except Exception as e:
+                log(f"write_map_files: novabot_mapping restart failed: {e}")
+                restart_ok = False
+
+        log(f"write_map_files: wrote {len(written)} files (home={home}) restart={restart_ok}")
+        respond("write_map_files_respond", {
+            "result": 0,
+            "home": home,
+            "written": written,
+            "novabot_mapping_restarted": restart_ok,
+        })
+    except Exception as e:
+        log(f"write_map_files error: {e}")
+        respond("write_map_files_respond", {"result": 1, "error": str(e)})
+
+
+def handle_generate_empty_map(params, respond):
+    """Synthesize map.png + map.yaml in home0/ from polygon CSVs.
+
+    Stock firmware writes map.pgm/png/yaml during a real `save_map type:1`
+    at the end of a BLE mapping session. Portable import skips that flow —
+    we drop the polygon CSVs straight into home0/ — so the nav stack has
+    no raster to load and start_navigation fails Error 107 / 125.
+
+    coverage_planner uses the raster's contour to derive the planning
+    area (`No coverage map, using obstacle map to plan!!!`) — a fully
+    free raster collapses to the raster perimeter, which is then dropped
+    as "close to edge" leaving "No valid contour!!!". So we have to
+    rasterize the polygon ourselves: pixels INSIDE the work polygon are
+    free (254), everything outside is occupied (0). Obstacles inside the
+    work polygon are punched back to occupied so the planner avoids them.
+
+    Reads CSVs directly from `<base>/csv_file/`:
+      - <map>_work.csv             — outer boundary
+      - <map>_*_obstacle.csv       — interior obstacles
+      - <map>tocharge_unicom.csv   — kept free (path to dock)
+
+    Required params: none — uses defaults.
+
+    Optional:
+      home:        str  — home dir under /userdata/lfi/maps. Default "home0".
+      map:         str  — base map name. Default "map0".
+      resolution:  float — m/pixel. Default 0.05.
+      margin:      float — meters of free space around polygon bbox. Default 5.
+      index:       int  — also copy to map<index>.png/yaml. Default 0.
+    """
+    import glob
+    home = params.get("home", "home0") if isinstance(params, dict) else "home0"
+    map_name = params.get("map", "map0") if isinstance(params, dict) else "map0"
+    resolution = float(params.get("resolution", 0.05)) if isinstance(params, dict) else 0.05
+    margin = float(params.get("margin", 5.0)) if isinstance(params, dict) else 5.0
+    index = int(params.get("index", 0)) if isinstance(params, dict) else 0
+
+    base = f"/userdata/lfi/maps/{home}"
+    csv_dir = f"{base}/csv_file"
+    work_csv = f"{csv_dir}/{map_name}_work.csv"
+    if not os.path.exists(work_csv):
+        respond("generate_empty_map_respond", {"result": 1, "error": f"work csv missing: {work_csv}"})
+        return
+
+    try:
+        import numpy as np
+        from PIL import Image, ImageDraw
+    except Exception as e:
+        respond("generate_empty_map_respond", {"result": 1, "error": f"PIL/numpy import failed: {e}"})
+        return
+
+    def _load_csv(path):
+        pts = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                a, b = line.split(",")
+                pts.append((float(a), float(b)))
+        return pts
+
+    try:
+        work_pts = _load_csv(work_csv)
+        if len(work_pts) < 3:
+            respond("generate_empty_map_respond", {"result": 1, "error": f"work csv too small: {len(work_pts)} pts"})
+            return
+
+        obstacle_paths = sorted(glob.glob(f"{csv_dir}/{map_name}_*_obstacle.csv"))
+        obstacle_polys = [_load_csv(p) for p in obstacle_paths]
+        obstacle_polys = [p for p in obstacle_polys if len(p) >= 3]
+
+        # Compute bbox over all polygons + margin
+        xs = [p[0] for p in work_pts] + [p[0] for poly in obstacle_polys for p in poly]
+        ys = [p[1] for p in work_pts] + [p[1] for poly in obstacle_polys for p in poly]
+        min_x, max_x = min(xs) - margin, max(xs) + margin
+        min_y, max_y = min(ys) - margin, max(ys) + margin
+
+        width_px = int(round((max_x - min_x) / resolution))
+        height_px = int(round((max_y - min_y) / resolution))
+        if width_px < 10 or height_px < 10 or width_px > 6000 or height_px > 6000:
+            respond("generate_empty_map_respond", {"result": 1, "error": f"raster size out of bounds: {width_px}x{height_px}"})
+            return
+
+        # PGM/YAML: image y-axis grows downward, map y grows up. So the row
+        # corresponding to map_y is flipped: row = (height_px - 1) - (y - min_y)/res.
+        def _world_to_pixel(pts):
+            return [
+                (
+                    int(round((x - min_x) / resolution)),
+                    int(round(height_px - 1 - (y - min_y) / resolution)),
+                )
+                for (x, y) in pts
+            ]
+
+        # Start with all-occupied (0). Polygon fill marks free (254).
+        img = Image.new("L", (width_px, height_px), color=0)
+        draw = ImageDraw.Draw(img)
+        draw.polygon(_world_to_pixel(work_pts), fill=254, outline=254)
+        # Punch obstacles back to occupied
+        for poly in obstacle_polys:
+            draw.polygon(_world_to_pixel(poly), fill=0, outline=0)
+
+        png_dst = f"{base}/map.png"
+        yaml_dst = f"{base}/map.yaml"
+        idx_png = f"{base}/map{index}.png"
+        idx_yaml = f"{base}/map{index}.yaml"
+
+        img.save(png_dst, format="PNG")
+        img.save(idx_png, format="PNG")
+
+        yaml_text = (
+            f"image: map.png\n"
+            f"mode: trinary\n"
+            f"resolution: {resolution}\n"
+            f"origin: [{min_x}, {min_y}, 0]\n"
+            f"negate: 0\n"
+            f"occupied_thresh: 0.65\n"
+            f"free_thresh: 0.25\n"
+        )
+        with open(yaml_dst + ".tmp", "w") as f:
+            f.write(yaml_text)
+        os.replace(yaml_dst + ".tmp", yaml_dst)
+
+        idx_yaml_text = yaml_text.replace("image: map.png\n", f"image: map{index}.png\n")
+        with open(idx_yaml + ".tmp", "w") as f:
+            f.write(idx_yaml_text)
+        os.replace(idx_yaml + ".tmp", idx_yaml)
+
+        written = [png_dst, yaml_dst, idx_png, idx_yaml]
+        log(f"generate_empty_map: rasterized polygon {len(work_pts)} pts + {len(obstacle_polys)} obstacles → {width_px}x{height_px} px origin=({min_x:.2f},{min_y:.2f})")
+        respond("generate_empty_map_respond", {
+            "result": 0,
+            "written": written,
+            "origin": [min_x, min_y, 0],
+            "width_px": width_px,
+            "height_px": height_px,
+            "resolution": resolution,
+            "polygon_pts": len(work_pts),
+            "obstacles": len(obstacle_polys),
+        })
+    except Exception as e:
+        log(f"generate_empty_map error: {e}")
+        respond("generate_empty_map_respond", {"result": 1, "error": str(e)})
+
+
 def handle_finalize_map_files(params, respond):
     """Normalise home0 map filenames after a ZIP-restore or save_map type:1.
 
@@ -2099,10 +2390,17 @@ def handle_calibration_drive(params, respond):
                     self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
                     self._timer = None
 
-                def drive_forward(self, secs):
+                def drive_backward(self, secs):
+                    # Drive BACKWARD because the mower starts on the dock with
+                    # its front pressed against the charger plate; positive
+                    # linear.x would push into the charger and not move (the
+                    # contacts physically block forward motion). Server's
+                    # deriveHeading() returns the GPS direction of the backward
+                    # travel; the start-drive route adds pi to convert that
+                    # into the mower-forward heading.
                     end_at = _time.monotonic() + secs
                     msg = Twist()
-                    msg.linear.x = max_speed
+                    msg.linear.x = -max_speed
                     while _time.monotonic() < end_at and not drive_done.is_set():
                         self._cmd_pub.publish(msg)
                         _time.sleep(0.05)
@@ -2118,7 +2416,7 @@ def handle_calibration_drive(params, respond):
             # snapshot start_pose BEFORE invoking us and end_pose AFTER. So this
             # handler only DRIVES — the pose readback is server-side.
             duration_s = distance_m / max_speed + 0.5  # +0.5s decel buffer
-            node.drive_forward(duration_s)
+            node.drive_backward(duration_s)
 
             respond("calibration_drive_respond", {
                 "result": 0,
@@ -2147,6 +2445,9 @@ COMMANDS = {
     "set_wifi_config": handle_set_wifi_config,
     "clean_ota_cache": handle_clean_ota_cache,
     "finalize_map_files": handle_finalize_map_files,
+    "generate_empty_map": handle_generate_empty_map,
+    "read_map_files": handle_read_map_files,
+    "write_map_files": handle_write_map_files,
     "recalibrate_charging_pose": handle_recalibrate_charging_pose,
     "start_edge_cut": handle_start_edge_cut,
     "stop_boundary_follow": handle_stop_boundary_follow,
@@ -2474,6 +2775,15 @@ def _restart_novabot_mapping():
             "export LD_LIBRARY_PATH=/usr/lib/hbmedia/:/usr/lib/hbbpu/:/usr/lib/sensorlib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:/usr/bpu:/usr/opencv_world_4.6/lib:$LD_LIBRARY_PATH; "
             "export ROS_LOG_DIR=/root/novabot/data/ros2_log; "
             "export ROS_LOCALHOST_ONLY=1; "
+            # CRITICAL: cyclonedds shm transport — without these envs the
+            # novabot_mapping binary inits its DDS layer with default RMW
+            # which can't reach the existing peer set, segfaults silently a
+            # second after launch. Restart appears to "succeed" (pgrep
+            # matches the bash wrapper) but the binary was already gone.
+            # Verified live LFIN1231000211 2026-05-08 — adding these envs
+            # makes the launched binary survive long-term.
+            "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; "
+            "export CYCLONEDDS_URI=file:///root/novabot/shm_config/shm_cyclonedds.xml; "
             "setsid nohup ros2 launch novabot_mapping novabot_mapping_launch.py "
             ">> $ROS_LOG_DIR/novabot_mapping_restart.log 2>&1 </dev/null & "
             "setsid nohup ros2 launch coverage_planner coverage_planner_server.launch.py "

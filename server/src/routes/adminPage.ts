@@ -307,10 +307,10 @@ export function adminPageHtml(): string {
       <!-- Above the map: only the mower picker + the polygon-offset entry,
            since polygon offset is the one calibration that overlays the
            canvas itself (live preview while nudging). Everything else
-           (Import ZIP, Recalibrate Charging Pose, Map Recovery) lives
+           (Portable Map Bundle, legacy Map Recovery, Debug) lives
            below the map so the canvas is the visual focal point. -->
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value)" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value);portableCheckActive(this.value);loadPortableBackups()" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
         </select>
         <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
@@ -369,70 +369,32 @@ export function adminPageHtml(): string {
         <span><span style="display:inline-block;width:14px;height:2px;background:#84cc16;vertical-align:middle;margin-right:4px"></span>RTK GPS trail</span>
         <span><span style="display:inline-block;width:10px;height:10px;background:#22d3ee;border:2px solid #0e7490;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Live mower</span>
       </div>
-      <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
-        <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
-        <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:monospace">
-          <span style="color:#888">Select a mower to start validation polling.</span>
-        </div>
-      </div>
       <div id="mapList" style="margin-top:12px"></div>
 
-      <!-- Below the map: Import ZIP, Recalibrate Charging Pose, Map Recovery.
-           Order matches expected operator workflow: import a fresh map →
-           recalibrate the charger pose → restore from a snapshot if
-           something went wrong. -->
-      <div style="display:flex;gap:8px;align-items:center;margin-top:20px;flex-wrap:wrap">
-        <input type="file" id="mapZipFile" accept=".zip" style="flex:1;min-width:180px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:12px">
-        <button onclick="uploadMapZip()" style="padding:8px 16px;background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Import ZIP</button>
-      </div>
-      <div id="mapUploadStatus" style="font-size:12px;margin-top:8px;display:none"></div>
-
-      <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-top:16px">
-        <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
-          <b style="color:#fca5a5">Recovery — wrong charger pose causes mower to drive off target.</b><br>
-          Stock firmware needs a drive-back cycle to initialize localization
-          before the reported pose is trustworthy. While docked at boot,
-          <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
-          <b>Workflow:</b>
-          <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
-            <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1–2 m)</li>
-            <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
-            <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
-            <li>Then press <b>Recalibrate Charging Pose</b></li>
-          </ol>
+      <div style="padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px;margin-top:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:600;color:#67e8f9">Portable Map Bundle <span style="background:rgba(16,185,129,.15);color:#86efac;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:6px">RECOMMENDED</span></div>
         </div>
-        <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:monospace">
-          <span style="color:#888">Loading localization status...</span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
-          <a href="javascript:void(0)" onclick="document.getElementById('infoRecal').style.display=document.getElementById('infoRecal').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
-        </div>
-        <div id="infoRecal" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
-          <div><b>Snaps the dock pose to where the mower currently sits.</b></div>
-          <div style="margin-top:6px"><b style="color:#86efac">Updates:</b> <code>charging_station.yaml</code> + <code>map_info.json</code> in <code>csv_file/</code> and <code>x3_csv_file/</code> on the mower (3 files). Saves the new theta in DB so subsequent <code>sync_map</code> calls reuse it.</div>
-          <div style="margin-top:6px"><b style="color:#fca5a5">Does NOT touch:</b> polygon CSVs, the <code>_latest.zip</code>, charger GPS, or the mower's coverage planner state.</div>
-          <div style="margin-top:6px"><b style="color:#93c5fd">Use when:</b> mower drifted after heading discovery or theta is wrong but the polygon shape itself is fine.</div>
-          <div style="margin-top:6px"><b style="color:#fbbf24">Required:</b> mower on dock + <code>battery_state == CHARGING</code> + RTK FIX + non-zero <code>map_position</code>.</div>
-        </div>
-      </div>
-      <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
-
-      <div style="padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px;margin-top:16px">
-        <div style="font-size:12px;font-weight:600;color:#67e8f9;margin-bottom:8px">Portable Map Bundle</div>
         <div style="font-size:11px;color:#94a3b8;line-height:1.6;margin-bottom:8px">
-          Export the active polygon as a portable .novabotmap bundle. Re-import on this mower or another to anchor the polygon at a new charger position via a 1m calibration drive.
+          Export the active polygon + verbatim mower files as a portable .novabotmap bundle. Re-import on this same mower with one click — Δ rotation/translation derived from charging-pose, no drive needed. Auto-snapshots every successful save_map (last 20 retained per mower).
         </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <button onclick="exportPortableBundle()" style="padding:7px 18px;background:rgba(34,211,238,.2);color:#67e8f9;border:1px solid rgba(34,211,238,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Export bundle</button>
           <input id="portableImportFile" type="file" accept=".novabotmap,.zip" style="display:none" onchange="startPortableImport()">
           <button onclick="document.getElementById('portableImportFile').click()" style="padding:7px 18px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import bundle...</button>
+          <button onclick="manualPortableBackup()" style="padding:7px 18px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Snapshot now</button>
+          <button onclick="loadPortableBackups()" style="padding:7px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">&#x21BB; Refresh</button>
         </div>
         <div id="portableImportPanel" style="display:none;margin-top:10px"></div>
+        <div id="portableBackupList" style="margin-top:10px;display:none">
+          <div style="font-size:11px;font-weight:600;color:#cbd5e1;margin-bottom:6px">Auto-saved snapshots</div>
+          <div id="portableBackupListContent" style="font-size:11px;color:#aaa"></div>
+        </div>
       </div>
 
-      <div style="padding:8px 12px;background:rgba(124,58,237,.05);border:1px solid rgba(124,58,237,.2);border-radius:8px;margin-top:16px">
-        <div style="font-size:12px;font-weight:600;color:#a78bfa;margin-bottom:8px">Map Recovery — restore from auto-backup snapshots</div>
+      <details style="padding:8px 12px;background:rgba(124,58,237,.04);border:1px solid rgba(124,58,237,.15);border-radius:8px;margin-top:16px">
+        <summary style="font-size:12px;font-weight:600;color:#a78bfa;cursor:pointer;list-style:none">Legacy Map Recovery (server-side ZIP backups) <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">LEGACY</span></summary>
+        <div style="font-size:10px;color:#94a3b8;margin:6px 0">DB→sync_map flow with same drift-bug history as legacy import. Use Portable Map Bundle above instead. Kept for cross-device debug + emergency restore.</div>
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
           <select id="mapBackupSelect" onchange="loadBackupContents();previewBackupGhost()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
             <option value="">Select a backup snapshot...</option>
@@ -467,7 +429,49 @@ export function adminPageHtml(): string {
           <div style="margin-top:8px"><b style="color:#93c5fd">Use when:</b> polygon corruption, post-mapping rollback, or after admin map edits that need to land on the mower.</div>
           <div style="margin-top:8px"><b style="color:#fbbf24">Required for realign:</b> mower online + RTK FIX + on dock (for the GPS update step).</div>
         </div>
-      </div>
+      </details>
+
+      <details style="padding:8px 12px;background:rgba(239,68,68,.04);border:1px solid rgba(239,68,68,.15);border-radius:8px;margin-top:12px">
+        <summary style="font-size:12px;font-weight:600;color:#fca5a5;cursor:pointer;list-style:none">Debug — manual recalibrate charging pose <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">DEBUG</span></summary>
+        <div style="font-size:10px;color:#94a3b8;margin:6px 0">Use only when polygon shape is correct but dock pose drifted. Portable Map Bundle handles this automatically — only fall back here if exact-restore is unavailable.</div>
+        <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-top:8px">
+          <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
+            <b style="color:#fca5a5">Recovery — wrong charger pose causes mower to drive off target.</b><br>
+            Stock firmware needs a drive-back cycle to initialize localization
+            before the reported pose is trustworthy. While docked at boot,
+            <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
+            <b>Workflow:</b>
+            <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
+              <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1–2 m)</li>
+              <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
+              <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
+              <li>Then press <b>Recalibrate Charging Pose</b></li>
+            </ol>
+          </div>
+          <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:monospace">
+            <span style="color:#888">Loading localization status...</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+            <a href="javascript:void(0)" onclick="document.getElementById('infoRecal').style.display=document.getElementById('infoRecal').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
+          </div>
+          <div id="infoRecal" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
+            <div><b>Snaps the dock pose to where the mower currently sits.</b></div>
+            <div style="margin-top:6px"><b style="color:#86efac">Updates:</b> <code>charging_station.yaml</code> + <code>map_info.json</code> in <code>csv_file/</code> and <code>x3_csv_file/</code> on the mower (3 files). Saves the new theta in DB so subsequent <code>sync_map</code> calls reuse it.</div>
+            <div style="margin-top:6px"><b style="color:#fca5a5">Does NOT touch:</b> polygon CSVs, the <code>_latest.zip</code>, charger GPS, or the mower's coverage planner state.</div>
+            <div style="margin-top:6px"><b style="color:#93c5fd">Use when:</b> mower drifted after heading discovery or theta is wrong but the polygon shape itself is fine.</div>
+            <div style="margin-top:6px"><b style="color:#fbbf24">Required:</b> mower on dock + <code>battery_state == CHARGING</code> + RTK FIX + non-zero <code>map_position</code>.</div>
+          </div>
+          <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
+        </div>
+        <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
+          <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">Live dual-trail diagnose during mow: cyan = firmware <code>map_position</code>, lime = RTK GPS via charger anchor. Δ between them flags drift or frame-rotation issues. Read-only — no apply button (use Portable Map Bundle exact-restore instead).</div>
+          <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:monospace">
+            <span style="color:#888">Select a mower to start validation polling.</span>
+          </div>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -623,7 +627,7 @@ export function adminPageHtml(): string {
         <div id="remoteLogs" style="background:#0a0a1a;border-radius:8px;padding:8px;font:11px/1.6 monospace;color:#aaa;height:400px;overflow-y:auto"></div>
       </div>
       <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="btn" style="font-size:11px" onclick="refreshRemoteDevices()">Refresh</button>
+        <button class="btn" style="font-size:11px" onclick="refreshRemoteDevices(); pollRemoteLogs();">Refresh</button>
         <button class="btn" style="font-size:11px;background:rgba(239,68,68,.2);border-color:rgba(239,68,68,.3)" onclick="clearRemoteLogs()">Clear All</button>
       </div>
     </div>
@@ -2164,6 +2168,7 @@ async function populateMowerDropdown() {
       loadMaps();
       loadMapBackups(sel.value);
       startLocalizationPoll(sel.value);
+      portableCheckActive(sel.value);
     }
   } catch(e) {
     document.getElementById('mapInfo').textContent = 'Failed to load devices: ' + e.message;
@@ -2432,15 +2437,11 @@ function renderValidationPanel(data) {
     : '';
   el.innerHTML =
     '<div style="font-size:11px;color:#cbd5e1;line-height:1.6">'
-    + '<div><b style="color:#22d3ee">Cyan trail</b> = firmware <code>map_position</code></div>'
-    + '<div><b style="color:#84cc16">Lime trail</b> = RTK GPS via charger anchor</div>'
-    + '<div style="margin-top:6px"><b>Suggested offset:</b> dx=<b>' + dxCm + ' cm</b>, dy=<b>' + dyCm + ' cm</b> (|d|=' + totalOffsetCm.toFixed(1) + ' cm)</div>'
+    + '<div style="margin-top:6px"><b>Δ offset:</b> dx=<b>' + dxCm + ' cm</b>, dy=<b>' + dyCm + ' cm</b> (|d|=' + totalOffsetCm.toFixed(1) + ' cm)</div>'
     + '<div style="color:' + stdColor + '">noise σ: x=' + (s.stdevX * 100).toFixed(1) + ' cm, y=' + (s.stdevY * 100).toFixed(1) + ' cm  (n=' + s.samples + ')</div>'
     + '</div>'
     + warning
     + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
-    + '<button onclick="applySuggestedOffset(' + s.dx + ',' + s.dy + ')" '
-    + 'style="padding:6px 12px;background:' + (suspectAnchor ? 'rgba(100,116,139,.15)' : 'rgba(16,185,129,.2)') + ';color:' + (suspectAnchor ? '#94a3b8' : '#86efac') + ';border:1px solid ' + (suspectAnchor ? 'rgba(100,116,139,.3)' : 'rgba(16,185,129,.5)') + ';border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Apply suggested offset</button>'
     + '<button onclick="clearValidationTrail()" style="padding:6px 12px;background:rgba(100,116,139,.15);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;cursor:pointer">Clear trail</button>'
     + '</div>'
     + debugHtml(data.debug);
@@ -2556,6 +2557,167 @@ async function exportPortableBundle() {
 }
 
 var portableStagingId = null;
+
+// Live RTK badge polling — keeps a small indicator near the wizard header
+// updated every 2 s so the operator can SEE when loc_quality reaches 100
+// (RTK FIX) before triggering drive / dock steps.
+var portableRtkPoll = null;
+function portableStartRtkPoll(sn) {
+  if (portableRtkPoll) clearInterval(portableRtkPoll);
+  function tick() {
+    var badge = document.getElementById('portableRtkBadge');
+    if (!badge) { clearInterval(portableRtkPoll); portableRtkPoll = null; return; }
+    fetch('/api/dashboard/devices/' + encodeURIComponent(sn))
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var s = (d && d.sensors) || {};
+        var locQ = parseInt(s.loc_quality, 10);
+        var rtkSat = parseInt(s.rtk_sat, 10);
+        var batt = String(s.battery_state || '').toUpperCase();
+        var col = locQ === 100 ? '#86efac' : locQ >= 50 ? '#fbbf24' : '#fca5a5';
+        var lockTxt = locQ === 100 ? 'RTK FIX' : ('loc_quality=' + (isNaN(locQ) ? '?' : locQ));
+        var battCol = batt.indexOf('CHARGING') >= 0 || batt.indexOf('FINISHED') >= 0 ? '#86efac' : '#fbbf24';
+        badge.innerHTML =
+          '<span style="color:' + col + '"><b>' + lockTxt + '</b></span>' +
+          ' · sat ' + (isNaN(rtkSat) ? '?' : rtkSat) +
+          ' · battery <span style="color:' + battCol + '">' + (batt || '?') + '</span>';
+        var snapBtn = document.getElementById('portableSnapshotBtn');
+        if (snapBtn) {
+          var charging = batt.indexOf('CHARGING') >= 0;
+          var rtkFix = locQ === 100;
+          var ready = charging && rtkFix;
+          snapBtn.disabled = !ready;
+          if (ready) {
+            snapBtn.textContent = '2. Snapshot anchor (mower on dock)';
+            snapBtn.style.background = 'rgba(99,102,241,.2)';
+            snapBtn.style.color = '#a5b4fc';
+            snapBtn.style.borderColor = 'rgba(99,102,241,.5)';
+            snapBtn.style.cursor = 'pointer';
+            snapBtn.style.opacity = '1';
+          } else {
+            var missing = [];
+            if (!charging) missing.push('battery=CHARGING');
+            if (!rtkFix) missing.push('RTK FIX');
+            snapBtn.textContent = '2. Snapshot anchor (waiting: ' + missing.join(' + ') + ')';
+            snapBtn.style.background = 'rgba(99,102,241,.1)';
+            snapBtn.style.color = '#6b7280';
+            snapBtn.style.borderColor = 'rgba(99,102,241,.25)';
+            snapBtn.style.cursor = 'not-allowed';
+            snapBtn.style.opacity = '0.5';
+          }
+        }
+      })
+      .catch(function() { /* swallow */ });
+  }
+  tick();
+  portableRtkPoll = setInterval(tick, 2000);
+}
+
+// Resume an in-progress import session if one exists for the selected mower.
+// Called from mapMowerSelect onchange so a page refresh / SN switch picks up
+// where the operator left off instead of demanding a fresh upload (and then
+// rejecting it with a 409 because the server-side staging is still active).
+var portableExactRestore = false;
+
+async function manualPortableBackup() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) { alert('Select a mower first'); return; }
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups', {
+    method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+  });
+  var j = await r.json();
+  if (!j.ok) { alert('Snapshot failed: ' + j.error); return; }
+  alert('Snapshot saved: ' + j.backup.filename + ' (' + (j.backup.bytes / 1024).toFixed(1) + ' KB)');
+  loadPortableBackups();
+}
+
+async function loadPortableBackups() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) return;
+  var box = document.getElementById('portableBackupList');
+  var content = document.getElementById('portableBackupListContent');
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups', {
+      headers: { 'Authorization': token },
+    });
+    var j = await r.json();
+    var backups = j.backups || [];
+    if (backups.length === 0) {
+      box.style.display = 'block';
+      content.innerHTML = '<div style="color:#666;font-style:italic">No snapshots yet — auto-saved after each mapping session, or click "Snapshot now".</div>';
+      return;
+    }
+    box.style.display = 'block';
+    var html = '<div style="display:flex;flex-direction:column;gap:4px">';
+    for (var i = 0; i < backups.length; i++) {
+      var b = backups[i];
+      var dt = new Date(b.createdAt).toLocaleString('nl-NL');
+      var kb = (b.bytes / 1024).toFixed(1);
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:4px;font-family:monospace;font-size:11px">';
+      html += '<span><span style="color:#cbd5e1">' + dt + '</span> · <span style="color:#67e8f9">' + b.reason + '</span> · <span style="color:#888">' + kb + ' KB</span></span>';
+      html += '<span style="display:flex;gap:4px">';
+      html += '<button onclick="restorePortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(16,185,129,.15);color:#86efac;border:1px solid rgba(16,185,129,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">Restore</button>';
+      html += '<a href="/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(b.filename) + '" download style="padding:3px 10px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;text-decoration:none">⬇</a>';
+      html += '<button onclick="deletePortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">×</button>';
+      html += '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+    content.innerHTML = html;
+  } catch (e) {
+    content.innerHTML = '<div style="color:#fca5a5">Error: ' + e + '</div>';
+  }
+}
+
+async function restorePortableBackup(filename) {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!confirm('Restore this snapshot? Current map state on mower will be replaced.')) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(filename) + '/restore', {
+    method: 'POST', headers: { 'Authorization': token },
+  });
+  var j = await r.json();
+  if (!j.ok) { alert('Restore failed: ' + j.error); return; }
+  // Now apply via apply-exact (auto-step since exactRestore=true expected)
+  if (j.exactRestore) {
+    portableStagingId = j.stagingId;
+    portableExactRestore = true;
+    await portableApplyExact();
+  } else {
+    alert('Restore staged but not exact-restore — bundle missing mowerFiles. Use Import bundle wizard.');
+  }
+}
+
+async function deletePortableBackup(filename) {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!confirm('Delete snapshot ' + filename + '?')) return;
+  await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(filename), {
+    method: 'DELETE', headers: { 'Authorization': token },
+  });
+  loadPortableBackups();
+}
+
+async function portableCheckActive(sn) {
+  if (!sn) return;
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/active', {
+      headers: { 'Authorization': token },
+    });
+    if (!r.ok) return;
+    var j = await r.json();
+    if (j && j.stagingId) {
+      portableStagingId = j.stagingId;
+      portableExactRestore = !!j.exactRestore;
+      renderPortableImportWizard(sn, j.state || 'UPLOADED');
+    } else {
+      portableStagingId = null;
+      portableExactRestore = false;
+      var panel = document.getElementById('portableImportPanel');
+      if (panel) panel.style.display = 'none';
+      if (portableRtkPoll) { clearInterval(portableRtkPoll); portableRtkPoll = null; }
+    }
+  } catch (e) { /* swallow — fresh page load races are fine */ }
+}
+
 async function startPortableImport() {
   var fi = document.getElementById('portableImportFile');
   var sn = document.getElementById('mapMowerSelect').value;
@@ -2568,6 +2730,7 @@ async function startPortableImport() {
   var j = await r.json();
   if (!j.ok) { alert('Import failed: ' + j.error); return; }
   portableStagingId = j.stagingId;
+  portableExactRestore = !!j.exactRestore;
   renderPortableImportWizard(sn, 'UPLOADED');
 }
 
@@ -2577,76 +2740,173 @@ function renderPortableImportWizard(sn, state) {
   var html = '<div style="padding:10px;background:#0d0d20;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.7">';
   html += '<div><b>Staging:</b> <code>' + portableStagingId + '</code></div>';
   html += '<div><b>State:</b> <span style="color:#67e8f9">' + state + '</span></div>';
+  html += '<div id="portableRtkBadge" style="margin-top:4px;font-size:11px"></div>';
   html += '</div>';
   html += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
-  if (state === 'UPLOADED') html += '<button onclick="portableSetAnchor()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Set anchor (mower MUST be on dock + RTK FIX)</button>';
-  if (state === 'ANCHOR_SET') html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">2. Start 1m calibration drive</button>';
-  if (state === 'DRIVE_COMPLETE' || state === 'PREVIEW_SHOWN') {
+  if (state === 'UPLOADED') {
+    if (portableExactRestore) {
+      // Exact-restore bundles ship the export-time charging_pose verbatim,
+      // so Δ rotation is computed from stored vs current pose. One click —
+      // no drive, no manual snapshot, no preview/confirm dance.
+      html += '<div style="flex-basis:100%;font-size:10px;color:#86efac;margin-bottom:4px">Exact-restore bundle detected — one-click apply. Mower must be online with valid map_position.</div>';
+      html += '<button onclick="portableApplyExact()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Apply bundle (exact-restore)</button>';
+    } else {
+      html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Start drive backward + RTK lock</button>';
+    }
+  }
+  if (state === 'AUTO_DOCK') {
+    html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">Drive or push the mower BACK ONTO the dock manually (Control-tab joystick or by hand). Wait for battery=CHARGING and RTK FIX, then click below.</div>';
+    html += '<button id="portableSnapshotBtn" onclick="portableAutoDock()" disabled style="padding:6px 12px;background:rgba(99,102,241,.1);color:#6b7280;border:1px solid rgba(99,102,241,.25);border-radius:6px;font-size:11px;font-weight:600;cursor:not-allowed;opacity:0.5">2. Snapshot anchor (waiting for CHARGING + RTK FIX)</button>';
+  }
+  if (state === 'ANCHOR_SET' || state === 'PREVIEW_SHOWN') {
     html += '<button onclick="portableShowPreview()" style="padding:6px 12px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">3. Show preview overlay</button>';
     if (state === 'PREVIEW_SHOWN') html += '<button onclick="portableConfirm()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">4. Confirm + apply</button>';
   }
   html += '<button onclick="portableCancel()" style="padding:6px 12px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;cursor:pointer">Cancel</button>';
   html += '</div>';
+  if (state === 'PREVIEW_SHOWN') {
+    html += '<div style="margin-top:8px;padding:8px;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;font-size:11px">';
+    html += '<div style="color:#fbbf24;margin-bottom:6px"><b>Rotation override:</b> <span id="portableRotateLabel">auto (delta)</span></div>';
+    html += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
+    html += '<button onclick="portableSetRotation(null)" style="padding:4px 8px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;cursor:pointer">auto</button>';
+    html += '<button onclick="portableSetRotation(0)" style="padding:4px 8px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;cursor:pointer">0°</button>';
+    html += '<button onclick="portableSetRotation(90)" style="padding:4px 8px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;cursor:pointer">90°</button>';
+    html += '<button onclick="portableSetRotation(180)" style="padding:4px 8px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;cursor:pointer">180°</button>';
+    html += '<button onclick="portableSetRotation(-90)" style="padding:4px 8px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;cursor:pointer">-90°</button>';
+    html += '<button onclick="portableNudgeRotation(-15)" style="padding:4px 8px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:4px;font-size:10px;cursor:pointer">-15°</button>';
+    html += '<button onclick="portableNudgeRotation(-5)" style="padding:4px 8px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:4px;font-size:10px;cursor:pointer">-5°</button>';
+    html += '<button onclick="portableNudgeRotation(5)" style="padding:4px 8px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:4px;font-size:10px;cursor:pointer">+5°</button>';
+    html += '<button onclick="portableNudgeRotation(15)" style="padding:4px 8px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:4px;font-size:10px;cursor:pointer">+15°</button>';
+    html += '</div>';
+    html += '</div>';
+  }
   html += '<div id="portablePreviewBox" style="margin-top:8px;display:none;height:300px;border:1px solid #2a2a3a;border-radius:6px"></div>';
   panel.innerHTML = html;
+  portableStartRtkPoll(sn);
 }
 
-async function portableSetAnchor() {
+async function portableApplyExact() {
   var sn = document.getElementById('mapMowerSelect').value;
-  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/set-anchor', {
-    method: 'POST', headers: { 'Authorization': token },
+  if (!confirm('Apply exact-restore bundle? Reads mower live charging_pose, transforms polygon, pushes CSVs to mower. No drive needed.')) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-exact', {
+    method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
   });
   var j = await r.json();
-  if (!j.ok) { alert('Set anchor failed: ' + j.error); return; }
-  renderPortableImportWizard(sn, j.state);
+  if (!j.ok) { alert('Apply failed: ' + j.error); portableCheckActive(sn); return; }
+  alert('Applied. Δ dx=' + j.delta.dx.toFixed(3) + ' dy=' + j.delta.dy.toFixed(3) + ' dθ=' + (j.delta.dtheta * 180 / Math.PI).toFixed(2) + '°\\n\\nFiles pushed: ' + j.transformedFiles.length);
+  document.getElementById('portableImportPanel').style.display = 'none';
+  portableStagingId = null;
+  portableExactRestore = false;
+  loadMaps();
 }
 
 async function portableStartDrive() {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!confirm('Mower will drive 1m forward. Ensure clear path. Continue?')) return;
+  if (!confirm('Mower will drive 1m BACKWARD off the dock then wait for RTK FIX. Ensure clear path behind the mower. Continue?')) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/start-drive', {
     method: 'POST', headers: { 'Authorization': token },
   });
   var j = await r.json();
-  if (!j.ok) { alert('Drive failed: ' + j.error); return; }
+  if (!j.ok) {
+    alert('Drive failed: ' + j.error + (j.recoverable ? '\\n\\nClick "Start drive" again to retry - bundle is preserved.' : ''));
+    // Re-fetch active state so the UI reflects whether we can retry.
+    portableCheckActive(sn);
+    return;
+  }
   alert('Drive complete. Heading derived: ' + (j.derivedHeadingRad * 180 / Math.PI).toFixed(2) + ' deg, distance ' + j.distanceM.toFixed(2) + ' m');
   renderPortableImportWizard(sn, j.state);
 }
 
+async function portableAutoDock() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/auto-dock', {
+    method: 'POST', headers: { 'Authorization': token },
+  });
+  var j = await r.json();
+  if (!j.ok) {
+    alert('Snapshot failed: ' + j.error + (j.recoverable ? '\\n\\nFix the condition then click again.' : ''));
+    portableCheckActive(sn);
+    return;
+  }
+  alert('Anchor saved. lat=' + j.newCharger.lat.toFixed(7) + ', lng=' + j.newCharger.lng.toFixed(7));
+  renderPortableImportWizard(sn, j.state);
+}
+
+var portableRotateDeg = null; // null = use server delta math; number = override
+var portableGeoLayer = null;
+var portablePreviewMap = null;
+
 async function portableShowPreview() {
   var sn = document.getElementById('mapMowerSelect').value;
-  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/preview', {
-    headers: { 'Authorization': token },
-  });
+  var url = '/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/preview';
+  if (portableRotateDeg !== null) url += '?rotateDeg=' + portableRotateDeg;
+  var r = await fetch(url, { headers: { 'Authorization': token } });
   var geo = await r.json();
+  renderPortableImportWizard(sn, 'PREVIEW_SHOWN');
   var box = document.getElementById('portablePreviewBox');
   box.style.display = 'block';
-  if (!window.L) { box.innerHTML = '<div style="color:#fca5a5;padding:8px">Leaflet not loaded</div>'; renderPortableImportWizard(sn, 'PREVIEW_SHOWN'); return; }
-  if (box.__map) box.__map.remove();
+  if (!window.L) {
+    box.innerHTML = '<div style="color:#fca5a5;padding:8px">Leaflet not loaded</div>';
+    return;
+  }
   var center = geo.features[0]?.geometry?.coordinates?.[0]?.[0] || [6.23, 52.14];
-  var map = L.map(box).setView([center[1], center[0]], 19);
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').addTo(map);
-  L.geoJSON(geo, {
+  portablePreviewMap = L.map(box).setView([center[1], center[0]], 19);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').addTo(portablePreviewMap);
+  portableGeoLayer = L.geoJSON(geo, {
     style: function(f) {
       var k = f.properties.kind;
       return k === 'work' ? { color: '#10b981', weight: 2 } : k === 'obstacle' ? { color: '#ef4444', weight: 2 } : { color: '#3b82f6', weight: 2 };
     },
-  }).addTo(map);
-  box.__map = map;
-  renderPortableImportWizard(sn, 'PREVIEW_SHOWN');
+  }).addTo(portablePreviewMap);
+  box.__map = portablePreviewMap;
+  setTimeout(function() { try { portablePreviewMap.invalidateSize(); } catch (e) {} }, 100);
+}
+
+async function portableRefreshPreview() {
+  if (!portablePreviewMap || !portableGeoLayer) { portableShowPreview(); return; }
+  var sn = document.getElementById('mapMowerSelect').value;
+  var url = '/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/preview';
+  if (portableRotateDeg !== null) url += '?rotateDeg=' + portableRotateDeg;
+  var r = await fetch(url, { headers: { 'Authorization': token } });
+  var geo = await r.json();
+  portablePreviewMap.removeLayer(portableGeoLayer);
+  portableGeoLayer = L.geoJSON(geo, {
+    style: function(f) {
+      var k = f.properties.kind;
+      return k === 'work' ? { color: '#10b981', weight: 2 } : k === 'obstacle' ? { color: '#ef4444', weight: 2 } : { color: '#3b82f6', weight: 2 };
+    },
+  }).addTo(portablePreviewMap);
+  var lbl = document.getElementById('portableRotateLabel');
+  if (lbl) lbl.textContent = portableRotateDeg === null ? 'auto (delta)' : portableRotateDeg + '°';
+}
+
+function portableSetRotation(deg) {
+  portableRotateDeg = deg;
+  portableRefreshPreview();
+}
+
+function portableNudgeRotation(delta) {
+  var cur = portableRotateDeg === null ? 0 : portableRotateDeg;
+  portableRotateDeg = ((cur + delta + 540) % 360) - 180;
+  portableRefreshPreview();
 }
 
 async function portableConfirm() {
   var sn = document.getElementById('mapMowerSelect').value;
   if (!confirm('Apply imported polygon? This wipes existing maps for this SN and triggers sync_map.')) return;
+  var body = {};
+  if (portableRotateDeg !== null) body.rotateDeg = portableRotateDeg;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/confirm', {
-    method: 'POST', headers: { 'Authorization': token },
+    method: 'POST',
+    headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
   var j = await r.json();
   if (!j.ok) { alert('Confirm failed: ' + j.error); return; }
   alert('Applied. Sync_map triggered.');
   document.getElementById('portableImportPanel').style.display = 'none';
   portableStagingId = null;
+  portableRotateDeg = null;
   loadMaps();
 }
 
@@ -4118,10 +4378,15 @@ function toggleRelay() {
 
 // ── Remote Debug receiver ──
 var _activeRemoteSn = null;
-var _remoteLogSeen = 0;
+// Use a timestamp cursor instead of a count cursor. The server buffer is
+// capped per SN, so a count cursor walks past the array end once the cap
+// is exceeded and the server returns nothing. Switching to "logs newer
+// than this ts" keeps polling working indefinitely. Live bug 2026-05-07:
+// dashboard froze at the 2000-line mark even though new logs kept arriving.
+var _remoteLogSinceTs = 0;
 var _remoteLogTimer = null;
 var remoteLogBuf = [];
-var MAX_REMOTE_CONSOLE = 500;
+var MAX_REMOTE_CONSOLE = 5000;
 
 function refreshRemoteDevices() {
   fetch('/api/dashboard/remote-debug/devices').then(function(r){return r.json()}).then(function(d) {
@@ -4148,7 +4413,7 @@ function refreshRemoteDevices() {
 
 function selectRemoteSn(sn) {
   _activeRemoteSn = sn;
-  _remoteLogSeen = 0;
+  _remoteLogSinceTs = 0;
   remoteLogBuf = [];
   document.getElementById('remoteConsoleWrap').style.display = 'block';
   document.getElementById('remoteLogs').innerHTML = '';
@@ -4160,13 +4425,14 @@ function selectRemoteSn(sn) {
 
 function pollRemoteLogs() {
   if (!_activeRemoteSn) return;
-  fetch('/api/dashboard/remote-debug/logs?sn=' + encodeURIComponent(_activeRemoteSn) + '&since=' + _remoteLogSeen)
+  fetch('/api/dashboard/remote-debug/logs?sn=' + encodeURIComponent(_activeRemoteSn) + '&sinceTs=' + _remoteLogSinceTs)
     .then(function(r){return r.json()})
     .then(function(d) {
       var entries = d.logs || [];
       for (var i = 0; i < entries.length; i++) {
         remoteLogBuf.push(entries[i]);
-        _remoteLogSeen++;
+        var ts = entries[i].ts || 0;
+        if (ts > _remoteLogSinceTs) _remoteLogSinceTs = ts;
       }
       if (remoteLogBuf.length > MAX_REMOTE_CONSOLE) remoteLogBuf.splice(0, remoteLogBuf.length - MAX_REMOTE_CONSOLE);
       if (entries.length > 0) renderRemoteLogs();
@@ -4182,9 +4448,11 @@ function formatRemoteLog(entry, q) {
   var icon = typeIcon(entry.type);
   var sn = entry.sn || '';
   var topic = entry.topic ? entry.topic.replace('Dart/Receive_mqtt/','\\u2190').replace('Dart/Send_mqtt/','\\u2192').replace('Dart/Receive_server_mqtt/','\\u21D0') : '';
-  var payload = truncate((entry.payload || '').split('<').join('&lt;'), 300);
+  // Show the full payload — no truncation. Wrap across lines so JSON
+  // doesn't get cut off at the right edge of the console.
+  var payload = (entry.payload || '').split('<').join('&lt;');
   if (q) { sn = highlightTerm(sn, q); topic = highlightTerm(topic, q); payload = highlightTerm(payload, q); }
-  return '<div style="color:' + color + ';border-bottom:1px solid #1a1a2e;padding:1px 0">' +
+  return '<div style="color:' + color + ';border-bottom:1px solid #1a1a2e;padding:1px 0;white-space:pre-wrap;word-break:break-all">' +
     '<span style="color:#555">' + time + '</span> ' + icon + ' ' +
     '<span style="font-weight:700">' + (entry.type || '').toUpperCase() + '</span> ' +
     (sn ? '<span style="opacity:.7">' + sn + '</span> ' : '') +
