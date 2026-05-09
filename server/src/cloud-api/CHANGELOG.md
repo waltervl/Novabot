@@ -2,6 +2,17 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-09 — Work records: clock sanity check (issue #58)
+
+- `routes/equipmentState.ts`: stock firmware ≤6.x falls back to
+  `2001-01-01` on the on-board RTC when WiFi NTP can't sync, then posts
+  that year verbatim in `saveCutGrassRecord`. Records started showing
+  year-2001 dates in the dashboard/app history. Server now treats any
+  parsed year `< 2025` as an unsynced clock and substitutes the server
+  wall clock (same Date used when no `dateTime` is supplied at all).
+  No schema change; only the stored `dateTime` value is corrected on
+  ingest.
+
 ## 2026-05-06 — Work records: server-side mowing-session timer (issue #17 round 5)
 
 - `routes/equipmentState.ts` + `mqtt/sensorData.ts`: stock and custom
