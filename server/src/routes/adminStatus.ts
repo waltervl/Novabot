@@ -15,7 +15,7 @@ import { awaitCommand, publishToDevice, publishToExtended, onExtendedResponse, o
 import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo } from '../db/repositories/index.js';
 import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
-import { parseMapZip, polygonArea, MapArea } from '../mqtt/mapConverter.js';
+import { parseMapZip, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
@@ -67,7 +67,6 @@ const importStaging = new ImportStagingStore(
 );
 const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-const MAPS_STORAGE = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
 
 // Read version once at startup
 import fs from 'fs';
