@@ -34,6 +34,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { v4 as uuidv4 } from 'uuid';
 import { getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
+import { getDeviceHealth } from '../services/deviceHealth.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -449,6 +450,7 @@ dashboardRouter.get('/devices/:sn', (req: Request, res: Response) => {
     online: isDeviceOnline(sn) || isDemoMode(sn),
     deviceType: sn.startsWith('LFIC') ? 'charger' : 'mower',
     sensors: snapshot,
+    health: getDeviceHealth(sn),
   });
 });
 

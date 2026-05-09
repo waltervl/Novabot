@@ -42,6 +42,7 @@ export function useMowerState(): UseMowerStateResult {
           firmwareVersion: d.firmwareVersion ?? null,
           macAddress: d.macAddress ?? null,
           dockPose: d.dockPose ?? null,
+          health: d.health ?? null,
         });
       }
       setDevices(map);

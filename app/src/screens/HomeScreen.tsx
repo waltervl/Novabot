@@ -31,6 +31,7 @@ import { MowerPickerChevron } from '../components/MowerPickerChevron';
 import { ApiClient, type Schedule } from '../services/api';
 import { getServerUrl, getToken } from '../services/auth';
 import { DemoBanner } from '../components/DemoBanner';
+import { HealthBanner } from '../components/HealthBanner';
 import { MowingProgressMap } from '../components/MowingProgressMap';
 import HistoryScreen from './HistoryScreen';
 import MessagesScreen from './MessagesScreen';
@@ -1755,6 +1756,11 @@ export default function HomeScreen() {
             )}
           </View>
         </View>
+
+        {/* Server-computed health banner — LoRa pair mismatch + mower_error.
+            Shown above rain/error banners so the user sees the actionable
+            issue first when something is off in the device pair. */}
+        <HealthBanner health={devices.get(mower.sn)?.health ?? null} />
 
         {/* Rain overlay — placed right under the status card so it's
             visually paired with the battery panel (was buried below the

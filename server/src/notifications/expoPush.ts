@@ -13,6 +13,7 @@
  */
 import { pushTokensRepo } from '../db/repositories/pushTokens.js';
 import { MowerEvent } from './types.js';
+import { getDeviceLabel } from './deviceLabel.js';
 
 const TAG = '[NOTIFY:EXPO]';
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
@@ -42,9 +43,12 @@ function toMessage(token: string, ev: MowerEvent): ExpoPushMessage {
   // Stuck / error events get high priority so iOS doesn't coalesce
   // them with the next mowing_started 5 minutes later.
   const isAlert = ev.type === 'stuck' || ev.type === 'error' || ev.type === 'low_battery';
+  // Prefix the title with the friendly device label so households with
+  // multiple mowers can tell at a glance which one fired the push.
+  const label = getDeviceLabel(ev.sn);
   return {
     to: token,
-    title: ev.title,
+    title: `${label} - ${ev.title}`,
     body: ev.message || ev.title,
     data: { type: ev.type, sn: ev.sn, ts: ev.ts, ...ev.data },
     sound: 'default',

@@ -521,6 +521,33 @@ export function cleanupSignalHistory(): void {
 // Cache van laatst bekende waarden per SN per veld (ruwe waarde)
 export const deviceCache = new Map<string, Map<string, string>>();
 
+// ── mower_error debouncer ───────────────────────────────────────
+// The charger publishes mower_error inside up_status_info every ~1s while
+// the LoRa link is alive. Code 2 ("Searching mower") fires routinely
+// during normal pair handshakes — surfacing it instantly causes false
+// alarms on the app/admin UI. We track consecutive identical non-zero
+// values so the consumer can require N persistent samples before showing
+// the warning. Reset on `0` or when the value flips to a different code.
+const mowerErrorCounters = new Map<string, { value: string; count: number }>();
+
+export function _updateMowerErrorCounter(sn: string, raw: string): void {
+  const n = parseInt(raw, 10);
+  if (isNaN(n) || n === 0) {
+    mowerErrorCounters.delete(sn);
+    return;
+  }
+  const existing = mowerErrorCounters.get(sn);
+  if (existing && existing.value === raw) {
+    existing.count += 1;
+  } else {
+    mowerErrorCounters.set(sn, { value: raw, count: 1 });
+  }
+}
+
+export function getMowerErrorState(sn: string): { value: string; count: number } | null {
+  return mowerErrorCounters.get(sn) ?? null;
+}
+
 // ── Dock pose capture ───────────────────────────────────────────
 // Stock firmware's heading-discovery drives the mower physically before
 // declaring its localization origin (0,0). The polygon stored on disk is
@@ -669,6 +696,11 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
     // Issue #17: refresh the in-memory mowing-session timer whenever
     // work_status passes through an active task value (100..150).
     if (field === 'work_status') _updateMowingSession(sn, strValue);
+
+    // mower_error gateway state — track consecutive identical non-zero
+    // values so the UI can debounce transient "Searching mower (2)"
+    // blips that the LoRa link emits during normal pair handshakes.
+    if (field === 'mower_error') _updateMowerErrorCounter(sn, strValue);
   }
 
   // Extraheer geneste GPS data uit report_state_timer_data → localization.gps_position

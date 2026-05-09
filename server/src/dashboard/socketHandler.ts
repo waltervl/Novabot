@@ -4,6 +4,7 @@
 import { Server as HttpServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { getAllDeviceSnapshots, getDockPose } from '../mqtt/sensorData.js';
+import { getDeviceHealth } from '../services/deviceHealth.js';
 import { isDeviceOnline } from '../mqtt/broker.js';
 import { db } from '../db/database.js';
 import { initBleLogger, sendBleLogHistory } from '../ble/bleLogger.js';
@@ -142,6 +143,9 @@ export function initDashboardSocket(httpServer: HttpServer): void {
             // hardcoded (0,0). Null when the mower has not yet been seen
             // docked since server start.
             dockPose: dock ? { x: dock.x, y: dock.y, orientation: dock.orientation } : null,
+            // LoRa pair + mower_error status — surfaced to the app so it
+            // can render a warning banner without a separate poll loop.
+            health: getDeviceHealth(r.sn!),
           };
         });
     }

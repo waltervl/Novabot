@@ -1492,9 +1492,12 @@ function appModal(opts) {
       var borderColor = destructive ? '#ef4444' : (primary ? c.fg : 'rgba(255,255,255,0.12)');
       btn.style.cssText = 'padding:8px 18px;border-radius:8px;border:1px solid ' + borderColor + ';background:' + bg + ';color:' + fg + ';font-size:13px;font-weight:600;cursor:pointer';
       btn.addEventListener('click', function() {
+        // Read any caller-provided onClick BEFORE removing the backdrop so
+        // it can still query input values inside the modal.
+        var ret;
+        if (b.onClick) ret = b.onClick();
         document.body.removeChild(backdrop);
-        if (b.onClick) b.onClick();
-        resolve(b.value !== undefined ? b.value : b.text);
+        resolve(ret !== undefined ? ret : (b.value !== undefined ? b.value : b.text));
       });
       btnRow.appendChild(btn);
     });
@@ -1602,6 +1605,26 @@ function devRow(dev) {
   if (!isCharger && dev.is_active) {
     activeBadge = '<span style="font-size:9px;background:rgba(124,58,237,.2);color:#a78bfa;padding:1px 6px;border-radius:3px;font-weight:600;margin-left:4px">Active</span>';
   }
+
+  // Health badges — LoRa pair mismatch + mower_error gateway state.
+  // Rendered next to the firmware/active chips so issues are visible at a glance.
+  var healthBadges = '';
+  var h = dev.health;
+  if (h && h.loraPair && !h.loraPair.ok && h.loraPair.charger && h.loraPair.mower) {
+    var fields = [];
+    if (h.loraPair.issues.indexOf('addr-mismatch') >= 0) fields.push('addr');
+    if (h.loraPair.issues.indexOf('channel-mismatch') >= 0) fields.push('channel');
+    if (fields.length > 0) {
+      var pairTitle = 'LoRa pair mismatch (' + fields.join(' + ') + ')'
+        + ' — charger ' + h.loraPair.charger.addr + '/ch' + h.loraPair.charger.channel
+        + ' vs mower ' + h.loraPair.mower.addr + '/ch' + h.loraPair.mower.channel;
+      healthBadges += '<span title="' + pairTitle + '" style="font-size:9px;background:rgba(239,68,68,.18);color:#fca5a5;padding:1px 6px;border-radius:3px;font-weight:600;margin-left:4px;cursor:help">⚠ LoRa ' + fields.join('+') + '</span>';
+    }
+  }
+  if (h && h.mowerError) {
+    healthBadges += '<span title="mower_error ' + h.mowerError.code + ': ' + h.mowerError.label + '" style="font-size:9px;background:rgba(239,68,68,.18);color:#fca5a5;padding:1px 6px;border-radius:3px;font-weight:600;margin-left:4px;cursor:help">⚠ Err ' + h.mowerError.code + '</span>';
+  }
+  activeBadge += healthBadges;
   // Layout: één primaire actieknop (Activate/Deactivate voor mowers, niets
   // voor chargers) + kebab-menu (⋯) met destructieve / minder-gebruikte
   // opties (Unbind, Delete + Banish). Houdt rijen compact en visueel rustig.

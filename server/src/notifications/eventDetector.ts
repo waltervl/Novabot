@@ -136,7 +136,7 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
           sn,
           'error_cleared',
           TITLE_BY_TYPE.error_cleared,
-          `Previous error_status=${prev.errorStatus} now 0`,
+          `Earlier error (code ${prev.errorStatus}) is gone.`,
           { previous_error_status: prev.errorStatus, msg: next.msg },
         ));
       }
@@ -158,16 +158,16 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
         sn,
         'mowing_started',
         'Mowing started',
-        next.msg,
-        { msg: next.msg },
+        `Started mowing — battery ${next.batteryPower}%.`,
+        { msg: next.msg, battery_power: next.batteryPower },
       ));
     } else if (wasMowing && !nowMowing && isFinished(next.msg) && next.errorStatus === '0') {
       dispatchEvent(makeEvent(
         sn,
         'mowing_finished',
         'Mowing finished',
-        next.msg,
-        { msg: next.msg },
+        `Mowing complete — battery ${next.batteryPower}%.`,
+        { msg: next.msg, battery_power: next.batteryPower },
       ));
     }
   }
@@ -178,7 +178,7 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
       sn,
       'docked',
       'Mower docked',
-      `recharge_status=9 (FINISHED on dock), battery=${next.batteryPower}%`,
+      `Back on the dock and charged — battery ${next.batteryPower}%.`,
       { recharge_status: next.rechargeStatus, battery_power: next.batteryPower },
     ));
   }
@@ -206,8 +206,8 @@ export function detectAndDispatch(sn: string, snValues: Map<string, string>): vo
     dispatchEvent(makeEvent(
       sn,
       'low_battery',
-      `Battery ${next.batteryPower}%`,
-      `Battery dropped below ${LOW_BATTERY_THRESHOLD}% threshold`,
+      `Battery low (${next.batteryPower}%)`,
+      `Battery dropped to ${next.batteryPower}% — heading back to the dock soon.`,
       { battery_power: next.batteryPower, threshold: LOW_BATTERY_THRESHOLD },
     ));
   }

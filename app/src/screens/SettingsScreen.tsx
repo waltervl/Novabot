@@ -61,9 +61,11 @@ export default function SettingsScreen({ navigation }: Props) {
     discoverServers((server) => {
       found.push(server);
       setServers([...found]);
-      // Auto-fill first discovered server
+      // Auto-fill first discovered server — strip the HTTP port suffix
+      // (e.g. "opennova.local:8080") so the MQTT field only carries the
+      // hostname. Port stays at 1883 (mower/charger MQTT default).
       if (found.length === 1) {
-        setMqttAddr(server.ip);
+        setMqttAddr(server.ip.split(':')[0]);
       }
     }).finally(() => setScanning(false));
   }, [loaded]);
@@ -135,25 +137,25 @@ export default function SettingsScreen({ navigation }: Props) {
                 key={s.ip}
                 style={[
                   styles.serverItem,
-                  mqttAddr === s.ip && styles.serverItemSelected,
+                  mqttAddr === s.ip.split(':')[0] && styles.serverItemSelected,
                 ]}
-                onPress={() => setMqttAddr(s.ip)}
+                onPress={() => setMqttAddr(s.ip.split(':')[0])}
                 activeOpacity={0.7}
               >
                 <View style={styles.serverItemLeft}>
                   <View style={[
                     styles.serverDot,
-                    mqttAddr === s.ip && styles.serverDotSelected,
+                    mqttAddr === s.ip.split(':')[0] && styles.serverDotSelected,
                   ]} />
                   <View>
                     <Text style={[
                       styles.serverIp,
-                      mqttAddr === s.ip && styles.serverIpSelected,
+                      mqttAddr === s.ip.split(':')[0] && styles.serverIpSelected,
                     ]}>{s.ip}</Text>
                     <Text style={styles.serverLabel}>OpenNova Server</Text>
                   </View>
                 </View>
-                {mqttAddr === s.ip && (
+                {mqttAddr === s.ip.split(':')[0] && (
                   <Ionicons name="checkmark-circle" size={20} color={colors.emerald} />
                 )}
               </TouchableOpacity>

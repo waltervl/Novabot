@@ -24,7 +24,7 @@ import {
   Modal,
   BackHandler,
 } from 'react-native';
-import { appAlertCompat } from '../context/AppAlertContext';
+import { appAlert, appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -579,25 +579,37 @@ export default function MappingScreen() {
       // unreachable
     }
 
+    let chosen = candidates[0];
     if (candidates.length > 1 && isIos) {
-      // iOS cannot filter by MAC — refuse to guess. Caller will navigate
-      // back so the user disambiguates physically before retrying.
+      // iOS cannot filter by MAC — let the user pick from a list of all
+      // visible mowers, sorted by signal strength (closest first).
       candidates.sort((a, b) => b.rssi - a.rssi);
-      const list = candidates
-        .map((c, i) => `  ${i + 1}. ${c.name} (RSSI ${c.rssi})`)
-        .join('\n');
-      setBleConnecting(false);
-      setBleStatus(null);
-      appAlertCompat.alert(
-        'Multiple mowers detected',
-        `Found ${candidates.length} Novabot mowers within Bluetooth range:\n\n${list}\n\n` +
-          'iOS does not expose MAC addresses, so the app cannot tell them apart. Move the OTHER mower further away ' +
-          '(or power it down) and try again.',
-      );
-      return 'multi-mower';
+      const picked = await new Promise<ScannedDevice | null>(resolvePick => {
+        appAlert({
+          title: 'Multiple mowers detected',
+          message:
+            `Found ${candidates.length} Novabot mowers within Bluetooth range. ` +
+            'iOS does not expose MAC addresses, so pick the one you want to use ' +
+            '(strongest signal first — usually the closest).',
+          accent: 'info',
+          buttons: [
+            ...candidates.map((c, i) => ({
+              text: `${i + 1}. ${c.name} (RSSI ${c.rssi})`,
+              style: 'default' as const,
+              onPress: () => resolvePick(c),
+            })),
+            { text: 'Cancel', style: 'cancel' as const, onPress: () => resolvePick(null) },
+          ],
+        });
+      });
+      if (!picked) {
+        setBleConnecting(false);
+        setBleStatus(null);
+        return 'multi-mower';
+      }
+      chosen = picked;
     }
 
-    const chosen = candidates[0];
     setBleStatus(`Connecting to ${chosen.name}...`);
     const ok = await bleJoystickConnect(chosen.id);
     setBleConnected(ok);

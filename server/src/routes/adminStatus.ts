@@ -21,6 +21,7 @@ import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../servi
 import { getPolygonAnchor } from '../services/anchor.js';
 import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase } from '../services/portableMap.js';
 import { ImportStagingStore } from '../services/importStaging.js';
+import { getDeviceHealth } from '../services/deviceHealth.js';
 import { importAuditRepo } from '../db/repositories/importAudit.js';
 import { deriveHeading } from '../services/driveCalibration.js';
 import {
@@ -151,9 +152,22 @@ adminStatusRouter.get('/devices', (_req: AuthRequest, res: Response) => {
   const devices = rows.map(r => ({
     ...r,
     is_online: r.sn && isDeviceOnline(r.sn) ? 1 : 0,
+    health: r.sn ? getDeviceHealth(r.sn) : null,
   }));
 
   res.json({ devices });
+});
+
+// GET /api/admin-status/health/:sn — explicit single-device health probe
+// (LoRa pair mismatch + mower_error). Same shape as `health` field on
+// /devices, exposed separately for clients that only need one device.
+adminStatusRouter.get('/health/:sn', (req: AuthRequest, res: Response) => {
+  const { sn } = req.params;
+  if (!sn) {
+    res.status(400).json({ ok: false, error: 'sn required' });
+    return;
+  }
+  res.json({ ok: true, health: getDeviceHealth(sn) });
 });
 
 // POST /api/admin-status/bind-device — bind unbound device to current user
@@ -1178,6 +1192,17 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (
       partial: true,
     });
     return;
+  }
+
+  // After sync_map writes the CSVs (and map.yaml/pgm/png from the ZIP if
+  // those were included), trigger save_map type:1 as a safety net so the
+  // mower re-renders the map artifacts from the freshly applied CSVs.
+  // Stale restored ZIPs can carry mismatched yaml/pgm; this re-render
+  // guarantees Errors 107/118 don't surface immediately after a restore.
+  // Fire-and-forget — caller doesn't need the respond.
+  if (syncResult.ok) {
+    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+    console.log(`[Admin] restore-and-realign ${sn}: post-sync save_map type:1 dispatched to render map.yaml/pgm`);
   }
 
   console.log(
@@ -2392,6 +2417,17 @@ adminStatusRouter.post('/maps/:sn/apply-polygon-offset', async (req: AuthRequest
       dx_m: dx, dy_m: dy,
     });
     return;
+  }
+
+  // 5. After sync_map applied the CSVs, ask the mower to render
+  // map.yaml/.pgm/.png from those CSVs by triggering save_map type:1.
+  // The DB-only recovery path was leaving these render artifacts missing,
+  // so navigation/coverage planners hit Errors 107/118 even though the
+  // polygons were correctly written. Fire-and-forget — the mower processes
+  // it asynchronously and the response isn't needed for the caller.
+  if (syncResult.ok) {
+    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+    console.log(`[Admin] apply-polygon-offset ${sn}: post-sync save_map type:1 dispatched to render map.yaml/pgm`);
   }
 
   console.log(`[Admin] apply-polygon-offset ${sn}: dx=${dx} dy=${dy} syncOk=${syncResult.ok}`);

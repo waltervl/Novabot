@@ -37,6 +37,30 @@ export interface DeviceState {
    * pose is non-zero in map frame.
    */
   dockPose?: { x: number; y: number; orientation: number } | null;
+  /** Server-computed health flags — surface LoRa pair mismatch + mower_error
+   *  without each screen re-deriving the same logic. Null while the server
+   *  hasn't sent it yet (older builds). */
+  health?: DeviceHealth | null;
+}
+
+export type LoraPairIssue =
+  | 'missing-charger-cache'
+  | 'missing-mower-cache'
+  | 'addr-mismatch'
+  | 'channel-mismatch'
+  | 'unpaired';
+
+export interface DeviceHealth {
+  sn: string;
+  pairedWith: string | null;
+  loraSupported: boolean;
+  loraPair: {
+    ok: boolean;
+    issues: LoraPairIssue[];
+    charger: { addr: number | null; channel: number | null } | null;
+    mower: { addr: number | null; channel: number | null } | null;
+  } | null;
+  mowerError: { code: number; label: string } | null;
 }
 
 export interface MowerStatus {
@@ -116,4 +140,5 @@ export interface SnapshotDevice {
   firmwareVersion?: string | null;
   macAddress?: string | null;
   dockPose?: { x: number; y: number; orientation: number } | null;
+  health?: DeviceHealth | null;
 }

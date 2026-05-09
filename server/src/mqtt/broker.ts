@@ -374,15 +374,26 @@ export function writeRawPublish(sn: string, payload: Buffer, qos: 0 | 1 = 0): bo
   }
 }
 
-/** Geeft true als het apparaat met dit SN momenteel verbonden is met de MQTT broker
- *  én niet meer dan STALE_SN_MS geleden een PUBLISH stuurde. Zonder die laatste
- *  check blijft de app "Charging 100%" tonen na een power-off totdat aedes
- *  z'n keepalive expireert (kan tot 2 min duren). */
+/** Geeft true als het apparaat met dit SN ECHT online is. We beschouwen
+ *  een device pas als online wanneer:
+ *  1. de aedes-broker minstens één client-sessie voor dit SN registreert, EN
+ *  2. er recent (binnen STALE_SN_MS) een telemetrie-publish op
+ *     `Dart/Receive_mqtt/<SN>` is binnengekomen — dat is het signaal dat de
+ *     mqtt_node / charger firmware de echte data-stack actief heeft.
+ *
+ *  Pure CONNECT + PINGREQ houdt isDeviceOnline NIET true — de mower kan met
+ *  alleen extended_commands.py (Python wrapper) verbonden zijn terwijl
+ *  mqtt_node dood is. In dat geval rapporteert die wel `get_lora_info_respond`
+ *  op `novabot/extended_response/<SN>` maar geen `report_state_timer_data` /
+ *  `report_state_robot` op `Dart/Receive_mqtt/<SN>`. Voor de UI is dat NIET
+ *  online — er komen geen sensor-updates binnen.
+ */
 export function isDeviceOnline(sn: string): boolean {
   const clients = onlineBySn.get(sn);
   if (clients === undefined || clients.size === 0) return false;
   const lastPub = lastPublishBySn.get(sn);
-  if (lastPub != null && Date.now() - lastPub > STALE_SN_MS) return false;
+  if (lastPub == null) return false;                          // never seen real telemetry
+  if (Date.now() - lastPub > STALE_SN_MS) return false;       // stale
   return true;
 }
 
@@ -844,13 +855,13 @@ export async function startMqttBroker(): Promise<void> {
     const direction = packet.topic.startsWith('Dart/Send_mqtt/') ? '→DEV' :
                       packet.topic.startsWith('Dart/Receive_mqtt/') ? '←DEV' : '';
 
-    // Track lastPublish voor stale-detection (zie isDeviceOnline). Alleen
-    // PUBLISH vanuit een LFI-client telt (PINGREQ is transport-level en
-    // kan doorgaan zonder app-level activiteit).
-    if (client.id.startsWith('LFI')) {
-      const snFromClient = client.id.replace(/_.*$/, '');
-      lastPublishBySn.set(snFromClient, Date.now());
-    } else if (direction === '←DEV') {
+    // Track lastPublish ALLEEN op telemetrie-publishes (Dart/Receive_mqtt/<SN>).
+    // Dat is het topic waarop mqtt_node / charger v0.4.0 hun report_state_*
+    // sturen. Andere publishes (PINGREQ, extended_response heartbeat van
+    // extended_commands.py) bewijzen NIET dat de echte firmware-stack online
+    // is. Zonder dit onderscheid bleef een mower met dood mqtt_node maar
+    // werkend extended_commands.py oneindig "Online" tonen.
+    if (direction === '←DEV') {
       const snFromTopic = packet.topic.split('/').pop() ?? '';
       if (snFromTopic.startsWith('LFI')) {
         lastPublishBySn.set(snFromTopic, Date.now());

@@ -1,0 +1,118 @@
+/**
+ * Device health helpers — surface LoRa pair mismatch + mower-error
+ * gateway state in one shape so admin UI + the OpenNova app can render
+ * matching warnings without each re-deriving the same logic.
+ *
+ * Returned health is informational only — nothing on the server changes
+ * behaviour based on it. The fields are intended for badge / banner
+ * rendering on the consumers.
+ */
+import { equipmentRepo } from '../db/repositories/equipment.js';
+import { translateValue, getMowerErrorState } from '../mqtt/sensorData.js';
+
+export interface LoraSide {
+  addr: number | null;
+  channel: number | null;
+}
+
+export type LoraPairIssue =
+  | 'missing-charger-cache'
+  | 'missing-mower-cache'
+  | 'addr-mismatch'
+  | 'channel-mismatch'
+  | 'unpaired';
+
+export interface DeviceHealth {
+  /** SN that was queried (echoed for clients that batch-call). */
+  sn: string;
+  /** Paired counterpart SN, when this device is part of a bound equipment row. */
+  pairedWith: string | null;
+  /** Whether the device-type combination supports a LoRa pair check at all. */
+  loraSupported: boolean;
+  /** Non-null only when LoRa cache is available for at least one side. */
+  loraPair: {
+    ok: boolean;
+    issues: LoraPairIssue[];
+    charger: LoraSide | null;
+    mower: LoraSide | null;
+  } | null;
+  /** Decoded mower_error reported by the charger via LoRa up_status_info. */
+  mowerError: { code: number; label: string } | null;
+}
+
+function parseLora(row: { charger_address: string | null; charger_channel: string | null } | undefined): LoraSide | null {
+  if (!row) return null;
+  const addr = row.charger_address != null && row.charger_address !== '' ? parseInt(row.charger_address, 10) : null;
+  const channel = row.charger_channel != null && row.charger_channel !== '' ? parseInt(row.charger_channel, 10) : null;
+  if (addr == null && channel == null) return null;
+  return {
+    addr: isNaN(addr ?? NaN) ? null : addr,
+    channel: isNaN(channel ?? NaN) ? null : channel,
+  };
+}
+
+function findPairedSn(sn: string): { mower_sn: string | null; charger_sn: string | null } {
+  const eq = equipmentRepo.findBySn(sn);
+  return {
+    mower_sn: eq?.mower_sn ?? null,
+    charger_sn: eq?.charger_sn ?? null,
+  };
+}
+
+export function getDeviceHealth(sn: string): DeviceHealth {
+  const isMower = sn.startsWith('LFIN');
+  const isCharger = sn.startsWith('LFIC');
+  const { mower_sn, charger_sn } = findPairedSn(sn);
+
+  const counterpart = isMower ? charger_sn : isCharger ? mower_sn : null;
+
+  // LoRa pair status — only meaningful when both halves of the pair exist.
+  let loraPair: DeviceHealth['loraPair'] = null;
+  const issues: LoraPairIssue[] = [];
+  if (charger_sn || mower_sn) {
+    const chargerLora = charger_sn ? parseLora(equipmentRepo.getLoraCache(charger_sn)) : null;
+    const mowerLora = mower_sn ? parseLora(equipmentRepo.getLoraCache(mower_sn)) : null;
+
+    if (charger_sn && !chargerLora) issues.push('missing-charger-cache');
+    if (mower_sn && !mowerLora) issues.push('missing-mower-cache');
+    if (chargerLora && mowerLora) {
+      if (chargerLora.addr !== mowerLora.addr) issues.push('addr-mismatch');
+      if (chargerLora.channel !== mowerLora.channel) issues.push('channel-mismatch');
+    }
+
+    loraPair = {
+      ok: issues.length === 0 && !!chargerLora && !!mowerLora,
+      issues,
+      charger: chargerLora,
+      mower: mowerLora,
+    };
+  } else if (isMower || isCharger) {
+    issues.push('unpaired');
+    loraPair = { ok: false, issues, charger: null, mower: null };
+  }
+
+  // mower_error — published by the charger inside up_status_info every ~1s.
+  // Surface only after MOWER_ERROR_THRESHOLD consecutive identical non-zero
+  // samples so transient code 2 ("Searching mower") blips during routine
+  // LoRa handshakes don't trigger the warning banner. Counter is reset on
+  // any `0` or value-change in sensorData.ts._updateMowerErrorCounter.
+  const MOWER_ERROR_THRESHOLD = 50;
+  let mowerError: DeviceHealth['mowerError'] = null;
+  if (charger_sn) {
+    const state = getMowerErrorState(charger_sn);
+    if (state && state.count >= MOWER_ERROR_THRESHOLD) {
+      const code = parseInt(state.value, 10);
+      if (!isNaN(code)) {
+        mowerError = { code, label: translateValue('mower_error', state.value) };
+      }
+    }
+  }
+
+  return {
+    sn,
+    pairedWith: counterpart,
+    loraSupported: !!(charger_sn && mower_sn),
+    loraPair,
+    mowerError,
+  };
+}

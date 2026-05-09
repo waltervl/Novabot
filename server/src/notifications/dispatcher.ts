@@ -11,6 +11,7 @@ import { publishToTopic } from '../mqtt/mapSync.js';
 import { sendExpoPush } from './expoPush.js';
 import { writeRobotMessage } from './robotMessageWriter.js';
 import { MowerEvent } from './types.js';
+import { getDeviceLabel } from './deviceLabel.js';
 
 const TAG = '[NOTIFY]';
 
@@ -58,7 +59,7 @@ async function sendNtfy(ev: MowerEvent): Promise<void> {
   if (!NTFY_TOPIC) return;
   const url = `${NTFY_URL.replace(/\/$/, '')}/${NTFY_TOPIC}`;
   const headers: Record<string, string> = {
-    'Title': asciiHeader(`${ev.title} - ${ev.sn}`),
+    'Title': asciiHeader(`${getDeviceLabel(ev.sn)} - ${ev.title}`),
     'Tags': asciiHeader(`mower,${ev.type}`),
   };
   if (NTFY_PRIORITY) headers['Priority'] = NTFY_PRIORITY;
