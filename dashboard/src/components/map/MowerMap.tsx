@@ -934,9 +934,14 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
     return Number.isFinite(lat) && Number.isFinite(lng) ? [[lat, lng] as [number, number]] : [];
   });
 
-  // Mower heading icon (rotates with heading data)
-  const headingDeg = heading ? parseFloat(heading) : 0;
-  const mowerIcon = useMemo(() => makeMowerIcon(isNaN(headingDeg) ? 0 : headingDeg), [headingDeg]);
+  // Mower heading icon — `heading` carries the firmware `theta` field
+  // (radians, ENU convention). Issue #50: previously read mower_z which is
+  // the Z-axis position, so the icon was always pinned to north. Convert
+  // radians → degrees here; makeMowerIcon then applies the -90 offset to
+  // align the PNG (which faces left) with the rotation frame.
+  const thetaRad = heading ? parseFloat(heading) : 0;
+  const headingDeg = isNaN(thetaRad) ? 0 : (thetaRad * 180 / Math.PI);
+  const mowerIcon = useMemo(() => makeMowerIcon(headingDeg), [headingDeg]);
   // Coverage stats per polygon (trail points inside each work area)
   const coverageStats = useMemo(() => {
     if (trail.length === 0) return new Map<string, { points: number; area: number }>();

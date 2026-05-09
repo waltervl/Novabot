@@ -23,7 +23,7 @@ export function MapTab({ mower, liveOutlines, coveredLanes }: Props) {
       sn={mower.sn}
       lat={mower.sensors.latitude}
       lng={mower.sensors.longitude}
-      heading={mower.sensors.z ?? mower.sensors.mower_z}
+      heading={mower.sensors.theta}
       signals={{
         wifiRssi: mower.sensors.wifi_rssi,
         rtkSat: mower.sensors.rtk_sat,

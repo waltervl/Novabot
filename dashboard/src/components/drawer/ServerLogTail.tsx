@@ -52,7 +52,7 @@ export function ServerLogTail() {
           <p className="text-zinc-600 italic">{t('drawer.logs.empty')}</p>
         ) : logs.map((l, i) => (
           <div key={`${l.ts}-${i}`} className="py-0.5 border-b border-zinc-900 last:border-b-0">
-            <span className="text-zinc-600">{new Date(l.ts).toISOString().slice(11, 19)}</span>
+            <span className="text-zinc-600">{new Date(l.ts).toLocaleTimeString(undefined, { hour12: false })}</span>
             <span className="text-zinc-500 mx-1">[{l.type}]</span>
             {l.sn && <span className="text-zinc-500">{l.sn} </span>}
             <span className="text-zinc-300">{l.topic}</span>

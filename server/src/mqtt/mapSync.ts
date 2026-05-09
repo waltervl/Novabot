@@ -135,6 +135,35 @@ export function publishRawToDevice(sn: string, payload: Buffer, qos: 0 | 1 = 1):
   });
 }
 
+/**
+ * Determine whether the on-device firmware understands AES-128-CBC payloads
+ * on `Dart/Send_mqtt/<SN>`. Issue #49: stock mower firmware ≤ v5.7.1 has no
+ * AES path and silently drops encrypted commands; charger firmware ≤ v0.3.6
+ * is the same. We only encrypt when the equipment table has a known version
+ * that we know supports it. Unknown / missing version errs on the safe side
+ * (plain JSON) so commands at least reach the device.
+ */
+function isAesCapable(sn: string): boolean {
+  try {
+    const eq = equipmentRepo.findBySn(sn);
+    if (!eq) return false;
+    if (sn.startsWith('LFIN')) {
+      const v = eq.mower_version ?? '';
+      const m = v.match(/v?(\d+)/i);
+      if (!m) return false;
+      return parseInt(m[1], 10) >= 6;     // v6.x and up understand AES
+    }
+    if (sn.startsWith('LFIC')) {
+      const v = eq.charger_version ?? '';
+      // charger v0.4.0+ supports AES; v0.3.x does not
+      const m = v.match(/v?0\.(\d+)/i);
+      if (!m) return false;
+      return parseInt(m[1], 10) >= 4;
+    }
+  } catch { /* fall through */ }
+  return false;
+}
+
 export function publishToDevice(sn: string, command: Record<string, unknown>): void {
   if (!aedesBroker) {
     console.error(`${TAG} Broker niet geinitialiseerd`);
@@ -149,8 +178,11 @@ export function publishToDevice(sn: string, command: Record<string, unknown>): v
 
   const json = JSON.stringify(command);
 
-  // Auto-encrypt voor alle LFI-apparaten (maaier v6+ en charger v0.4.0+ verwachten AES)
-  if (sn.startsWith('LFI')) {
+  // Auto-encrypt only when the firmware version is known to support AES.
+  // Stock v5.x mowers and charger v0.3.x silently drop encrypted commands —
+  // see firmware-aes-versions.md / issue #49. For those we publish plain JSON
+  // on the same topic; the firmware accepts that path unchanged.
+  if (sn.startsWith('LFI') && isAesCapable(sn)) {
     const KEY_PREFIX = 'abcdabcd1234';
     const IV = Buffer.from('abcd1234abcd1234', 'utf8');
     const key = Buffer.from(KEY_PREFIX + sn.slice(-4), 'utf8');

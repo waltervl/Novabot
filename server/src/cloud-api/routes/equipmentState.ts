@@ -132,25 +132,37 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
   //      local wall clock, both stock + dashboard render correctly. The
   //      OpenNova app uses toLocaleString itself and is timezone-agnostic.
   const SERVER_TZ = process.env.TZ || 'Europe/Amsterdam';
+  // Issue #58: stock firmware (≤6.x) lets the on-board RTC fall back to
+  // 2001-01-01 when WiFi NTP can't sync, and posts that date verbatim in
+  // saveCutGrassRecord. Walter's records dropped to year 2001 the moment
+  // his mower's clock skewed. Treat any year < 2025 as "mower clock not
+  // trustworthy" and substitute the server's wall clock — the same Date
+  // we'd use when no dateTime was sent at all.
+  const MIN_PLAUSIBLE_YEAR = 2025;
+  function formatInTz(d: Date): string {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: SERVER_TZ,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    }).formatToParts(d).reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== 'literal') acc[p.type] = p.value;
+      return acc;
+    }, {});
+    const hh = parts.hour === '24' ? '00' : parts.hour;
+    return `${parts.year}-${parts.month}-${parts.day} ${hh}:${parts.minute}:${parts.second}`;
+  }
   function normaliseDateTime(raw: string): string {
     try {
       const d = new Date(raw);
-      if (isNaN(d.getTime())) return raw;
-      const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: SERVER_TZ,
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        hour12: false,
-      }).formatToParts(d).reduce<Record<string, string>>((acc, p) => {
-        if (p.type !== 'literal') acc[p.type] = p.value;
-        return acc;
-      }, {});
-      // Intl en-CA: YYYY-MM-DD by default; hour 24h. Re-assemble manually
-      // so the format is identical regardless of CLDR future tweaks.
-      const hh = parts.hour === '24' ? '00' : parts.hour;
-      return `${parts.year}-${parts.month}-${parts.day} ${hh}:${parts.minute}:${parts.second}`;
+      if (isNaN(d.getTime())) return formatInTz(new Date());
+      if (d.getUTCFullYear() < MIN_PLAUSIBLE_YEAR) {
+        console.log(`[STATE] saveCutGrassRecord: dateTime "${raw}" looks like an unsynced mower clock — substituting server time`);
+        return formatInTz(new Date());
+      }
+      return formatInTz(d);
     } catch {
-      return raw;
+      return formatInTz(new Date());
     }
   }
 
