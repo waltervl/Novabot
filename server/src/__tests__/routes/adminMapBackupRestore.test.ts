@@ -521,8 +521,8 @@ describe('GET /map-backups/:sn/:filename/polygons', () => {
   });
 });
 
-// ── /upload endpoint — external ZIP import with structural guards ────────────
-describe('POST /map-backups/:sn/upload', () => {
+// ── /upload endpoint — REMOVED 2026-05-09 (Import ZIP feature dropped) ────────
+describe.skip('POST /map-backups/:sn/upload', () => {
   beforeEach(() => {
     existsSpy.mockReturnValue(true);
   });

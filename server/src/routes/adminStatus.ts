@@ -66,22 +66,8 @@ const importStaging = new ImportStagingStore(
 );
 const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-// Multer for ZIP upload (temp directory)
 const MAPS_STORAGE = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
 const upload = multer({ dest: os.tmpdir() });
-// Dedicated uploader for /map-backups/:sn/upload — extension filter + size cap
-// stop the obviously-wrong cases before parseMapZip even runs.
-const uploadZip = multer({
-  dest: os.tmpdir(),
-  limits: { fileSize: 50 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    if (!/\.zip$/i.test(file.originalname)) {
-      cb(new Error('Only .zip files are accepted'));
-      return;
-    }
-    cb(null, true);
-  },
-});
 
 // Read version once at startup
 import fs from 'fs';
@@ -604,86 +590,6 @@ function getLocalIp(): string {
   return '127.0.0.1';
 }
 
-// POST /api/admin-status/import-map-zip — import a Novabot map ZIP, always creating NEW map records
-adminStatusRouter.post('/import-map-zip', upload.single('file'), (req: AuthRequest, res: Response) => {
-  const sn = req.body?.sn as string | undefined;
-  const file = (req as any).file as Express.Multer.File | undefined;
-
-  if (!sn) {
-    res.status(400).json({ error: 'sn (mower serial) required' });
-    return;
-  }
-  if (!file) {
-    res.status(400).json({ error: 'file (ZIP) required' });
-    return;
-  }
-
-  try {
-    // Parse the ZIP using the existing mapConverter function
-    const parsed = parseMapZip(file.path);
-    if (!parsed || parsed.areas.length === 0) {
-      res.status(400).json({ error: 'No valid map areas found in ZIP' });
-      return;
-    }
-
-    let mapsImported = 0;
-
-    for (const area of parsed.areas) {
-      if (area.points.length < 2) continue;
-
-      const mapId = uuidv4();
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const areaM2 = area.type !== 'unicom' && area.points.length >= 3
-        ? polygonArea(area.points)
-        : 0;
-
-      // Build a descriptive map name from the area metadata
-      let mapName: string;
-      if (area.type === 'work') {
-        mapName = `map${area.mapIndex}_work`;
-      } else if (area.type === 'obstacle') {
-        mapName = `map${area.mapIndex}_${area.subIndex ?? 0}_obstacle`;
-      } else {
-        mapName = `map${area.mapIndex}to${area.target ?? 'charge'}_unicom`;
-      }
-
-      // Compute bounding box
-      const xs = area.points.map(p => p.x);
-      const ys = area.points.map(p => p.y);
-      const mapMaxMin = JSON.stringify({
-        minX: Math.min(...xs), maxX: Math.max(...xs),
-        minY: Math.min(...ys), maxY: Math.max(...ys),
-      });
-
-      mapRepo.create({
-        map_id: mapId,
-        mower_sn: sn,
-        map_name: mapName,
-        map_area: JSON.stringify(area.points),
-        map_max_min: mapMaxMin,
-        map_type: area.type,
-      });
-      mapsImported++;
-    }
-
-    // Copy uploaded ZIP as _latest.zip for queryEquipmentMap
-    fs.mkdirSync(MAPS_STORAGE, { recursive: true });
-    const latestPath = path.join(MAPS_STORAGE, `${sn}_latest.zip`);
-    fs.copyFileSync(file.path, latestPath);
-
-    // Clean up temp file
-    try { fs.unlinkSync(file.path); } catch { /* ignore */ }
-
-    console.log(`[Admin] Imported ${mapsImported} map(s) from ZIP for ${sn}`);
-    res.json({ ok: true, mapsImported });
-  } catch (err) {
-    // Clean up temp file on error
-    try { fs.unlinkSync(file.path); } catch { /* ignore */ }
-    console.error('[Admin] Map ZIP import failed:', err);
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Import failed' });
-  }
-});
-
 // GET /api/admin-status/check-firmware-updates — compare remote manifest with local versions
 adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: Response) => {
   try {
@@ -1041,84 +947,6 @@ adminStatusRouter.get('/map-backups/:sn/:filename/polygons', (req: AuthRequest, 
     res.status(500).json({ error: err instanceof Error ? err.message : 'unknown error' });
   }
 });
-
-// POST /api/admin-status/map-backups/:sn/upload — import an external ZIP
-//
-// Accepts a single multipart field `zip` (max 50 MB). The upload is run
-// through `parseMapZip` and a small set of structural guards before being
-// stored in the backup directory; on success the new entry shows up in
-// the standard backup list and can be ghost-previewed + restored like any
-// auto-snapshot.
-//
-// Guards (each rejected with a descriptive message):
-//   - .zip extension on filename
-//   - parseMapZip returns truthy
-//   - chargingPose present AND not (0,0,0) — that's the corrupted-stub
-//     pattern from the maps recovery playbook
-//   - at least one work polygon with >= 3 points
-adminStatusRouter.post(
-  '/map-backups/:sn/upload',
-  uploadZip.single('zip'),
-  (req: AuthRequest, res: Response) => {
-    const { sn } = req.params;
-    const file = (req as unknown as { file?: Express.Multer.File }).file;
-
-    if (!file) {
-      res.status(400).json({ ok: false, error: 'No file uploaded (expected multipart field "zip")' });
-      return;
-    }
-
-    const tmpPath = file.path;
-    try {
-      const parsed = parseMapZip(tmpPath);
-      if (!parsed) {
-        res.status(400).json({ ok: false, error: 'Not a valid Novabot map ZIP — parseMapZip rejected the file' });
-        return;
-      }
-
-      const cp = parsed.chargingPose;
-      const cpZeroed = !cp || (cp.x === 0 && cp.y === 0 && cp.orientation === 0);
-      if (cpZeroed) {
-        res.status(400).json({
-          ok: false,
-          error: 'ZIP has missing or (0,0,0) chargingPose — that is the corrupted-stub pattern, refusing to import',
-        });
-        return;
-      }
-
-      const workCount = parsed.areas.filter(a => a.type === 'work' && a.points.length >= 3).length;
-      if (workCount === 0) {
-        res.status(400).json({ ok: false, error: 'ZIP contains no work polygon with >= 3 points' });
-        return;
-      }
-
-      // Stash into the backup directory under a deterministic, sortable name
-      // so the existing list-backups path picks it up automatically.
-      const dir = path.dirname(backupPath(sn, 'placeholder'));
-      fs.mkdirSync(dir, { recursive: true });
-      const ts = Date.now();
-      const finalName = `imported_${ts}.zip`;
-      const finalPath = path.join(dir, finalName);
-      fs.copyFileSync(tmpPath, finalPath);
-
-      console.log(`[Admin] map-backup uploaded for ${sn}: ${finalName} (${file.size}B, ${workCount} work polygons)`);
-
-      res.json({
-        ok: true,
-        filename: finalName,
-        sizeBytes: file.size,
-        work: workCount,
-        obstacles: parsed.areas.filter(a => a.type === 'obstacle').length,
-        unicoms: parsed.areas.filter(a => a.type === 'unicom').length,
-        chargingPose: cp,
-      });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'unknown error' });
-    } finally {
-      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-    }
-  },
-);
 
 // POST /api/admin-status/map-backups/:sn/:filename/restore — selective DB restore
 //

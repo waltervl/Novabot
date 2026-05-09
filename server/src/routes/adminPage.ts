@@ -14,8 +14,20 @@ export function adminPageHtml(): string {
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
+  @font-face {
+    font-family:'Posterama 1919';
+    src:url('/fonts/Posterama1919.woff2') format('woff2'),
+        url('/fonts/Posterama1919.ttf') format('truetype');
+    font-weight:normal;font-style:normal;font-display:swap;
+  }
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:system-ui,-apple-system,sans-serif;background:#030712;color:#e0e0e0;min-height:100vh}
+  /* Display font for headers, tabs, chips, badges, buttons — body stays system-ui */
+  h1,h2,h3,.tab,.chip,.badge,.btn,button{font-family:'Posterama 1919',system-ui,sans-serif;letter-spacing:0.08em}
+  h1{letter-spacing:0.18em;text-transform:uppercase}
+  h2{letter-spacing:0.16em}
+  .tab{letter-spacing:0.12em;text-transform:uppercase}
+  .badge{letter-spacing:0.08em;text-transform:uppercase}
   .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:1000;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s}
   .modal-overlay.show{opacity:1}
   .modal-box{background:#1a1a2e;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:24px;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
@@ -65,9 +77,18 @@ export function adminPageHtml(): string {
   input{padding:10px 14px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:14px;width:100%}
   input:focus{border-color:#7c3aed;outline:none}
   .login-box{max-width:360px;margin:80px auto;padding:0 16px}
-  .tabs{display:flex;gap:4px;margin-bottom:16px}
-  .tab{padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;background:rgba(255,255,255,.05);color:#aaa;border:none}
-  .tab.active{background:#7c3aed;color:#fff}
+  /* Tabs — bottom-border style, active gets accent underline */
+  .tabs{display:flex;gap:0;margin-bottom:18px;border-bottom:1px solid rgba(255,255,255,.08);padding:0 4px;align-items:flex-end}
+  .tab{padding:10px 18px;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px;font-weight:600;background:transparent;color:#777;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s,background .15s;position:relative}
+  .tab:hover{color:#cbd5e1;background:rgba(255,255,255,.02)}
+  .tab.active{background:transparent;color:#a78bfa;border-bottom:2px solid #a78bfa}
+  /* Version / system info chips */
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:500;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.4;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);color:#aaa;white-space:nowrap}
+  .chip-version{background:rgba(0,212,170,.1);border-color:rgba(0,212,170,.3);color:#00d4aa}
+  .chip-uptime{background:rgba(124,58,237,.08);border-color:rgba(124,58,237,.25);color:#a78bfa}
+  .chip-ram{background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.25);color:#fbbf24}
+  .chip-dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7}
   .hide-mobile{}
   /* Responsive */
   @media(max-width:600px){
@@ -84,8 +105,39 @@ export function adminPageHtml(): string {
     .btn{font-size:11px;padding:6px 10px}
     .login-box{margin:40px auto}
     .hide-mobile{display:none!important}
-    .tabs{flex-wrap:wrap}
-    .tab{padding:6px 12px;font-size:12px}
+    .tab{padding:8px 12px;font-size:12px}
+    /* Inline form elements: drop hard min-widths so they collapse cleanly */
+    select,input[type="text"],input[type="email"],input[type="password"],input[type="search"],input[type="number"]{min-width:0!important;width:100%}
+    /* Cards often use inline display:flex with min-width:200/250 children — let them stack */
+    .card > div[style*="display:flex"]{flex-wrap:wrap!important}
+    .card > div[style*="display:flex"] > select,
+    .card > div[style*="display:flex"] > input{flex:1 1 100%!important;min-width:0!important}
+    /* Buttons in toolbars */
+    button{font-size:12px}
+    /* Avoid filenames blowing out width */
+    code,pre{word-break:break-all;white-space:pre-wrap}
+    /* Backup list rows: stack timestamp + actions */
+    #portableBackupListContent > div > div{flex-direction:column;align-items:stretch!important;gap:6px}
+    /* Modal full-width on small screens */
+    .modal-box{max-width:100%;padding:18px;border-radius:12px}
+    /* Tabs: horizontal scroll instead of cramped wrap */
+    .tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+    .tab{flex:0 0 auto;white-space:nowrap}
+    /* Map canvas: avoid forcing 800px min */
+    #mapCanvas{height:auto!important}
+    /* Polygon offset overlay: don't pin to fixed 240px on phone */
+    #polygonCalPanel{width:calc(100% - 24px)!important;left:12px!important;right:12px!important;max-width:280px}
+    /* Generic toolbar with labels + button: reduce gap */
+    details > div[style*="display:flex"]{gap:6px!important}
+    /* Long sync_map / dashboard URLs */
+    .value,.sn{word-break:break-all}
+  }
+  @media(max-width:380px){
+    h1{font-size:18px}
+    .container{padding:8px}
+    .card{padding:10px}
+    .tab{padding:5px 10px;font-size:11px}
+    button{font-size:11px;padding:5px 10px}
   }
   #app{display:none}
   .dev-row{display:grid;grid-template-columns:90px 180px 150px 90px 140px 80px minmax(180px,1fr);align-items:center;gap:8px;padding:10px 6px;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px}
@@ -157,8 +209,11 @@ export function adminPageHtml(): string {
 <div id="app" class="container" style="display:none">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;flex-wrap:wrap;gap:8px">
     <div style="min-width:0">
-      <h1>OpenNova Admin</h1>
-      <div class="version" id="serverInfo">Loading...</div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <img src="/assets/OpenNova.png" alt="OpenNova" style="height:40px;width:auto;flex-shrink:0">
+        <h1 style="font-family:'Posterama 1919',sans-serif;letter-spacing:0.18em;text-transform:uppercase;font-weight:normal;color:#cbd5e1;font-size:22px;margin:0;white-space:nowrap">Admin</h1>
+      </div>
+      <div class="chips" id="serverInfo"><span class="chip">Loading...</span></div>
     </div>
     <div style="display:flex;gap:6px">
       <button class="btn" style="background:#333" onclick="logout()">Logout</button>
@@ -400,8 +455,6 @@ export function adminPageHtml(): string {
             <option value="">Select a backup snapshot...</option>
           </select>
           <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
-          <input id="mapBackupUploadFile" type="file" accept=".zip" style="display:none" onchange="uploadExternalBackup()">
-          <button onclick="document.getElementById('mapBackupUploadFile').click()" title="Upload an external Novabot map ZIP — server validates structure before accepting" style="padding:6px 12px;background:rgba(59,130,246,.15);color:#93c5fd;border:1px solid rgba(59,130,246,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">+ Import ZIP</button>
         </div>
         <div id="mapBackupTree" style="margin-bottom:8px"></div>
         <div id="conflictHelpers" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px">
@@ -1421,7 +1474,7 @@ function appModal(opts) {
     card.appendChild(title);
 
     var body = document.createElement('div');
-    body.style.cssText = 'font-size:13px;color:#e5e7eb;line-height:1.5;margin-bottom:16px';
+    body.style.cssText = 'font-size:13px;color:#e5e7eb;line-height:1.5;margin-bottom:16px;white-space:pre-line';
     if (opts.bodyHtml) body.innerHTML = opts.bodyHtml;
     else if (opts.body) body.textContent = opts.body;
     card.appendChild(body);
@@ -1458,11 +1511,54 @@ function appModal(opts) {
   });
 }
 
+// Drop-in replacements for native alert() / confirm() — themed, async.
+function appAlert(message, opts) {
+  opts = opts || {};
+  var accent = opts.accent || 'info';
+  var defaultTitle = accent === 'danger' ? 'Error'
+    : accent === 'warning' ? 'Heads up'
+    : accent === 'success' ? 'Done'
+    : 'Notice';
+  return appModal({
+    title: opts.title || defaultTitle,
+    body: message,
+    accent: accent,
+    buttons: [{ text: 'OK', primary: true }],
+  });
+}
+
+function appConfirm(message, opts) {
+  opts = opts || {};
+  var destructive = !!opts.destructive;
+  var accent = opts.accent || (destructive ? 'danger' : 'warning');
+  return appModal({
+    title: opts.title || 'Confirm',
+    body: message,
+    accent: accent,
+    dismissOnBackdrop: false,
+    buttons: [
+      { text: opts.cancelText || 'Cancel', value: false },
+      {
+        text: opts.okText || 'Continue',
+        primary: !destructive,
+        style: destructive ? 'destructive' : undefined,
+        value: true,
+      },
+    ],
+  }).then(function(v) { return v === true; });
+}
+
+function renderServerChips(s) {
+  return '<span class="chip chip-version" title="Server version"><span class="chip-dot"></span>v' + (s.version || '?') + '</span>'
+    + '<span class="chip chip-uptime" title="Uptime">⏱ ' + s.uptimeFormatted + '</span>'
+    + '<span class="chip chip-ram" title="Memory">⚡ ' + s.memoryMB + ' MB</span>';
+}
+
 async function loadAccount() {
   try {
     const d = await api('/overview');
     const s = d.server;
-    document.getElementById('serverInfo').textContent = 'v' + (s.version || '?') + ' · uptime ' + s.uptimeFormatted + ' · ' + s.memoryMB + ' MB RAM';
+    document.getElementById('serverInfo').innerHTML = renderServerChips(s);
     const u = d.currentUser || {};
     document.getElementById('account').innerHTML =
       '<div class="row"><span class="label">Email</span><span class="value">' + (u.email || '-') + '</span></div>' +
@@ -1475,8 +1571,7 @@ async function loadAccount() {
 setInterval(async function() {
   try {
     var d = await api('/overview');
-    var s = d.server;
-    document.getElementById('serverInfo').textContent = 'v' + (s.version || '?') + ' · uptime ' + s.uptimeFormatted + ' · ' + s.memoryMB + ' MB RAM';
+    document.getElementById('serverInfo').innerHTML = renderServerChips(d.server);
   } catch {}
 }, 30000);
 
@@ -2169,65 +2264,10 @@ async function populateMowerDropdown() {
       loadMapBackups(sel.value);
       startLocalizationPoll(sel.value);
       portableCheckActive(sel.value);
+      loadPortableBackups();
     }
   } catch(e) {
     document.getElementById('mapInfo').textContent = 'Failed to load devices: ' + e.message;
-  }
-}
-
-async function uploadMapZip() {
-  var sn = document.getElementById('mapMowerSelect').value;
-  var fileInput = document.getElementById('mapZipFile');
-  var status = document.getElementById('mapUploadStatus');
-
-  status.style.display = 'block';
-
-  if (!sn) {
-    status.style.color = '#f87171';
-    status.textContent = 'Please select a mower first.';
-    return;
-  }
-
-  if (!fileInput.files || fileInput.files.length === 0) {
-    status.style.color = '#f87171';
-    status.textContent = 'Please select a ZIP file.';
-    return;
-  }
-
-  var file = fileInput.files[0];
-  if (!file.name.toLowerCase().endsWith('.zip')) {
-    status.style.color = '#f87171';
-    status.textContent = 'Only .zip files are accepted.';
-    return;
-  }
-
-  status.style.color = '#60a5fa';
-  status.textContent = 'Importing ' + file.name + ' (creates new maps)...';
-
-  try {
-    var fd = new FormData();
-    fd.append('file', file, file.name);
-    fd.append('sn', sn);
-
-    var r = await fetch('/api/admin-status/import-map-zip', {
-      method: 'POST',
-      headers: { 'Authorization': token },
-      body: fd
-    });
-
-    if (!r.ok) {
-      var errData = await r.json().catch(function() { return {}; });
-      throw new Error(errData.error || 'HTTP ' + r.status);
-    }
-    var result = await r.json();
-
-    status.style.color = '#00d4aa';
-    status.textContent = 'Imported ' + (result.mapsImported || 0) + ' map(s) from ' + file.name;
-    fileInput.value = '';
-    loadMaps();
-  } catch(e) {
-    status.style.color = '#f87171';
-    status.textContent = 'Import failed: ' + e.message;
   }
 }
 
@@ -2450,7 +2490,7 @@ function renderValidationPanel(data) {
 async function applySuggestedOffset(dx, dy) {
   var sn = document.getElementById('mapMowerSelect').value;
   if (!sn) return;
-  if (!confirm('Apply suggested offset dx=' + (dx * 100).toFixed(1) + ' cm, dy=' + (dy * 100).toFixed(1) + ' cm to ' + sn + '?\\n\\nThis runs a full sync_map (same as the manual nudge panel).')) return;
+  if (!(await appConfirm('Apply suggested offset dx=' + (dx * 100).toFixed(1) + ' cm, dy=' + (dy * 100).toFixed(1) + ' cm to ' + sn + '?\\n\\nThis runs a full sync_map (same as the manual nudge panel).', { okText: 'Apply' }))) return;
   try {
     var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/apply-polygon-offset', {
       method: 'POST',
@@ -2458,9 +2498,9 @@ async function applySuggestedOffset(dx, dy) {
       body: JSON.stringify({ dx_m: dx, dy_m: dy })
     });
     var json = await r.json();
-    alert(r.ok ? 'Offset applied. Mower will resync.' : ('Failed: ' + (json.error || r.status)));
+    await appAlert(r.ok ? 'Offset applied. Mower will resync.' : ('Failed: ' + (json.error || r.status)), { accent: r.ok ? 'success' : 'danger' });
   } catch (e) {
-    alert('Apply failed: ' + e.message);
+    await appAlert('Apply failed: ' + e.message, { accent: 'danger' });
   }
 }
 
@@ -2497,7 +2537,7 @@ async function recalibrateChargingPose() {
     'Physical mower MUST be on its dock with battery_state=CHARGING\\n' +
     'AND localization_state must be Localized (drive-back done).\\n\\n' +
     'This writes map_info.json in both csv_file/ and x3_csv_file/ and charging_station.yaml.';
-  if (!confirm(confirmMsg)) return;
+  if (!(await appConfirm(confirmMsg, { okText: 'Recalibrate' }))) return;
 
   status.style.color = '#60a5fa';
   status.textContent = 'Sending recalibrate command to ' + sn + '...';
@@ -2514,7 +2554,7 @@ async function recalibrateChargingPose() {
       // Safety gate fired — ask once more with force
       var forceConfirm = 'Mower battery_state is "' + (result.batteryState || 'unknown') + '" (expected CHARGING).\\n\\n' +
         'Override the safety check and recalibrate anyway?';
-      if (!confirm(forceConfirm)) {
+      if (!(await appConfirm(forceConfirm, { destructive: true, okText: 'Override' }))) {
         status.style.color = '#f87171';
         status.textContent = 'Cancelled. Place mower on dock first.';
         return;
@@ -2543,10 +2583,10 @@ async function recalibrateChargingPose() {
 
 async function exportPortableBundle() {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!sn) { alert('Select a mower first'); return; }
+  if (!sn) { await appAlert('Select a mower first', { accent: 'warning' }); return; }
   var url = '/api/admin-status/maps/' + encodeURIComponent(sn) + '/export-portable';
   var r = await fetch(url, { headers: { 'Authorization': token } });
-  if (!r.ok) { alert('Export failed: HTTP ' + r.status); return; }
+  if (!r.ok) { await appAlert('Export failed: HTTP ' + r.status, { accent: 'danger' }); return; }
   var blob = await r.blob();
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2621,13 +2661,13 @@ var portableExactRestore = false;
 
 async function manualPortableBackup() {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!sn) { alert('Select a mower first'); return; }
+  if (!sn) { await appAlert('Select a mower first', { accent: 'warning' }); return; }
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups', {
     method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
   });
   var j = await r.json();
-  if (!j.ok) { alert('Snapshot failed: ' + j.error); return; }
-  alert('Snapshot saved: ' + j.backup.filename + ' (' + (j.backup.bytes / 1024).toFixed(1) + ' KB)');
+  if (!j.ok) { await appAlert('Snapshot failed: ' + j.error, { accent: 'danger' }); return; }
+  await appAlert('Snapshot saved: ' + j.backup.filename + ' (' + (j.backup.bytes / 1024).toFixed(1) + ' KB)', { accent: 'success' });
   loadPortableBackups();
 }
 
@@ -2671,25 +2711,25 @@ async function loadPortableBackups() {
 
 async function restorePortableBackup(filename) {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!confirm('Restore this snapshot? Current map state on mower will be replaced.')) return;
+  if (!(await appConfirm('Restore this snapshot? Current map state on mower will be replaced.', { okText: 'Restore' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(filename) + '/restore', {
     method: 'POST', headers: { 'Authorization': token },
   });
   var j = await r.json();
-  if (!j.ok) { alert('Restore failed: ' + j.error); return; }
+  if (!j.ok) { await appAlert('Restore failed: ' + j.error, { accent: 'danger' }); return; }
   // Now apply via apply-exact (auto-step since exactRestore=true expected)
   if (j.exactRestore) {
     portableStagingId = j.stagingId;
     portableExactRestore = true;
     await portableApplyExact();
   } else {
-    alert('Restore staged but not exact-restore — bundle missing mowerFiles. Use Import bundle wizard.');
+    await appAlert('Restore staged but not exact-restore — bundle missing mowerFiles. Use Import bundle wizard.', { accent: 'warning' });
   }
 }
 
 async function deletePortableBackup(filename) {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!confirm('Delete snapshot ' + filename + '?')) return;
+  if (!(await appConfirm('Delete snapshot ' + filename + '?', { destructive: true, okText: 'Delete' }))) return;
   await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(filename), {
     method: 'DELETE', headers: { 'Authorization': token },
   });
@@ -2728,7 +2768,7 @@ async function startPortableImport() {
     method: 'POST', headers: { 'Authorization': token }, body: fd,
   });
   var j = await r.json();
-  if (!j.ok) { alert('Import failed: ' + j.error); return; }
+  if (!j.ok) { await appAlert('Import failed: ' + j.error, { accent: 'danger' }); return; }
   portableStagingId = j.stagingId;
   portableExactRestore = !!j.exactRestore;
   renderPortableImportWizard(sn, 'UPLOADED');
@@ -2787,13 +2827,13 @@ function renderPortableImportWizard(sn, state) {
 
 async function portableApplyExact() {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!confirm('Apply exact-restore bundle? Reads mower live charging_pose, transforms polygon, pushes CSVs to mower. No drive needed.')) return;
+  if (!(await appConfirm('Apply exact-restore bundle? Reads mower live charging_pose, transforms polygon, pushes CSVs to mower. No drive needed.', { okText: 'Apply' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-exact', {
     method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
   });
   var j = await r.json();
-  if (!j.ok) { alert('Apply failed: ' + j.error); portableCheckActive(sn); return; }
-  alert('Applied. Δ dx=' + j.delta.dx.toFixed(3) + ' dy=' + j.delta.dy.toFixed(3) + ' dθ=' + (j.delta.dtheta * 180 / Math.PI).toFixed(2) + '°\\n\\nFiles pushed: ' + j.transformedFiles.length);
+  if (!j.ok) { await appAlert('Apply failed: ' + j.error, { accent: 'danger' }); portableCheckActive(sn); return; }
+  await appAlert('Applied. Δ dx=' + j.delta.dx.toFixed(3) + ' dy=' + j.delta.dy.toFixed(3) + ' dθ=' + (j.delta.dtheta * 180 / Math.PI).toFixed(2) + '°\\n\\nFiles pushed: ' + j.transformedFiles.length, { accent: 'success' });
   document.getElementById('portableImportPanel').style.display = 'none';
   portableStagingId = null;
   portableExactRestore = false;
@@ -2802,18 +2842,18 @@ async function portableApplyExact() {
 
 async function portableStartDrive() {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!confirm('Mower will drive 1m BACKWARD off the dock then wait for RTK FIX. Ensure clear path behind the mower. Continue?')) return;
+  if (!(await appConfirm('Mower will drive 1m BACKWARD off the dock then wait for RTK FIX. Ensure clear path behind the mower. Continue?', { destructive: true, okText: 'Drive' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/start-drive', {
     method: 'POST', headers: { 'Authorization': token },
   });
   var j = await r.json();
   if (!j.ok) {
-    alert('Drive failed: ' + j.error + (j.recoverable ? '\\n\\nClick "Start drive" again to retry - bundle is preserved.' : ''));
+    await appAlert('Drive failed: ' + j.error + (j.recoverable ? '\\n\\nClick "Start drive" again to retry - bundle is preserved.' : ''), { accent: 'danger' });
     // Re-fetch active state so the UI reflects whether we can retry.
     portableCheckActive(sn);
     return;
   }
-  alert('Drive complete. Heading derived: ' + (j.derivedHeadingRad * 180 / Math.PI).toFixed(2) + ' deg, distance ' + j.distanceM.toFixed(2) + ' m');
+  await appAlert('Drive complete. Heading derived: ' + (j.derivedHeadingRad * 180 / Math.PI).toFixed(2) + ' deg, distance ' + j.distanceM.toFixed(2) + ' m', { accent: 'success' });
   renderPortableImportWizard(sn, j.state);
 }
 
@@ -2824,11 +2864,11 @@ async function portableAutoDock() {
   });
   var j = await r.json();
   if (!j.ok) {
-    alert('Snapshot failed: ' + j.error + (j.recoverable ? '\\n\\nFix the condition then click again.' : ''));
+    await appAlert('Snapshot failed: ' + j.error + (j.recoverable ? '\\n\\nFix the condition then click again.' : ''), { accent: 'danger' });
     portableCheckActive(sn);
     return;
   }
-  alert('Anchor saved. lat=' + j.newCharger.lat.toFixed(7) + ', lng=' + j.newCharger.lng.toFixed(7));
+  await appAlert('Anchor saved. lat=' + j.newCharger.lat.toFixed(7) + ', lng=' + j.newCharger.lng.toFixed(7), { accent: 'success' });
   renderPortableImportWizard(sn, j.state);
 }
 
@@ -2893,7 +2933,7 @@ function portableNudgeRotation(delta) {
 
 async function portableConfirm() {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!confirm('Apply imported polygon? This wipes existing maps for this SN and triggers sync_map.')) return;
+  if (!(await appConfirm('Apply imported polygon? This wipes existing maps for this SN and triggers sync_map.', { destructive: true, okText: 'Apply' }))) return;
   var body = {};
   if (portableRotateDeg !== null) body.rotateDeg = portableRotateDeg;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/confirm', {
@@ -2902,8 +2942,8 @@ async function portableConfirm() {
     body: JSON.stringify(body),
   });
   var j = await r.json();
-  if (!j.ok) { alert('Confirm failed: ' + j.error); return; }
-  alert('Applied. Sync_map triggered.');
+  if (!j.ok) { await appAlert('Confirm failed: ' + j.error, { accent: 'danger' }); return; }
+  await appAlert('Applied. Sync_map triggered.', { accent: 'success' });
   document.getElementById('portableImportPanel').style.display = 'none';
   portableStagingId = null;
   portableRotateDeg = null;
@@ -2997,71 +3037,6 @@ async function previewBackupGhost() {
   }
 }
 
-/** External ZIP upload — POSTs a user-picked file to the server's import
- *  endpoint, which validates structure (parseMapZip + non-zero charging
- *  pose + at least one work polygon) before placing the ZIP into the
- *  backup directory. On success the dropdown is reloaded and the new
- *  filename is auto-selected so the ghost preview shows it immediately. */
-async function uploadExternalBackup() {
-  var sn = document.getElementById('mapMowerSelect').value;
-  var input = document.getElementById('mapBackupUploadFile');
-  var file = input.files && input.files[0];
-  var status = document.getElementById('mapRecoveryStatus');
-  status.style.display = 'block';
-
-  if (!sn) {
-    status.style.color = '#f87171';
-    status.textContent = 'Pick a mower first.';
-    input.value = '';
-    return;
-  }
-  if (!file) {
-    status.style.display = 'none';
-    return;
-  }
-  if (!file.name.toLowerCase().endsWith('.zip')) {
-    status.style.color = '#f87171';
-    status.textContent = 'Only .zip files are accepted.';
-    input.value = '';
-    return;
-  }
-
-  status.style.color = '#a78bfa';
-  status.textContent = 'Uploading and validating ' + file.name + '...';
-
-  var fd = new FormData();
-  fd.append('zip', file);
-
-  try {
-    var r = await fetch('/api/admin-status/map-backups/' + encodeURIComponent(sn) + '/upload', {
-      method: 'POST',
-      headers: { 'Authorization': token },
-      body: fd,
-    });
-    var data = await r.json().catch(function(){return{};});
-    if (!r.ok || !data.ok) {
-      status.style.color = '#f87171';
-      status.textContent = 'Import rejected: ' + (data.error || 'HTTP ' + r.status);
-      input.value = '';
-      return;
-    }
-    status.style.color = '#86efac';
-    status.textContent = 'Imported as ' + data.filename + ' — '
-      + data.work + ' work / ' + data.obstacles + ' obstacle / ' + data.unicoms + ' unicom polygons.';
-
-    // Reload dropdown so the new entry shows up + auto-select it.
-    await loadMapBackups(sn);
-    var sel = document.getElementById('mapBackupSelect');
-    sel.value = data.filename;
-    loadBackupContents();
-    previewBackupGhost();
-  } catch(e) {
-    status.style.color = '#f87171';
-    status.textContent = 'Upload failed: ' + e.message;
-  } finally {
-    input.value = ''; // allow re-select of the same file later
-  }
-}
 
 async function loadBackupContents() {
   var sn = document.getElementById('mapMowerSelect').value;
@@ -3245,7 +3220,7 @@ async function restoreAndRealign() {
   if (!sn) { status.style.color='#f87171'; status.textContent='Please select a mower first.'; return; }
   if (!filename) { status.style.color='#f87171'; status.textContent='Please select a backup snapshot first.'; return; }
 
-  var ok = confirm(
+  var ok = await appConfirm(
     'Restore + Realign Mower will:\\n\\n' +
     '  1. Restore ALL polygons + obstacles + unicom from the selected backup ZIP (overwrites existing rows)\\n' +
     '  2. Re-anchor charger pose from the polygon mapNtocharge_unicom first point\\n' +
@@ -3253,8 +3228,8 @@ async function restoreAndRealign() {
     '  4. Regenerate <SN>_latest.zip with embedded charger pose\\n' +
     '  5. Push everything to mower via sync_map MQTT\\n' +
     '  6. Mower restarts novabot_mapping + auto_recharge_server\\n\\n' +
-    'Preconditions: mower must be online + on dock + RTK FIX.\\n' +
-    '\\nContinue?'
+    'Preconditions: mower must be online + on dock + RTK FIX.',
+    { destructive: true, okText: 'Restore + Realign' }
   );
   if (!ok) return;
 
@@ -3295,7 +3270,7 @@ var polygonCal = null;  // { dx, dy, ghostMaps } | null
 async function enterPolygonCalibration() {
   if (polygonCal) return;  // already in calibration mode
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!sn) { alert('Select a mower first.'); return; }
+  if (!sn) { await appAlert('Select a mower first.', { accent: 'warning' }); return; }
 
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/polygon-offset', {
     headers: { 'Authorization': token },
@@ -3840,7 +3815,7 @@ function renderMapList(container, maps, sn) {
 }
 
 async function deleteMap(sn, mapId, mapName) {
-  if (!confirm('Delete map "' + mapName + '"? This cannot be undone.')) return;
+  if (!(await appConfirm('Delete map "' + mapName + '"? This cannot be undone.', { destructive: true, okText: 'Delete' }))) return;
   try {
     var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(sn) + '/' + encodeURIComponent(mapId), {
       method: 'DELETE',
@@ -3849,7 +3824,7 @@ async function deleteMap(sn, mapId, mapName) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     loadMaps();
   } catch(e) {
-    alert('Delete failed: ' + e.message);
+    await appAlert('Delete failed: ' + e.message, { accent: 'danger' });
   }
 }
 
