@@ -67,7 +67,6 @@ const importStaging = new ImportStagingStore(
 const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const MAPS_STORAGE = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
-const upload = multer({ dest: os.tmpdir() });
 
 // Read version once at startup
 import fs from 'fs';
