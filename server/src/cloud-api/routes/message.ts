@@ -22,17 +22,50 @@ function formatWorkArea(m2: number | null | undefined): string {
  * to "All maps" when the selection covers every work-map for this mower
  * (the same label the stock cloud uses).
  */
+/**
+ * Stock firmware sometimes posts `mapNames` as a decimal-position bitfield
+ * — `1` means "map0 selected", `10` = map1, `100` = map2, `11` = map0+map1,
+ * `111` = all three. Decode every token in the input that looks like one
+ * of those into `mapN` canonical names. Returns null when the input isn't
+ * numeric so the caller can fall back to its normal JSON / CSV parsing.
+ */
+function decodeNumericMapNames(input: string): string[] | null {
+  const cleaned = input.replace(/[[\]\s"]/g, '');
+  if (!cleaned) return null;
+  const tokens = cleaned.split(',').filter(t => t !== '');
+  if (tokens.length === 0) return null;
+  if (!tokens.every(t => /^\d+$/.test(t))) return null;
+  const slots = new Set<string>();
+  for (const tok of tokens) {
+    let n = parseInt(tok, 10);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    let slot = 0;
+    while (n > 0) {
+      if (n % 10 === 1) slots.add(`map${slot}`);
+      n = Math.floor(n / 10);
+      slot++;
+    }
+  }
+  return slots.size > 0 ? [...slots].sort() : null;
+}
+
 function formatSelectMap(rawMapNames: string | null | undefined, sn: string | null): string {
   if (!rawMapNames) return '';
   let canonicals: string[];
   try {
     const parsed = JSON.parse(rawMapNames);
-    canonicals = Array.isArray(parsed)
-      ? parsed.map(String).filter(s => s.trim() !== '')
-      : [String(parsed)];
+    if (typeof parsed === 'number') {
+      canonicals = decodeNumericMapNames(String(parsed)) ?? [String(parsed)];
+    } else if (Array.isArray(parsed)) {
+      canonicals = parsed.map(String).filter(s => s.trim() !== '');
+    } else {
+      canonicals = [String(parsed)];
+    }
   } catch {
-    // Not JSON — old rows may have stored a plain comma-separated string.
-    canonicals = rawMapNames.split(',').map(s => s.trim()).filter(s => s !== '');
+    // Not JSON — try the decimal-bitfield decoder first, then fall back
+    // to a plain comma-separated split for legacy CSV rows.
+    const decoded = decodeNumericMapNames(rawMapNames);
+    canonicals = decoded ?? rawMapNames.split(',').map(s => s.trim()).filter(s => s !== '');
   }
   if (canonicals.length === 0) return '';
 

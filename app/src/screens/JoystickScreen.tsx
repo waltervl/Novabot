@@ -308,6 +308,10 @@ export default function JoystickScreen() {
   // ── Camera stream ──
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [cameraVisible, setCameraVisible] = useState(true);
+  // Bump this counter to force the WebView to remount + re-pull the stream.
+  // Used by the refresh button when the MJPEG feed silently stalls (server
+  // socket dropped, mower camera_node restarted, etc.).
+  const [cameraReloadKey, setCameraReloadKey] = useState(0);
 
   useEffect(() => {
     if (!mower?.online || !sn) { setStreamUrl(null); return; }
@@ -377,6 +381,11 @@ export default function JoystickScreen() {
                   <Ionicons name={cameraVisible ? 'videocam' : 'videocam-off'} size={22} color={cameraVisible ? colors.emerald : colors.textMuted} />
                 </TouchableOpacity>
               )}
+              {streamUrl && cameraVisible && (
+                <TouchableOpacity onPress={() => setCameraReloadKey(k => k + 1)} activeOpacity={0.7}>
+                  <Ionicons name="refresh" size={22} color={colors.textMuted} />
+                </TouchableOpacity>
+              )}
             </View>
           </View>
           {mower && (
@@ -425,8 +434,9 @@ export default function JoystickScreen() {
             {cameraVisible && streamUrl && (
               <View style={styles.cameraContainer}>
                 <WebView
+                key={cameraReloadKey}
                 source={{
-                  html: `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><style>*{margin:0;padding:0;touch-action:none;pointer-events:none}body{background:#000;width:100vw;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden}img{max-width:100%;max-height:100%;object-fit:contain;pointer-events:none}</style></head><body><img src="${streamUrl}" /></body></html>`,
+                  html: `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><style>*{margin:0;padding:0;touch-action:none;pointer-events:none}body{background:#000;width:100vw;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden}img{max-width:100%;max-height:100%;object-fit:contain;pointer-events:none}</style></head><body><img src="${streamUrl}&_=${cameraReloadKey}" /></body></html>`,
                 }}
                 style={styles.cameraStream}
                 scrollEnabled={false}

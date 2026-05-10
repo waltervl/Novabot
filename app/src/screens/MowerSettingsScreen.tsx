@@ -67,6 +67,21 @@ export default function MowerSettingsScreen() {
   const { brightness: headlightBrightness, setBrightness: setHeadlightBrightness } = useHeadlightBrightness();
   const [sending, setSending] = useState('');
 
+  // Last-known mower-applied snapshot — used to drive the Save button's
+  // "dirty" indicator. Updated whenever sensor data syncs back in or a
+  // Save call completes. Compared against current slider state to know
+  // if there are unsent changes.
+  const [savedSnapshot, setSavedSnapshot] = useState({
+    sensitivity: 2,
+    pathDirection: 0,
+    joystickSpeed: 300,
+    joystickHandling: 300,
+    headlight: false,
+    headlightBrightness: 255,
+    sound: false,
+    cuttingHeight: 50,
+  });
+
   // Rain auto-pause — loaded from /api/dashboard/rain-settings/:sn, per-mower.
   const [rainEnabled, setRainEnabled] = useState(true);
   const [rainMm, setRainMm] = useState(0.1);
@@ -144,7 +159,135 @@ export default function MowerSettingsScreen() {
     }
     if (s.headlight) setHeadlight(s.headlight === '2');
     if (s.sound) setSound(s.sound === '2');
+
+    // Sync the saved-snapshot to whatever the mower currently reports, so
+    // the Save button's dirty state resets to clean once the round-trip
+    // completes. State setters above use functional updates next render —
+    // we read the freshly-derived values here via the same parsing logic
+    // so the snapshot mirrors whatever each setter wrote.
+    setSavedSnapshot(prev => ({
+      ...prev,
+      sensitivity: (() => {
+        const v = parseInt(s.obstacle_avoidance_sensitivity ?? '', 10);
+        return v >= 1 && v <= 3 ? v : prev.sensitivity;
+      })(),
+      pathDirection: (() => {
+        const a = parseInt(s.path_direction ?? '', 10);
+        return a >= 0 && a <= 180 ? a : prev.pathDirection;
+      })(),
+      joystickSpeed: (() => {
+        const v = parseInt(s.manual_controller_v ?? '', 10);
+        return v >= 100 && v <= 300 ? v : prev.joystickSpeed;
+      })(),
+      joystickHandling: (() => {
+        const v = parseInt(s.manual_controller_w ?? '', 10);
+        return v >= 100 && v <= 300 ? v : prev.joystickHandling;
+      })(),
+      headlight: s.headlight ? s.headlight === '2' : prev.headlight,
+      sound: s.sound ? s.sound === '2' : prev.sound,
+      cuttingHeight: (() => {
+        const h = parseInt(s.defaultCuttingHeight ?? '', 10);
+        if (h >= 20 && h <= 90) return h;
+        if (h >= 0 && h <= 7) return (h + 2) * 10;
+        if (h >= 2 && h <= 9) return h * 10;
+        return prev.cuttingHeight;
+      })(),
+    }));
   }, [mower?.sn, sensorJson]);
+
+  const isDirty = sensitivity !== savedSnapshot.sensitivity
+    || pathDirection !== savedSnapshot.pathDirection
+    || joystickSpeed !== savedSnapshot.joystickSpeed
+    || joystickHandling !== savedSnapshot.joystickHandling
+    || headlight !== savedSnapshot.headlight
+    || headlightBrightness !== savedSnapshot.headlightBrightness
+    || sound !== savedSnapshot.sound
+    || cuttingHeight !== savedSnapshot.cuttingHeight;
+
+  const handleSaveAll = useCallback(async () => {
+    if (!mowerSn || !mowerOnline) return;
+    setSending('save');
+    try {
+      const url = await getServerUrl();
+      if (!url) return;
+      const api = new ApiClient(url);
+      const params = {
+        sound: sound ? 2 : 0,
+        headlight: headlight ? headlightBrightness : 0,
+        path_direction: pathDirection,
+        obstacle_avoidance_sensitivity: sensitivity,
+        manual_controller_v: joystickSpeed,
+        manual_controller_w: joystickHandling,
+      };
+      // Single MQTT command carrying every para field — mqtt_node overwrites
+      // para.value as one block so omitting a field resets it to 0; sending
+      // them together preserves every slider in one shot.
+      await api.sendCommand(mowerSn, { set_para_info: params });
+      // Mirror to server sensor cache so values survive a re-open of the
+      // screen without waiting for a fresh sensor frame.
+      await fetch(`${url}/api/dashboard/sensor-override/${encodeURIComponent(mowerSn)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
+        ),
+      });
+      // Cutting height takes its own path (not in set_para_info).
+      await fetch(`${url}/api/dashboard/sensor-override/${encodeURIComponent(mowerSn)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaultCuttingHeight: String(cuttingHeight) }),
+      });
+      setSavedSnapshot({
+        sensitivity, pathDirection, joystickSpeed, joystickHandling,
+        headlight, headlightBrightness, sound, cuttingHeight,
+      });
+      // Let the user briefly see "All settings saved" before popping back —
+      // mirrors stock Novabot's Confirm flow which also pops the page after
+      // a tiny acknowledgement delay.
+      setTimeout(() => { navigation.goBack(); }, 700);
+    } catch { /* swallow — UI keeps dirty state so user can retry */ }
+    finally { setSending(''); }
+  }, [mowerSn, mowerOnline, sound, headlight, headlightBrightness, pathDirection, sensitivity, joystickSpeed, joystickHandling, cuttingHeight, navigation]);
+
+  // Intercept hardware-back / swipe-back / nav.pop when the user has
+  // un-saved slider changes. Prompts Cancel / Discard / Save instead of
+  // silently dropping them.
+  const allowLeaveRef = useRef(false);
+  useEffect(() => {
+    const unsubscribe = (navigation as unknown as {
+      addListener: (event: string, cb: (e: { preventDefault: () => void; data: { action: unknown } }) => void) => () => void;
+    }).addListener('beforeRemove', (e) => {
+      if (!isDirty || allowLeaveRef.current) return;
+      e.preventDefault();
+      appAlertCompat.alert(
+        'Unsaved changes',
+        'Some settings have not been sent to the mower yet. Save them before leaving?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              allowLeaveRef.current = true;
+              (navigation as unknown as { dispatch: (a: unknown) => void }).dispatch(e.data.action);
+            },
+          },
+          {
+            text: 'Save',
+            onPress: async () => {
+              await handleSaveAll();
+              // handleSaveAll already pops via goBack after a brief delay,
+              // so no manual dispatch needed. Mark allow-leave so the
+              // resulting beforeRemove from goBack doesn't re-prompt.
+              allowLeaveRef.current = true;
+            },
+          },
+        ],
+      );
+    });
+    return unsubscribe;
+  }, [navigation, isDirty, handleSaveAll]);
 
   // Load rain auto-pause settings (server-side, not part of the mower's own sensor cache)
   useEffect(() => {
@@ -186,120 +329,43 @@ export default function MowerSettingsScreen() {
 
   const handleRainEnabled = (value: boolean) => saveRain({ enabled: value });
 
-  const sendSetting = useCallback(async (label: string, fn: (api: ApiClient) => Promise<unknown>) => {
-    setSending(label);
-    try {
-      const url = await getServerUrl();
-      if (!url) return;
-      const api = new ApiClient(url);
-      await fn(api);
-    } catch { /* ignore */ }
-    finally { setSending(''); }
-  }, []);
-
-  // Send full set_para_info with all current values (matches Flutter Advanced Settings Confirm)
-  // Also persists to server sensor cache so values survive app restart.
-  const sendAllSettings = (overrides: Record<string, unknown> = {}) => {
-    const params = {
-      sound: sound ? 2 : 0,
-      headlight: headlight ? 2 : 0,
-      path_direction: pathDirection,
-      obstacle_avoidance_sensitivity: sensitivity,
-      manual_controller_v: joystickSpeed,
-      manual_controller_w: joystickHandling,
-      ...overrides,
-    };
-    sendSetting('all', async (api) => {
-      // 1. Stuur naar maaier via MQTT
-      await api.sendCommand(mowerSn, { set_para_info: params });
-      // 2. Persist in server sensor cache zodat settings bewaard blijven
-      const url = await getServerUrl();
-      if (url) {
-        await fetch(`${url}/api/dashboard/sensor-override/${encodeURIComponent(mowerSn)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(
-            Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
-          ),
-        });
-      }
-    });
-  };
-
   const handleCuttingHeight = (height: number) => {
     setCuttingHeight(height);
-    // Cutting height is NOT in set_para_info — only in cutterhigh within start_navigation.
-    // We update the sensor cache on the server so StartMowSheet can read it.
-    sendSetting('height', async (api) => {
-      await fetch(`${(await getServerUrl())}/api/dashboard/sensor-override/${encodeURIComponent(mowerSn)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ defaultCuttingHeight: String(height) }),
-      });
-    });
   };
 
-  // Send ONLY the field the user changed. Sending the whole bundle every time
-  // (the previous behaviour) quietly overrode the other settings — e.g. every
-  // path_direction slider event carried `headlight: 0`, which resets the dock
-  // LED from 255 back to dim via the server's led_bridge translation
-  // (dashboard.ts:1508-1510). Novabot sends individual fields per change and
-  // only emits a full bundle on the Advanced Settings "Confirm" button.
-  const sendSingle = (params: Record<string, unknown>) => sendSetting('single', async (api) => {
-    await api.sendCommand(mowerSn, { set_para_info: params });
-    const url = await getServerUrl();
-    if (url) {
-      await fetch(`${url}/api/dashboard/sensor-override/${encodeURIComponent(mowerSn)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
-        ),
-      });
-    }
-  });
-
+  // Local-only handlers — slider drags update state, NOT the mower. mqtt_node
+  // treats each `set_para_info` as a full overwrite of `para.value`, so a
+  // single-field send (e.g. obstacle_avoidance_sensitivity) clobbers
+  // path_direction back to 0. To avoid that, we batch everything behind one
+  // explicit Save button at the bottom of the screen (mirrors stock app's
+  // "Confirm" workflow).
   const handleSensitivity = (level: number) => {
     setSensitivity(level);
-    sendSingle({ obstacle_avoidance_sensitivity: level });
   };
 
   const handlePathDirection = (angle: number) => {
     lastPathDirEditAtRef.current = Date.now();
     setPathDirection(angle);
-    sendSingle({ path_direction: angle });
   };
 
   const handleJoystickSpeed = (val: number) => {
     setJoystickSpeed(val);
-    sendSingle({ manual_controller_v: val });
   };
 
   const handleJoystickHandling = (val: number) => {
     setJoystickHandling(val);
-    sendSingle({ manual_controller_w: val });
   };
 
   const handleHeadlight = (on: boolean) => {
     setHeadlight(on);
-    // Stuurt de gekozen brightness waarde (0-255) wanneer aan, 0 wanneer uit.
-    // De firmware forward deze waarde 1:1 naar de charger LED (via led_set),
-    // en gebruikt hem ook voor de mower headlight. 255 = vol vermogen, zoals
-    // nodig voor ArUco bij night docking.
-    sendSingle({ headlight: on ? headlightBrightness : 0 });
   };
 
   const handleHeadlightBrightness = (val: number) => {
     setHeadlightBrightness(val);
-    // Als de lamp al aan staat, stuur de nieuwe brightness meteen live door
-    // zodat de gebruiker het effect direct ziet tijdens het slepen (en onCommit
-    // van de slider pas bij release vuurt → geen spam tijdens dragging).
-    if (headlight) sendSingle({ headlight: val });
   };
 
   const handleSound = (on: boolean) => {
     setSound(on);
-    sendSingle({ sound: on ? 2 : 0 });
   };
 
   const handleRecalibrateChargingPose = useCallback(async () => {
@@ -624,6 +690,30 @@ export default function MowerSettingsScreen() {
           </View>
         </View>
 
+        {/* Sticky Save button — collects EVERY slider value and sends one
+            `set_para_info` so mqtt_node never resets the rest of the para
+            block to 0. Disabled when offline or nothing changed. */}
+        <View style={styles.saveBarWrap} pointerEvents="box-none">
+          <TouchableOpacity
+            onPress={handleSaveAll}
+            disabled={!mowerOnline || !isDirty || sending === 'save'}
+            style={[
+              styles.saveButton,
+              (!mowerOnline || !isDirty || sending === 'save') && styles.saveButtonDisabled,
+            ]}
+            activeOpacity={0.85}
+          >
+            <Ionicons
+              name={sending === 'save' ? 'sync' : isDirty ? 'save' : 'checkmark'}
+              size={18}
+              color={colors.white}
+            />
+            <Text style={styles.saveButtonText}>
+              {sending === 'save' ? 'Saving…' : isDirty ? 'Save changes' : 'All settings saved'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Recovery — recalibrate charging pose when coverage drifts. */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>RECOVERY</Text>
@@ -766,5 +856,27 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   toggleThumbActive: {
     backgroundColor: c.white,
     alignSelf: 'flex-end',
+  },
+  saveBarWrap: {
+    marginHorizontal: 16,
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  saveButton: {
+    backgroundColor: c.emerald,
+    paddingVertical: 14,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  saveButtonDisabled: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  saveButtonText: {
+    color: c.white,
+    fontSize: 15,
+    fontWeight: '600',
   },
 });

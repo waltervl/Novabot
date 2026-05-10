@@ -77,24 +77,42 @@ export function AppAlertModal({ visible, options, onDismiss }: Props) {
           {options.message ? (
             <Text style={styles.body}>{options.message}</Text>
           ) : null}
-          <View style={[
-            styles.buttonRow,
-            buttons.length === 1 && { justifyContent: 'flex-end' },
-          ]}>
-            {buttons.map((btn, idx) => {
+          {(() => {
+            // When the dialog ships 3+ buttons (e.g. Cancel / Discard /
+            // Save), put cancel + destructive next to each other on one
+            // row and the primary action full-width below it. Standard
+            // mobile dialog convention: "exit options" cluster, primary
+            // action gets its own emphasis below.
+            const secondary: { btn: AppAlertButton; idx: number }[] = [];
+            const primary: { btn: AppAlertButton; idx: number }[] = [];
+            buttons.forEach((b, idx) => {
+              if (b.style === 'destructive' || b.style === 'cancel') secondary.push({ btn: b, idx });
+              else primary.push({ btn: b, idx });
+            });
+            const useGroupedLayout = buttons.length > 2 && secondary.length >= 2 && primary.length >= 1;
+            const renderBtn = (btn: AppAlertButton, idx: number) => {
               const isDestructive = btn.style === 'destructive';
               const isCancel = btn.style === 'cancel';
               const isPrimary = !isDestructive && !isCancel;
+              // Primary buttons always use the same emerald regardless of
+              // the dialog accent — the accent colors only the icon/border
+              // so a destructive alert (e.g. unsaved-changes prompt) does
+              // NOT also paint the "Save" button red.
               const bg = isDestructive
                 ? '#ef4444'
                 : isCancel
                   ? 'rgba(255,255,255,0.06)'
-                  : accentColor;
+                  : '#10b981';
               const fg = isCancel ? colors.text : '#ffffff';
               return (
                 <TouchableOpacity
                   key={idx}
-                  style={[styles.btn, { backgroundColor: bg }]}
+                  style={[
+                    styles.btn,
+                    { backgroundColor: bg },
+                    // fullWidth keeps flex:1 so a single button in its
+                    // row stretches edge-to-edge.
+                  ]}
                   onPress={() => {
                     onDismiss();
                     btn.onPress?.();
@@ -106,8 +124,28 @@ export function AppAlertModal({ visible, options, onDismiss }: Props) {
                   </Text>
                 </TouchableOpacity>
               );
-            })}
-          </View>
+            };
+            if (useGroupedLayout) {
+              return (
+                <View style={{ gap: 8 }}>
+                  <View style={styles.buttonRow}>
+                    {secondary.map(({ btn, idx }) => renderBtn(btn, idx))}
+                  </View>
+                  <View style={styles.buttonRow}>
+                    {primary.map(({ btn, idx }) => renderBtn(btn, idx))}
+                  </View>
+                </View>
+              );
+            }
+            return (
+              <View style={[
+                styles.buttonRow,
+                buttons.length === 1 && { justifyContent: 'flex-end' },
+              ]}>
+                {buttons.map((btn, idx) => renderBtn(btn, idx))}
+              </View>
+            );
+          })()}
         </View>
       </View>
     </Modal>
@@ -160,20 +198,22 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   },
   buttonRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
     marginTop: 4,
     flexWrap: 'wrap',
   },
   btn: {
     flex: 1,
-    minWidth: 100,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderRadius: 10,
+    minWidth: 64,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   btnText: {
-    fontSize: 14,
+    fontSize: 13,
+    textAlign: 'center',
+    includeFontPadding: false,
   },
 });

@@ -170,7 +170,7 @@ export function MowerPickerChevron({ onAddMower, onRename }: MowerPickerChevronP
                     style={styles.addIcon}
                   />
                   <Text style={styles.addLabel} numberOfLines={1} ellipsizeMode="tail">
-                    Add mower
+                    Add device
                   </Text>
                 </Pressable>
               </>
