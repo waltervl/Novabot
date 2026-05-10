@@ -2813,6 +2813,7 @@ function renderPortableImportWizard(sn, state) {
       // no drive, no manual snapshot, no preview/confirm dance.
       html += '<div style="flex-basis:100%;font-size:10px;color:#86efac;margin-bottom:4px">Exact-restore bundle detected — one-click apply. Mower must be online with valid map_position.</div>';
       html += '<button onclick="portableApplyExact()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Apply bundle (exact-restore)</button>';
+      html += '<button onclick="portableShowSelective()" style="padding:6px 12px;background:rgba(99,102,241,.18);color:#a5b4fc;border:1px solid rgba(99,102,241,.45);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Selective import…</button>';
     } else {
       html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Start drive backward + RTK lock</button>';
     }
@@ -2846,6 +2847,120 @@ function renderPortableImportWizard(sn, state) {
   html += '<div id="portablePreviewBox" style="margin-top:8px;display:none;height:300px;border:1px solid #2a2a3a;border-radius:6px"></div>';
   panel.innerHTML = html;
   portableStartRtkPoll(sn);
+}
+
+// ── Selective import — pick which categories of the bundle to push ─────────
+// Loads inventory from /inventory, renders checkbox panel + advanced toggle,
+// confirms, posts to /apply-selective.
+async function portableShowSelective() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn || !portableStagingId) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/inventory', {
+    headers: { 'Authorization': token },
+  });
+  var j = await r.json();
+  if (!j.ok) {
+    await appAlert('Inventory failed: ' + (j.error || ('HTTP ' + r.status)), { accent: 'danger' });
+    return;
+  }
+  var bc = j.bundle.byCategory;
+  var mowerWorkSlots = j.mower ? j.mower.workMaps : [];
+
+  function row(cat, label, color) {
+    var n = bc[cat] ? bc[cat].length : 0;
+    if (n === 0) return '';
+    var disabled = n === 0 ? 'disabled' : '';
+    var checked = (cat === 'work' || cat === 'obstacle' || cat === 'unicom' || cat === 'dock') ? 'checked' : '';
+    return '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:6px;margin-bottom:4px;cursor:pointer">'
+      + '<input type="checkbox" name="selective-cat" value="' + cat + '" ' + checked + ' ' + disabled + ' style="cursor:pointer">'
+      + '<span style="color:' + color + ';font-weight:600;font-size:11px">' + label + '</span>'
+      + '<span style="color:#888;font-size:10px;margin-left:auto">' + n + ' files</span>'
+      + '</label>';
+  }
+
+  // Per-obstacle remap dropdowns (only when bundle has obstacles AND mower has work-maps).
+  var obstacleEntries = bc.obstacle || [];
+  var remapHtml = '';
+  if (obstacleEntries.length > 0 && mowerWorkSlots.length > 0) {
+    remapHtml = '<details style="margin-top:8px;padding:8px;background:#0d0d20;border:1px solid #333;border-radius:6px">'
+      + '<summary style="font-size:11px;color:#a5b4fc;cursor:pointer;font-weight:600">Advanced — remap obstacle parents</summary>'
+      + '<div style="margin-top:8px;font-size:10px;color:#888">Override which work-map each obstacle attaches to on the destination mower. Leave as default to keep the bundle\\\'s parent.</div>';
+    remapHtml += '<div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:8px">';
+    for (var i = 0; i < obstacleEntries.length; i++) {
+      var o = obstacleEntries[i];
+      var opts = '<option value="">' + o.parent + ' (default)</option>';
+      for (var k = 0; k < mowerWorkSlots.length; k++) {
+        if (mowerWorkSlots[k] !== o.parent) {
+          opts += '<option value="' + mowerWorkSlots[k] + '">' + mowerWorkSlots[k] + '</option>';
+        }
+      }
+      remapHtml += '<span style="font-family:monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
+      remapHtml += '<select data-remap-source="' + o.filename + '" style="background:#161628;color:#fff;border:1px solid #333;border-radius:4px;padding:3px 6px;font-size:10px">' + opts + '</select>';
+    }
+    remapHtml += '</div></details>';
+  }
+
+  var bodyHtml = '<div style="font-size:11px;color:#cbd5e1;margin-bottom:8px">Pick which parts of the bundle to push to the mower. Add-only mode skips files that already exist; Replace overwrites them.</div>'
+    + '<div style="margin-bottom:10px">'
+    + row('work',     'Work polygons',    '#86efac')
+    + row('obstacle', 'Obstacles',        '#fca5a5')
+    + row('unicom',   'Channels (unicom)', '#93c5fd')
+    + row('dock',     'Charging-station yaml', '#fbbf24')
+    + row('meta',     'map_info.json + metadata', '#a78bfa')
+    + '</div>'
+    + '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:6px;margin-bottom:8px;cursor:pointer;font-size:11px">'
+    + '  <input type="radio" name="selective-mode" value="add-only" checked> Add-only — never overwrite mower files'
+    + '</label>'
+    + '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);border-radius:6px;margin-bottom:8px;cursor:pointer;font-size:11px">'
+    + '  <input type="radio" name="selective-mode" value="replace"> Replace — overwrite matching filenames'
+    + '</label>'
+    + remapHtml;
+
+  var captured = await appModal({
+    title: 'Selective import',
+    bodyHtml: bodyHtml,
+    accent: 'warning',
+    dismissOnBackdrop: false,
+    buttons: [
+      { text: 'Cancel', value: null },
+      {
+        text: 'Apply selection',
+        primary: true,
+        onClick: function() {
+          var cats = Array.prototype.slice.call(document.querySelectorAll('input[name="selective-cat"]:checked'))
+            .map(function(el) { return el.value; });
+          var modeEl = document.querySelector('input[name="selective-mode"]:checked');
+          var mode = modeEl ? modeEl.value : 'add-only';
+          var remap = {};
+          var sels = document.querySelectorAll('select[data-remap-source]');
+          for (var i = 0; i < sels.length; i++) {
+            var s = sels[i];
+            if (s.value) remap[s.getAttribute('data-remap-source')] = s.value;
+          }
+          return { include: cats, mode: mode, obstacleRemap: remap };
+        },
+      },
+    ],
+  });
+  if (!captured || !captured.include || captured.include.length === 0) return;
+
+  var ar = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-selective', {
+    method: 'POST',
+    headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(captured),
+  });
+  var aj = await ar.json();
+  if (!aj.ok) {
+    await appAlert('Apply failed: ' + (aj.error || ('HTTP ' + ar.status)), { accent: 'danger' });
+    return;
+  }
+  var summary = 'Applied (' + aj.mode + '). ' + (aj.written.length || 0) + ' written, ' + (aj.skipped.length || 0) + ' skipped.';
+  if (aj.skipped.length) summary += '\\nSkipped: ' + aj.skipped.join(', ');
+  await appAlert(summary, { accent: 'success' });
+  document.getElementById('portableImportPanel').style.display = 'none';
+  portableStagingId = null;
+  portableExactRestore = false;
+  loadMaps();
 }
 
 async function portableApplyExact() {

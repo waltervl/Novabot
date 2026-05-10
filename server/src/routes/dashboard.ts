@@ -303,6 +303,11 @@ dashboardRouter.post('/bind-device', async (req: Request, res: Response) => {
     userRepo.createIfMissing(appUserId, 'admin@local', hash, 'admin');
     user = userRepo.findFirst();
     if (!user) { res.status(500).json({ ok: false, error: 'Could not create user' }); return; }
+    // Same is_admin gap as setup.ts /skip — createIfMissing skips the
+    // is_admin column. Flip it on the actual stored row so the admin
+    // page works on the very first login after a factory reset.
+    userRepo.setRole(user.app_user_id, 'is_admin', true);
+    userRepo.setRole(user.app_user_id, 'dashboard_access', true);
     console.log(`[dashboard] bind-device: auto-created local admin account`);
   }
 

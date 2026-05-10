@@ -22,6 +22,7 @@ import { getPolygonAnchor } from '../services/anchor.js';
 import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase } from '../services/portableMap.js';
 import { ImportStagingStore } from '../services/importStaging.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
+import { classifyBundle, type ClassifyResult } from '../services/bundleClassifier.js';
 import { importAuditRepo } from '../db/repositories/importAudit.js';
 import { deriveHeading } from '../services/driveCalibration.js';
 import {
@@ -1468,6 +1469,83 @@ adminStatusRouter.get('/maps/:sn/import-portable/active', (req: AuthRequest, res
   res.json({ stagingId: active.stagingId, state: active.state, exactRestore });
 });
 
+// GET /api/admin-status/maps/:sn/import-portable/:stagingId/inventory
+//
+// Lists every file in the staged bundle classified into work / obstacle /
+// unicom / meta / dock categories, plus the same classification of files
+// currently on the mower (via MQTT extended `read_map_files`). The import
+// wizard's selective-apply step uses this to render checkboxes per
+// category and detect collisions for add-only mode.
+adminStatusRouter.get(
+  '/maps/:sn/import-portable/:stagingId/inventory',
+  async (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown staging session' });
+      return;
+    }
+
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
+    let bundle: { csvFiles: Record<string, string>; chargingStationYaml: string | null };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
+      bundle = {
+        csvFiles: (parsed.mowerFiles?.csvFiles as Record<string, string> | undefined) ?? {},
+        chargingStationYaml: (parsed.mowerFiles?.chargingStationYaml as string | null | undefined) ?? null,
+      };
+    } catch (err) {
+      res.status(500).json({ ok: false, error: `failed to read staging bundle: ${(err as Error).message}` });
+      return;
+    }
+
+    const bundleClass = classifyBundle(bundle);
+
+    // Mower-side enumeration is best-effort. Offline mower → empty list,
+    // operator can still proceed in "replace" mode (overwrites whatever
+    // is there). For "add-only" the UI should refuse to apply when the
+    // mower list is empty (server-side enforcement happens at apply time
+    // via a fresh read_map_files call against the live state).
+    let mowerSide: ClassifyResult | null = null;
+    if (isDeviceOnline(sn)) {
+      const mowerData = await new Promise<{ csvFiles?: Record<string, string>; chargingStationYaml?: string | null }>(resolve => {
+        let settled = false;
+        const handler = (data: Record<string, unknown>) => {
+          const r = data.read_map_files_respond as
+            | { result?: number; csv_files?: Record<string, string>; charging_station_yaml?: string }
+            | undefined;
+          if (!r || settled) return;
+          settled = true;
+          offExtendedResponse(sn, handler);
+          if (r.result !== 0) { resolve({}); return; }
+          resolve({ csvFiles: r.csv_files, chargingStationYaml: r.charging_station_yaml ?? null });
+        };
+        onExtendedResponse(sn, handler);
+        publishToExtended(sn, { read_map_files: {} });
+        setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          offExtendedResponse(sn, handler);
+          resolve({});
+        }, 8000);
+      });
+      if (mowerData.csvFiles) {
+        mowerSide = classifyBundle({
+          csvFiles: mowerData.csvFiles,
+          chargingStationYaml: mowerData.chargingStationYaml ?? null,
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      stagingId,
+      bundle: bundleClass,
+      mower: mowerSide,
+    });
+  },
+);
+
 // POST /api/admin-status/maps/:sn/import-portable/:stagingId/start-drive
 // Drive the mower 1 m backward off the dock and derive heading from RTK delta.
 // No pre-RTK requirement: the act of driving away from the dock typically
@@ -2099,6 +2177,234 @@ adminStatusRouter.post(
       state: 'APPLIED',
       delta: { dx: dockMP.x - origPose.x, dy: dockMP.y - origPose.y, dtheta: dt },
       transformedFiles: Object.keys(transformedCsvs),
+    });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/import-portable/:stagingId/apply-selective
+//
+// Selective import — pushes a chosen subset of bundle categories to the
+// mower. Two safety modes:
+//   - mode = 'add-only' (default): skip files that already exist on the
+//     mower; never overwrite. Safe combination because nothing on the
+//     mower is destroyed.
+//   - mode = 'replace': overwrite matching filenames. Same risk profile
+//     as the existing apply-exact endpoint but scoped to the chosen
+//     categories.
+//
+// Files in selected categories are Δ-rotated/translated against the
+// bundle's originalChargingPose vs the mower's live charging_pose so the
+// imported polygons land in the destination frame. obstacleRemap can
+// rewrite an obstacle's parent map (e.g. rename `map3_0_obstacle.csv`
+// from the bundle to `map1_0_obstacle.csv` so it attaches to the mower's
+// existing `map1`).
+//
+// NOTE: this endpoint does NOT update DB polygon rows. The dashboard map
+// view continues to reflect whatever the last full import / sync_map
+// wrote; the mower's csv_file/ is the source of truth for actual mowing.
+adminStatusRouter.post(
+  '/maps/:sn/import-portable/:stagingId/apply-selective',
+  async (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown staging session' });
+      return;
+    }
+    if (session.state !== 'UPLOADED') {
+      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
+      return;
+    }
+
+    const body = (req.body ?? {}) as {
+      include?: string[];
+      mode?: 'add-only' | 'replace';
+      obstacleRemap?: Record<string, string>;
+    };
+    const include = new Set(body.include ?? ['work', 'obstacle', 'unicom', 'dock']);
+    const mode: 'add-only' | 'replace' = body.mode === 'replace' ? 'replace' : 'add-only';
+    const obstacleRemap = body.obstacleRemap ?? {};
+
+    // ── Read bundle from staging dir ─────────────────────────────────
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
+    let parsed: {
+      mowerFiles?: { csvFiles: Record<string, string>; chargingStationYaml: string | null };
+      metadata?: { originalChargingPose?: { x: number; y: number; orientation: number } };
+    };
+    try {
+      parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
+    } catch (err) {
+      res.status(500).json({ ok: false, error: `failed to read bundle: ${(err as Error).message}` });
+      return;
+    }
+    const mowerFiles = parsed.mowerFiles;
+    const origPose = parsed.metadata?.originalChargingPose;
+    if (!mowerFiles || !origPose) {
+      res.status(400).json({ ok: false, error: 'bundle missing exact-restore data' });
+      return;
+    }
+
+    // ── Live mower frame for Δ ───────────────────────────────────────
+    const sensors = deviceCache.get(sn);
+    const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+    const my = parseFloat(sensors?.get('map_position_y') ?? '');
+    const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+    if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
+      res.status(409).json({ ok: false, error: 'no live map_position — is mower online?' });
+      return;
+    }
+    const dockMP = { x: mx, y: my, orientation: mo };
+    const dt = dockMP.orientation - origPose.orientation;
+    const cosDt = Math.cos(dt);
+    const sinDt = Math.sin(dt);
+    const transformPoint = (px: number, py: number): [number, number] => {
+      const relX = px - origPose.x;
+      const relY = py - origPose.y;
+      const rx = relX * cosDt - relY * sinDt;
+      const ry = relX * sinDt + relY * cosDt;
+      return [rx + dockMP.x, ry + dockMP.y];
+    };
+
+    // ── Mower current files (for collision detection in add-only mode) ──
+    const mowerSide = await new Promise<{ csvFiles?: Record<string, string>; chargingStationYaml?: string | null }>(resolve => {
+      let settled = false;
+      const handler = (data: Record<string, unknown>) => {
+        const r = data.read_map_files_respond as
+          | { result?: number; csv_files?: Record<string, string>; charging_station_yaml?: string }
+          | undefined;
+        if (!r || settled) return;
+        settled = true;
+        offExtendedResponse(sn, handler);
+        if (r.result !== 0) { resolve({}); return; }
+        resolve({ csvFiles: r.csv_files, chargingStationYaml: r.charging_station_yaml ?? null });
+      };
+      onExtendedResponse(sn, handler);
+      publishToExtended(sn, { read_map_files: {} });
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        offExtendedResponse(sn, handler);
+        resolve({});
+      }, 8000);
+    });
+    const mowerExisting = new Set(Object.keys(mowerSide.csvFiles ?? {}));
+
+    // ── Build target file map ────────────────────────────────────────
+    const toWrite: Record<string, string> = {};
+    const skipped: string[] = [];
+
+    const bundleClass = classifyBundle(mowerFiles);
+
+    for (const e of bundleClass.entries) {
+      // Skip categories the operator didn't tick.
+      if (!include.has(e.category)) continue;
+      // 'meta' (map_info.json etc.) follows whichever other category was
+      // selected — we always include it when ANY data category is chosen
+      // so the mower has a coherent metadata file. Falls into the
+      // skip-existing logic below.
+      if (e.category === 'meta' && !include.has('work') && !include.has('obstacle') && !include.has('unicom')) {
+        continue;
+      }
+
+      const original = mowerFiles.csvFiles[e.filename];
+      if (original === undefined) continue;
+
+      // Apply obstacle remap if requested.
+      let targetName = e.filename;
+      if (e.category === 'obstacle' && obstacleRemap[e.filename]) {
+        const newParent = obstacleRemap[e.filename];
+        targetName = e.filename.replace(/^map\d+_/, `${newParent}_`);
+      }
+
+      if (mode === 'add-only' && mowerExisting.has(targetName)) {
+        skipped.push(targetName);
+        continue;
+      }
+
+      // Δ-transform CSV polygon points so they land in the mower's frame.
+      if (e.category === 'work' || e.category === 'obstacle' || e.category === 'unicom') {
+        const out: string[] = [];
+        for (const raw of original.split('\n')) {
+          const line = raw.trim();
+          if (!line) { out.push(''); continue; }
+          const parts = line.split(',');
+          if (parts.length < 2) { out.push(line); continue; }
+          const px = parseFloat(parts[0]);
+          const py = parseFloat(parts[1]);
+          if (!Number.isFinite(px) || !Number.isFinite(py)) { out.push(line); continue; }
+          const [nx, ny] = transformPoint(px, py);
+          out.push(`${nx.toFixed(2)},${ny.toFixed(2)}`);
+        }
+        toWrite[targetName] = out.join('\n');
+      } else if (e.category === 'meta' && e.filename === 'map_info.json') {
+        // Inject mower's live charging_pose so map_info matches the dock.
+        try {
+          const mi = JSON.parse(original) as Record<string, unknown>;
+          mi.charging_pose = { x: dockMP.x, y: dockMP.y, orientation: dockMP.orientation };
+          toWrite[targetName] = JSON.stringify(mi, null, 3);
+        } catch {
+          toWrite[targetName] = original;
+        }
+      } else {
+        toWrite[targetName] = original;
+      }
+    }
+
+    // Dock yaml lives alongside csv_file on the mower; treat separately.
+    let chargingStationYaml: string | null = null;
+    if (include.has('dock') && mowerFiles.chargingStationYaml != null) {
+      // add-only never overwrites the existing dock — prevents accidental
+      // pose loss when the operator just wants to add obstacles.
+      const dockExists = mowerSide.chargingStationYaml != null && mowerSide.chargingStationYaml.length > 0;
+      if (mode === 'add-only' && dockExists) {
+        skipped.push('charging_station.yaml');
+      } else {
+        chargingStationYaml = `charging_pose: [${dockMP.x}, ${dockMP.y}, ${dockMP.orientation}]\n`;
+      }
+    }
+
+    if (Object.keys(toWrite).length === 0 && chargingStationYaml === null) {
+      res.json({ ok: true, written: [], skipped, note: 'nothing to write — selection was empty or all files skipped by add-only mode' });
+      return;
+    }
+
+    publishToExtended(sn, {
+      write_map_files: {
+        csv_files: toWrite,
+        charging_station_yaml: chargingStationYaml,
+        restart_mapping: false,
+      },
+    });
+
+    // Re-render map.yaml/pgm/png when polygon-bearing categories were
+    // touched. Nav2's static costmap layer reads the pgm; without a
+    // re-render new obstacles wouldn't be inflated and the mower could
+    // drive through them. Skip for dock-only or meta-only changes —
+    // those don't affect the rasterized occupancy grid.
+    const polygonCategoriesTouched = include.has('work') || include.has('obstacle') || include.has('unicom');
+    if (polygonCategoriesTouched && Object.keys(toWrite).length > 0) {
+      publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+      console.log(`[Admin] apply-selective ${sn}: post-write save_map type:1 dispatched to render map.yaml/pgm`);
+    }
+
+    importStaging.transition(stagingId, 'APPLIED', {
+      applyResult: {
+        warning: `selective ${mode} — ${Object.keys(toWrite).length} written, ${skipped.length} skipped`,
+      },
+    });
+    importAuditRepo.append({
+      sn,
+      staging_id: stagingId,
+      from_state: 'UPLOADED',
+      to_state: 'APPLIED',
+      reason: `selective apply mode=${mode} categories=${[...include].join(',')}`,
+    });
+    res.json({
+      ok: true,
+      mode,
+      written: Object.keys(toWrite),
+      skipped,
+      delta: { dx: dockMP.x - origPose.x, dy: dockMP.y - origPose.y, dtheta: dt },
     });
   },
 );

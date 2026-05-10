@@ -559,6 +559,17 @@ setupRouter.post('/skip', async (_req: Request, res: Response) => {
     const appUserId = `local_${Date.now()}`;
 
     userRepo.createIfMissing(appUserId, 'admin@local', hashedPwd, 'admin');
+    // createIfMissing leaves is_admin at the column default (0) — without
+    // this the adminMiddleware would reject the very first request after
+    // login and the admin UI bounces right back to the login screen.
+    // Lookup the actual user row (the appUserId above is fresh, but the
+    // INSERT OR IGNORE may have kept an existing row with a different id)
+    // and flip is_admin / dashboard_access on whichever row matches.
+    const existing = userRepo.findByEmail('admin@local');
+    if (existing) {
+      userRepo.setRole(existing.app_user_id, 'is_admin', true);
+      userRepo.setRole(existing.app_user_id, 'dashboard_access', true);
+    }
 
     invalidateSetupCache();
     res.json({ ok: true, message: 'Local account created. Bind your mower via the Novabot app.' });
