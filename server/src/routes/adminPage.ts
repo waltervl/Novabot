@@ -2884,7 +2884,7 @@ async function portableShowSelective() {
   if (obstacleEntries.length > 0 && mowerWorkSlots.length > 0) {
     remapHtml = '<details style="margin-top:8px;padding:8px;background:#0d0d20;border:1px solid #333;border-radius:6px">'
       + '<summary style="font-size:11px;color:#a5b4fc;cursor:pointer;font-weight:600">Advanced — remap obstacle parents</summary>'
-      + '<div style="margin-top:8px;font-size:10px;color:#888">Override which work-map each obstacle attaches to on the destination mower. Leave as default to keep the bundle\\\'s parent.</div>';
+      + '<div style="margin-top:8px;font-size:10px;color:#888">Override which work-map each obstacle attaches to on the destination mower. Leave as default to keep the bundle parent.</div>';
     remapHtml += '<div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:8px">';
     for (var i = 0; i < obstacleEntries.length; i++) {
       var o = obstacleEntries[i];
