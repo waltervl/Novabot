@@ -220,10 +220,14 @@ export default function ScheduleScreen() {
     route.params?.preselectedMapName,
   ]);
 
-  // Group schedules by day — a schedule with weekdays [1,3,5] appears under each day
+  // Group schedules by day — a schedule with weekdays [1,3,5] appears under
+  // each day. Interval-mode schedules (intervalDays > 0) carry an empty
+  // weekdays array and instead get their own section below, so we skip
+  // them here.
   const byDay = useMemo(() => {
     const grouped: Record<number, Schedule[]> = {};
     for (const s of schedules) {
+      if ((s.intervalDays ?? 0) > 0) continue;
       const days: number[] = (s as any).weekdays ?? [s.day_of_week ?? 0];
       for (const d of days) {
         if (!grouped[d]) grouped[d] = [];
@@ -239,6 +243,20 @@ export default function ScheduleScreen() {
       });
     }
     return grouped;
+  }, [schedules]);
+
+  // Interval schedules — sorted by intervalDays then startTime.
+  const intervalSchedules = useMemo(() => {
+    return schedules
+      .filter((s) => (s.intervalDays ?? 0) > 0)
+      .sort((a, b) => {
+        const dA = a.intervalDays ?? 0;
+        const dB = b.intervalDays ?? 0;
+        if (dA !== dB) return dA - dB;
+        const aTime = (a as any).startTime ?? '00:00';
+        const bTime = (b as any).startTime ?? '00:00';
+        return aTime.localeCompare(bTime);
+      });
   }, [schedules]);
 
   if (!mowerSn) {
@@ -420,6 +438,87 @@ export default function ScheduleScreen() {
             </View>
           );
         })}
+
+        {/* Interval-mode schedules — issue #51. These don't fit under any
+            weekday header so they get their own group beneath the weekday
+            list. Header reads "Every N days from <anchor>" for each row. */}
+        {intervalSchedules.length > 0 && (
+          <View style={styles.dayGroup}>
+            <Text style={styles.dayLabel}>
+              {t('intervalSchedules', undefined) || 'Every N days'}
+            </Text>
+            {intervalSchedules.map((s) => (
+              <Swipeable
+                key={`interval-${s.id ?? (s as any).scheduleId}`}
+                renderRightActions={() => (
+                  <TouchableOpacity
+                    style={styles.swipeDelete}
+                    onPress={() => handleDelete(s)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="trash" size={22} color={colors.white} />
+                  </TouchableOpacity>
+                )}
+              >
+                <TouchableOpacity
+                  style={[
+                    styles.scheduleCard,
+                    !s.enabled && styles.scheduleCardDisabled,
+                    s.currentlyRunning && styles.scheduleCardRunning,
+                    !!s.rainPausedAt && styles.scheduleCardRainPaused,
+                  ]}
+                  onPress={() => handleEdit(s)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.scheduleLeft}>
+                    <View style={styles.scheduleHeaderRow}>
+                      <Text style={[styles.scheduleTime, !s.enabled && styles.textDisabled]}>
+                        {(s as any).startTime ?? `${pad(s.start_hour ?? 0)}:${pad(s.start_minute ?? 0)}`}
+                      </Text>
+                      {s.currentlyRunning && (
+                        <View style={styles.statusBadgeRunning}>
+                          <View style={styles.statusDot} />
+                          <Text style={styles.statusBadgeRunningText}>
+                            {t('scheduleRunning', undefined) || 'Running now'}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.scheduleChips}>
+                      <Text style={styles.scheduleChip}>
+                        Every {s.intervalDays} day{s.intervalDays === 1 ? '' : 's'}
+                      </Text>
+                      {s.intervalAnchorDate && (
+                        <Text style={styles.scheduleChip}>from {s.intervalAnchorDate}</Text>
+                      )}
+                      {(s.cuttingHeight ?? s.cutting_height) != null && (
+                        <Text style={styles.scheduleChip}>
+                          {s.cuttingHeight ?? s.cutting_height} cm
+                        </Text>
+                      )}
+                      {(s.mapName ?? s.map_name) && (
+                        <Text style={styles.scheduleChip}>
+                          {s.mapName ?? s.map_name}
+                        </Text>
+                      )}
+                      {(s.rainPause ?? s.rain_pause) && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                          <Ionicons name="rainy" size={12} color="#60a5fa" />
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                  <Switch
+                    value={s.enabled}
+                    onValueChange={() => handleToggle(s)}
+                    trackColor={{ false: '#374151', true: 'rgba(0,212,170,0.3)' }}
+                    thumbColor={s.enabled ? colors.emerald : '#6b7280'}
+                  />
+                </TouchableOpacity>
+              </Swipeable>
+            ))}
+          </View>
+        )}
       </ScrollView>
 
       {/* Schedule Editor Modal */}
