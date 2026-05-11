@@ -464,13 +464,13 @@ export default function JoystickScreen() {
             initialized or mower in protect_mode). */}
         {(bladeOn || bladeSpeed > 0) && (
           <TouchableOpacity onPress={toggleBlade} activeOpacity={0.85} style={styles.bladeBanner}>
-            <BladeSpinIcon size={18} color={bladeSpeed > 0 ? colors.red : colors.amber} spinning={bladeSpeed > 0} />
+            <BladeSpinIcon size={28} color={bladeSpeed > 0 ? colors.red : colors.amber} spinning={bladeSpeed > 0} />
             <Text style={{ color: bladeSpeed > 0 ? colors.red : colors.amber, fontWeight: '700', fontSize: 13, flex: 1 }}>
               {bladeSpeed > 0
                 ? `Blade spinning — ${bladeSpeed} rpm — tap to stop`
                 : 'Blade requested — waiting for motor… tap to cancel'}
             </Text>
-            <Ionicons name="stop-circle" size={18} color={bladeSpeed > 0 ? colors.red : colors.amber} />
+            <Ionicons name="stop-circle" size={20} color={bladeSpeed > 0 ? colors.red : colors.amber} />
           </TouchableOpacity>
         )}
 
@@ -494,7 +494,10 @@ export default function JoystickScreen() {
           <>
             {/* Camera stream */}
             {cameraVisible && streamUrl && (
-              <View style={styles.cameraContainer}>
+              <View style={[
+                styles.cameraContainer,
+                (bladeOn || bladeSpeed > 0) && { height: 130 },
+              ]}>
                 <WebView
                 key={cameraReloadKey}
                 source={{
