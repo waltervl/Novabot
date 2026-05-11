@@ -135,9 +135,16 @@ export default function OtaScreen() {
       ? mower?.sensors.sw_version ?? mower?.sensors.mower_version ?? '?'
       : charger?.sensors.charger_version ?? charger?.sensors.sw_version ?? '?';
 
+    // Normalise: mower sensors sometimes report `6.0.2-custom-24`, dashboard
+    // entries always carry the `v` prefix, so blind concatenation produced
+    // `vv6.0.2-custom-24`. Strip any leading `v` first and add exactly one.
+    const stripV = (s: string) => s.replace(/^v+/i, '');
+    const fromLabel = `v${stripV(String(currentVersion))}`;
+    const toLabel = `v${stripV(String(version.version))}`;
+
     appAlertCompat.alert(
       'Firmware Update',
-      `Update ${deviceLabel} from v${currentVersion} to ${version.version}?\n\nThis will restart the device.`,
+      `Update ${deviceLabel} ${sn} from ${fromLabel} to ${toLabel}?\n\nThis will restart the device.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
