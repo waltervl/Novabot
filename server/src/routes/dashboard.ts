@@ -2963,7 +2963,7 @@ dashboardRouter.get('/firmware-list', (_req: Request, res: Response) => {
 // Open path (no admin gate) so the mobile app can show the same panel as
 // the dashboard's Firmware tab — both poll the same logic via this single
 // helper exported from adminStatus.ts.
-dashboardRouter.get('/firmware/check-updates', async (_req: Request, res: Response) => {
+dashboardRouter.get('/firmware-check-updates', async (_req: Request, res: Response) => {
   try {
     const { MANIFEST_URL, fetchJson, normaliseFirmwareDownloadUrl } = await import('./adminStatus.js');
     const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: Array<{ version: string; device_type: string; url: string; md5: string; description: string; filename?: string }> };
@@ -3004,7 +3004,7 @@ dashboardRouter.get('/firmware/check-updates', async (_req: Request, res: Respon
 // POST /api/dashboard/firmware/download — pull a firmware from the remote
 // manifest into the local firmware/ directory and register it in the OTA
 // versions table so the OTA flow can pick it up.
-dashboardRouter.post('/firmware/download', async (req: Request, res: Response) => {
+dashboardRouter.post('/firmware-download', async (req: Request, res: Response) => {
   const { url: rawUrl, filename, version, device_type, md5, description } = req.body as {
     url?: string; filename?: string; version?: string; device_type?: string; md5?: string; description?: string;
   };

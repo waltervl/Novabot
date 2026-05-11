@@ -756,7 +756,7 @@ export class ApiClient {
     available: Array<{ version: string; device_type: string; url: string; filename: string; md5: string; description: string; installed: boolean }>;
     installed: Array<{ version: string; device_type: string; md5: string }>;
   }> {
-    return this.request('GET', '/api/dashboard/firmware/check-updates');
+    return this.request('GET', '/api/dashboard/firmware-check-updates');
   }
 
   /** Download a firmware from the remote manifest into the local
@@ -769,7 +769,7 @@ export class ApiClient {
     md5: string;
     description?: string;
   }): Promise<{ ok: boolean }> {
-    return this.request('POST', '/api/dashboard/firmware/download', { body: args });
+    return this.request('POST', '/api/dashboard/firmware-download', { body: args });
   }
 
   async getFirmwareFiles(): Promise<FirmwareFile[]> {
