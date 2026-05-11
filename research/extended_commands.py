@@ -2302,12 +2302,19 @@ def _publish_topic_bg(topic: str, type_name: str, payload_yaml: str) -> str:
     # ros2 uses fastrtps which can't see cyclonedds participants at all.
     # Observed live 2026-04-21: ros2 topic pub printed "publishing #1" fine
     # but chassis_control_node's log showed NO blade messages received.
+    # Use a rate-based publish kept alive for 8s instead of `--once`. On the
+    # Horizon X3 DDS stack subscriber discovery often takes 6-10s; `--once`
+    # exits before the chassis_control_node's late-joining subscriber has
+    # registered and the message is dropped (live capture 2026-05-11). With
+    # `-r 1` the publisher re-broadcasts every second so the subscription
+    # latches in and chassis_control_node receives the value within the
+    # window. timeout 8 hard-bounds the subprocess lifetime.
     cmd = (
         "export ROS_LOCALHOST_ONLY=1; "
         "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; "
         "source /opt/ros/galactic/setup.bash 2>/dev/null; "
         "source /root/novabot/install/setup.bash 2>/dev/null; "
-        f"ros2 topic pub --once {topic} {type_name} '{payload_yaml}' "
+        f"timeout 8 ros2 topic pub -r 1 {topic} {type_name} '{payload_yaml}' "
         f">>/tmp/extcmd_pub.log 2>&1"
     )
     try:
@@ -2327,56 +2334,172 @@ def _publish_topic_bg(topic: str, type_name: str, payload_yaml: str) -> str:
 
 
 def _publish_blade_speed(speed: int) -> str:
-    return _publish_topic_bg(
-        "/blade_speed_set",
-        "std_msgs/msg/Int16",
-        f"{{data: {int(speed)}}}",
-    )
+    """Set the sustained blade-speed target. BladeRelay's 10Hz timer keeps
+    republishing the value via its long-lived rclpy publisher; subprocess
+    publishes were flaky because sourcing setup.bash can block on
+    register-python-argcomplete3 long enough that `timeout 8 ros2 topic
+    pub` exits without ever broadcasting the value (live observation
+    2026-05-11)."""
+    node = _ROS_BLADE_NODE[0]
+    if node is None:
+        return "ros node not ready"
+    node.target_blade_speed = int(speed)
+    return ""
+
+
+def _start_robot_status_override():
+    """Activate the BladeRelay timer that republishes a modified copy of
+    robot_decision's RobotStatus at 50Hz. Modifies only task_mode=1,
+    work_status=10, merged_work_status=COVER — all other fields (battery,
+    error_status, msg, location, etc.) come from the real status so the
+    cloud / app keep seeing accurate values. The v8 subprocess spammer
+    zeroed every field which made the app show "battery 0% — heading back
+    to dock" (live observation 2026-05-11)."""
+    node = _ROS_BLADE_NODE[0]
+    if node is None:
+        log("[robot-status] override request but ROS node not ready")
+        return
+    if not node.override_active:
+        node.override_active = True
+        log("[robot-status] override activated (50Hz passthrough+modify)")
+
+
+def _stop_robot_status_override():
+    node = _ROS_BLADE_NODE[0]
+    if node is None:
+        return
+    if node.override_active:
+        node.override_active = False
+        log("[robot-status] override stopped")
+
+
+def _publish_motor_driver_reset() -> str:
+    """Publish empty String on /motor_driver_reset.
+
+    Triggers chassis_control_node's sub_MotorDriverReset_cb which sends UART
+    cmd 0xF0 to the STM32. This re-arms the motor drivers and clears any
+    latched stall/overcurrent flags from a previous failed blade-spin
+    attempt. Factory test and (probably) the OEM coverage workflow publish
+    this before driving blade speed; without it the STM32 latches its stall
+    flag from the previous cold-start inrush spike and refuses subsequent
+    speed commands (observed live on .244 2026-05-11: piep + abort with no
+    motor activity)."""
+    node = _ROS_BLADE_NODE[0]
+    if node is None:
+        return "ros node not ready"
+    try:
+        from std_msgs.msg import String  # type: ignore
+        msg = String()
+        msg.data = "reset"
+        node.reset_pub.publish(msg)
+        return ""
+    except Exception as ex:
+        return str(ex)[:200]
 
 
 def _publish_blade_height(level: int) -> str:
-    """Level 0-7 where 0 = blades retracted (stored, not cutting) and
-    1-7 = cutting heights. Index maps to physical mm: mm = 90 − level*10,
-    so level 5 = 40mm (default mowing height)."""
-    return _publish_topic_bg(
-        "/blade_height_set",
-        "std_msgs/msg/UInt8",
-        f"{{data: {int(level)}}}",
-    )
+    """Convert wire-level 0..7 to mm and publish on /blade_height_set.
+
+    chassis_control_node's `set_blade_height_cb` (Ghidra decompile @
+    0x162ddc) accepts ONLY discrete mm values 20/30/40/50/60/70/80/90 as
+    UInt8 and silently no-ops on anything else. The MQTT/app side speaks
+    the cutterhigh enum 0..7 where `mm = (level + 2) * 10` (verified
+    live in cutting-height-mapping.md). Publishing the raw level
+    bypassed the firmware's accepted-input set so the cutting deck never
+    actuated and the blade motor never engaged — even though the speed
+    publish succeeded — leaving manual-control "Blade is spinning"
+    showing while nothing physical happened (issue #55).
+    """
+    mm = (int(level) + 2) * 10
+    if mm < 20 or mm > 90:
+        return f"invalid level {level} (mm {mm} out of range 20..90)"
+    node = _ROS_BLADE_NODE[0]
+    if node is None:
+        return "ros node not ready"
+    node.target_blade_height = int(mm)
+    return ""
 
 
 def handle_blade_on(params, respond):
-    """Turn the blade motor ON. Optional {speed: int} sets RPM (default 3000),
-    {height: int} sets blade height level 0-7 (default 5 = 40mm). Height is
-    pushed BEFORE speed so the blades are in cutting position before the
-    motor spins up."""
-    speed = int((params or {}).get("speed", 3000))
+    """Turn the blade motor ON.
+
+    Stock OEM `coverage_planner_params.yaml` publishes `blade_speed: -2750`
+    to /blade_speed_set when starting a mowing task — NEGATIVE value.
+    Positive values are silently rejected by chassis_control_node / STM32
+    (live capture on .244 2026-05-11: +3000 → height moves + 2 beeps +
+    headlight blink + then motor never engaged). The sign encodes blade
+    rotation direction; OEM only ever uses negative for the cutting
+    direction. We mirror that: negate the magnitude here.
+
+    Sequence:
+      1. publish blade_height (lift motor moves cutting deck into position)
+      2. sleep blade_startup_time (matches the OEM 4.5s param)
+      3. publish blade_speed = -|magnitude| on /blade_speed_set
+
+    Params: {speed: int (magnitude, default 2750), height: int (0-7,
+    default 5 = 60mm)}.
+    """
+    raw_speed = int((params or {}).get("speed", 2750))
+    # Force negative — OEM convention. Accept either sign on the wire.
+    magnitude = abs(raw_speed)
+    if magnitude < 500: magnitude = 500
+    # OEM coverage_planner_params.yaml uses -2750 as the cutting speed.
+    # Sending |speed| > 2750 silently fails on STM32 v3.6.0 (live test
+    # 2026-05-11: speed=3000 reached chassis, STM32 logged nothing further,
+    # motor never engaged; speed=-2750 from the same sequence spun the
+    # motor to 1725 mA). Treat 2750 as the hard ceiling.
+    if magnitude > 2750: magnitude = 2750
+    signed_speed = -magnitude
+
     height = (params or {}).get("height")
-    # Clamp to something sensible — the chassis firmware has its own max.
-    if speed < 500: speed = 500
-    if speed > 3600: speed = 3600
     err_h = ""
     if height is not None:
         h = int(height)
         if h < 0: h = 0
         if h > 7: h = 7
         err_h = _publish_blade_height(h)
-    err_s = _publish_blade_speed(speed)
-    err = err_h or err_s
+
+    # Override RobotStatus so chassis_control_node forwards work_status=10
+    # (COVERING) to STM32. STM32 v3.6.0 stock keeps the blade motor disabled
+    # unless it sees this state on the periodic UART status packet. The
+    # override stays active until blade_off.
+    _start_robot_status_override()
+
+    # Re-arm motor drivers so a previous stall-trip flag doesn't latch the
+    # blade off (UART cmd 0xF0 → STM32). OEM factory test publishes this
+    # before every blade test; without it the STM32 silently refuses the
+    # next /blade_speed_set.
+    err_r = _publish_motor_driver_reset()
+    if err_r:
+        log(f"[blade_on] motor_driver_reset publish error: {err_r}")
+
+    def _delayed_speed():
+        # Match the OEM blade_startup_time of 4.5s before driving speed.
+        time.sleep(4.5)
+        err = _publish_blade_speed(signed_speed)
+        if err:
+            log(f"[blade_on] delayed speed publish error: {err}")
+        else:
+            log(f"[blade_on] delayed speed {signed_speed} rpm published (OEM sign convention)")
+
+    threading.Thread(target=_delayed_speed, daemon=True, name='blade-speed-delayed').start()
     respond("blade_on_respond", {
-        "result": 0 if not err else 1,
-        "speed": speed,
+        "result": 0 if not err_h else 1,
+        "speed": signed_speed,
         "height": height,
-        "error": err,
+        "error": err_h,
+        "note": "speed publishes 4.5s after height; negative sign matches OEM coverage_planner_params.yaml",
     })
 
 
 def handle_blade_off(params, respond):
     """Turn the blade motor OFF (speed 0) AND retract blades (height 0).
     Retracting is important safety: blades UP = physically safer when
-    mower is picked up, moved, or stuck."""
+    mower is picked up, moved, or stuck. Also stops the RobotStatus
+    override so robot_decision's real status reaches chassis again."""
     err1 = _publish_blade_speed(0)
     err2 = _publish_blade_height(0)
+    _stop_robot_status_override()
     err = err1 or err2
     respond("blade_off_respond", {"result": 0 if not err else 1, "error": err})
 
@@ -3039,21 +3162,35 @@ def _rerun_set_server_urls():
 # merges the field into deviceCache like any other sensor, so the app
 # reads it through the standard /api/dashboard/devices/:sn endpoint.
 
+_ROS_BLADE_NODE = [None]  # holds the live BladeRelay instance, populated once rclpy.init succeeds
+
+
 def start_blade_telemetry_relay(sn, mqtt_ref):
-    """Spin up a daemon thread that bridges /blade_speed_get → MQTT."""
+    """Spin up a daemon thread that bridges /blade_speed_get → MQTT AND owns
+    long-lived ROS pubs/subs for blade and RobotStatus manipulation.
+
+    Subprocess `ros2 topic pub --once` is unreliable on Horizon X3 (DDS
+    discovery takes 6-10s, `--once` exits before chassis subscribes).
+    Long-lived publishers held by this daemon stay discovered across the
+    session, so the next publish is delivered immediately.
+
+    For the RobotStatus override we subscribe to robot_decision's status,
+    cache the latest message, and at 50Hz republish a clone with only
+    task_mode/work_status/merged_work_status modified — preserving battery,
+    error_status, msg, and all the other fields so the app doesn't get a
+    zeroed status (which the v8 spam-publisher caused: battery=0% notif).
+    """
     try:
         import rclpy  # type: ignore
         from rclpy.node import Node  # type: ignore
-        from std_msgs.msg import Int16  # type: ignore
+        from std_msgs.msg import Int16, UInt8, String  # type: ignore
+        from decision_msgs.msg import RobotStatus  # type: ignore
     except ImportError as ex:
         log(f"[BladeRelay] rclpy import failed, telemetry disabled: {ex}")
         return
 
     def _spin():
         try:
-            # Don't shut down if a previous rclpy.init was already done — the
-            # main extended_commands process doesn't init rclpy itself, so
-            # the first call here owns it.
             try:
                 rclpy.init()
             except RuntimeError:
@@ -3067,7 +3204,31 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
                     self.create_subscription(
                         Int16, '/blade_speed_get', self._on_msg, 10,
                     )
+                    self.speed_pub = self.create_publisher(Int16, '/blade_speed_set', 10)
+                    self.height_pub = self.create_publisher(UInt8, '/blade_height_set', 10)
+                    self.reset_pub = self.create_publisher(String, '/motor_driver_reset', 10)
+                    # Sustained blade target: timer at 10Hz publishes the
+                    # current target speed/height so the chassis (and STM32)
+                    # never lose state mid-spin. None = nothing to publish.
+                    self.target_blade_speed = None
+                    self.target_blade_height = None
+                    self.create_timer(0.1, self._tick_blade)
+                    # RobotStatus passthrough: cache real status from
+                    # robot_decision; republish a modified clone at 50Hz when
+                    # override_active is True. Preserves all fields except the
+                    # ones the STM32 blade-enable gate checks.
+                    self._status_last = None
+                    self.status_pub = self.create_publisher(
+                        RobotStatus, '/robot_decision/robot_status', 10,
+                    )
+                    self.create_subscription(
+                        RobotStatus, '/robot_decision/robot_status',
+                        self._on_status, 10,
+                    )
+                    self.create_timer(0.02, self._republish_status)  # 50Hz
+                    self.override_active = False
                     log(f"[BladeRelay] subscribed /blade_speed_get → MQTT {self._topic}")
+                    log("[BladeRelay] publishers ready: blade + RobotStatus passthrough")
 
                 def _on_msg(self, msg):
                     value = int(msg.data)
@@ -3084,13 +3245,96 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
                     except Exception as ex:
                         log(f"[BladeRelay] publish failed: {ex}")
 
+                def _tick_blade(self):
+                    if self.target_blade_height is not None:
+                        try:
+                            m = UInt8()
+                            m.data = int(self.target_blade_height)
+                            self.height_pub.publish(m)
+                        except Exception as ex:
+                            log(f"[BladeRelay] height tick failed: {ex}")
+                    if self.target_blade_speed is not None:
+                        try:
+                            m = Int16()
+                            m.data = int(self.target_blade_speed)
+                            self.speed_pub.publish(m)
+                        except Exception as ex:
+                            log(f"[BladeRelay] speed tick failed: {ex}")
+
+                def _on_status(self, msg):
+                    # Only cache messages NOT produced by ourselves. rclpy's
+                    # RMW already filters intraprocess loopback, but if it
+                    # didn't we'd snap onto our own modified value and never
+                    # get the real battery/error fields. Identify our own
+                    # clones by the override-marker work_status=10 + COVER —
+                    # robot_decision never sets that combo in manual control.
+                    if (self.override_active
+                            and int(msg.work_status) == 10
+                            and int(msg.merged_work_status) == 1):
+                        return
+                    self._status_last = msg
+
+                def _republish_status(self):
+                    if not self.override_active or self._status_last is None:
+                        return
+                    out = RobotStatus()
+                    src = self._status_last
+                    for slot in src.__slots__:
+                        try:
+                            setattr(out, slot, getattr(src, slot))
+                        except Exception:
+                            pass
+                    # Override the 3 fields the STM32 blade-enable gate
+                    # checks (chassis_control_node forwards UART cmd 0x50
+                    # with mode-byte derived from merged_work_status; STM32
+                    # only enables the cutting motor when this resolves to
+                    # the COVERING state).
+                    out.task_mode = 1
+                    out.work_status = 10
+                    out.merged_work_status = 1  # RobotStatus.COVER
+                    try:
+                        self.status_pub.publish(out)
+                    except Exception as ex:
+                        log(f"[BladeRelay] status republish failed: {ex}")
+
             node = _BladeRelay()
+            _ROS_BLADE_NODE[0] = node
             rclpy.spin(node)
         except Exception as ex:
             log(f"[BladeRelay] crashed: {ex}")
 
     t = threading.Thread(target=_spin, daemon=True, name='blade-relay')
     t.start()
+
+
+def _ros_publish_blade_speed_native(speed: int) -> bool:
+    node = _ROS_BLADE_NODE[0]
+    if node is None:
+        return False
+    try:
+        from std_msgs.msg import Int16  # type: ignore
+        msg = Int16()
+        msg.data = int(speed)
+        node.speed_pub.publish(msg)
+        return True
+    except Exception as ex:
+        log(f"[blade-pub] speed native publish failed: {ex}")
+        return False
+
+
+def _ros_publish_blade_height_native(mm: int) -> bool:
+    node = _ROS_BLADE_NODE[0]
+    if node is None:
+        return False
+    try:
+        from std_msgs.msg import UInt8  # type: ignore
+        msg = UInt8()
+        msg.data = int(mm)
+        node.height_pub.publish(msg)
+        return True
+    except Exception as ex:
+        log(f"[blade-pub] height native publish failed: {ex}")
+        return False
 
 
 # ── Hoofdprogramma ─────────────────────────────────────────────────────────

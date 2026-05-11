@@ -14,8 +14,9 @@ import {
   Platform,
   Alert,
   Modal,
+  Animated,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   GestureDetector,
@@ -55,6 +56,40 @@ function getHoldType(x: number, y: number): number {
   return x < 0 ? 1 : 2; // left(1), right(2)
 }
 
+/** Spinning saw-blade icon — same pattern as HomeScreen's BladeIcon.
+ *  Loops a 700ms 360° rotation while `spinning` is true. Used in the
+ *  manual-control blade banner so the operator can SEE the firmware
+ *  actually engaged the motor (chassis_control_node publishes RPM on
+ *  /blade_speed_get and extended_commands.py relays it as
+ *  sensors.blade_speed). */
+function BladeSpinIcon({ size, color, spinning }: { size: number; color: string; spinning: boolean }) {
+  const rotation = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!spinning) {
+      rotation.stopAnimation();
+      rotation.setValue(0);
+      return;
+    }
+    rotation.setValue(0);
+    const loop = Animated.loop(
+      Animated.timing(rotation, {
+        toValue: 1,
+        duration: 700,
+        useNativeDriver: true,
+        isInteraction: false,
+      }),
+    );
+    loop.start();
+    return () => { loop.stop(); };
+  }, [spinning, rotation]);
+  const spin = rotation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  return (
+    <Animated.View style={{ transform: [{ rotate: spin }] }}>
+      <MaterialCommunityIcons name="saw-blade" size={size} color={color} />
+    </Animated.View>
+  );
+}
+
 export default function JoystickScreen() {
   const insets = useSafeAreaInsets();
   const demo = useDemo();
@@ -66,11 +101,30 @@ export default function JoystickScreen() {
   const mower = activeMower && activeMower.online ? activeMower : null;
   const sn = mower?.sn ?? '';
 
+  // Manual mowing blade-on flag. Hoisted here so busyWithTask can reference
+  // it: when the user turns on the manual blade, extended_commands.py forces
+  // a RobotStatus override (task_mode=1, work_status=10, merged_work_status
+  // =COVER) so STM32 enables the cutting motor. That override propagates
+  // back through mqtt_node → MQTT → the sensor cache, which would normally
+  // trip busyWithTask and lock the joystick. Suppress that lock while the
+  // user explicitly drives the blade themselves — the COVERING state is
+  // synthetic, not a real autonomous task.
+  const [bladeOn, setBladeOn] = useState(false);
+  const bladeOnRef = useRef(false);
+  // Physical blade RPM from chassis `/blade_speed_get` (relayed by
+  // extended_commands.py blade-relay). Drives the saw-blade spin
+  // animation + rpm chip so the operator can tell the firmware actually
+  // engaged the motor, instead of trusting the local toggle.
+  const bladeSpeed = parseInt(mower?.sensors?.blade_speed ?? '0', 10) || 0;
+
   // Disable manual control while the mower is autonomously busy — mowing, mapping,
   // or returning to the dock. Sending start_move / mst during an active task can
   // corrupt the nav2 plan or cause the firmware to enter an inconsistent state.
   // Matches the activity detection logic from HomeScreen.
   const busyWithTask = (() => {
+    // User-driven manual mowing publishes a synthetic COVERING state to
+    // unlock the STM32 blade gate. Don't treat that as autonomous busy.
+    if (bladeOn) return false;
     const s = mower?.sensors ?? {};
     const msg = s.msg ?? '';
     const taskMode = parseInt(s.task_mode ?? '0', 10);
@@ -104,13 +158,6 @@ export default function JoystickScreen() {
   const [speedLevel, setSpeedLevel] = useState(1);
   const [lightOn, setLightOn] = useState(false);
   const { brightness: headlightBrightness } = useHeadlightBrightness();
-  // Manual mowing — blade motor control. OFF by default, user moet bevestigen
-  // via confirm-dialog. Auto-off bij: unmount, joystick-stop, mower-error,
-  // mower-offline, of task-busy. Wordt aangestuurd via extended_commands.py
-  // backchannel (blade_on / blade_off), omdat de standaard MQTT API geen
-  // blade-motor commando buiten coverage tasks heeft.
-  const [bladeOn, setBladeOn] = useState(false);
-  const bladeOnRef = useRef(false);
   // Modal state + last-used cutting height (user cm, 2-9, wire = cm-2)
   const [showBladeSheet, setShowBladeSheet] = useState(false);
   const [bladeHeight, setBladeHeight] = useState(5); // 5cm = level 3 = 60mm
@@ -163,8 +210,14 @@ export default function JoystickScreen() {
   }, [mower?.online, mower?.sensors?.error_status, busyWithTask, sn]);
 
   const toggleBlade = useCallback(() => {
-    if (bladeOnRef.current) {
-      // Turn off — no confirmation, always allowed.
+    // Treat blade as ON whenever EITHER our local toggle says so OR the
+    // chassis is reporting RPM > 0. Auto-off effects can flip
+    // bladeOnRef.current to false while the motor is still spinning (e.g.
+    // a transient busy state during the RobotStatus override race), and
+    // without the bladeSpeed check the banner becomes inert and the user
+    // can't kill the motor — they'd just keep reopening the height sheet.
+    const motorRunning = bladeOnRef.current || bladeSpeed > 0;
+    if (motorRunning) {
       bladeOnRef.current = false;
       setBladeOn(false);
       (async () => {
@@ -184,7 +237,7 @@ export default function JoystickScreen() {
     // één stap. Persist gekozen hoogte in state zodat volgende keer weer
     // dezelfde default verschijnt.
     setShowBladeSheet(true);
-  }, []);
+  }, [bladeSpeed, sn]);
 
   // Start blade met gekozen hoogte. blade_on publisht naar
   // /blade_height_set (chassis inverted index): mm = 90 − level*10,
@@ -347,13 +400,17 @@ export default function JoystickScreen() {
                 <TouchableOpacity
                   onPress={toggleBlade}
                   activeOpacity={0.7}
-                  style={bladeOn ? styles.bladeBtnActive : undefined}
+                  style={(bladeOn || bladeSpeed > 0) ? styles.bladeBtnActive : undefined}
                 >
-                  <Ionicons
-                    name={bladeOn ? 'cut' : 'cut-outline'}
-                    size={22}
-                    color={bladeOn ? colors.red : colors.textMuted}
-                  />
+                  {bladeSpeed > 0 ? (
+                    <BladeSpinIcon size={22} color={colors.red} spinning={true} />
+                  ) : (
+                    <MaterialCommunityIcons
+                      name="saw-blade"
+                      size={22}
+                      color={bladeOn ? colors.amber : colors.textMuted}
+                    />
+                  )}
                 </TouchableOpacity>
               )}
               <TouchableOpacity
@@ -399,16 +456,21 @@ export default function JoystickScreen() {
           )}
         </View>
 
-        {/* BLADE ON banner — heel zichtbaar wanneer het mes draait, plus een
-            tap-om-uit-te-schakelen zodat je zonder naar de kleine header te
-            hoeven ook snel kan stoppen. */}
-        {bladeOn && (
+        {/* Blade banner — separated into "command requested" (local bladeOn
+            toggle) and "actually spinning" (chassis RPM > 0). Spinning
+            saw-blade icon + live RPM mirror the HomeScreen activity card so
+            the operator can tell when the firmware engaged the motor vs
+            when it silently rejected the request (e.g. IMU zero-bias not
+            initialized or mower in protect_mode). */}
+        {(bladeOn || bladeSpeed > 0) && (
           <TouchableOpacity onPress={toggleBlade} activeOpacity={0.85} style={styles.bladeBanner}>
-            <Ionicons name="warning" size={16} color={colors.red} />
-            <Text style={{ color: colors.red, fontWeight: '700', fontSize: 13, flex: 1 }}>
-              Blade is spinning — tap to stop
+            <BladeSpinIcon size={18} color={bladeSpeed > 0 ? colors.red : colors.amber} spinning={bladeSpeed > 0} />
+            <Text style={{ color: bladeSpeed > 0 ? colors.red : colors.amber, fontWeight: '700', fontSize: 13, flex: 1 }}>
+              {bladeSpeed > 0
+                ? `Blade spinning — ${bladeSpeed} rpm — tap to stop`
+                : 'Blade requested — waiting for motor… tap to cancel'}
             </Text>
-            <Ionicons name="stop-circle" size={18} color={colors.red} />
+            <Ionicons name="stop-circle" size={18} color={bladeSpeed > 0 ? colors.red : colors.amber} />
           </TouchableOpacity>
         )}
 
