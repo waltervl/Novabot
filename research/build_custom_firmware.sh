@@ -1466,9 +1466,20 @@ if [ -f "$EXT_SRC" ]; then
 
   # CUSTOM: Extended commands starten (reboot, camera snapshot, system info)
   # Luistert op novabot/extended/<SN> — apart van mqtt_node (onversleuteld)
+  # BladeRelay heeft rclpy nodig — re-source ROS env in subshell
+  # zodat import niet faalt bij boot race (bewezen 2026-05-06 op .100,
+  # zonder dit faalt /blade_speed_set native publish + RobotStatus
+  # override → blade-on werkt niet vanuit manual control).
   if [ -f "/root/novabot/scripts/extended_commands.py" ]; then
-      (sleep 12 && python3 /root/novabot/scripts/extended_commands.py >> $LOGS_PATH/extended_commands.log 2>&1) &
-      echo "Extended commands scheduled (12s delay)" >> $LOGS_PATH/extended_commands.log
+      (sleep 12 && \
+       source /opt/ros/galactic/setup.bash && \
+       source /root/novabot/install/setup.bash && \
+       export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
+       export LD_LIBRARY_PATH=/usr/lib/hbmedia/:/usr/lib/hbbpu/:/usr/lib/sensorlib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:/usr/bpu:/usr/opencv_world_4.6/lib:$LD_LIBRARY_PATH && \
+       export ROS_LOG_DIR=/root/novabot/data/ros2_log && \
+       export ROS_LOCALHOST_ONLY=1 && \
+       python3 /root/novabot/scripts/extended_commands.py >> $LOGS_PATH/extended_commands.log 2>&1) &
+      echo "Extended commands scheduled (12s delay, ROS env explicit)" >> $LOGS_PATH/extended_commands.log
   fi
 EXTEOF
         sed -i '' '/start_test.sh/r /tmp/ext_cmd_start_block.sh' "$RUN_NOVABOT"
