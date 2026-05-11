@@ -748,6 +748,30 @@ export class ApiClient {
     return (res as { versions?: OtaVersion[] }).versions ?? [];
   }
 
+  /** Check the remote manifest for firmware newer than what's installed
+   *  locally. Server-side filters out anything already on disk and sorts
+   *  the result newest-first. Uses the unauth dashboard mirror of the
+   *  admin endpoint so the mobile app doesn't need an admin token. */
+  async checkFirmwareUpdates(): Promise<{
+    available: Array<{ version: string; device_type: string; url: string; filename: string; md5: string; description: string; installed: boolean }>;
+    installed: Array<{ version: string; device_type: string; md5: string }>;
+  }> {
+    return this.request('GET', '/api/dashboard/firmware/check-updates');
+  }
+
+  /** Download a firmware from the remote manifest into the local
+   *  firmware/ directory and register it in the OTA versions table. */
+  async downloadFirmware(args: {
+    url: string;
+    filename: string;
+    version: string;
+    device_type: string;
+    md5: string;
+    description?: string;
+  }): Promise<{ ok: boolean }> {
+    return this.request('POST', '/api/dashboard/firmware/download', { body: args });
+  }
+
   async getFirmwareFiles(): Promise<FirmwareFile[]> {
     return this.request<FirmwareFile[]>('GET', '/api/dashboard/firmware-list');
   }

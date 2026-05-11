@@ -187,9 +187,57 @@ export default function OtaScreen() {
     );
   };
 
-  // Group versions by device type
-  const mowerVersions = versions.filter((v) => v.device_type === 'mower');
-  const chargerVersions = versions.filter((v) => v.device_type === 'charger');
+  // Keep ONLY the newest version per device_type. The user explicitly
+  // doesn't want the OpenNova app to show legacy firmware in the picker
+  // — only the latest mower + latest charger entry are surfaced. Sort
+  // descending and take the first match per type. Intl.Collator numeric
+  // handles both `vX.Y.Z` semver and `vX.Y.Z-custom-N` suffixes.
+  const versionCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  const newest = (type: string) => versions
+    .filter((v) => v.device_type === type)
+    .sort((a, b) => versionCollator.compare(b.version, a.version))[0];
+  const mowerVersions = (() => {
+    const v = newest('mower');
+    return v ? [v] : [];
+  })();
+  const chargerVersions = (() => {
+    const v = newest('charger');
+    return v ? [v] : [];
+  })();
+
+  // Pull the remote manifest, download any firmware newer than what's
+  // installed locally, then reload the version list. Surface in-flight
+  // feedback via the existing `loading` indicator so the refresh button
+  // doesn't need its own spinner.
+  const refreshFromCloud = useCallback(async () => {
+    setLoading(true);
+    try {
+      const url = await getServerUrl();
+      if (!url) return;
+      const api = new ApiClient(url);
+      const updates = await api.checkFirmwareUpdates();
+      const fresh = updates.available.filter((fw) => !fw.installed);
+      for (const fw of fresh) {
+        try {
+          await api.downloadFirmware({
+            url: fw.url,
+            filename: fw.filename,
+            version: fw.version,
+            device_type: fw.device_type,
+            md5: fw.md5,
+            description: fw.description,
+          });
+        } catch {
+          // skip on per-file failure — others may still succeed
+        }
+      }
+      await fetchVersions();
+    } catch {
+      // silently fail
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchVersions]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -203,7 +251,16 @@ export default function OtaScreen() {
           >
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
-          <Text style={styles.title}>Firmware Updates</Text>
+          <Text style={[styles.title, { flex: 1 }]}>Firmware Updates</Text>
+          <TouchableOpacity
+            onPress={refreshFromCloud}
+            disabled={loading}
+            style={{ padding: 8, opacity: loading ? 0.4 : 1 }}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="refresh" size={22} color={colors.emerald} />
+          </TouchableOpacity>
         </View>
 
         {/* Current device versions */}

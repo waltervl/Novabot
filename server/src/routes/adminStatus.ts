@@ -36,7 +36,7 @@ import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
 
-const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.json';
+export const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.json';
 
 /**
  * Issue #26: the published manifest still references the legacy host
@@ -49,7 +49,7 @@ const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.jso
  * Rewrite both at the server boundary so the URL works regardless of when
  * the manifest is regenerated.
  */
-function normaliseFirmwareDownloadUrl(url: string): string {
+export function normaliseFirmwareDownloadUrl(url: string): string {
   return url
     .replace(
       /https?:\/\/download\.ramonvanbruggen\.nl/gi,
@@ -782,7 +782,7 @@ adminStatusRouter.get('/check-server-update', async (_req: AuthRequest, res: Res
 });
 
 /** Fetch JSON from an HTTPS URL */
-function fetchJson(url: string): Promise<unknown> {
+export function fetchJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     https.get(url, { rejectUnauthorized: true }, (resp) => {
       if (resp.statusCode && resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
@@ -806,7 +806,7 @@ function fetchJson(url: string): Promise<unknown> {
 }
 
 /** Download a file from HTTPS URL to local path */
-function downloadFile(url: string, destPath: string): Promise<void> {
+export function downloadFile(url: string, destPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : require('http');
     mod.get(url, { rejectUnauthorized: true }, (resp: any) => {

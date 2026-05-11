@@ -2958,6 +2958,96 @@ dashboardRouter.get('/firmware-list', (_req: Request, res: Response) => {
   }
 });
 
+// GET /api/dashboard/firmware/check-updates — fetch cloud manifest, return
+// versions newer than what's installed locally, sorted newest-first.
+// Open path (no admin gate) so the mobile app can show the same panel as
+// the dashboard's Firmware tab — both poll the same logic via this single
+// helper exported from adminStatus.ts.
+dashboardRouter.get('/firmware/check-updates', async (_req: Request, res: Response) => {
+  try {
+    const { MANIFEST_URL, fetchJson, normaliseFirmwareDownloadUrl } = await import('./adminStatus.js');
+    const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: Array<{ version: string; device_type: string; url: string; md5: string; description: string; filename?: string }> };
+    const remoteFirmwares = manifest.firmwares || [];
+    const localVersions = otaVersionRepo.listAll();
+    const localVersionSet = new Set(localVersions.map((v: { version: string }) => v.version));
+    const cmp = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    const maxInstalledByType = new Map<string, string>();
+    for (const v of localVersions) {
+      const cur = maxInstalledByType.get(v.device_type);
+      if (!cur || cmp.compare(v.version, cur) > 0) maxInstalledByType.set(v.device_type, v.version);
+    }
+    const available = remoteFirmwares
+      .filter(fw => {
+        const localMax = maxInstalledByType.get(fw.device_type);
+        if (!localMax) return true;
+        return cmp.compare(fw.version, localMax) > 0;
+      })
+      .map(fw => ({
+        ...fw,
+        url: normaliseFirmwareDownloadUrl(fw.url),
+        filename: fw.filename || fw.url.split('/').pop() || `firmware_${fw.version}`,
+        installed: localVersionSet.has(fw.version),
+      }))
+      .sort((a, b) => cmp.compare(b.version, a.version));
+    res.json({
+      available,
+      installed: localVersions.map((v: { version: string; device_type: string; md5: string | null }) => ({
+        version: v.version, device_type: v.device_type, md5: v.md5,
+      })),
+    });
+  } catch (err) {
+    console.error('[Dashboard] check-firmware-updates failed:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to fetch manifest' });
+  }
+});
+
+// POST /api/dashboard/firmware/download — pull a firmware from the remote
+// manifest into the local firmware/ directory and register it in the OTA
+// versions table so the OTA flow can pick it up.
+dashboardRouter.post('/firmware/download', async (req: Request, res: Response) => {
+  const { url: rawUrl, filename, version, device_type, md5, description } = req.body as {
+    url?: string; filename?: string; version?: string; device_type?: string; md5?: string; description?: string;
+  };
+  if (!rawUrl || !filename || !version || !device_type) {
+    res.status(400).json({ error: 'url, filename, version, and device_type are required' });
+    return;
+  }
+  try {
+    const { downloadFile, normaliseFirmwareDownloadUrl } = await import('./adminStatus.js');
+    const url = normaliseFirmwareDownloadUrl(rawUrl);
+    mkdirSync(firmwareDir, { recursive: true });
+    const filePath = path.join(firmwareDir, filename);
+    await downloadFile(url, filePath);
+    const fileBuffer = readFileSync(filePath);
+    const fileMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    if (md5 && fileMd5 !== md5) {
+      try { unlinkSync(filePath); } catch { /* ignore */ }
+      res.status(400).json({ error: `MD5 mismatch: expected ${md5}, got ${fileMd5}` });
+      return;
+    }
+    const metaPath = filePath.replace(/\.(deb|bin)$/, '.json');
+    fs.writeFileSync(metaPath, JSON.stringify({
+      version, device_type, filename, md5: fileMd5, description: description || '',
+    }, null, 2));
+    const port = process.env.PORT ?? '3000';
+    const localUrl = `http://${process.env.TARGET_IP ?? '127.0.0.1'}:${port}/api/dashboard/firmware/${encodeURIComponent(filename)}`;
+    const existing = otaVersionRepo.listAll().find((v: { version: string; device_type: string }) => v.version === version && v.device_type === device_type);
+    if (existing) {
+      otaVersionRepo.updateById(existing.id, {
+        download_url: localUrl, md5: fileMd5, release_notes: description || existing.release_notes,
+      });
+    } else {
+      otaVersionRepo.create({
+        version, device_type, download_url: localUrl, md5: fileMd5, release_notes: description || null,
+      });
+    }
+    res.json({ ok: true, version, md5: fileMd5, size: fileBuffer.length });
+  } catch (err) {
+    console.error('[Dashboard] firmware download failed:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Download failed' });
+  }
+});
+
 // ── OTA Version Management ──────────────────────────────────────
 
 // ── Firmware versie extractie uit binaire bestanden ─────────────────────────
