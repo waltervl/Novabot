@@ -15,7 +15,7 @@ import {
   virtualWallRepo,
   otaVersionRepo,
 } from '../db/repositories/index.js';
-import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGpsTrail, getLocalTrail, clearLocalTrail, deviceCache, translateValue, markPinVerified, getDockPose } from '../mqtt/sensorData.js';
+import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGpsTrail, getLocalTrail, clearLocalTrail, deviceCache, translateValue, markPinVerified, getDockPose, getMowingSession, clearMowingSession } from '../mqtt/sensorData.js';
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum } from '../mqtt/mapSync.js';
@@ -1934,6 +1934,54 @@ dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
     if (loraInfo.channel != null) loraChanges.set('lora_channel', String(loraInfo.channel));
     forwardToDashboard(sn, loraChanges);
     console.log(`[DASHBOARD] Cached LoRa config for ${sn}: addr=${loraInfo.addr} channel=${loraInfo.channel}`);
+  }
+
+  // Issue #48: stock firmware doesn't always POST saveCutGrassRecord after
+  // a user-initiated stop, leaving the mowing history empty even though a
+  // session ran. Emit an interrupted-session row ourselves when the app or
+  // dashboard fires a session-ending command for an LFIN mower. If the
+  // firmware later does POST saveCutGrassRecord, it adds a second row —
+  // better two rows than zero. Skip when no session was active.
+  if (sn.startsWith('LFIN') && (
+    'stop_navigation' in command ||
+    'stop_run' in command ||
+    'cancel_navigation' in command
+  )) {
+    try {
+      const cache = deviceCache.get(sn);
+      const session = getMowingSession(sn);
+      if (cache && session && session.lastActiveAt > session.startedAt) {
+        const elapsedMin = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
+        const equip = equipmentRepo.findByMowerSn(sn);
+        const dateTime = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        const heightRaw = parseInt(cache.get('defaultCuttingHeight') ?? cache.get('target_height') ?? '0', 10);
+        const cutGrassHeightCm = Number.isFinite(heightRaw) && heightRaw >= 20
+          ? heightRaw / 10
+          : (Number.isFinite(heightRaw) && heightRaw >= 0 && heightRaw <= 7 ? heightRaw + 2 : null);
+        const areaRaw = parseFloat(cache.get('cov_area') ?? '');
+        const areaM2 = Number.isFinite(areaRaw) && areaRaw > 0 ? areaRaw : null;
+        const mapIds = cache.get('current_map_ids') ?? cache.get('cover_map_id');
+        const mapNames = mapIds ? JSON.stringify([`map${mapIds}`]) : null;
+        messageRepo.createWorkRecordFull(
+          uuidv4(),
+          equip?.user_id ?? 'system',
+          equip?.equipment_id ?? sn,
+          dateTime,
+          elapsedMin,
+          areaM2,
+          cutGrassHeightCm,
+          mapNames,
+          'app',
+          'interrupted artificially',
+          null,
+          null,
+        );
+        clearMowingSession(sn);
+        console.log(`[STOP-RECORD] ${sn} interrupted-session row: ${elapsedMin}min area=${areaM2 ?? '-'}m²`);
+      }
+    } catch (err) {
+      console.warn('[STOP-RECORD] failed:', err);
+    }
   }
 
   if (shouldEncrypt) {
