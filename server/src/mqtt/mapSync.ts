@@ -323,7 +323,11 @@ export function publishEncryptedOnTopic(topic: string, sn: string, message: Reco
   const json = JSON.stringify(message);
   let payload: Buffer;
 
-  if (sn.startsWith('LFI')) {
+  // Mirror publishToDevice's AES capability check — stock v5.x mowers and
+  // charger v0.3.x publish plain JSON on Dart/Receive_mqtt/<SN>, so when
+  // we simulate a device response we must match that wire format. Sending
+  // AES at the app makes it decrypt junk on those firmwares.
+  if (sn.startsWith('LFI') && isAesCapable(sn)) {
     const KEY_PREFIX = 'abcdabcd1234';
     const IV = Buffer.from('abcd1234abcd1234', 'utf8');
     const key = Buffer.from(KEY_PREFIX + sn.slice(-4), 'utf8');

@@ -1,17 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Mock isDeviceOnline + publishRawToDevice so we can hit startMowing
-// without an actual aedes broker.
+// Mock isDeviceOnline + publishToDevice so we can hit startMowing
+// without an actual aedes broker. mowingService now delegates to
+// publishToDevice (which handles AES vs plain JSON internally based
+// on firmware version), so the test asserts on that call instead of
+// the lower-level publishRawToDevice.
 vi.mock('../../mqtt/broker.js', () => ({
   isDeviceOnline: vi.fn(() => true),
 }));
 vi.mock('../../mqtt/mapSync.js', () => ({
-  publishRawToDevice: vi.fn(),
+  publishToDevice: vi.fn(),
 }));
 
 import { isMowerBusy, startMowing } from '../../services/mowingService.js';
 import { deviceCache } from '../../mqtt/sensorData.js';
-import { publishRawToDevice } from '../../mqtt/mapSync.js';
+import { publishToDevice } from '../../mqtt/mapSync.js';
 
 const sn = 'LFIN1234567890';
 
@@ -78,19 +81,19 @@ describe('startMowing busy guard', () => {
     const result = startMowing({ sn });
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/busy/i);
-    expect(publishRawToDevice).not.toHaveBeenCalled();
+    expect(publishToDevice).not.toHaveBeenCalled();
   });
 
   it('publishes when mower is idle', () => {
     setSensors({ work_status: '9', msg: 'Mode:DOCK Work:WAIT' });
     const result = startMowing({ sn });
     expect(result.ok).toBe(true);
-    expect(publishRawToDevice).toHaveBeenCalledOnce();
+    expect(publishToDevice).toHaveBeenCalledOnce();
   });
 
   it('publishes when no cache exists yet (first start after boot)', () => {
     const result = startMowing({ sn });
     expect(result.ok).toBe(true);
-    expect(publishRawToDevice).toHaveBeenCalledOnce();
+    expect(publishToDevice).toHaveBeenCalledOnce();
   });
 });

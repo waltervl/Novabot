@@ -10,8 +10,7 @@
  * - App API (start via OpenNova/Novabot app)
  */
 
-import crypto from 'crypto';
-import { publishRawToDevice } from '../mqtt/mapSync.js';
+import { publishToDevice } from '../mqtt/mapSync.js';
 import { isDeviceOnline } from '../mqtt/broker.js';
 import { deviceCache } from '../mqtt/sensorData.js';
 
@@ -55,20 +54,14 @@ export interface MowingResult {
   error?: string;
 }
 
-/** Encrypt and publish a command — same as dashboard command handler */
-function sendEncryptedCommand(sn: string, command: Record<string, unknown>): void {
-  const KEY_PREFIX = 'abcdabcd1234';
-  const IV = Buffer.from('abcd1234abcd1234', 'utf8');
-  const key = Buffer.from(KEY_PREFIX + sn.slice(-4), 'utf8');
-  const json = JSON.stringify(command);
-  const plaintext = Buffer.from(json, 'utf8');
-  const padded = Buffer.alloc(Math.ceil(plaintext.length / 16) * 16, 0);
-  plaintext.copy(padded);
-  const cipher = crypto.createCipheriv('aes-128-cbc', key, IV);
-  cipher.setAutoPadding(false);
-  const encrypted = Buffer.concat([cipher.update(padded), cipher.final()]);
-  publishRawToDevice(sn, encrypted);
-  console.log(`[MowingService] Sent ${Object.keys(command)[0]} to ${sn} (${encrypted.length}B encrypted)`);
+/** Publish a command to the mower. Delegates to publishToDevice which
+ *  checks isAesCapable() and falls back to plain JSON for stock v5.x
+ *  mowers and charger v0.3.x — both silently drop AES payloads, so
+ *  the schedule runner + start_navigation flow previously failed
+ *  invisibly on those firmwares (issues #45 / #49). */
+function sendCommand(sn: string, command: Record<string, unknown>): void {
+  publishToDevice(sn, command);
+  console.log(`[MowingService] Sent ${Object.keys(command)[0]} to ${sn}`);
 }
 
 /**
@@ -100,7 +93,7 @@ export function startMowing(params: MowingParams): MowingResult {
   const cutterhigh = Math.max(0, displayCm - 2);
 
   const cmdNum = Date.now() % 100000;
-  sendEncryptedCommand(sn, {
+  sendCommand(sn, {
     start_navigation: {
       mapName: 'test',
       cutterhigh,
@@ -120,7 +113,7 @@ export function stopMowing(sn: string): MowingResult {
   if (!sn) return { ok: false, error: 'sn required' };
 
   const cmdNum = Date.now() % 100000;
-  sendEncryptedCommand(sn, {
+  sendCommand(sn, {
     stop_navigation: { cmd_num: cmdNum },
   });
 
@@ -135,9 +128,9 @@ export function goHome(sn: string): MowingResult {
   if (!sn) return { ok: false, error: 'sn required' };
 
   const cmdNum = Date.now() % 100000;
-  sendEncryptedCommand(sn, { go_pile: {} });
+  sendCommand(sn, { go_pile: {} });
   setTimeout(() => {
-    sendEncryptedCommand(sn, {
+    sendCommand(sn, {
       go_to_charge: {
         cmd_num: cmdNum,
         chargerpile: { latitude: 200, longitude: 200 },
