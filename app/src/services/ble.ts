@@ -493,9 +493,20 @@ export async function provisionDevice(
     await sleep(1000);
 
     onProgress('commit', 'Saving settings...');
+    // Use the operator's device timezone instead of the previous hard-coded
+    // 'Europe/Amsterdam' default. Users in other zones (e.g. Europe/Paris,
+    // reported in issue #56) were getting their schedules misaligned and
+    // mqtt_node's novabot_timezone.txt out of sync with json_config.json.
+    // Intl returns the IANA zone the OS exposes — same format the firmware
+    // expects in tz fields.
+    let deviceTz = 'Europe/Amsterdam';
+    try {
+      const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (detected) deviceTz = detected;
+    } catch { /* fall back to default */ }
     const cfgPayload = isCharger
       ? JSON.stringify({ set_cfg_info: 1 })
-      : JSON.stringify({ set_cfg_info: { cfg_value: 1, tz: 'Europe/Amsterdam' } });
+      : JSON.stringify({ set_cfg_info: { cfg_value: 1, tz: deviceTz } });
     await cmd(cfgPayload, 'set_cfg_info', 15000);
 
     // Best-effort explicit reboot. Stock firmware sometimes only restarts

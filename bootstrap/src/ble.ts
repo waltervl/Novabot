@@ -455,10 +455,18 @@ export async function provisionDevice(params: ProvisionParams, io: IOServer): Pr
     io.emit('ble-progress', { phase: 'commit', message: 'Saving settings...' });
 
     // Charger: { set_cfg_info: 1 }
-    // Mower: { set_cfg_info: { cfg_value: 1, tz: "Europe/Amsterdam" } }
+    // Mower: { set_cfg_info: { cfg_value: 1, tz: <operator timezone> } }
     // Note: tz in BLE set_cfg_info is safe — the OTA bug is only about tz in MQTT ota_upgrade_cmd
+    // Detect the bootstrap host's timezone instead of hard-coding Amsterdam
+    // so wizard users outside NL (issue #56: France) end up with the right
+    // tz in mqtt_node's json_config.json + novabot_timezone.txt.
+    let bootstrapTz = 'Europe/Amsterdam';
+    try {
+      const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (detected) bootstrapTz = detected;
+    } catch { /* fall back to default */ }
     const cfgPayload = deviceType === 'mower'
-      ? JSON.stringify({ set_cfg_info: { cfg_value: 1, tz: 'Europe/Amsterdam' } })
+      ? JSON.stringify({ set_cfg_info: { cfg_value: 1, tz: bootstrapTz } })
       : JSON.stringify({ set_cfg_info: 1 });
 
     try {
