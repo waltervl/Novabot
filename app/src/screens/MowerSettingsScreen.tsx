@@ -238,6 +238,18 @@ export default function MowerSettingsScreen() {
     }));
   }, [mower?.sn, sensorJson]);
 
+  // useHeadlightBrightness hydrates the brightness from SecureStore
+  // asynchronously, so the initial savedSnapshot (255) didn't match the
+  // hook's value (e.g. last-saved 100) and isDirty stuck at true,
+  // popping the "Unsaved changes" dialog on every back-press. Mirror
+  // the hook's value into savedSnapshot whenever it changes so the
+  // baseline tracks the persisted preference.
+  useEffect(() => {
+    setSavedSnapshot(prev => prev.headlightBrightness === headlightBrightness
+      ? prev
+      : { ...prev, headlightBrightness });
+  }, [headlightBrightness]);
+
   const isDirty = sensitivity !== savedSnapshot.sensitivity
     || pathDirection !== savedSnapshot.pathDirection
     || joystickSpeed !== savedSnapshot.joystickSpeed
@@ -742,8 +754,12 @@ export default function MowerSettingsScreen() {
             </TouchableOpacity>
             <TouchableOpacity style={styles.optionRow} onPress={() => setTzPickerOpen(true)} activeOpacity={0.7}>
               <Ionicons name="time-outline" size={20} color={colors.textMuted} />
-              <Text style={[styles.optionLabel, { flex: 1, marginLeft: 12 }]}>Timezone</Text>
-              <Text style={{ color: colors.text, fontSize: 14, marginRight: 6 }}>{timezone}</Text>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.optionLabel}>Timezone</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
+                  {timezone}
+                </Text>
+              </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
@@ -825,12 +841,12 @@ export default function MowerSettingsScreen() {
             activeOpacity={0.85}
           >
             <Ionicons
-              name={sending === 'save' ? 'sync' : isDirty ? 'save' : 'checkmark'}
+              name={sending === 'save' ? 'sync' : 'save-outline'}
               size={18}
               color={colors.white}
             />
             <Text style={styles.saveButtonText}>
-              {sending === 'save' ? 'Saving…' : isDirty ? 'Save changes' : 'All settings saved'}
+              {sending === 'save' ? 'Saving…' : isDirty ? 'Save changes' : 'Save'}
             </Text>
           </TouchableOpacity>
         </View>
