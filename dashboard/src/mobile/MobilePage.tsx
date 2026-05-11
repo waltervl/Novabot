@@ -90,10 +90,15 @@ function deriveMower(devices: Map<string, DeviceState>): MowerDerived {
     localizationState: s.localization_state,
     lat: s.latitude ? parseFloat(s.latitude) : null,
     lng: s.longitude ? parseFloat(s.longitude) : null,
-    // Heading from firmware theta (radians, ENU); convert to degrees for
-    // the MiniMap renderer. Issue #50: previously read mower_z which is
-    // the Z-axis position so the icon was pinned to north.
-    heading: (parseFloat(s.theta ?? '0') || 0) * 180 / Math.PI,
+    // Heading from firmware theta (radians, ENU: 0=East, π/2=North);
+    // convert ENU rad → compass deg (0=North) so the MiniMap icon
+    // helper's existing -90 offset lines the PNG up with the map.
+    // Issue #50: earlier code converted to ENU deg and skipped the
+    // compass step so the arrow was 90° off real heading.
+    heading: (() => {
+      const enuDeg = (parseFloat(s.theta ?? '0') || 0) * 180 / Math.PI;
+      return ((90 - enuDeg) % 360 + 360) % 360;
+    })(),
     chargerLat: charger?.sensors.latitude ? parseFloat(charger.sensors.latitude) : null,
     chargerLng: charger?.sensors.longitude ? parseFloat(charger.sensors.longitude) : null,
     mowingProgress: parseInt(s.mowing_progress ?? '0', 10) || 0,

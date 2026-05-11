@@ -934,14 +934,16 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
     return Number.isFinite(lat) && Number.isFinite(lng) ? [[lat, lng] as [number, number]] : [];
   });
 
-  // Mower heading icon — `heading` carries the firmware `theta` field
-  // (radians, ENU convention). Issue #50: previously read mower_z which is
-  // the Z-axis position, so the icon was always pinned to north. Convert
-  // radians → degrees here; makeMowerIcon then applies the -90 offset to
-  // align the PNG (which faces left) with the rotation frame.
+  // Mower heading icon — `heading` carries the firmware `theta` field in
+  // radians using the ENU convention (0 = East, π/2 = North). The icon
+  // helper expects compass degrees (0 = North, 90 = East), so we have to
+  // convert ENU → compass before passing it in. Earlier code converted
+  // radians → degrees but skipped the ENU→compass step, leaving the
+  // arrow rotated 90° clockwise from reality (issue #50 follow-up).
   const thetaRad = heading ? parseFloat(heading) : 0;
-  const headingDeg = isNaN(thetaRad) ? 0 : (thetaRad * 180 / Math.PI);
-  const mowerIcon = useMemo(() => makeMowerIcon(headingDeg), [headingDeg]);
+  const enuDeg = isNaN(thetaRad) ? 0 : (thetaRad * 180 / Math.PI);
+  const compassDeg = ((90 - enuDeg) % 360 + 360) % 360;
+  const mowerIcon = useMemo(() => makeMowerIcon(compassDeg), [compassDeg]);
   // Coverage stats per polygon (trail points inside each work area)
   const coverageStats = useMemo(() => {
     if (trail.length === 0) return new Map<string, { points: number; area: number }>();
