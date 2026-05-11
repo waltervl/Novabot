@@ -10,6 +10,8 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,6 +44,31 @@ const CONTROLLER_LEVELS = [
   { value: 300, label: 'High' },
 ];
 
+// Common IANA timezones for the picker. The auto-detected device tz is
+// prepended dynamically at render time so the operator can pick "their"
+// zone with a single tap. Curated short-list because mqtt_node's
+// set_cfg_info only validates that the string is a parseable IANA name —
+// we don't need to ship the full 600+ tz database here.
+const COMMON_TIMEZONES = [
+  'Europe/Amsterdam', 'Europe/Berlin', 'Europe/Brussels', 'Europe/Paris',
+  'Europe/London', 'Europe/Madrid', 'Europe/Rome', 'Europe/Vienna',
+  'Europe/Warsaw', 'Europe/Stockholm', 'Europe/Helsinki', 'Europe/Athens',
+  'Europe/Lisbon', 'Europe/Zurich', 'Europe/Prague', 'Europe/Dublin',
+  'America/New_York', 'America/Chicago', 'America/Denver',
+  'America/Los_Angeles', 'America/Toronto', 'America/Vancouver',
+  'America/Sao_Paulo', 'America/Mexico_City',
+  'Australia/Sydney', 'Australia/Melbourne', 'Australia/Perth',
+  'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Singapore', 'Asia/Dubai',
+];
+
+function detectDeviceTimezone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) return tz;
+  } catch { /* RN/Hermes without ICU falls through */ }
+  return 'Europe/Amsterdam';
+}
+
 export default function MowerSettingsScreen() {
   const styles = useStyles(makeStyles);
   const { colors } = useTheme();
@@ -64,6 +91,13 @@ export default function MowerSettingsScreen() {
   const [joystickHandling, setJoystickHandling] = useState(300);
   const [headlight, setHeadlight] = useState(false);
   const [sound, setSound] = useState(false);
+  // Mower IANA timezone — sent via set_cfg_info on Save. Default to the
+  // operator's device tz so a fresh install lands in the right zone
+  // without manual picker interaction. Existing users (e.g. issue #56
+  // operator in Paris whose firmware still reports Amsterdam) can pick
+  // their zone here without re-running BLE provisioning.
+  const [timezone, setTimezone] = useState<string>(() => detectDeviceTimezone());
+  const [tzPickerOpen, setTzPickerOpen] = useState(false);
   const { brightness: headlightBrightness, setBrightness: setHeadlightBrightness } = useHeadlightBrightness();
   const [sending, setSending] = useState('');
 
@@ -71,7 +105,7 @@ export default function MowerSettingsScreen() {
   // "dirty" indicator. Updated whenever sensor data syncs back in or a
   // Save call completes. Compared against current slider state to know
   // if there are unsent changes.
-  const [savedSnapshot, setSavedSnapshot] = useState({
+  const [savedSnapshot, setSavedSnapshot] = useState(() => ({
     sensitivity: 2,
     pathDirection: 0,
     joystickSpeed: 300,
@@ -80,7 +114,8 @@ export default function MowerSettingsScreen() {
     headlightBrightness: 255,
     sound: false,
     cuttingHeight: 50,
-  });
+    timezone: detectDeviceTimezone(),
+  }));
 
   // Rain auto-pause — loaded from /api/dashboard/rain-settings/:sn, per-mower.
   const [rainEnabled, setRainEnabled] = useState(true);
@@ -202,7 +237,8 @@ export default function MowerSettingsScreen() {
     || headlight !== savedSnapshot.headlight
     || headlightBrightness !== savedSnapshot.headlightBrightness
     || sound !== savedSnapshot.sound
-    || cuttingHeight !== savedSnapshot.cuttingHeight;
+    || cuttingHeight !== savedSnapshot.cuttingHeight
+    || timezone !== savedSnapshot.timezone;
 
   const handleSaveAll = useCallback(async () => {
     if (!mowerSn || !mowerOnline) return;
@@ -223,6 +259,15 @@ export default function MowerSettingsScreen() {
       // para.value as one block so omitting a field resets it to 0; sending
       // them together preserves every slider in one shot.
       await api.sendCommand(mowerSn, { set_para_info: params });
+      // Push the operator-selected timezone via set_cfg_info. mqtt_node
+      // writes this to json_config.json's config.value.tz AND to
+      // /userdata/ota/novabot_timezone.txt, keeping both files in sync —
+      // issue #56's operator (Paris) was stuck with Amsterdam after BLE
+      // provisioning hard-coded NL. Only send when actually changed so
+      // we don't trigger mqtt_node's network reset on every save.
+      if (timezone && timezone !== savedSnapshot.timezone) {
+        await api.sendCommand(mowerSn, { set_cfg_info: { cfg_value: 1, tz: timezone } });
+      }
       // Mirror to server sensor cache so values survive a re-open of the
       // screen without waiting for a fresh sensor frame.
       await fetch(`${url}/api/dashboard/sensor-override/${encodeURIComponent(mowerSn)}`, {
@@ -240,7 +285,7 @@ export default function MowerSettingsScreen() {
       });
       setSavedSnapshot({
         sensitivity, pathDirection, joystickSpeed, joystickHandling,
-        headlight, headlightBrightness, sound, cuttingHeight,
+        headlight, headlightBrightness, sound, cuttingHeight, timezone,
       });
       // Let the user briefly see "All settings saved" before popping back —
       // mirrors stock Novabot's Confirm flow which also pops the page after
@@ -248,7 +293,7 @@ export default function MowerSettingsScreen() {
       setTimeout(() => { navigation.goBack(); }, 700);
     } catch { /* swallow — UI keeps dirty state so user can retry */ }
     finally { setSending(''); }
-  }, [mowerSn, mowerOnline, sound, headlight, headlightBrightness, pathDirection, sensitivity, joystickSpeed, joystickHandling, cuttingHeight, navigation]);
+  }, [mowerSn, mowerOnline, sound, headlight, headlightBrightness, pathDirection, sensitivity, joystickSpeed, joystickHandling, cuttingHeight, timezone, savedSnapshot.timezone, navigation]);
 
   // Intercept hardware-back / swipe-back / nav.pop when the user has
   // un-saved slider changes. Prompts Cancel / Discard / Save instead of
@@ -687,8 +732,76 @@ export default function MowerSettingsScreen() {
                 <View style={[styles.toggleThumb, sound && styles.toggleThumbActive]} />
               </View>
             </TouchableOpacity>
+            <TouchableOpacity style={styles.optionRow} onPress={() => setTzPickerOpen(true)} activeOpacity={0.7}>
+              <Ionicons name="time-outline" size={20} color={colors.textMuted} />
+              <Text style={[styles.optionLabel, { flex: 1, marginLeft: 12 }]}>Timezone</Text>
+              <Text style={{ color: colors.text, fontSize: 14, marginRight: 6 }}>{timezone}</Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
           </View>
         </View>
+
+        {/* Timezone picker modal — operator picks IANA zone, sent via
+            set_cfg_info on Save (mqtt_node writes json_config.json +
+            novabot_timezone.txt). Auto-detected device tz is pinned to
+            the top so the common case is one tap. */}
+        <Modal
+          visible={tzPickerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setTzPickerOpen(false)}
+        >
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 }}
+            activeOpacity={1}
+            onPress={() => setTzPickerOpen(false)}
+          >
+            <TouchableOpacity
+              activeOpacity={1}
+              onPress={(e) => e.stopPropagation()}
+              style={{ width: '100%', maxWidth: 420, maxHeight: '80%', backgroundColor: colors.cardBg, borderRadius: 16, padding: 16 }}
+            >
+              <Text style={{ color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 12 }}>Select timezone</Text>
+              <FlatList
+                data={(() => {
+                  const detected = detectDeviceTimezone();
+                  const list = [detected, ...COMMON_TIMEZONES.filter(tz => tz !== detected)];
+                  return list;
+                })()}
+                keyExtractor={(item) => item}
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity
+                    onPress={() => { setTimezone(item); setTzPickerOpen(false); }}
+                    style={{
+                      paddingVertical: 12, paddingHorizontal: 12,
+                      borderRadius: 8,
+                      backgroundColor: item === timezone ? 'rgba(16,185,129,0.15)' : 'transparent',
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      {index === 0 && (
+                        <Ionicons name="locate" size={14} color={colors.emerald} style={{ marginRight: 6 }} />
+                      )}
+                      <Text style={{ color: item === timezone ? colors.emerald : colors.text, fontSize: 14, flex: 1 }}>
+                        {item}
+                      </Text>
+                      {item === timezone && (
+                        <Ionicons name="checkmark" size={18} color={colors.emerald} />
+                      )}
+                    </View>
+                    {index === 0 && (
+                      <Text style={{ color: colors.textMuted, fontSize: 11, marginLeft: 20, marginTop: 2 }}>
+                        Auto-detected from this device
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+                style={{ maxHeight: 480 }}
+              />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </Modal>
 
         {/* Sticky Save button — collects EVERY slider value and sends one
             `set_para_info` so mqtt_node never resets the rest of the para
