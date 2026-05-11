@@ -783,7 +783,7 @@ export default function MowerSettingsScreen() {
             <TouchableOpacity
               activeOpacity={1}
               onPress={(e) => e.stopPropagation()}
-              style={{ width: '100%', maxWidth: 420, maxHeight: '80%', backgroundColor: colors.cardBg, borderRadius: 16, padding: 16 }}
+              style={{ width: '100%', maxWidth: 420, maxHeight: '80%', backgroundColor: colors.card, borderRadius: 16, padding: 16 }}
             >
               <Text style={{ color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 12 }}>Select timezone</Text>
               <FlatList

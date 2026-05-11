@@ -485,6 +485,26 @@ function ScheduleEditor({
   const toggleDay = (d: number) => {
     setSelectedDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]);
   };
+
+  // Issue #51: "every N days" alternative to weekday-of-week scheduling.
+  // mode='interval' makes the server-side runner fire on dates spaced by
+  // intervalDays starting from intervalAnchorDate (YYYY-MM-DD). Weekday
+  // mode stays the default for backwards compatibility.
+  const initialIntervalDays = isEdit ? (schedule!.intervalDays ?? 0) : 0;
+  const [mode, setMode] = useState<'weekly' | 'interval'>(initialIntervalDays > 0 ? 'interval' : 'weekly');
+  const [intervalDays, setIntervalDays] = useState<string>(
+    String(initialIntervalDays > 0 ? initialIntervalDays : 2),
+  );
+  const todayLocalIso = (() => {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  })();
+  const [intervalAnchorDate, setIntervalAnchorDate] = useState<string>(
+    isEdit ? (schedule!.intervalAnchorDate ?? todayLocalIso) : todayLocalIso,
+  );
   const [hour, setHour] = useState(initialHour);
   const [minute, setMinute] = useState(initialMinute);
   const [duration, setDuration] = useState(String(schedule?.duration_minutes ?? 60));
@@ -551,17 +571,39 @@ function ScheduleEditor({
         rainPause: rainPause,
       };
 
-      if (selectedDays.length === 0) {
-        appAlertCompat.alert('Error', 'Select at least one day');
-        return;
+      // Decide between weekday mode and interval mode. In interval mode
+      // intervalDays must be ≥ 1 and the anchor date must be a valid
+      // YYYY-MM-DD; we send empty weekdays so the server uses the
+      // interval rule. Weekday mode requires at least one selected day.
+      let extra: Record<string, unknown> = {};
+      if (mode === 'interval') {
+        const n = parseInt(intervalDays, 10);
+        if (!Number.isFinite(n) || n < 1) {
+          appAlertCompat.alert('Error', 'Interval must be at least 1 day');
+          return;
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(intervalAnchorDate)) {
+          appAlertCompat.alert('Error', 'Start date must look like YYYY-MM-DD');
+          return;
+        }
+        extra = {
+          weekdays: [],
+          intervalDays: n,
+          intervalAnchorDate,
+        };
+      } else {
+        if (selectedDays.length === 0) {
+          appAlertCompat.alert('Error', 'Select at least one day');
+          return;
+        }
+        const sortedDays = [...selectedDays].sort((a, b) => a - b);
+        extra = { weekdays: sortedDays, intervalDays: 0, intervalAnchorDate: null };
       }
 
-      const sortedDays = [...selectedDays].sort((a, b) => a - b);
-
       if (isEdit) {
-        await api.updateSchedule(mowerSn, schedule!.id, { ...base, weekdays: sortedDays });
+        await api.updateSchedule(mowerSn, schedule!.id, { ...base, ...extra });
       } else {
-        await api.createSchedule(mowerSn, { ...base, weekdays: sortedDays });
+        await api.createSchedule(mowerSn, { ...base, ...extra });
       }
       onSaved();
     } catch (e) {
@@ -615,20 +657,69 @@ function ScheduleEditor({
             ))}
           </ScrollView>
 
-          <Text style={editorStyles.label}>{isEdit ? t('day') : (t('days') || 'Days')}</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={editorStyles.dayRow}>
-            {DAYS.map((d, i) => (
-              <TouchableOpacity
-                key={i}
-                style={[editorStyles.dayChip, selectedDays.includes(i) && editorStyles.dayChipActive]}
-                onPress={() => toggleDay(i)}
-              >
-                <Text style={[editorStyles.dayChipText, selectedDays.includes(i) && editorStyles.dayChipTextActive]}>
-                  {d}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+          <Text style={editorStyles.label}>Repeat</Text>
+          <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+            <TouchableOpacity
+              style={[editorStyles.dayChip, mode === 'weekly' && editorStyles.dayChipActive, { flex: 1, alignItems: 'center' }]}
+              onPress={() => setMode('weekly')}
+            >
+              <Text style={[editorStyles.dayChipText, mode === 'weekly' && editorStyles.dayChipTextActive]}>
+                Weekdays
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[editorStyles.dayChip, mode === 'interval' && editorStyles.dayChipActive, { flex: 1, alignItems: 'center' }]}
+              onPress={() => setMode('interval')}
+            >
+              <Text style={[editorStyles.dayChipText, mode === 'interval' && editorStyles.dayChipTextActive]}>
+                Every N days
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {mode === 'weekly' ? (
+            <>
+              <Text style={editorStyles.label}>{isEdit ? t('day') : (t('days') || 'Days')}</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={editorStyles.dayRow}>
+                {DAYS.map((d, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={[editorStyles.dayChip, selectedDays.includes(i) && editorStyles.dayChipActive]}
+                    onPress={() => toggleDay(i)}
+                  >
+                    <Text style={[editorStyles.dayChipText, selectedDays.includes(i) && editorStyles.dayChipTextActive]}>
+                      {d}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </>
+          ) : (
+            <>
+              <Text style={editorStyles.label}>Every</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <TextInput
+                  style={[editorStyles.input, { flex: 1 }]}
+                  value={intervalDays}
+                  onChangeText={(v) => setIntervalDays(v.replace(/[^0-9]/g, ''))}
+                  keyboardType="number-pad"
+                  placeholder="2"
+                  placeholderTextColor={colors.textMuted}
+                />
+                <Text style={{ color: colors.text, fontSize: 14 }}>days</Text>
+              </View>
+              <Text style={editorStyles.label}>Starting from</Text>
+              <TextInput
+                style={editorStyles.input}
+                value={intervalAnchorDate}
+                onChangeText={setIntervalAnchorDate}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </>
+          )}
 
           {/* Time */}
           <Text style={editorStyles.label}>{t('startTime')}</Text>

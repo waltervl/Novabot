@@ -69,6 +69,10 @@ export interface Schedule {
   taskMode?: number;
   lastTriggeredAt?: string | null;
   scheduleName?: string | null;
+  /** #51: "every N days" mode. 0 = use weekdays. */
+  intervalDays?: number;
+  /** YYYY-MM-DD anchor date for interval mode. */
+  intervalAnchorDate?: string | null;
   /** Server-derived: this schedule is the one currently being executed by the mower. */
   currentlyRunning?: boolean;
   /** Server-derived: ISO timestamp when the rain monitor paused this schedule's session, or null. */
@@ -161,6 +165,8 @@ export interface ScheduleWritePayload {
   workMode?: number;
   taskMode?: number;
   rainPause?: boolean;
+  intervalDays?: number;
+  intervalAnchorDate?: string | null;
   start_hour?: number;
   start_minute?: number;
   duration_minutes?: number;
@@ -223,6 +229,8 @@ function normalizeSchedule(input: ScheduleLike): Schedule {
     workMode: input.workMode,
     taskMode: input.taskMode,
     lastTriggeredAt: input.lastTriggeredAt ?? null,
+    intervalDays: (input as { intervalDays?: number }).intervalDays ?? 0,
+    intervalAnchorDate: (input as { intervalAnchorDate?: string | null }).intervalAnchorDate ?? null,
     created_at: createdAt,
     createdAt,
     updated_at: updatedAt,

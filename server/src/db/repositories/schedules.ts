@@ -27,6 +27,11 @@ export interface ScheduleRow {
   alternate_direction: number;
   alternate_step: number;
   last_triggered_at: string | null;
+  /** "Every N days" mode. 0 = use weekdays (legacy behaviour). */
+  interval_days: number;
+  /** YYYY-MM-DD anchor date when interval_days > 0; first day the
+   *  schedule fires. */
+  interval_anchor_date: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -166,8 +171,9 @@ export class ScheduleRepository {
         schedule_id, mower_sn, schedule_name, start_time, end_time, weekdays, enabled,
         map_id, map_name, cutting_height, path_direction, work_mode, task_mode,
         edge_offset, rain_pause, rain_threshold_mm, rain_threshold_probability,
-        rain_check_hours, alternate_direction, alternate_step
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        rain_check_hours, alternate_direction, alternate_step,
+        interval_days, interval_anchor_date
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.schedule_id, data.mower_sn, data.schedule_name ?? null,
       data.start_time, data.end_time ?? null, data.weekdays ?? '[]', data.enabled ?? 1,
@@ -176,6 +182,7 @@ export class ScheduleRepository {
       data.edge_offset ?? 0, data.rain_pause ?? 0, data.rain_threshold_mm ?? 0.5,
       data.rain_threshold_probability ?? 50, data.rain_check_hours ?? 2,
       data.alternate_direction ?? 0, data.alternate_step ?? 90,
+      data.interval_days ?? 0, data.interval_anchor_date ?? null,
     );
   }
 
@@ -202,6 +209,8 @@ export class ScheduleRepository {
       ['rain_check_hours', data.rain_check_hours],
       ['alternate_direction', data.alternate_direction],
       ['alternate_step', data.alternate_step],
+      ['interval_days', data.interval_days],
+      ['interval_anchor_date', data.interval_anchor_date],
     ];
 
     for (const [key, value] of updatable) {
@@ -242,6 +251,8 @@ export class ScheduleRepository {
       ['rain_check_hours', data.rain_check_hours],
       ['alternate_direction', data.alternate_direction],
       ['alternate_step', data.alternate_step],
+      ['interval_days', data.interval_days],
+      ['interval_anchor_date', data.interval_anchor_date],
     ];
 
     for (const [key, value] of updatable) {

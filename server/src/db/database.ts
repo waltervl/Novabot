@@ -564,6 +564,19 @@ export function initDb(): void {
     catch { /* kolom bestaat al */ }
   }
 
+  // Feature #51: "every N days" schedule mode. interval_days > 0 takes
+  // precedence over weekdays — the schedule fires when
+  // (today_local - interval_anchor_date) is a multiple of interval_days.
+  // anchor_date is the first date the schedule should fire (YYYY-MM-DD).
+  // 0 keeps the legacy weekday behaviour.
+  for (const col of [
+    'interval_days INTEGER DEFAULT 0',
+    'interval_anchor_date TEXT',
+  ]) {
+    try { db.exec(`ALTER TABLE dashboard_schedules ADD COLUMN ${col}`); }
+    catch { /* kolom bestaat al */ }
+  }
+
   // Feature: actieve regenpauze sessies (rain monitor → go_to_charge → herstart na regen)
   db.exec(`
     CREATE TABLE IF NOT EXISTS rain_sessions (

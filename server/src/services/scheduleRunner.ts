@@ -23,10 +23,32 @@ function getChargerGps(mowerSn: string): { lat: number; lng: number } | null {
   return mapRepo.getChargerGps(mowerSn);
 }
 
+function isIntervalDayMatch(row: ScheduleRow, now: Date): boolean {
+  // Issue #51: "every N days" mode. Anchor + interval define which calendar
+  // days trigger; weekdays array is ignored when interval_days > 0. Compare
+  // local-midnight dates so DST changes / timezone offsets don't shift the
+  // count by ±1 day.
+  if (!row.interval_days || row.interval_days <= 0) return false;
+  if (!row.interval_anchor_date) return false;
+  const [anchorY, anchorM, anchorD] = row.interval_anchor_date.split('-').map(Number);
+  if (!Number.isFinite(anchorY) || !Number.isFinite(anchorM) || !Number.isFinite(anchorD)) return false;
+  const anchorMidnight = new Date(anchorY, anchorM - 1, anchorD).getTime();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const daysSince = Math.round((todayMidnight - anchorMidnight) / 86_400_000);
+  if (daysSince < 0) return false;
+  return daysSince % row.interval_days === 0;
+}
+
 function getScheduleOccurrence(row: ScheduleRow, now: Date): Date | null {
-  const weekdays: number[] = JSON.parse(row.weekdays);
-  const currentDay = now.getDay(); // 0=Sunday
-  if (!weekdays.includes(currentDay)) return null;
+  // Match today against either the interval-days rule (preferred when set)
+  // or the legacy weekdays array.
+  if (row.interval_days && row.interval_days > 0) {
+    if (!isIntervalDayMatch(row, now)) return null;
+  } else {
+    const weekdays: number[] = JSON.parse(row.weekdays);
+    const currentDay = now.getDay(); // 0=Sunday
+    if (!weekdays.includes(currentDay)) return null;
+  }
 
   const [hourText = '0', minuteText = '0'] = row.start_time.split(':');
   const hour = Number(hourText);

@@ -2146,6 +2146,8 @@ interface ScheduleRow {
   rain_threshold_probability: number;
   rain_check_hours: number;
   last_triggered_at: string | null;
+  interval_days: number;
+  interval_anchor_date: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -2173,6 +2175,8 @@ function scheduleRowToDto(r: ScheduleRow) {
     rainThresholdProbability: r.rain_threshold_probability ?? 50,
     rainCheckHours: r.rain_check_hours ?? 2,
     lastTriggeredAt: r.last_triggered_at,
+    intervalDays: r.interval_days ?? 0,
+    intervalAnchorDate: r.interval_anchor_date,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -2253,6 +2257,13 @@ dashboardRouter.post('/schedules/:sn', (req: Request, res: Response) => {
     rainThresholdMm?: number;
     rainThresholdProbability?: number;
     rainCheckHours?: number;
+    // #51: "every N days" alternative to weekdays. intervalDays > 0
+    // makes the schedule fire on intervalAnchorDate, intervalAnchorDate +
+    // N, +2N, … The mower's own timer_task only understands WEEKLY, so
+    // schedules in interval mode are driven entirely by the server-side
+    // scheduleRunner (rain_pause=true path).
+    intervalDays?: number;
+    intervalAnchorDate?: string;
   };
 
   if (!body.startTime) {
@@ -2282,11 +2293,14 @@ dashboardRouter.post('/schedules/:sn', (req: Request, res: Response) => {
     rain_threshold_mm: body.rainThresholdMm ?? 0.5,
     rain_threshold_probability: body.rainThresholdProbability ?? 50,
     rain_check_hours: body.rainCheckHours ?? 2,
+    interval_days: body.intervalDays ?? 0,
+    interval_anchor_date: body.intervalAnchorDate ?? null,
   });
 
-  // Stuur timer_task naar maaier als die online is — maar NIET als rain_pause actief is
-  // (dan beheert de server-side scheduleRunner het starten)
-  if (isDeviceOnline(sn) && !body.rainPause) {
+  // Stuur timer_task naar maaier als die online is — maar NIET als rain_pause
+  // actief is OF als interval_days mode aan staat (mower's timer_task is
+  // strictly WEEKLY, interval scheduling lives server-side via the runner).
+  if (isDeviceOnline(sn) && !body.rainPause && !(body.intervalDays && body.intervalDays > 0)) {
     publishToDevice(sn, {
       timer_task: {
         task_id: scheduleId,
@@ -2348,6 +2362,8 @@ dashboardRouter.patch('/schedules/:sn/:scheduleId', (req: Request, res: Response
     rain_threshold_mm: body.rainThresholdMm as number | undefined,
     rain_threshold_probability: body.rainThresholdProbability as number | undefined,
     rain_check_hours: body.rainCheckHours as number | undefined,
+    interval_days: body.intervalDays as number | undefined,
+    interval_anchor_date: body.intervalAnchorDate as string | undefined,
   });
 
   const row = scheduleRepo.findById(scheduleId) as ScheduleRow;
