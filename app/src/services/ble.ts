@@ -497,13 +497,20 @@ export async function provisionDevice(
     // 'Europe/Amsterdam' default. Users in other zones (e.g. Europe/Paris,
     // reported in issue #56) were getting their schedules misaligned and
     // mqtt_node's novabot_timezone.txt out of sync with json_config.json.
-    // Intl returns the IANA zone the OS exposes — same format the firmware
-    // expects in tz fields.
+    // Try expo-localization first (works on Hermes without full ICU),
+    // fall back to Intl, then Amsterdam.
     let deviceTz = 'Europe/Amsterdam';
     try {
-      const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      if (detected) deviceTz = detected;
-    } catch { /* fall back to default */ }
+      const Localization = await import('expo-localization');
+      const cals = Localization.getCalendars?.();
+      if (cals && cals.length > 0 && cals[0].timeZone) deviceTz = cals[0].timeZone;
+    } catch { /* ignore */ }
+    if (deviceTz === 'Europe/Amsterdam') {
+      try {
+        const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (detected) deviceTz = detected;
+      } catch { /* ignore */ }
+    }
     const cfgPayload = isCharger
       ? JSON.stringify({ set_cfg_info: 1 })
       : JSON.stringify({ set_cfg_info: { cfg_value: 1, tz: deviceTz } });

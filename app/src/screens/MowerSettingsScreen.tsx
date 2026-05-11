@@ -23,6 +23,7 @@ import { SimpleSlider } from '../components/SimpleSlider';
 import { useMowerState } from '../hooks/useMowerState';
 import { useActiveMower } from '../hooks/useActiveMower';
 import { useHeadlightBrightness } from '../hooks/useHeadlightBrightness';
+import * as Localization from 'expo-localization';
 import { getSocket } from '../services/socket';
 import { ApiClient } from '../services/api';
 import { getServerUrl } from '../services/auth';
@@ -62,10 +63,17 @@ const COMMON_TIMEZONES = [
 ];
 
 function detectDeviceTimezone(): string {
+  // expo-localization exposes the OS-reported IANA zone via Calendar metadata
+  // — works on Hermes builds that lack a full ICU. Falls back to Intl
+  // (modern web/desktop) and finally Europe/Amsterdam if both miss.
+  try {
+    const cals = Localization.getCalendars?.();
+    if (cals && cals.length > 0 && cals[0].timeZone) return cals[0].timeZone;
+  } catch { /* ignore */ }
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (tz) return tz;
-  } catch { /* RN/Hermes without ICU falls through */ }
+  } catch { /* ignore */ }
   return 'Europe/Amsterdam';
 }
 
