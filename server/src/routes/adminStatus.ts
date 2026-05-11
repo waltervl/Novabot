@@ -31,7 +31,7 @@ import {
   clearValidationTrail,
   getLocalTrail,
 } from '../mqtt/sensorData.js';
-import { gpsToLocal } from '../mqtt/mapConverter.js';
+import { gpsToLocal, metersPerDegLat, metersPerDegLng } from '../mqtt/mapConverter.js';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
@@ -1779,8 +1779,9 @@ adminStatusRouter.get(
     const offsetXm = req.query.offsetX !== undefined ? parseFloat(String(req.query.offsetX)) : 0;
     const offsetYm = req.query.offsetY !== undefined ? parseFloat(String(req.query.offsetY)) : 0;
     const anchor = session.context.newCharger!;
-    const cosLat = Math.cos((anchor.lat * Math.PI) / 180);
-    const METERS_PER_DEG = 111320;
+    // WGS84-aware m/deg — replaces flat 111320 constant (issue #53).
+    const mLat = metersPerDegLat(anchor.lat);
+    const mLng = metersPerDegLng(anchor.lat);
     // Rotate + translate so the unicom anchor lines up with the new charger
     // GPS — same math as /confirm, kept in lockstep so the on-screen
     // overlay matches what gets written to the DB.
@@ -1795,7 +1796,7 @@ adminStatusRouter.get(
       return pts.map((p) => {
         const rx = p.x * cosT + p.y * sinT - rotatedAnchor.x + offsetXm;
         const ry = -p.x * sinT + p.y * cosT - rotatedAnchor.y + offsetYm;
-        return [anchor.lng + rx / (cosLat * METERS_PER_DEG), anchor.lat + ry / METERS_PER_DEG];
+        return [anchor.lng + rx / mLng, anchor.lat + ry / mLat];
       });
     };
     const features: unknown[] = [];

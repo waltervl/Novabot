@@ -9,13 +9,17 @@ export interface HeadingResult {
   shortDistance: boolean; // true when < 0.5 m (drive aborted by obstacle?)
 }
 
-const METERS_PER_DEG = 111320;
+import { metersPerDegLat, metersPerDegLng } from '../mqtt/mapConverter.js';
+
 const SHORT_DISTANCE_THRESHOLD_M = 0.3;
 
 export function deriveHeading(start: LatLng, end: LatLng): HeadingResult {
-  const cosLat = Math.cos((start.lat * Math.PI) / 180);
-  const dx = (end.lng - start.lng) * cosLat * METERS_PER_DEG;
-  const dy = (end.lat - start.lat) * METERS_PER_DEG;
+  // WGS84-aware conversion — was flat 111320 m/deg constant which skewed
+  // the dy axis by ~17 cm per 100 m at 45° latitude (issue #53). Heading
+  // derivation runs on short drive traces (1–3 m), so the error was small
+  // but visible enough to bias the calibrated heading by ~0.1°.
+  const dx = (end.lng - start.lng) * metersPerDegLng(start.lat);
+  const dy = (end.lat - start.lat) * metersPerDegLat(start.lat);
   const distanceM = Math.sqrt(dx * dx + dy * dy);
   const shortDistance = distanceM < SHORT_DISTANCE_THRESHOLD_M;
   const headingRad = shortDistance ? 0 : Math.atan2(dy, dx);

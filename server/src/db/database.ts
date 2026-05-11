@@ -637,13 +637,25 @@ export function initDb(): void {
         if (Array.isArray(sample) && sample.length > 0 && 'lat' in sample[0]) {
           console.log('[DB] Migrating map_area from GPS to local coordinates...');
 
-          // Inline conversie (vermijdt circulaire import met mapConverter.ts)
-          const METERS_PER_DEG = 111320;
+          // Inline conversie (vermijdt circulaire import met mapConverter.ts).
+          // WGS84 polynomial — see metersPerDeg{Lat,Lng} in mapConverter.ts.
+          // Earlier the migration used a flat 111320 m/deg constant which
+          // skewed lat-axis distance by ~17 cm per 100 m at 45° (issue #53);
+          // existing DBs that already ran the old migration keep their now-
+          // off-by-a-hair values, but anything migrating today lands in the
+          // correct frame.
+          function metersPerDegLat(latDeg: number): number {
+            const phi = latDeg * Math.PI / 180;
+            return 111132.92 - 559.82 * Math.cos(2 * phi) + 1.175 * Math.cos(4 * phi) - 0.0023 * Math.cos(6 * phi);
+          }
+          function metersPerDegLng(latDeg: number): number {
+            const phi = latDeg * Math.PI / 180;
+            return 111412.84 * Math.cos(phi) - 93.5 * Math.cos(3 * phi) + 0.118 * Math.cos(5 * phi);
+          }
           function gps2local(p: { lat: number; lng: number }, o: { lat: number; lng: number }) {
-            const cosLat = Math.cos(o.lat * Math.PI / 180);
             return {
-              x: Math.round(((p.lng - o.lng) * cosLat * METERS_PER_DEG) * 100) / 100,
-              y: Math.round(((p.lat - o.lat) * METERS_PER_DEG) * 100) / 100,
+              x: Math.round(((p.lng - o.lng) * metersPerDegLng(o.lat)) * 100) / 100,
+              y: Math.round(((p.lat - o.lat) * metersPerDegLat(o.lat)) * 100) / 100,
             };
           }
 

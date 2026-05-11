@@ -6,8 +6,13 @@
  * Conversie GPS ↔ lokaal gebeurt alleen aan de API-grenzen (dashboard, app).
  *
  * Coördinaatconversie (WGS84 ↔ lokaal):
- *   x_local = (lon - lon_origin) × cos(lat_origin) × 111320
- *   y_local = (lat - lat_origin) × 111320
+ *   x_local = (lon - lon_origin) × metersPerDegLng(lat_origin)
+ *   y_local = (lat - lat_origin) × metersPerDegLat(lat_origin)
+ *
+ * Eerder gebruikte de code een vlakke constante (111320 m/deg) die alleen
+ * op de evenaar klopt — bij 45° gaf dat ~17 cm fout per 100 m langs de
+ * noord-zuid as (issue #53). De WGS84-polynoom hieronder corrigeert
+ * tot sub-millimeter precisie voor alle gangbare gebruikers-latitudes.
  *
  * ZIP structuur (identiek aan firmware):
  *   csv_file/
@@ -25,8 +30,26 @@ import { shiftPoints, isToChargeUnicomName } from '../services/polygonOffset.js'
 
 const TAG = '[MAP-CONV]';
 
-// Meters per graad op de evenaar
-const METERS_PER_DEGREE = 111320;
+/**
+ * Meters per degree of latitude at a given latitude — WGS84 polynomial
+ * approximation accurate to sub-mm at all earthly latitudes. Constant
+ * 111320 used in the old code is only correct on the equator; at 45° it
+ * overshoots by ~190 m/deg → 17 cm error per 100 m of north-south travel.
+ */
+export function metersPerDegLat(latDeg: number): number {
+  const phi = latDeg * Math.PI / 180;
+  return 111132.92 - 559.82 * Math.cos(2 * phi) + 1.175 * Math.cos(4 * phi) - 0.0023 * Math.cos(6 * phi);
+}
+
+/**
+ * Meters per degree of longitude at a given latitude. Shrinks with cos(lat)
+ * — 111.32 km/deg on the equator, 0 at the poles. WGS84 polynomial
+ * approximation keeps sub-mm accuracy.
+ */
+export function metersPerDegLng(latDeg: number): number {
+  const phi = latDeg * Math.PI / 180;
+  return 111412.84 * Math.cos(phi) - 93.5 * Math.cos(3 * phi) + 0.118 * Math.cos(5 * phi);
+}
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -69,10 +92,11 @@ export interface MapPackage {
  * Optioneel met rotatie (orientation in radialen van het lokale coördinatensysteem).
  */
 export function gpsToLocal(point: GpsPoint, origin: GpsPoint, orientation: number = 0): LocalPoint {
-  const cosLat = Math.cos(origin.lat * Math.PI / 180);
+  const mPerDegLat = metersPerDegLat(origin.lat);
+  const mPerDegLng = metersPerDegLng(origin.lat);
   // GPS → ongeroteerde meters
-  const mx = (point.lng - origin.lng) * cosLat * METERS_PER_DEGREE;
-  const my = (point.lat - origin.lat) * METERS_PER_DEGREE;
+  const mx = (point.lng - origin.lng) * mPerDegLng;
+  const my = (point.lat - origin.lat) * mPerDegLat;
   if (orientation === 0) return { x: mx, y: my };
   // Roteer naar lokaal coördinatensysteem
   const cos = Math.cos(orientation);
@@ -98,10 +122,9 @@ export function localToGps(point: LocalPoint, origin: GpsPoint, orientation: num
     x = rx;
     y = ry;
   }
-  const cosLat = Math.cos(origin.lat * Math.PI / 180);
   return {
-    lat: origin.lat + y / METERS_PER_DEGREE,
-    lng: origin.lng + x / (cosLat * METERS_PER_DEGREE),
+    lat: origin.lat + y / metersPerDegLat(origin.lat),
+    lng: origin.lng + x / metersPerDegLng(origin.lat),
   };
 }
 
