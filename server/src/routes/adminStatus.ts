@@ -645,7 +645,12 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
         url: normaliseFirmwareDownloadUrl(fw.url),
         filename: fw.filename || fw.url.split('/').pop() || `firmware_${fw.version}`,
         installed: localVersionSet.has(fw.version),
-      }));
+      }))
+      // Newest first — Intl.Collator numeric handles `custom-29` < `custom-30`
+      // and `v6.0.2` < `v6.0.3` correctly. Without this the admin
+      // "Firmware Updates" panel showed entries in manifest order so a
+      // freshly built custom-30 landed under custom-29.
+      .sort((a, b) => cmp.compare(b.version, a.version));
 
     res.json({
       available,
