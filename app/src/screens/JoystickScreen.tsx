@@ -390,8 +390,8 @@ export default function JoystickScreen() {
             onder de joystick / buiten beeld op kleine schermen. */}
         <View style={styles.header}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={styles.title}>{t('manualControl')}</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 18 }}>
+            <Text style={styles.title} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{t('manualControl')}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, marginLeft: 12 }}>
               {/* Blade — alleen zichtbaar als mower online is en niet in een
                   coverage task zit. Rood + outline wanneer uit, rood + fill
                   wanneer aan. Kleuring nadrukkelijk "gevaar" omdat dit een
@@ -572,20 +572,10 @@ export default function JoystickScreen() {
               ))}
             </View>
 
-            {/* Emergency stop */}
-            <TouchableOpacity
-              style={[styles.stopBtn, !active && { opacity: 0.3 }]}
-              onPress={stopAll}
-              disabled={!active}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="stop-circle" size={24} color={colors.white} />
-              <Text style={styles.stopText}>{t('emergencyStop')}</Text>
-            </TouchableOpacity>
-
-            {/* (Headlight verplaatst naar de header, naast het camera-icoon.
-                Eerder stond hier een grote toggle die buiten beeld viel op
-                kleine schermen.) */}
+            {/* Headlight + camera icons live in the header now. The
+                old emergency stop button below the speed picker was
+                effectively invisible on dark backgrounds and duplicated
+                the joystick's own release-to-stop behaviour, so removed. */}
           </>
         )}
       </View>
@@ -692,9 +682,10 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     paddingBottom: 12,
   },
   title: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '800',
     color: c.text,
+    flexShrink: 1,
   },
   statusRow: {
     flexDirection: 'row',
@@ -813,23 +804,6 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: c.textMuted,
-  },
-  stopBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 24,
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: 'rgba(239,68,68,0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(239,68,68,0.3)',
-  },
-  stopText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: c.white,
   },
   lightBtn: {
     flexDirection: 'row',
