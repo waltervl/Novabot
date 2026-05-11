@@ -142,9 +142,16 @@ export default function OtaScreen() {
     const fromLabel = `v${stripV(String(currentVersion))}`;
     const toLabel = `v${stripV(String(version.version))}`;
 
+    // Identify the target device by nickname + SN so the operator can tell
+    // exactly which mower is about to reboot. When the user hasn't set a
+    // nickname yet, just fall back to the SN.
+    const targetDevice = sn === mower?.sn ? mower : charger;
+    const nick = (targetDevice?.nickname ?? '').trim();
+    const target = nick ? `${nick} (${sn})` : sn;
+
     appAlertCompat.alert(
       'Firmware Update',
-      `Update ${deviceLabel} ${sn} from ${fromLabel} to ${toLabel}?\n\nThis will restart the device.`,
+      `Update ${deviceLabel} ${target} from ${fromLabel} to ${toLabel}?\n\nThis will restart the device.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
