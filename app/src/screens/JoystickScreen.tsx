@@ -117,6 +117,12 @@ export default function JoystickScreen() {
   // engaged the motor, instead of trusting the local toggle.
   const bladeSpeed = parseInt(mower?.sensors?.blade_speed ?? '0', 10) || 0;
 
+  // Mower physically on the charging dock — `battery_state` is published
+  // by the charger ESP32 over LoRa and reaches us through the sensor
+  // cache. Used to block the blade button: enabling the cutter while
+  // docked would spin the blades against the charging contacts.
+  const onDock = (mower?.sensors?.battery_state ?? '').toUpperCase() === 'CHARGING';
+
   // Disable manual control while the mower is autonomously busy — mowing, mapping,
   // or returning to the dock. Sending start_move / mst during an active task can
   // corrupt the nav2 plan or cause the firmware to enter an inconsistent state.
@@ -129,9 +135,7 @@ export default function JoystickScreen() {
     const msg = s.msg ?? '';
     const taskMode = parseInt(s.task_mode ?? '0', 10);
     const rechargeStatus = parseInt(s.recharge_status ?? '0', 10);
-    const batteryState = (s.battery_state ?? '').toUpperCase();
     const workStatus = s.work_status ?? '';
-    const onDock = batteryState === 'CHARGING';
     const coverageRunning = msg.includes('Work:RUNNING')
       || msg.includes('Work:COVERING') || msg.includes('Work:NAVIGATING')
       || msg.includes('Work:MOVING') || msg.includes('Work:QUIT_PILE_INIT')
@@ -188,15 +192,15 @@ export default function JoystickScreen() {
     };
   }, [sn]);
 
-  // Auto-off the blade if the mower goes offline or enters an error / busy
-  // state while manually mowing. The firmware's own safety also kicks in on
-  // tilt/overcurrent, but this gives faster UI feedback and doesn't rely on
-  // the hardware fault path.
+  // Auto-off the blade if the mower goes offline, lands on the charger,
+  // or enters an error / busy state while manually mowing. The firmware's
+  // own safety also kicks in on tilt/overcurrent, but this gives faster
+  // UI feedback and doesn't rely on the hardware fault path.
   useEffect(() => {
     if (!bladeOnRef.current) return;
     const online = !!mower?.online;
     const errorStatus = parseInt(mower?.sensors?.error_status ?? '0', 10);
-    if (online && !busyWithTask && errorStatus === 0) return;
+    if (online && !busyWithTask && !onDock && errorStatus === 0) return;
     (async () => {
       bladeOnRef.current = false;
       setBladeOn(false);
@@ -207,7 +211,7 @@ export default function JoystickScreen() {
         await api.sendExtended(sn, { blade_off: {} });
       } catch { /* ignore */ }
     })();
-  }, [mower?.online, mower?.sensors?.error_status, busyWithTask, sn]);
+  }, [mower?.online, mower?.sensors?.error_status, busyWithTask, onDock, sn]);
 
   const toggleBlade = useCallback(() => {
     // Treat blade as ON whenever EITHER our local toggle says so OR the
@@ -398,9 +402,13 @@ export default function JoystickScreen() {
                   echt cutting-mes aanzet. Bevestig-dialog voor aan. */}
               {mower?.online && !busyWithTask && (
                 <TouchableOpacity
-                  onPress={toggleBlade}
+                  onPress={onDock ? undefined : toggleBlade}
                   activeOpacity={0.7}
-                  style={(bladeOn || bladeSpeed > 0) ? styles.bladeBtnActive : undefined}
+                  disabled={onDock}
+                  style={[
+                    (bladeOn || bladeSpeed > 0) ? styles.bladeBtnActive : undefined,
+                    onDock && { opacity: 0.35 },
+                  ]}
                 >
                   {bladeSpeed > 0 ? (
                     <BladeSpinIcon size={22} color={colors.red} spinning={true} />
@@ -408,7 +416,7 @@ export default function JoystickScreen() {
                     <MaterialCommunityIcons
                       name="saw-blade"
                       size={22}
-                      color={bladeOn ? colors.amber : colors.textMuted}
+                      color={onDock ? colors.textMuted : (bladeOn ? colors.amber : colors.textMuted)}
                     />
                   )}
                 </TouchableOpacity>
