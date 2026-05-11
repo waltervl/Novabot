@@ -1881,7 +1881,21 @@ dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
   // Auto-encrypt voor LFI-apparaten — maaier (v6+) en charger (v0.4.0+) verwachten AES
   // Handmatige override: encrypt=true/false in body
   const { encrypt: doEncrypt, qos } = req.body as { encrypt?: boolean; qos?: number };
-  const shouldEncrypt = doEncrypt !== undefined ? doEncrypt : sn.startsWith('LFI');
+  // Stock v5.x mower firmware has NO AES decryption — encrypted commands
+  // are silently dropped at the firmware layer, which surfaced as
+  // start_cov_task vanishing into the void (issue #45: mower flickered
+  // to "100% done" because the start_cov_task MQTT never reached
+  // mqtt_node's handler). Detect via the sw_version sensor and force
+  // plaintext for those mowers. Same rule the OTA trigger already uses.
+  let isV5StockMower = false;
+  if (sn.startsWith('LFIN')) {
+    const sensors = deviceCache.get(sn);
+    const fwVersion = sensors?.get('sw_version') || sensors?.get('mower_version') || sensors?.get('version') || '';
+    isV5StockMower = fwVersion.startsWith('v5.') || fwVersion.startsWith('5.');
+  }
+  const shouldEncrypt = doEncrypt !== undefined
+    ? doEncrypt
+    : sn.startsWith('LFI') && !isV5StockMower;
 
   // set_para_info: bewaar alle settings in sensor cache + SQLite zodat dashboard
   // de juiste state toont (maaier retourneert GEEN get_para_info_respond)
