@@ -2017,11 +2017,38 @@ for i, fw in enumerate(fws):
 if not updated:
     fws.append(entry)
 
-manifest['firmwares'] = fws
+# Prune to the 5 newest custom-N entries per device_type. Older builds
+# accumulate quickly otherwise, manifest grew to 8+ entries including
+# malformed duplicates like 'v6.0.2-v6.0.2-custom-25'. Sort by the
+# trailing custom-N integer (fallback: keep the entry only if it matches
+# our normal naming so the prune doesn't silently delete unrelated rows).
+import re
+KEEP = 5
+
+def custom_num(fw):
+    m = re.search(r'custom-(\d+)', fw.get('version', ''))
+    return int(m.group(1)) if m else -1
+
+def is_custom(fw):
+    return custom_num(fw) >= 0
+
+by_type = {}
+for fw in fws:
+    by_type.setdefault(fw.get('device_type', 'mower'), []).append(fw)
+
+pruned = []
+for device, entries in by_type.items():
+    customs = [fw for fw in entries if is_custom(fw)]
+    others = [fw for fw in entries if not is_custom(fw)]
+    customs.sort(key=custom_num, reverse=True)
+    pruned.extend(others)
+    pruned.extend(customs[:KEEP])
+
+manifest['firmwares'] = pruned
 with open(manifest_path, 'w') as f:
     json.dump(manifest, f, indent=2, ensure_ascii=False)
 
-print(f'  Manifest updated: {manifest_path} ({len(fws)} firmware(s))')
+print(f'  Manifest updated: {manifest_path} ({len(pruned)} firmware(s), pruned to {KEEP} newest custom-N per type)')
 "
 
 echo ""
