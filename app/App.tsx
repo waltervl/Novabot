@@ -16,7 +16,6 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { ThemeProvider, useTheme, type Colors } from './src/theme';
 import { DemoProvider } from './src/context/DemoContext';
-import { DevModeProvider, useDevMode } from './src/context/DevModeContext';
 import { PatternProvider } from './src/context/PatternContext';
 import { ExperimentalProvider } from './src/context/ExperimentalContext';
 import { MapLabelsProvider } from './src/context/MapLabelsContext';
@@ -256,46 +255,10 @@ function MainTabs({ onLogout, onGoToProvision }: { onLogout: () => void; onGoToP
   );
 }
 
-// ── Authenticated: dev mode = full app, otherwise provisioning only ──────────
+// ── Authenticated app — always full tabs ────────────────────────────────────
 
 function AuthenticatedApp({ onLogout, onGoToProvision }: { onLogout: () => void; onGoToProvision: () => void }) {
-  const { unlocked } = useDevMode();
-  const { colors: c, colorScheme } = useTheme();
-
-  // Always show full tabs — locked mode only hides certain features, not tabs
   return <MainTabs onLogout={onLogout} onGoToProvision={onGoToProvision} />;
-
-  // Locked mode: Provision + Settings (two tabs)
-  return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        headerShown: false,
-        tabBarStyle: {
-          backgroundColor: colorScheme === 'light' ? 'transparent' : c.bg,
-          borderTopColor: c.cardBorder,
-          borderTopWidth: colorScheme === 'light' ? 0 : 1,
-          height: Platform.OS === 'ios' ? 88 : 64,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 8,
-          paddingTop: 8,
-          ...(colorScheme === 'light' ? { elevation: 0 } : {}),
-        },
-        tabBarActiveTintColor: c.emerald,
-        tabBarInactiveTintColor: c.textMuted,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
-        tabBarIcon: ({ color, size }) => {
-          const iconName = route.name === 'ProvisionTab' ? 'bluetooth' : 'settings';
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-      })}
-    >
-      <Tab.Screen name="ProvisionTab" component={ProvisionTabScreen} options={{ tabBarLabel: 'Provision' }} />
-      <Tab.Screen name="AppSettings" options={{ tabBarLabel: 'Settings' }}>
-        {() => (
-          <SettingsTabScreen onLogout={onLogout} onGoToProvision={onGoToProvision} />
-        )}
-      </Tab.Screen>
-    </Tab.Navigator>
-  );
 }
 
 // ── ThemedApp — reads active theme, renders NavigationContainer ──────────────
@@ -453,7 +416,6 @@ export default function App() {
 
   return (
     <ThemeProvider>
-    <DevModeProvider>
     <DemoProvider>
     <I18nProvider>
     <ExperimentalProvider>
@@ -476,7 +438,6 @@ export default function App() {
     </ExperimentalProvider>
     </I18nProvider>
     </DemoProvider>
-    </DevModeProvider>
     </ThemeProvider>
   );
 }

@@ -1550,6 +1550,63 @@ def handle_write_map_files(params, respond):
                 f.write(cs_yaml)
             written.append(yaml_path)
 
+        # Per-map yaml/pgm/png — firmware looks for `map<N>.yaml` (etc.)
+        # when planning navigation per work-area. The mapping-node normally
+        # produces these during `save_map type:0` inside an active mapping
+        # session; recovery flows (sync_map / write_map_files / DB restore)
+        # never go through that path so the per-map artifacts are missing
+        # and `start_navigation` returns Error 107 "Loading map failed,
+        # please check mapN file exists!!". Mirror the whole-area
+        # `map.yaml`/`map.pgm`/`map.png` to every work-map slot present
+        # in the freshly-written csv_file/ so every map<N>.yaml resolves
+        # to a real file. The image: field is rewritten so each yaml
+        # points at its own pgm copy.
+        try:
+            import re as _re
+            whole_yaml = f"{base}/map.yaml"
+            whole_pgm = f"{base}/map.pgm"
+            whole_png = f"{base}/map.png"
+            if os.path.exists(whole_yaml) and os.path.exists(whole_pgm):
+                # Distinct work-map slots present in the newly-written CSV
+                # set — `map3_work.csv`, `map3.csv`, `map3_0_obstacle.csv`
+                # all collapse to slot "map3".
+                slots = set()
+                for fname in csv_files.keys():
+                    m = _re.match(r"^(map\d+)", fname)
+                    if m:
+                        slots.add(m.group(1))
+                with open(whole_yaml, "r") as f:
+                    whole_yaml_content = f.read()
+                for slot in slots:
+                    slot_yaml = f"{base}/{slot}.yaml"
+                    slot_pgm = f"{base}/{slot}.pgm"
+                    slot_png = f"{base}/{slot}.png"
+                    # Yaml: same content, image: line rewritten to <slot>.pgm
+                    rewritten = _re.sub(
+                        r"^image:\s*map\.pgm\s*$",
+                        f"image: {slot}.pgm",
+                        whole_yaml_content,
+                        flags=_re.MULTILINE,
+                    )
+                    with open(slot_yaml, "w") as f:
+                        f.write(rewritten)
+                    # PGM + PNG: byte-for-byte copy. All slots share the
+                    # whole-area bitmap; coverage_planner uses the polygon
+                    # CSV (csv_file/) for per-area boundaries, the pgm is
+                    # only consumed by Nav2 costmap which only needs an
+                    # occupancy grid covering the area.
+                    import shutil as _shutil2
+                    _shutil2.copyfile(whole_pgm, slot_pgm)
+                    if os.path.exists(whole_png):
+                        _shutil2.copyfile(whole_png, slot_png)
+                    written.extend([slot_yaml, slot_pgm, slot_png])
+                if slots:
+                    log(f"write_map_files: mirrored map.yaml/pgm/png to {len(slots)} per-map slots: {sorted(slots)}")
+            else:
+                log(f"write_map_files: whole-area map.yaml/pgm missing — skipping per-map mirror (recovery callers should trigger save_map type:1 first)")
+        except Exception as e:
+            log(f"write_map_files: per-map mirror failed (non-fatal): {e}")
+
         # Restart novabot_mapping so the freshly-written CSVs are loaded
         # into memory. Without this, coverage_planner reads the previously
         # cached polygon and the new map only takes effect on next mower
@@ -1572,6 +1629,97 @@ def handle_write_map_files(params, respond):
     except Exception as e:
         log(f"write_map_files error: {e}")
         respond("write_map_files_respond", {"result": 1, "error": str(e)})
+
+
+def handle_regenerate_per_map_files(params, respond):
+    """Mirror map.yaml/pgm/png to map<N>.yaml/pgm/png for every work-map
+    slot present in home0/csv_file/.
+
+    Mapping-node's `save_map type:1` produces only the whole-area triple
+    (`map.yaml/pgm/png`). Per-map artifacts (`map0.yaml`, `map1.yaml`,
+    ...) are only emitted by `save_map type:0`, which requires an active
+    mapping session with edge data — recovery / sync flows never go
+    through that path, so per-map files are missing and start_navigation
+    returns Error 107 "Loading map failed, please check mapN file
+    exists!!". This handler synthesizes them by copying the whole-area
+    bitmap to each slot. Coverage planner reads polygons from
+    csv_file/<slot>_work.csv anyway; the pgm only feeds Nav2's static
+    costmap which needs nothing more than an occupancy grid that covers
+    the slot.
+
+    Optional params:
+      home: str — default "home0"
+
+    Response:
+      result:0, mirrored:[slot...], skipped_reason:str|null
+    """
+    import re as _re
+    import shutil as _shutil
+    home = params.get("home", "home0") if isinstance(params, dict) else "home0"
+    base = f"/userdata/lfi/maps/{home}"
+    csv_dir = f"{base}/csv_file"
+    whole_yaml = f"{base}/map.yaml"
+    whole_pgm = f"{base}/map.pgm"
+    whole_png = f"{base}/map.png"
+
+    try:
+        if not os.path.exists(whole_yaml) or not os.path.exists(whole_pgm):
+            respond("regenerate_per_map_files_respond", {
+                "result": 1,
+                "error": "whole-area map.yaml / map.pgm missing — call save_map type:1 first",
+            })
+            return
+        if not os.path.isdir(csv_dir):
+            respond("regenerate_per_map_files_respond", {
+                "result": 1,
+                "error": f"{csv_dir} not found",
+            })
+            return
+
+        slots = set()
+        for fname in os.listdir(csv_dir):
+            m = _re.match(r"^(map\d+)", fname)
+            if m:
+                slots.add(m.group(1))
+
+        if not slots:
+            respond("regenerate_per_map_files_respond", {
+                "result": 0,
+                "mirrored": [],
+                "skipped_reason": "no map<N> CSVs in csv_file/",
+            })
+            return
+
+        with open(whole_yaml, "r") as f:
+            whole_yaml_content = f.read()
+
+        mirrored = []
+        for slot in sorted(slots):
+            slot_yaml = f"{base}/{slot}.yaml"
+            slot_pgm = f"{base}/{slot}.pgm"
+            slot_png = f"{base}/{slot}.png"
+            rewritten = _re.sub(
+                r"^image:\s*map\.pgm\s*$",
+                f"image: {slot}.pgm",
+                whole_yaml_content,
+                flags=_re.MULTILINE,
+            )
+            with open(slot_yaml, "w") as f:
+                f.write(rewritten)
+            _shutil.copyfile(whole_pgm, slot_pgm)
+            if os.path.exists(whole_png):
+                _shutil.copyfile(whole_png, slot_png)
+            mirrored.append(slot)
+
+        log(f"regenerate_per_map_files: mirrored map.yaml/pgm/png to {mirrored}")
+        respond("regenerate_per_map_files_respond", {
+            "result": 0,
+            "mirrored": mirrored,
+            "home": home,
+        })
+    except Exception as e:
+        log(f"regenerate_per_map_files error: {e}")
+        respond("regenerate_per_map_files_respond", {"result": 1, "error": str(e)})
 
 
 def handle_generate_empty_map(params, respond):
@@ -2448,6 +2596,7 @@ COMMANDS = {
     "generate_empty_map": handle_generate_empty_map,
     "read_map_files": handle_read_map_files,
     "write_map_files": handle_write_map_files,
+    "regenerate_per_map_files": handle_regenerate_per_map_files,
     "recalibrate_charging_pose": handle_recalibrate_charging_pose,
     "start_edge_cut": handle_start_edge_cut,
     "stop_boundary_follow": handle_stop_boundary_follow,

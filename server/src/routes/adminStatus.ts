@@ -1203,6 +1203,17 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (
   if (syncResult.ok) {
     publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
     console.log(`[Admin] restore-and-realign ${sn}: post-sync save_map type:1 dispatched to render map.yaml/pgm`);
+    // Per-map slot files (map<N>.yaml/.pgm/.png) — mapping-node only
+    // emits these inside a real edge-recording session; recovery callers
+    // never go through that path. Mirror map.yaml/pgm/png into each
+    // map<N> slot via the custom extended_commands handler so Nav2 can
+    // resolve `start_navigation` lookups for any work-map without
+    // hitting Error 107. Small delay so save_map type:1 finishes
+    // writing map.yaml before we copy from it.
+    setTimeout(() => {
+      publishToExtended(sn, { regenerate_per_map_files: {} });
+      console.log(`[Admin] restore-and-realign ${sn}: regenerate_per_map_files dispatched`);
+    }, 3000);
   }
 
   console.log(
@@ -2385,6 +2396,11 @@ adminStatusRouter.post(
     if (polygonCategoriesTouched && Object.keys(toWrite).length > 0) {
       publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
       console.log(`[Admin] apply-selective ${sn}: post-write save_map type:1 dispatched to render map.yaml/pgm`);
+      // See restore-and-realign for the per-map-mirror rationale.
+      setTimeout(() => {
+        publishToExtended(sn, { regenerate_per_map_files: {} });
+        console.log(`[Admin] apply-selective ${sn}: regenerate_per_map_files dispatched`);
+      }, 3000);
     }
 
     importStaging.transition(stagingId, 'APPLIED', {
@@ -2733,6 +2749,11 @@ adminStatusRouter.post('/maps/:sn/apply-polygon-offset', async (req: AuthRequest
   if (syncResult.ok) {
     publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
     console.log(`[Admin] apply-polygon-offset ${sn}: post-sync save_map type:1 dispatched to render map.yaml/pgm`);
+    // See restore-and-realign for the per-map-mirror rationale.
+    setTimeout(() => {
+      publishToExtended(sn, { regenerate_per_map_files: {} });
+      console.log(`[Admin] apply-polygon-offset ${sn}: regenerate_per_map_files dispatched`);
+    }, 3000);
   }
 
   console.log(`[Admin] apply-polygon-offset ${sn}: dx=${dx} dy=${dy} syncOk=${syncResult.ok}`);

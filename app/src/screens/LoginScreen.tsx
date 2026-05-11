@@ -21,7 +21,6 @@ import type { AuthStackParams } from '../navigation/types';
 import { getServerUrl, setServerUrl, setToken } from '../services/auth';
 import { ApiClient, AuthError } from '../services/api';
 import { discoverServers } from '../services/discovery';
-import { useDevMode } from '../context/DevModeContext';
 
 type Props = NativeStackScreenProps<AuthStackParams, 'Login'> & {
   onLoginSuccess: (token: string, serverUrl: string) => void;
@@ -42,7 +41,6 @@ export default function LoginScreen({ navigation, onLoginSuccess }: Props) {
   // render layer show the LAN address muted under the hostname so two
   // candidates on a multi-homed network are distinguishable.
   const [discoveredServers, setDiscoveredServers] = useState<string[]>([]);
-  const devMode = useDevMode();
 
   const runDiscover = () => {
     if (scanning) return;
@@ -141,20 +139,13 @@ export default function LoginScreen({ navigation, onLoginSuccess }: Props) {
       >
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={devMode.handleTap} activeOpacity={0.9} style={styles.iconCircle}>
+          <View style={styles.iconCircle}>
             <Image source={require('../../assets/icon.png')} style={styles.logo} />
-          </TouchableOpacity>
+          </View>
           <Text style={styles.title}>OpenNova</Text>
           <Text style={styles.subtitle}>
-            {devMode.unlocked
-              ? 'Developer mode active. Sign in to access the full app.'
-              : 'Sign in to your local server to control your mower.'}
+            Sign in to your local server to control your mower.
           </Text>
-          {devMode.unlocked && (
-            <View style={{ backgroundColor: 'rgba(124,58,237,0.15)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, marginTop: 8 }}>
-              <Text style={{ color: '#c084fc', fontSize: 13, fontWeight: '600', textAlign: 'center' }}>Developer Mode</Text>
-            </View>
-          )}
         </View>
 
         {/* Server URL */}
@@ -308,16 +299,17 @@ export default function LoginScreen({ navigation, onLoginSuccess }: Props) {
           )}
         </TouchableOpacity>
 
-        {/* Register link */}
+        {/* Register button — promoted to a full button so first-time
+            users on a fresh server can see the path to create an account
+            immediately. Previously this was a small grey link buried
+            below the Sign In button. */}
         <TouchableOpacity
-          style={styles.registerLink}
+          style={styles.registerButton}
           onPress={() => navigation.navigate('Register')}
           activeOpacity={0.7}
         >
-          <Text style={styles.registerText}>
-            Don't have an account?{' '}
-            <Text style={styles.registerTextHighlight}>Create one</Text>
-          </Text>
+          <Ionicons name="person-add-outline" size={18} color={colors.emerald} />
+          <Text style={styles.registerButtonText}>Create a new account</Text>
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -435,18 +427,22 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     fontWeight: '600',
     color: c.text,
   },
-  registerLink: {
+  registerButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 24,
-    paddingVertical: 8,
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: c.emerald,
+    backgroundColor: 'rgba(16,185,129,0.08)',
   },
-  registerText: {
+  registerButtonText: {
     fontSize: 15,
-    color: c.textDim,
-  },
-  registerTextHighlight: {
-    color: c.emerald,
     fontWeight: '600',
+    color: c.emerald,
   },
   discoverBtn: {
     flexDirection: 'row',

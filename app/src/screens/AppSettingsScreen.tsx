@@ -30,7 +30,6 @@ import {
 import { useMowerState } from '../hooks/useMowerState';
 import { useActiveMower } from '../hooks/useActiveMower';
 import { ApiClient } from '../services/api';
-import { useDevMode } from '../context/DevModeContext';
 import { useExperimental } from '../context/ExperimentalContext';
 import { useMapLabels } from '../context/MapLabelsContext';
 import { useI18n, LANGUAGES } from '../i18n';
@@ -66,7 +65,6 @@ export default function AppSettingsScreen({
   const [isEditingUpdateUrl, setIsEditingUpdateUrl] = useState(false);
   const defaultUpdateUrl = getDefaultReleaseManifestUrl();
   const isCustomUpdateUrl = updateUrl !== defaultUpdateUrl;
-  const devMode = useDevMode();
   const experimental = useExperimental();
   const mapLabels = useMapLabels();
   const { language, setLanguage, t } = useI18n();
@@ -517,17 +515,10 @@ export default function AppSettingsScreen({
           <Text style={styles.logoutText}>Sign Out</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={devMode.handleTap} activeOpacity={1}>
-          <Text style={styles.versionText}>
-            OpenNova App v{Application.nativeApplicationVersion ?? '?'}
-            {Application.nativeBuildVersion ? ` (build ${Application.nativeBuildVersion})` : ''}
-            {devMode.tapCount >= 4 && devMode.tapCount < 7
-              ? `  (${7 - devMode.tapCount} taps to go...)`
-              : devMode.unlocked
-                ? '  [Developer Mode]'
-                : ''}
-          </Text>
-        </TouchableOpacity>
+        <Text style={styles.versionText}>
+          OpenNova App v{Application.nativeApplicationVersion ?? '?'}
+          {Application.nativeBuildVersion ? ` (build ${Application.nativeBuildVersion})` : ''}
+        </Text>
       </ScrollView>
 
     </View>
