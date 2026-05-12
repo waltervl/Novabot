@@ -44,7 +44,12 @@ export interface ExportInput {
   chargerLng: number;
   rtkQuality: number | null;
   chargingPose: { x: number; y: number; orientation: number };
-  workMap: ExportPolygon;
+  /** All work polygons on the mower. Bundle now carries every work map +
+   *  every obstacle + every unicom for the mower so a single export
+   *  captures multi-zone fleets too (issue #51 follow-up). The first entry
+   *  is also written as `polygon.json` (legacy single-map readers fall
+   *  back to it) so older clients can still open the bundle. */
+  workMaps: ExportPolygon[];
   obstacles: ExportPolygon[];
   unicom: ExportUnicom[];
   /** Verbatim CSVs from /userdata/lfi/maps/home0/csv_file/ on the mower at
@@ -117,12 +122,18 @@ function buildGeoJson(
 }
 
 export async function exportBundle(input: ExportInput): Promise<Buffer> {
-  const polygonJson = {
-    name: input.workMap.canonical,
-    alias: input.workMap.alias,
-    areaM2: polygonAreaM2(input.workMap.points),
-    points: input.workMap.points,
-  };
+  if (input.workMaps.length === 0) {
+    throw new Error('exportBundle: workMaps must contain at least one polygon');
+  }
+  const polygonsJson = input.workMaps.map((m) => ({
+    name: m.canonical,
+    alias: m.alias,
+    areaM2: polygonAreaM2(m.points),
+    points: m.points,
+  }));
+  // polygon.json keeps the legacy shape (single object) — first work map,
+  // so old readers still get a usable bundle.
+  const polygonJson = polygonsJson[0];
   const obstaclesJson = input.obstacles.map((o) => ({
     name: o.canonical,
     alias: o.alias,
@@ -136,15 +147,16 @@ export async function exportBundle(input: ExportInput): Promise<Buffer> {
   }));
 
   const allPts = [
-    ...input.workMap.points,
+    ...input.workMaps.flatMap((m) => m.points),
     ...input.obstacles.flatMap((o) => o.points),
     ...input.unicom.flatMap((u) => u.points),
   ];
 
   const userAliases: Record<string, string> = {};
+  for (const m of input.workMaps) userAliases[m.canonical] = m.alias;
   for (const o of input.obstacles) userAliases[o.canonical] = o.alias;
 
-  const checksumSrc = JSON.stringify({ polygonJson, obstaclesJson, unicomJson });
+  const checksumSrc = JSON.stringify({ polygonsJson, obstaclesJson, unicomJson });
   const checksum = `sha256:${createHash('sha256').update(checksumSrc).digest('hex')}`;
 
   const metadata = {
@@ -166,14 +178,15 @@ export async function exportBundle(input: ExportInput): Promise<Buffer> {
         ' rad.',
     },
     originalChargingPose: input.chargingPose,
-    originalMapAreaName: input.workMap.alias,
+    originalMapAreaName: input.workMaps[0].alias,
+    workMapNames: input.workMaps.map((m) => m.canonical),
     userAliases,
     boundsM: bounds(allPts),
     checksum,
   };
 
   const workGeo = buildGeoJson(
-    [{ name: input.workMap.alias, type: 'Polygon', pts: input.workMap.points }],
+    input.workMaps.map((m) => ({ name: m.alias, type: 'Polygon' as const, pts: m.points })),
     input.chargerLat,
     input.chargerLng,
   );
@@ -201,6 +214,7 @@ export async function exportBundle(input: ExportInput): Promise<Buffer> {
 
     archive.append(JSON.stringify(metadata, null, 2), { name: 'metadata.json' });
     archive.append(JSON.stringify(polygonJson, null, 2), { name: 'polygon.json' });
+    archive.append(JSON.stringify(polygonsJson, null, 2), { name: 'polygons.json' });
     archive.append(JSON.stringify(obstaclesJson, null, 2), { name: 'obstacles.json' });
     archive.append(JSON.stringify(unicomJson, null, 2), { name: 'unicom.json' });
     archive.append(JSON.stringify(workGeo, null, 2), { name: 'geojson/work.geojson' });
@@ -242,10 +256,16 @@ export interface ParsedBundle {
     sourceCharger: { lat: number; lng: number; rtkQualityAtExport: number | null };
     originalChargingPose: { x: number; y: number; orientation: number };
     originalMapAreaName: string;
+    workMapNames?: string[];
     userAliases: Record<string, string>;
     checksum: string;
   };
+  /** First work map. Kept for backward compatibility with single-map
+   *  callers. New callers should iterate `polygons` instead. */
   polygon: { name: string; alias: string; areaM2: number; points: XY[] };
+  /** All work maps stored in the bundle. For pre-multi bundles this
+   *  contains exactly one entry (the same as `polygon`). */
+  polygons: Array<{ name: string; alias: string; areaM2: number; points: XY[] }>;
   obstacles: Array<{ name: string; alias: string; areaM2: number; points: XY[] }>;
   unicom: Array<{ name: string; targetMapName: string; points: XY[] }>;
   /** Verbatim mower files captured at export. Optional — older bundles
@@ -314,6 +334,31 @@ export async function parseBundle(buf: Buffer): Promise<ParsedBundle> {
     throw new BundleValidationError(`polygon area ${polygon.areaM2.toFixed(2)} m^2 below ${MIN_AREA_M2} m^2 minimum`);
   }
 
+  // polygons.json is the multi-map manifest (added 2026-05). Older bundles
+  // only have polygon.json — wrap it so the rest of the import pipeline
+  // can treat single-map bundles uniformly.
+  let polygons: ParsedBundle['polygons'];
+  if (entries.has('polygons.json')) {
+    const polygonsRaw = JSON.parse(entries.get('polygons.json')!) as unknown;
+    if (!Array.isArray(polygonsRaw)) throw new BundleValidationError('polygons.json: expected array');
+    if (polygonsRaw.length === 0) throw new BundleValidationError('polygons.json: must contain at least one polygon');
+    polygons = polygonsRaw.map((p: unknown, i: number) => {
+      assertObject(p, `polygons[${i}]`);
+      const parsed = {
+        name: String(p.name ?? ''),
+        alias: String(p.alias ?? ''),
+        areaM2: assertNumber(p.areaM2, `polygons[${i}].areaM2`),
+        points: assertPoints(p.points, `polygons[${i}].points`),
+      };
+      if (parsed.areaM2 < MIN_AREA_M2) {
+        throw new BundleValidationError(`polygons[${i}] area ${parsed.areaM2.toFixed(2)} m^2 below ${MIN_AREA_M2} m^2 minimum`);
+      }
+      return parsed;
+    });
+  } else {
+    polygons = [polygon];
+  }
+
   const obstaclesRaw = JSON.parse(entries.get('obstacles.json')!) as unknown;
   if (!Array.isArray(obstaclesRaw)) throw new BundleValidationError('obstacles.json: expected array');
   const obstacles = obstaclesRaw.map((o: unknown, i: number) => {
@@ -357,7 +402,7 @@ export async function parseBundle(buf: Buffer): Promise<ParsedBundle> {
 
   return {
     metadata: metaRaw as ParsedBundle['metadata'],
-    polygon, obstacles, unicom,
+    polygon, polygons, obstacles, unicom,
     mowerFiles,
   };
 }

@@ -100,8 +100,8 @@ export async function createBackup(sn: string, reason: string): Promise<BackupEn
     console.warn(`[portable-backup] ${sn}: skip — no charger anchor`);
     return null;
   }
-  const work = mapRepo.findAllByMowerSnAndType(sn, 'work')[0];
-  if (!work?.map_area) {
+  const workRows = mapRepo.findAllByMowerSnAndType(sn, 'work').filter((w) => w.map_area);
+  if (workRows.length === 0) {
     console.warn(`[portable-backup] ${sn}: skip — no work polygon in DB`);
     return null;
   }
@@ -170,11 +170,11 @@ export async function createBackup(sn: string, reason: string): Promise<BackupEn
     chargerLng: cal.charger_lng,
     rtkQuality: null,
     chargingPose,
-    workMap: {
-      canonical: work.canonical_name ?? 'map0',
-      alias: work.map_name ?? 'work',
-      points: JSON.parse(work.map_area as string),
-    },
+    workMaps: workRows.map((w, i) => ({
+      canonical: w.canonical_name ?? `map${i}`,
+      alias: w.map_name ?? `work${i}`,
+      points: JSON.parse(w.map_area as string),
+    })),
     obstacles: obstacles.filter((o) => o.map_area).map((o) => ({
       canonical: o.canonical_name ?? '',
       alias: o.map_name ?? '',

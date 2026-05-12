@@ -1320,8 +1320,8 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
     res.status(409).json({ ok: false, error: 'no charger anchor in DB — sync_map first' });
     return;
   }
-  const work = mapRepo.findAllByMowerSnAndType(sn, 'work')[0];
-  if (!work?.map_area) { res.status(404).json({ ok: false, error: 'no work polygon' }); return; }
+  const workRows = mapRepo.findAllByMowerSnAndType(sn, 'work').filter((w) => w.map_area);
+  if (workRows.length === 0) { res.status(404).json({ ok: false, error: 'no work polygon' }); return; }
   const obstacles = mapRepo.findAllByMowerSnAndType(sn, 'obstacle');
   const unicom = mapRepo.findAllByMowerSnAndType(sn, 'unicom');
 
@@ -1396,11 +1396,11 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
     chargerLng: cal.charger_lng,
     rtkQuality: null,
     chargingPose,
-    workMap: {
-      canonical: work.canonical_name ?? 'map0',
-      alias: work.map_name ?? 'work',
-      points: JSON.parse(work.map_area as string),
-    },
+    workMaps: workRows.map((w, i) => ({
+      canonical: w.canonical_name ?? `map${i}`,
+      alias: w.map_name ?? `work${i}`,
+      points: JSON.parse(w.map_area as string),
+    })),
     obstacles: obstacles.filter((o) => o.map_area).map((o) => ({
       canonical: o.canonical_name ?? '',
       alias: o.map_name ?? '',
@@ -1800,9 +1800,17 @@ adminStatusRouter.get(
       });
     };
     const features: unknown[] = [];
-    const workRing = project(parsed.polygon.points);
-    workRing.push(workRing[0]);
-    features.push({ type: 'Feature', properties: { name: parsed.polygon.alias, kind: 'work' }, geometry: { type: 'Polygon', coordinates: [workRing] } });
+    // Multi-map bundles (>= schema with polygons.json) expose every work
+    // polygon in `parsed.polygons`. Older single-map bundles fall back to
+    // the legacy `polygon` field — wrap into an array so the renderer
+    // treats them uniformly.
+    const workPolygons: Array<{ name: string; alias: string; points: { x: number; y: number }[] }> =
+      Array.isArray(parsed.polygons) && parsed.polygons.length > 0 ? parsed.polygons : [parsed.polygon];
+    for (const wp of workPolygons) {
+      const workRing = project(wp.points);
+      workRing.push(workRing[0]);
+      features.push({ type: 'Feature', properties: { name: wp.alias, kind: 'work' }, geometry: { type: 'Polygon', coordinates: [workRing] } });
+    }
     for (const o of parsed.obstacles) {
       const ring = project(o.points);
       ring.push(ring[0]);
@@ -1887,7 +1895,12 @@ adminStatusRouter.post(
     const ins = db.prepare(
       `INSERT INTO maps (mower_sn, map_id, map_name, map_type, file_name, map_area, canonical_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
-    ins.run(sn, 'imp_work', parsed.polygon.alias, 'work', parsed.polygon.name + '.csv', JSON.stringify(rebase(parsed.polygon.points)), parsed.polygon.name);
+    const workPolygons: Array<{ name: string; alias: string; points: { x: number; y: number }[] }> =
+      Array.isArray(parsed.polygons) && parsed.polygons.length > 0 ? parsed.polygons : [parsed.polygon];
+    for (let wi = 0; wi < workPolygons.length; wi++) {
+      const wp = workPolygons[wi];
+      ins.run(sn, `imp_work_${wi}`, wp.alias, 'work', wp.name + '.csv', JSON.stringify(rebase(wp.points)), wp.name);
+    }
     for (let i = 0; i < parsed.obstacles.length; i++) {
       const o = parsed.obstacles[i];
       ins.run(sn, `imp_obs_${i}`, o.alias, 'obstacle', o.name + '.csv', JSON.stringify(rebase(o.points)), o.name);
@@ -1907,7 +1920,7 @@ adminStatusRouter.post(
     // We pick the smallest empty raster that covers the rebased polygon
     // bbox + 2m margin and shift its origin so the polygon sits inside.
     const allPoints: { x: number; y: number }[] = [];
-    allPoints.push(...rebase(parsed.polygon.points));
+    for (const wp of workPolygons) allPoints.push(...rebase(wp.points));
     for (const o of parsed.obstacles) allPoints.push(...rebase(o.points));
     for (const u of parsed.unicom) allPoints.push(...rebase(u.points));
     if (allPoints.length > 0) {
@@ -2130,8 +2143,13 @@ adminStatusRouter.post(
         const [nx, ny] = transformPoint(p.x, p.y);
         return { x: nx, y: ny };
       });
-    ins.run(sn, 'imp_work', parsed.polygon.alias, 'work', parsed.polygon.name + '.csv',
-      JSON.stringify(transformPolygonPts(parsed.polygon.points)), parsed.polygon.name);
+    const workPolygons: Array<{ name: string; alias: string; points: { x: number; y: number }[] }> =
+      Array.isArray(parsed.polygons) && parsed.polygons.length > 0 ? parsed.polygons : [parsed.polygon];
+    for (let wi = 0; wi < workPolygons.length; wi++) {
+      const wp = workPolygons[wi];
+      ins.run(sn, `imp_work_${wi}`, wp.alias, 'work', wp.name + '.csv',
+        JSON.stringify(transformPolygonPts(wp.points)), wp.name);
+    }
     for (let i = 0; i < parsed.obstacles.length; i++) {
       const o = parsed.obstacles[i];
       ins.run(sn, `imp_obs_${i}`, o.alias, 'obstacle', o.name + '.csv',
@@ -2161,7 +2179,8 @@ adminStatusRouter.post(
     // Generate raster from the new (transformed) polygons. Compute bbox
     // from the transformed work polygon since coverage_planner rasterizes
     // around the mower's current frame.
-    const allPoints: { x: number; y: number }[] = transformPolygonPts(parsed.polygon.points);
+    const allPoints: { x: number; y: number }[] = [];
+    for (const wp of workPolygons) allPoints.push(...transformPolygonPts(wp.points));
     for (const o of parsed.obstacles) allPoints.push(...transformPolygonPts(o.points));
     if (allPoints.length > 0) {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

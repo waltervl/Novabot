@@ -47,16 +47,18 @@ describe('exportBundle', () => {
     chargerLng: 6.23103579689,
     rtkQuality: 100,
     chargingPose: { x: -1.21, y: 0.48, orientation: 1.4979 },
-    workMap: {
-      canonical: 'map0',
-      alias: 'Achtertuin',
-      points: [
-        { x: -2.6, y: -13.87 },
-        { x: 3.3, y: -13.87 },
-        { x: 3.3, y: 1.45 },
-        { x: -2.6, y: 1.45 },
-      ],
-    },
+    workMaps: [
+      {
+        canonical: 'map0',
+        alias: 'Achtertuin',
+        points: [
+          { x: -2.6, y: -13.87 },
+          { x: 3.3, y: -13.87 },
+          { x: 3.3, y: 1.45 },
+          { x: -2.6, y: 1.45 },
+        ],
+      },
+    ],
     obstacles: [
       {
         canonical: 'map0_0_obstacle',
@@ -96,6 +98,7 @@ describe('exportBundle', () => {
       'metadata.json',
       'obstacles.json',
       'polygon.json',
+      'polygons.json',
       'unicom.json',
     ]);
 
@@ -125,7 +128,7 @@ describe('parseBundle', () => {
       sn: 'LFIN1231000211',
       chargerLat: 52.14, chargerLng: 6.23, rtkQuality: 100,
       chargingPose: { x: 0, y: 0, orientation: 0 },
-      workMap: { canonical: 'map0', alias: 'Tuin', points: [{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 2 }, { x: 0, y: 2 }] },
+      workMaps: [{ canonical: 'map0', alias: 'Tuin', points: [{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 2 }, { x: 0, y: 2 }] }],
       obstacles: [],
       unicom: [],
     };
@@ -137,8 +140,33 @@ describe('parseBundle', () => {
     const parsed = await parseBundle(zip);
     expect(parsed.metadata.sourceSn).toBe('LFIN1231000211');
     expect(parsed.polygon.points).toHaveLength(4);
+    expect(parsed.polygons).toHaveLength(1);
+    expect(parsed.polygons[0].name).toBe('map0');
     expect(parsed.obstacles).toEqual([]);
     expect(parsed.unicom).toEqual([]);
+  });
+
+  it('round-trips a multi-work-map bundle (every work polygon preserved)', async () => {
+    const triple: ExportInput = {
+      sn: 'LFIN1231000211',
+      chargerLat: 52.14, chargerLng: 6.23, rtkQuality: 100,
+      chargingPose: { x: 0, y: 0, orientation: 0 },
+      workMaps: [
+        { canonical: 'map0', alias: 'Achtertuin', points: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 4 }, { x: 0, y: 4 }] },
+        { canonical: 'map1', alias: 'Voortuin', points: [{ x: 10, y: 10 }, { x: 14, y: 10 }, { x: 14, y: 13 }, { x: 10, y: 13 }] },
+        { canonical: 'map2', alias: 'Zijkant', points: [{ x: -10, y: 0 }, { x: -7, y: 0 }, { x: -7, y: 3 }, { x: -10, y: 3 }] },
+      ],
+      obstacles: [],
+      unicom: [],
+    };
+    const zip = await exportBundle(triple);
+    const parsed = await parseBundle(zip);
+    expect(parsed.polygons).toHaveLength(3);
+    expect(parsed.polygons.map((p) => p.name)).toEqual(['map0', 'map1', 'map2']);
+    expect(parsed.polygons.map((p) => p.alias)).toEqual(['Achtertuin', 'Voortuin', 'Zijkant']);
+    // Legacy field still points at the first work map for older readers.
+    expect(parsed.polygon.name).toBe('map0');
+    expect(parsed.metadata.workMapNames).toEqual(['map0', 'map1', 'map2']);
   });
 
   it('rejects a non-zip blob', async () => {
@@ -166,7 +194,7 @@ describe('parseBundle', () => {
     const tiny: ExportInput = {
       sn: 'X', chargerLat: 0, chargerLng: 0, rtkQuality: null,
       chargingPose: { x: 0, y: 0, orientation: 0 },
-      workMap: { canonical: 'map0', alias: 'Tiny', points: [{ x: 0, y: 0 }, { x: 0.5, y: 0 }, { x: 0.5, y: 0.5 }, { x: 0, y: 0.5 }] },
+      workMaps: [{ canonical: 'map0', alias: 'Tiny', points: [{ x: 0, y: 0 }, { x: 0.5, y: 0 }, { x: 0.5, y: 0.5 }, { x: 0, y: 0.5 }] }],
       obstacles: [], unicom: [],
     };
     const z = await exportBundle(tiny);
