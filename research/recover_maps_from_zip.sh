@@ -24,18 +24,27 @@ set -euo pipefail
 
 SN=""
 ROTATE_DEG="0"
+SET_ORIENTATION_DEG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --rotate-deg) ROTATE_DEG="$2"; shift 2 ;;
     --rotate-deg=*) ROTATE_DEG="${1#*=}"; shift ;;
+    --set-orientation-deg) SET_ORIENTATION_DEG="$2"; shift 2 ;;
+    --set-orientation-deg=*) SET_ORIENTATION_DEG="${1#*=}"; shift ;;
     -h|--help)
       echo "Usage: $0 [--rotate-deg N] <MOWER_SN>"
       echo ""
-      echo "  --rotate-deg N   Add N degrees to the stored originalChargingPose"
-      echo "                   orientation before writing the bundle. Use this"
-      echo "                   when the previous Apply-Exact rotated the polygons"
-      echo "                   by the wrong amount (mower picks a fresh map frame"
-      echo "                   on every reboot — see map-frame-realign-after-reboot)."
+      echo "  --rotate-deg N             Add N degrees to the stored originalChargingPose"
+      echo "                             orientation before writing the bundle. Use when"
+      echo "                             the previous Apply-Exact rotated polygons by the"
+      echo "                             wrong amount (mower picks a fresh map frame on"
+      echo "                             every reboot — see map-frame-realign-after-reboot)."
+      echo "  --set-orientation-deg N    Override the stored originalChargingPose"
+      echo "                             orientation to exactly N degrees (ignores"
+      echo "                             whatever was in map_info.json). Use when sign"
+      echo "                             flip is suspected — e.g. ROS ENU vs compass"
+      echo "                             handedness mismatch. Mutually exclusive with"
+      echo "                             --rotate-deg."
       echo ""
       echo "Examples:"
       echo "  $0 LFIN2231000633"
@@ -80,7 +89,12 @@ const SN = process.env.SN;
 const ROTATE_DEG = parseFloat(process.env.ROTATE_DEG || '0');
 const INPUT = `/data/storage/portable_backups/${SN}/${SN}_latest.zip`;
 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const suffix = ROTATE_DEG !== 0 ? `_rot${ROTATE_DEG}` : '';
+let suffix = '';
+if (process.env.SET_ORIENTATION_DEG && process.env.SET_ORIENTATION_DEG !== '') {
+  suffix = `_set${process.env.SET_ORIENTATION_DEG}`;
+} else if (ROTATE_DEG !== 0) {
+  suffix = `_rot${ROTATE_DEG}`;
+}
 const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery${suffix}.novabotmap`;
 
 (async () => {
@@ -98,11 +112,16 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery${suffix}.nov
       if (mi.charging_pose && Number.isFinite(mi.charging_pose.x)) chargingPose = mi.charging_pose;
     } catch {}
   }
-  // Rotation override: apply-exact computes Δ = liveDock - bundleStored.
-  // Adding ROTATE_DEG to the stored orientation shifts Δ by -ROTATE_DEG,
-  // which is what corrects a wrong-by-N-degrees first attempt. The actual
-  // CSVs stay untouched — only the metadata's reference frame moves.
-  if (ROTATE_DEG !== 0) {
+  // Override / offset stored orientation. apply-exact computes
+  // Δ = liveDock - bundleStored, so changing bundleStored changes Δ.
+  // --set-orientation-deg sets an absolute value (handy for sign-flip
+  // tests). --rotate-deg adds an offset to whatever map_info.json had.
+  if (process.env.SET_ORIENTATION_DEG && process.env.SET_ORIENTATION_DEG !== '') {
+    const targetRad = (parseFloat(process.env.SET_ORIENTATION_DEG) * Math.PI) / 180;
+    const before = chargingPose.orientation;
+    chargingPose = { ...chargingPose, orientation: targetRad };
+    console.log(`Set orientation override: ${process.env.SET_ORIENTATION_DEG}° (was ${before.toFixed(4)} rad → now ${targetRad.toFixed(4)} rad)`);
+  } else if (ROTATE_DEG !== 0) {
     const before = chargingPose.orientation;
     chargingPose = { ...chargingPose, orientation: before + (ROTATE_DEG * Math.PI) / 180 };
     console.log(`Applied rotation offset: ${ROTATE_DEG}° (orientation ${before.toFixed(4)} → ${chargingPose.orientation.toFixed(4)} rad)`);
@@ -213,7 +232,7 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery${suffix}.nov
 JSEOF
 
 # Run the converter inside the container -------------------------------------
-docker exec -e SN="$SN" -e ROTATE_DEG="$ROTATE_DEG" -e NODE_PATH=/app/server/node_modules "$CONTAINER" sh -c 'cd /app/server && node /tmp/recover_maps.js'
+docker exec -e SN="$SN" -e ROTATE_DEG="$ROTATE_DEG" -e SET_ORIENTATION_DEG="$SET_ORIENTATION_DEG" -e NODE_PATH=/app/server/node_modules "$CONTAINER" sh -c 'cd /app/server && node /tmp/recover_maps.js'
 
 echo
 echo '=== Resulting bundles ==='
