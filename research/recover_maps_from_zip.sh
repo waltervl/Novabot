@@ -22,10 +22,31 @@
 
 set -euo pipefail
 
-SN="${1:-}"
+SN=""
+ROTATE_DEG="0"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rotate-deg) ROTATE_DEG="$2"; shift 2 ;;
+    --rotate-deg=*) ROTATE_DEG="${1#*=}"; shift ;;
+    -h|--help)
+      echo "Usage: $0 [--rotate-deg N] <MOWER_SN>"
+      echo ""
+      echo "  --rotate-deg N   Add N degrees to the stored originalChargingPose"
+      echo "                   orientation before writing the bundle. Use this"
+      echo "                   when the previous Apply-Exact rotated the polygons"
+      echo "                   by the wrong amount (mower picks a fresh map frame"
+      echo "                   on every reboot — see map-frame-realign-after-reboot)."
+      echo ""
+      echo "Examples:"
+      echo "  $0 LFIN2231000633"
+      echo "  $0 --rotate-deg 90 LFIN2231000633   # polygons came out 90° CCW → bump +90"
+      echo "  $0 --rotate-deg -90 LFIN2231000633  # polygons came out 90° CW  → bump -90"
+      exit 0 ;;
+    *) SN="$1"; shift ;;
+  esac
+done
 if [ -z "$SN" ]; then
-  echo "Usage: $0 <MOWER_SN>" >&2
-  echo "Example: $0 LFIN2231000633" >&2
+  echo "Usage: $0 [--rotate-deg N] <MOWER_SN>  (try --help)" >&2
   exit 1
 fi
 
@@ -56,9 +77,11 @@ const { PassThrough } = require('node:stream');
 const { createHash } = require('node:crypto');
 
 const SN = process.env.SN;
+const ROTATE_DEG = parseFloat(process.env.ROTATE_DEG || '0');
 const INPUT = `/data/storage/portable_backups/${SN}/${SN}_latest.zip`;
 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery.novabotmap`;
+const suffix = ROTATE_DEG !== 0 ? `_rot${ROTATE_DEG}` : '';
+const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery${suffix}.novabotmap`;
 
 (async () => {
   const dir = await unzipper.Open.file(INPUT);
@@ -74,6 +97,15 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery.novabotmap`;
       const mi = JSON.parse(entries['csv_file/map_info.json']);
       if (mi.charging_pose && Number.isFinite(mi.charging_pose.x)) chargingPose = mi.charging_pose;
     } catch {}
+  }
+  // Rotation override: apply-exact computes Δ = liveDock - bundleStored.
+  // Adding ROTATE_DEG to the stored orientation shifts Δ by -ROTATE_DEG,
+  // which is what corrects a wrong-by-N-degrees first attempt. The actual
+  // CSVs stay untouched — only the metadata's reference frame moves.
+  if (ROTATE_DEG !== 0) {
+    const before = chargingPose.orientation;
+    chargingPose = { ...chargingPose, orientation: before + (ROTATE_DEG * Math.PI) / 180 };
+    console.log(`Applied rotation offset: ${ROTATE_DEG}° (orientation ${before.toFixed(4)} → ${chargingPose.orientation.toFixed(4)} rad)`);
   }
 
   const parsePoints = (txt) => {
@@ -95,7 +127,13 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery.novabotmap`;
     return Math.abs(acc) / 2;
   };
 
+  // Filenames in mower csv_file/ follow these patterns (see map-format.md):
+  //   map{N}_work.csv               work polygon
+  //   map{N}_{K}_obstacle.csv       obstacle K inside work map N
+  //   map{N}tocharge_unicom.csv     return-to-charger channel from N
+  //   map{N}tomap{M}_{K}_unicom.csv inter-map channel from N to M (variant K)
   const polygons = [], obstacles = [], unicom = [];
+  const skipped = [];
   for (const [name, content] of Object.entries(entries)) {
     if (!name.startsWith('csv_file/')) continue;
     const fname = name.slice('csv_file/'.length);
@@ -104,10 +142,15 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery.novabotmap`;
       polygons.push({ name: m[1], alias: m[1], areaM2: 0, points: parsePoints(content) });
     } else if ((m = fname.match(/^(map\d+_\d+_obstacle)\.csv$/))) {
       obstacles.push({ name: m[1], alias: m[1], areaM2: 0, points: parsePoints(content) });
-    } else if ((m = fname.match(/^(map\d+to(.+?)_?unicom)\.csv$/))) {
-      unicom.push({ name: m[1], targetMapName: m[2], points: parsePoints(content) });
+    } else if ((m = fname.match(/^(map\d+tocharge_unicom)\.csv$/))) {
+      unicom.push({ name: m[1], targetMapName: 'charge', points: parsePoints(content) });
+    } else if ((m = fname.match(/^(map\d+tomap(\d+)(?:_\d+)?_unicom)\.csv$/))) {
+      unicom.push({ name: m[1], targetMapName: `map${m[2]}`, points: parsePoints(content) });
+    } else if (fname !== 'map_info.json') {
+      skipped.push(fname);
     }
   }
+  if (skipped.length > 0) console.log('Skipped non-matching csv files:', skipped);
   for (const p of polygons) p.areaM2 = area(p.points);
   for (const o of obstacles) o.areaM2 = area(o.points);
 
@@ -170,7 +213,7 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery.novabotmap`;
 JSEOF
 
 # Run the converter inside the container -------------------------------------
-docker exec -e SN="$SN" -e NODE_PATH=/app/server/node_modules "$CONTAINER" sh -c 'cd /app/server && node /tmp/recover_maps.js'
+docker exec -e SN="$SN" -e ROTATE_DEG="$ROTATE_DEG" -e NODE_PATH=/app/server/node_modules "$CONTAINER" sh -c 'cd /app/server && node /tmp/recover_maps.js'
 
 echo
 echo '=== Resulting bundles ==='
