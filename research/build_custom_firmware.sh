@@ -1470,8 +1470,15 @@ if [ -f "$EXT_SRC" ]; then
   # zodat import niet faalt bij boot race (bewezen 2026-05-06 op .100,
   # zonder dit faalt /blade_speed_set native publish + RobotStatus
   # override → blade-on werkt niet vanuit manual control).
+  # Double-spawn guard: kill any stale instance before spawning so a second
+  # `run_novabot.sh start` (e.g. apt upgrade restarting systemd units) does
+  # not leave two MQTT clients with the same client_id fighting for the
+  # connection (issue #60 root-cause prevention).
   if [ -f "/root/novabot/scripts/extended_commands.py" ]; then
+      pkill -f "/root/novabot/scripts/extended_commands.py" 2>/dev/null
       (sleep 12 && \
+       pkill -f "/root/novabot/scripts/extended_commands.py" 2>/dev/null; \
+       sleep 1 && \
        source /opt/ros/galactic/setup.bash && \
        source /root/novabot/install/setup.bash && \
        export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && \
@@ -1479,7 +1486,7 @@ if [ -f "$EXT_SRC" ]; then
        export ROS_LOG_DIR=/root/novabot/data/ros2_log && \
        export ROS_LOCALHOST_ONLY=1 && \
        python3 /root/novabot/scripts/extended_commands.py >> $LOGS_PATH/extended_commands.log 2>&1) &
-      echo "Extended commands scheduled (12s delay, ROS env explicit)" >> $LOGS_PATH/extended_commands.log
+      echo "Extended commands scheduled (12s delay, double-spawn guard, ROS env explicit)" >> $LOGS_PATH/extended_commands.log
   fi
 EXTEOF
         sed -i '' '/start_test.sh/r /tmp/ext_cmd_start_block.sh' "$RUN_NOVABOT"

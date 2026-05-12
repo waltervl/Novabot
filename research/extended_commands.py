@@ -2360,8 +2360,7 @@ def _start_robot_status_override():
         log("[robot-status] override request but ROS node not ready")
         return
     if not node.override_active:
-        node.override_active = True
-        log("[robot-status] override activated (50Hz passthrough+modify)")
+        node._arm_status_override()
 
 
 def _stop_robot_status_override():
@@ -2369,8 +2368,7 @@ def _stop_robot_status_override():
     if node is None:
         return
     if node.override_active:
-        node.override_active = False
-        log("[robot-status] override stopped")
+        node._disarm_status_override()
 
 
 def _publish_motor_driver_reset() -> str:
@@ -3215,20 +3213,58 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
                     self.create_timer(0.1, self._tick_blade)
                     # RobotStatus passthrough: cache real status from
                     # robot_decision; republish a modified clone at 50Hz when
-                    # override_active is True. Preserves all fields except the
-                    # ones the STM32 blade-enable gate checks.
+                    # override_active is True. Subscription + 50Hz timer are
+                    # LAZILY created via _arm_status_override() so the heavy
+                    # callback path does not burn CPU while blade-override is
+                    # idle (>99% of mower lifetime — see issue #60). The
+                    # publisher stays up because creation is cheap and it
+                    # lets us publish-without-arm in the future if needed.
                     self._status_last = None
                     self.status_pub = self.create_publisher(
                         RobotStatus, '/robot_decision/robot_status', 10,
                     )
-                    self.create_subscription(
-                        RobotStatus, '/robot_decision/robot_status',
-                        self._on_status, 10,
-                    )
-                    self.create_timer(0.02, self._republish_status)  # 50Hz
+                    self._status_sub = None
+                    self._status_timer = None
                     self.override_active = False
                     log(f"[BladeRelay] subscribed /blade_speed_get → MQTT {self._topic}")
-                    log("[BladeRelay] publishers ready: blade + RobotStatus passthrough")
+                    log("[BladeRelay] publishers ready: blade ops + RobotStatus override (lazy)")
+
+                def _arm_status_override(self):
+                    """Create subscription + 50Hz republish timer. Idempotent.
+
+                    Called when manual blade-on activates. Without lazy arm
+                    the 50Hz timer + RobotStatus callback fired constantly
+                    (issue #60: ~30% CPU per worker thread on ARM, even idle).
+                    """
+                    if self._status_sub is None:
+                        self._status_sub = self.create_subscription(
+                            RobotStatus, '/robot_decision/robot_status',
+                            self._on_status, 10,
+                        )
+                    if self._status_timer is None:
+                        self._status_timer = self.create_timer(
+                            0.02, self._republish_status,
+                        )  # 50Hz
+                    self.override_active = True
+                    log("[BladeRelay] override armed (subscription + 50Hz timer up)")
+
+                def _disarm_status_override(self):
+                    """Destroy subscription + timer. Idempotent."""
+                    self.override_active = False
+                    if self._status_timer is not None:
+                        try:
+                            self.destroy_timer(self._status_timer)
+                        except Exception as ex:
+                            log(f"[BladeRelay] destroy timer failed: {ex}")
+                        self._status_timer = None
+                    if self._status_sub is not None:
+                        try:
+                            self.destroy_subscription(self._status_sub)
+                        except Exception as ex:
+                            log(f"[BladeRelay] destroy sub failed: {ex}")
+                        self._status_sub = None
+                    self._status_last = None
+                    log("[BladeRelay] override disarmed (subscription + timer down)")
 
                 def _on_msg(self, msg):
                     value = int(msg.data)
@@ -3347,6 +3383,18 @@ def main():
         log("SIGTERM ontvangen, afsluiten...")
         sys.exit(0)
     signal.signal(signal.SIGTERM, sigterm_handler)
+
+    # Auto-reap fire-and-forget child processes. Many helpers spawn
+    # subprocess.Popen(...) for "send command and forget" RPC (e.g. ros2
+    # action send_goal wrappers, set_server_urls.sh dispatch). Without an
+    # explicit wait() or SIGCHLD-IGN, exited children pile up as zombies
+    # ([bash] <defunct> in ps) — issue #60 caught one with PID 94309 PPID
+    # = extended_commands. SIG_IGN tells the kernel to auto-reap exited
+    # children so they never become zombies.
+    try:
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    except (AttributeError, ValueError) as ex:
+        log(f"SIGCHLD ignore not supported on this platform: {ex}")
 
     # Lees configuratie
     sn, mqtt_addr, mqtt_port = read_config()
