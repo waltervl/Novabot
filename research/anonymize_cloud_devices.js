@@ -15,7 +15,14 @@ const fs = require('fs');
 const path = require('path');
 
 const INPUT = path.resolve(__dirname, 'cloud_devices.json');
-const OUTPUT = path.resolve(__dirname, 'cloud_devices_anonymous.json');
+// Write to BOTH locations: research/ is the canonical scrape-pipeline output,
+// server/ is what the Dockerfile COPYs into the runtime image. Keep them in
+// lockstep — earlier mismatches shipped a stale factory list inside docker
+// while the repo looked up-to-date.
+const OUTPUTS = [
+  path.resolve(__dirname, 'cloud_devices_anonymous.json'),
+  path.resolve(__dirname, '..', 'server', 'cloud_devices_anonymous.json'),
+];
 
 const KEEP = [
   'sn', 'deviceType', 'macAddress', 'equipmentType', 'sysVersion',
@@ -32,5 +39,8 @@ const anon = raw.map((d) => {
 // Sort by SN so diffs across runs are stable.
 anon.sort((a, b) => (a.sn ?? '').localeCompare(b.sn ?? ''));
 
-fs.writeFileSync(OUTPUT, JSON.stringify(anon, null, 2));
-console.log(`Wrote ${anon.length} anonymized entries to ${OUTPUT}`);
+const payload = JSON.stringify(anon, null, 2);
+for (const out of OUTPUTS) {
+  fs.writeFileSync(out, payload);
+  console.log(`Wrote ${anon.length} anonymized entries to ${out}`);
+}
