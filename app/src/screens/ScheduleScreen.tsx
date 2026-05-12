@@ -614,6 +614,9 @@ function ScheduleEditor({
     schedule?.pathDirection ?? schedule?.path_direction ?? defaultPathDirection ?? 120,
   );
   const [rainPause, setRainPause] = useState(schedule?.rainPause ?? schedule?.rain_pause ?? true);
+  // #51 follow-up: rotate path_direction by step° each fire.
+  const [alternateDirection, setAlternateDirection] = useState(schedule?.alternateDirection ?? false);
+  const [alternateStep, setAlternateStep] = useState<number>(schedule?.alternateStep ?? 90);
   const [availableMaps, setAvailableMaps] = useState<MapData[]>([]);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(
     schedule?.mapId ?? schedule?.map_id ?? initialMapId ?? null,
@@ -668,6 +671,8 @@ function ScheduleEditor({
         cuttingHeight: cuttingHeight,
         pathDirection: pathDir,
         rainPause: rainPause,
+        alternateDirection,
+        alternateStep,
       };
 
       // Decide between weekday mode and interval mode. In interval mode
@@ -896,6 +901,36 @@ function ScheduleEditor({
               thumbColor={rainPause ? '#60a5fa' : '#666'}
             />
           </View>
+
+          {/* #51 follow-up: rotate path_direction by alternateStep° each
+              time the schedule fires. Server-side runner counts triggers
+              + adds (count × step) mod 360 to the base path_direction. */}
+          <View style={editorStyles.rainRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={editorStyles.rainTitle}>Rotate direction each run</Text>
+              <Text style={editorStyles.rainSub}>
+                Adds {alternateStep}° to the path direction every time this schedule fires
+              </Text>
+            </View>
+            <Switch
+              value={alternateDirection}
+              onValueChange={setAlternateDirection}
+              trackColor={{ false: 'rgba(255,255,255,0.1)', true: 'rgba(167,139,250,0.4)' }}
+              thumbColor={alternateDirection ? colors.purple : '#666'}
+            />
+          </View>
+          {alternateDirection && (
+            <View style={editorStyles.stepperRow}>
+              <Text style={[editorStyles.label, { flex: 1, marginBottom: 0 }]}>Rotation step</Text>
+              <TouchableOpacity style={editorStyles.stepperBtn} onPress={() => setAlternateStep(Math.max(15, alternateStep - 15))}>
+                <Ionicons name="remove" size={18} color={colors.white} />
+              </TouchableOpacity>
+              <Text style={editorStyles.stepperValue}>{alternateStep}°</Text>
+              <TouchableOpacity style={editorStyles.stepperBtn} onPress={() => setAlternateStep(Math.min(180, alternateStep + 15))}>
+                <Ionicons name="add" size={18} color={colors.white} />
+              </TouchableOpacity>
+            </View>
+          )}
 
           </ScrollView>
 

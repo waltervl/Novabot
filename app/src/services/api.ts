@@ -73,6 +73,11 @@ export interface Schedule {
   intervalDays?: number;
   /** YYYY-MM-DD anchor date for interval mode. */
   intervalAnchorDate?: string | null;
+  /** #51 follow-up: rotate path_direction by alternateStep° each time
+   *  the schedule fires. Server multiplies the fire count by the step
+   *  and wraps at 360. */
+  alternateDirection?: boolean;
+  alternateStep?: number;
   /** Server-derived: this schedule is the one currently being executed by the mower. */
   currentlyRunning?: boolean;
   /** Server-derived: ISO timestamp when the rain monitor paused this schedule's session, or null. */
@@ -167,6 +172,8 @@ export interface ScheduleWritePayload {
   rainPause?: boolean;
   intervalDays?: number;
   intervalAnchorDate?: string | null;
+  alternateDirection?: boolean;
+  alternateStep?: number;
   start_hour?: number;
   start_minute?: number;
   duration_minutes?: number;
@@ -231,6 +238,8 @@ function normalizeSchedule(input: ScheduleLike): Schedule {
     lastTriggeredAt: input.lastTriggeredAt ?? null,
     intervalDays: (input as { intervalDays?: number }).intervalDays ?? 0,
     intervalAnchorDate: (input as { intervalAnchorDate?: string | null }).intervalAnchorDate ?? null,
+    alternateDirection: (input as { alternateDirection?: boolean }).alternateDirection ?? false,
+    alternateStep: (input as { alternateStep?: number }).alternateStep ?? 90,
     created_at: createdAt,
     createdAt,
     updated_at: updatedAt,
