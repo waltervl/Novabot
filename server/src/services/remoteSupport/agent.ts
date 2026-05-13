@@ -88,3 +88,38 @@ export function startAgent(opts: AgentOpts): AgentHandle {
     },
   };
 }
+
+import * as pty from 'node-pty';
+
+export interface PtyOpts {
+  cols: number;
+  rows: number;
+  onOutput: (data: Buffer) => void;
+}
+
+export interface PtySession {
+  write(data: Buffer | string): void;
+  resize(cols: number, rows: number): void;
+  close(): void;
+}
+
+/** Spawns /bin/bash inside the container under the agent's own UID
+ *  (typically root in our docker image). Output is delivered as raw
+ *  Buffers to the caller, which forwards them upstream to the operator
+ *  via the relay socket. */
+export function spawnPtySession(opts: PtyOpts): PtySession {
+  const shell = process.env.SHELL ?? '/bin/bash';
+  const term = pty.spawn(shell, ['-i'], {
+    name: 'xterm-256color',
+    cols: opts.cols,
+    rows: opts.rows,
+    cwd: process.env.HOME ?? '/root',
+    env: process.env as Record<string, string>,
+  });
+  term.onData((data) => opts.onOutput(Buffer.from(data, 'utf8')));
+  return {
+    write(data) { term.write(Buffer.isBuffer(data) ? data.toString('utf8') : data); },
+    resize(cols, rows) { term.resize(cols, rows); },
+    close() { try { term.kill(); } catch { /* already exited */ } },
+  };
+}

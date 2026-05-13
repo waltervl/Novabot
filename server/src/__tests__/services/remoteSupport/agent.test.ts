@@ -91,3 +91,19 @@ describe('agent connection', () => {
     handle.stop();
   });
 });
+
+describe('pty session', () => {
+  it.skipIf(process.env.CI === 'true')('runs a command and captures stdout', async () => {
+    const { spawnPtySession } = await import('../../../services/remoteSupport/agent.js');
+    const chunks: string[] = [];
+    const session = spawnPtySession({
+      cols: 80,
+      rows: 24,
+      onOutput: (data) => chunks.push(data.toString('utf8')),
+    });
+    session.write('echo hello-pty\n');
+    await new Promise((r) => setTimeout(r, 250));
+    session.close();
+    expect(chunks.join('')).toContain('hello-pty');
+  });
+});
