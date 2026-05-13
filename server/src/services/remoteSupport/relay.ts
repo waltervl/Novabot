@@ -26,9 +26,18 @@ interface Session {
   operatorMsgListener: ((data: Buffer | string) => void) | null;
   closeTimer: NodeJS.Timeout | null;
   hooks: SessionHooks;
+  /** Rolling transcript of bytes in both directions, capped at BUFFER_MAX.
+   *  Exposed via getSessionBuffer for read-only observers (Claude / curl). */
+  buffer: Buffer[];
+  bufferBytes: number;
+  /** Monotonic byte counter — never decreases. Observers poll with
+   *  ?since=<lastSeen> and get only newer bytes. */
+  totalBytes: number;
+  startedAt: number | null;
 }
 
 const HARD_TIMEOUT_MS = 30 * 60 * 1000;
+const BUFFER_MAX = 65536;
 
 export class Relay {
   private sessions = new Map<string, Session>();
@@ -41,10 +50,54 @@ export class Relay {
         agentMsgListener: null, operatorMsgListener: null,
         closeTimer: null,
         hooks: {},
+        buffer: [],
+        bufferBytes: 0,
+        totalBytes: 0,
+        startedAt: null,
       };
       this.sessions.set(sn, s);
     }
     return s;
+  }
+
+  private appendBuffer(s: Session, data: Buffer | string): void {
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
+    if (chunk.length === 0) return;
+    s.buffer.push(chunk);
+    s.bufferBytes += chunk.length;
+    s.totalBytes += chunk.length;
+    while (s.bufferBytes > BUFFER_MAX && s.buffer.length > 1) {
+      const dropped = s.buffer.shift()!;
+      s.bufferBytes -= dropped.length;
+    }
+  }
+
+  listActiveSessions(): Array<{ sn: string; startedAt: number | null; totalBytes: number }> {
+    const out: Array<{ sn: string; startedAt: number | null; totalBytes: number }> = [];
+    for (const [sn, s] of this.sessions) {
+      if (s.state === 'ACTIVE') {
+        out.push({ sn, startedAt: s.startedAt, totalBytes: s.totalBytes });
+      }
+    }
+    return out;
+  }
+
+  getSessionBuffer(sn: string, since = 0): { data: string; totalBytes: number; truncated: boolean; state: SessionState } {
+    const s = this.sessions.get(sn);
+    if (!s) return { data: '', totalBytes: 0, truncated: false, state: 'IDLE' };
+    const full = Buffer.concat(s.buffer);
+    const firstAvailable = s.totalBytes - full.length;
+    let truncated = false;
+    let slice: Buffer;
+    if (since <= firstAvailable) {
+      slice = full;
+      truncated = since > 0 && since < firstAvailable;
+    } else if (since >= s.totalBytes) {
+      slice = Buffer.alloc(0);
+    } else {
+      slice = full.subarray(since - firstAvailable);
+    }
+    return { data: slice.toString('utf8'), totalBytes: s.totalBytes, truncated, state: s.state };
   }
 
   getState(sn: string): SessionState {
@@ -94,6 +147,10 @@ export class Relay {
     if (s.state !== 'REQUESTED') throw new Error('session not requested');
     if (!s.agent || !s.operator) throw new Error('both sides must be attached before approve');
     s.state = 'ACTIVE';
+    s.startedAt = Date.now();
+    s.buffer = [];
+    s.bufferBytes = 0;
+    s.totalBytes = 0;
     this.wirePipe(sn, s);
     s.closeTimer = setTimeout(() => this.closeSession(sn, 'hard-timeout'), HARD_TIMEOUT_MS);
   }
@@ -139,10 +196,12 @@ export class Relay {
     const operator = s.operator;
     s.agentMsgListener = (data) => {
       try { s.hooks.onByteOut?.(data); } catch { /* hook failure must not break the pipe */ }
+      try { this.appendBuffer(s, data); } catch { /* never break pipe on buffer issue */ }
       operator.send(data);
     };
     s.operatorMsgListener = (data) => {
       try { s.hooks.onByteIn?.(data); } catch { /* hook failure must not break the pipe */ }
+      try { this.appendBuffer(s, data); } catch { /* never break pipe on buffer issue */ }
       agent.send(data);
     };
     agent.on('message', s.agentMsgListener);

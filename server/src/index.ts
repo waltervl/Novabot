@@ -68,6 +68,7 @@ import {
   denyPending,
   getPendingRequest,
   killActiveSession,
+  getActivePty,
 } from './services/remoteSupport/agent.js';
 import { signAgentToken } from './services/remoteSupport/tokens.js';
 import { equipmentRepo } from './db/repositories/equipment.js';
@@ -282,6 +283,7 @@ if (PROXY_MODE === 'cloud') {
         denyRequest: (requestId) => { denyPending(requestId); },
         getPendingRequest: () => getPendingRequest(),
         killSession: () => killActiveSession(),
+        isSessionActive: () => getActivePty() !== null,
       });
       app.use('/api/remote-support', authMiddleware, agentRouter);
       console.log(`[remote-support] agent registered for ${ownSn}`);

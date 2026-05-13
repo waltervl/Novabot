@@ -662,22 +662,29 @@ export function adminPageHtml(): string {
       <div id="relayStatus" style="margin-top:8px;font-size:12px;color:#666"></div>
     </div>
 
-    <div class="card" style="border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.04)">
+    <div class="card" id="rsUserCard" style="display:${process.env.REMOTE_SUPPORT_ENABLED === 'true' ? 'block' : 'none'};border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.04)">
       <h2 style="color:#a5b4fc">Remote Support — Allow Ramon to assist</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">When enabled, Ramon can request an approved-by-you bash session inside this container to troubleshoot. Every keystroke is logged to disk for your review.</p>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <label class="switch"><input type="checkbox" id="rsToggle" onchange="rsToggle()"><span class="slider"></span></label>
-        <span id="rsStatus" style="font-size:12px">Off</span>
+        <button id="rsToggleBtn" onclick="rsToggle()" type="button" style="position:relative;display:inline-flex;align-items:center;gap:10px;padding:10px 18px 10px 14px;border:none;border-radius:999px;cursor:pointer;font-size:14px;font-weight:600;color:#fff;background:#374151;transition:background .15s ease;min-width:170px;justify-content:flex-start">
+          <span id="rsToggleDot" style="width:14px;height:14px;border-radius:999px;background:#9ca3af;box-shadow:0 0 0 3px rgba(156,163,175,.25);transition:background .15s ease,box-shadow .15s ease"></span>
+          <span id="rsToggleLabel">Remote support: OFF</span>
+        </button>
+        <input type="checkbox" id="rsToggle" style="display:none">
         <button class="btn btn-danger" id="rsKill" onclick="rsKill()" style="display:none">Kill Active Session</button>
       </div>
-      <div id="rsBanner" style="display:none;margin-top:12px;padding:8px 12px;background:rgba(239,68,68,.1);border-radius:6px;border:1px solid rgba(239,68,68,.4)">
-        <div style="font-weight:600;color:#fca5a5">Remote Support request</div>
-        <div id="rsBannerMsg" style="font-size:12px;color:#fecaca;margin-top:4px"></div>
-        <div style="margin-top:8px;display:flex;gap:8px">
-          <button class="btn btn-success" onclick="rsApprove()">Approve</button>
-          <button class="btn btn-danger" onclick="rsDeny()">Deny</button>
+      <div id="rsStatus" style="margin-top:6px;font-size:12px;color:#94a3b8">Off — Ramon cannot connect</div>
+      <div id="rsBanner" style="display:none;margin-top:14px;padding:14px 18px;background:rgba(59,130,246,.14);border-radius:8px;border:2px solid rgba(59,130,246,.65);box-shadow:0 0 0 4px rgba(59,130,246,.12)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.35);animation:rsPulse 1.4s ease-in-out infinite"></span>
+          <span style="font-weight:700;color:#bfdbfe;font-size:15px;letter-spacing:.02em">RAMON IS CONNECTED RIGHT NOW</span>
+        </div>
+        <div id="rsBannerMsg" style="font-size:12px;color:#bfdbfe;margin-top:6px"></div>
+        <div style="margin-top:10px">
+          <button class="btn btn-danger" onclick="rsKill()">End session now</button>
         </div>
       </div>
+      <style>@keyframes rsPulse { 0%,100% { opacity:1 } 50% { opacity:.45 } }</style>
       <div style="margin-top:12px">
         <div style="font-size:12px;color:#aaa;margin-bottom:6px">Audit logs</div>
         <ul id="rsAuditList" style="font-size:11px;color:#94a3b8;list-style:none;padding:0;margin:0"></ul>
@@ -686,13 +693,22 @@ export function adminPageHtml(): string {
 
     <div class="card" id="rsOperatorCard" style="display:${process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true' ? 'block' : 'none'};border:1px solid rgba(168,85,247,.3);background:rgba(168,85,247,.04)">
       <h2 style="color:#c4b5fd">Remote Support — Operator</h2>
-      <p style="font-size:12px;color:#aaa;margin-bottom:12px">Online agents that have toggled remote support ON. Pick one or enter an SN manually.</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input type="text" id="rsOpSn" placeholder="LFIN2231000656" style="flex:1;min-width:240px">
-        <button class="btn btn-primary" onclick="rsOpConnect()">Request Session</button>
-        <button class="btn btn-secondary" onclick="rsOpRefresh()">Refresh agents</button>
+      <p style="font-size:12px;color:#aaa;margin-bottom:12px">Users who toggled remote support ON are listed below. Click Connect to open an approval-gated bash session.</p>
+
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Pending support requests</div>
+        <div id="rsOpAgents" style="font-size:13px;color:#cbd5e1"></div>
       </div>
-      <ul id="rsOpAgents" style="margin-top:8px;font-size:12px;color:#94a3b8;list-style:none;padding:0"></ul>
+
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:12px;color:#94a3b8">Connect by SN manually</summary>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <input type="text" id="rsOpSn" placeholder="LFIN2231000656" style="flex:1;min-width:240px">
+          <button class="btn btn-primary" onclick="rsOpConnect()">Connect</button>
+          <button class="btn btn-secondary" onclick="rsOpRefresh()">Refresh</button>
+        </div>
+      </details>
+
       <div id="rsOpTerminal" style="margin-top:12px;height:400px;background:#000;display:none"></div>
     </div>
 
@@ -4572,104 +4588,144 @@ function loadRelayStatus() {
   }).catch(function(){});
 }
 
-var rsApproveRequestId = null;
+function rsAuthHeaders(extra) {
+  var h = { 'Authorization': token };
+  if (extra) for (var k in extra) h[k] = extra[k];
+  return h;
+}
 async function rsRefreshStatus() {
-  var r = await fetch('/api/remote-support/status').then(function(x) { return x.json(); }).catch(function() { return { enabled: false, pendingRequest: null }; });
+  var r = await fetch('/api/remote-support/status', { headers: rsAuthHeaders() }).then(function(x) { return x.json(); }).catch(function() { return { enabled: false, pendingRequest: null }; });
   var t = document.getElementById('rsToggle');
   if (t) t.checked = !!r.enabled;
+  var active = !!r.sessionActive;
+  var btn = document.getElementById('rsToggleBtn');
+  var dot = document.getElementById('rsToggleDot');
+  var lbl = document.getElementById('rsToggleLabel');
   var s = document.getElementById('rsStatus');
-  var pending = r.pendingRequest && r.pendingRequest.requestId;
-  if (s) {
-    s.textContent = pending
-      ? 'On — approval required'
-      : (r.enabled ? 'On — waiting for request' : 'Off');
-  }
   var banner = document.getElementById('rsBanner');
   var msg = document.getElementById('rsBannerMsg');
-  if (pending) {
-    rsApproveRequestId = r.pendingRequest.requestId;
+  var kill = document.getElementById('rsKill');
+  if (active) {
+    if (btn) btn.style.display = 'none';
+    if (s) s.style.display = 'none';
+    if (kill) kill.style.display = 'none';
     if (banner) banner.style.display = 'block';
-    if (msg) {
-      var since = new Date(r.pendingRequest.since).toLocaleTimeString();
-      msg.textContent = 'Ramon van Bruggen requests a remote session (since ' + since + ').';
-    }
+    if (msg) msg.textContent = 'A bash session is open in your container. All keystrokes are logged to disk.';
   } else {
-    rsApproveRequestId = null;
+    if (btn) btn.style.display = 'inline-flex';
+    if (s) s.style.display = 'block';
     if (banner) banner.style.display = 'none';
+    if (kill) kill.style.display = 'none';
+    if (btn && dot && lbl) {
+      if (r.enabled) {
+        btn.style.background = '#065f46';
+        dot.style.background = '#22c55e';
+        dot.style.boxShadow = '0 0 0 3px rgba(34,197,94,.35)';
+        lbl.textContent = 'Remote support: ON';
+      } else {
+        btn.style.background = '#374151';
+        dot.style.background = '#9ca3af';
+        dot.style.boxShadow = '0 0 0 3px rgba(156,163,175,.25)';
+        lbl.textContent = 'Remote support: OFF';
+      }
+    }
+    if (s) {
+      s.textContent = r.enabled
+        ? 'On — Ramon can connect on request. Auto-disables after 4 hours.'
+        : 'Off — Ramon cannot connect.';
+    }
   }
 }
 async function rsToggle() {
-  var enabled = document.getElementById('rsToggle').checked;
+  var t = document.getElementById('rsToggle');
+  var nextEnabled = !(t && t.checked);
+  if (t) t.checked = nextEnabled;
   await fetch('/api/remote-support/toggle', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled: enabled }),
+    method: 'POST', headers: rsAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ enabled: nextEnabled }),
   });
   rsRefreshStatus();
 }
 async function rsKill() {
   await fetch('/api/remote-support/kill', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: rsAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
   });
   rsRefreshStatus();
-}
-async function rsApprove() {
-  if (!rsApproveRequestId) return;
-  var id = rsApproveRequestId;
-  try {
-    await fetch('/api/remote-support/approve', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId: id }),
-    });
-  } finally {
-    rsApproveRequestId = null;
-    var b = document.getElementById('rsBanner');
-    if (b) b.style.display = 'none';
-    rsRefreshStatus();
-  }
-}
-async function rsDeny() {
-  if (!rsApproveRequestId) return;
-  var id = rsApproveRequestId;
-  try {
-    await fetch('/api/remote-support/deny', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId: id }),
-    });
-  } finally {
-    rsApproveRequestId = null;
-    var b = document.getElementById('rsBanner');
-    if (b) b.style.display = 'none';
-    rsRefreshStatus();
-  }
 }
 async function rsRefreshAuditLogs() {
   var sel = document.getElementById('mapMowerSelect');
   var sn = sel ? sel.value : '';
   if (!sn) return;
-  var r = await fetch('/api/remote-support/audit-logs?sn=' + encodeURIComponent(sn)).then(function(x) { return x.json(); }).catch(function() { return { files: [] }; });
+  var r = await fetch('/api/remote-support/audit-logs?sn=' + encodeURIComponent(sn), { headers: rsAuthHeaders() }).then(function(x) { return x.json(); }).catch(function() { return { files: [] }; });
   var list = document.getElementById('rsAuditList');
   if (!list) return;
   list.innerHTML = (r.files || []).slice(0, 10).map(function(f) {
     return '<li><a href="/api/remote-support/audit-logs/' + f.filename + '" download style="color:#a5b4fc">' + f.filename + '</a> (' + Math.round(f.bytes / 1024) + ' KB)</li>';
   }).join('');
 }
-rsRefreshStatus();
-rsRefreshAuditLogs();
-setInterval(rsRefreshStatus, 5000);
-setInterval(rsRefreshAuditLogs, 30000);
+var rsUserCard = document.getElementById('rsUserCard');
+if (rsUserCard && rsUserCard.style.display !== 'none') {
+  rsRefreshStatus();
+  rsRefreshAuditLogs();
+  setInterval(rsRefreshStatus, 2000);
+  setInterval(rsRefreshAuditLogs, 30000);
+}
 
+function rsOpConnectSn(sn) {
+  var input = document.getElementById("rsOpSn");
+  if (input) input.value = sn;
+  rsOpConnect();
+}
+function rsOpDisconnect() {
+  if (rsOpWs) { try { rsOpWs.close(); } catch (_) {} rsOpWs = null; }
+  if (rsOpTerm) { try { rsOpTerm.dispose(); } catch (_) {} rsOpTerm = null; }
+  var el = document.getElementById("rsOpTerminal");
+  if (el) { el.style.display = "none"; el.innerHTML = ""; }
+  rsOpCurrentSn = null;
+  rsOpRefresh();
+}
 async function rsOpRefresh() {
-  var r = await fetch("/api/remote-support/active-agents").then(function(x) { return x.json(); }).catch(function() { return { agents: [] }; });
+  var pAgents = fetch("/api/remote-support/active-agents", { headers: rsAuthHeaders() }).then(function(x) { return x.json(); }).catch(function() { return { agents: [] }; });
+  var pSessions = fetch("/api/remote-support/sessions", { headers: rsAuthHeaders() }).then(function(x) { return x.json(); }).catch(function() { return { sessions: [] }; });
+  var both = await Promise.all([pAgents, pSessions]);
+  var agents = both[0].agents || [];
+  var sessions = both[1].sessions || [];
+  var activeSet = {};
+  sessions.forEach(function(s) { activeSet[s.sn] = s; });
   var list = document.getElementById("rsOpAgents");
   if (!list) return;
-  var agents = r.agents || [];
+  if (agents.length === 0 && sessions.length === 0) {
+    list.innerHTML = "<div style=\\"font-size:12px;color:#64748b;font-style:italic;padding:8px 0\\">No pending requests. Users must toggle remote support ON in their admin panel to appear here.</div>";
+    return;
+  }
   list.innerHTML = agents.map(function(a) {
     var t = new Date(a.registeredAt).toLocaleTimeString();
-    return "<li><a href=\\"#\\" onclick=\\"document.getElementById('rsOpSn').value='" + a.sn + "';return false\\">" + a.sn + "</a> (since " + t + ")</li>";
-  }).join("") || "<li>no agents connected</li>";
+    var snEsc = String(a.sn).replace(/[^A-Za-z0-9_-]/g, "");
+    var isActive = !!activeSet[snEsc];
+    var isMine = rsOpCurrentSn === snEsc;
+    var border = isActive ? "rgba(34,197,94,.5)" : "rgba(168,85,247,.2)";
+    var bg = isActive ? "rgba(34,197,94,.08)" : "rgba(168,85,247,.06)";
+    var nameColor = isActive ? "#bbf7d0" : "#e9d5ff";
+    var subline = isActive
+      ? ("Session active since " + new Date(activeSet[snEsc].startedAt).toLocaleTimeString())
+      : ("Waiting since " + t);
+    var badge = isActive
+      ? "<span style=\\"display:inline-block;padding:2px 8px;margin-left:8px;border-radius:999px;background:#16a34a;color:#fff;font-size:10px;font-weight:700;letter-spacing:.05em\\">CONNECTED</span>"
+      : "";
+    var btn = isMine
+      ? "<button class=\\"btn btn-danger\\" onclick=\\"rsOpDisconnect()\\">Disconnect</button>"
+      : (isActive
+          ? "<button class=\\"btn btn-secondary\\" disabled style=\\"opacity:.5;cursor:not-allowed\\">In use</button>"
+          : "<button class=\\"btn btn-primary\\" onclick=\\"rsOpConnectSn('" + snEsc + "')\\">Connect</button>");
+    return "<div style=\\"display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin-bottom:6px;border:1px solid " + border + ";border-radius:6px;background:" + bg + "\\">"
+      + "<div><div style=\\"font-weight:600;color:" + nameColor + "\\">" + snEsc + badge + "</div>"
+      + "<div style=\\"font-size:11px;color:#94a3b8;margin-top:2px\\">" + subline + "</div></div>"
+      + btn
+      + "</div>";
+  }).join("");
 }
-var rsOpTerm = null, rsOpWs = null;
+var rsOpTerm = null, rsOpWs = null, rsOpCurrentSn = null;
 async function rsOpConnect() {
   var sn = document.getElementById("rsOpSn").value.trim();
   if (!sn) return;
@@ -4684,16 +4740,17 @@ async function rsOpConnect() {
   term.open(el);
   fit.fit();
   rsOpTerm = term;
+  rsOpCurrentSn = sn;
   var proto = location.protocol === "https:" ? "wss:" : "ws:";
-  var ws = new WebSocket(proto + "//" + location.host + "/api/remote-support/operator/" + sn);
+  var ws = new WebSocket(proto + "//" + location.host + "/api/remote-support/operator/" + sn + "?token=" + encodeURIComponent(token));
   rsOpWs = ws;
   ws.binaryType = "arraybuffer";
-  ws.onopen = function() { term.write("Waiting for user approval...\\r\\n"); };
+  ws.onopen = function() { rsOpRefresh(); };
   ws.onmessage = function(ev) {
     if (typeof ev.data === "string") term.write(ev.data);
     else term.write(new Uint8Array(ev.data));
   };
-  ws.onclose = function() { term.write("\\r\\n[session closed]"); };
+  ws.onclose = function() { term.write("\\r\\n[session closed]"); rsOpCurrentSn = null; rsOpRefresh(); };
   term.onData(function(d) { if (ws.readyState === 1) ws.send(d); });
 }
 var rsOpCard = document.getElementById("rsOperatorCard");

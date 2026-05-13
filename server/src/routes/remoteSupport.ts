@@ -26,6 +26,7 @@ export interface RouterOpts {
   denyRequest?: (requestId: string) => void;
   getPendingRequest?: () => { requestId: string; since: number } | null;
   killSession?: () => void;
+  isSessionActive?: () => boolean;
 }
 
 interface AgentEntry { sn: string; registeredAt: number; }
@@ -53,6 +54,24 @@ export function createRemoteSupportRouter(opts: RouterOpts): Router {
       }
       res.json({ agents: Array.from(agentRegistry.values()) });
     });
+
+    router.get('/sessions', (req: Request, res: Response) => {
+      if (opts.isOperator && !opts.isOperator(req)) {
+        res.status(403).json({ error: 'forbidden' }); return;
+      }
+      res.json({ sessions: opts.relay?.listActiveSessions() ?? [] });
+    });
+
+    router.get('/sessions/:sn/buffer', (req: Request, res: Response) => {
+      if (opts.isOperator && !opts.isOperator(req)) {
+        res.status(403).json({ error: 'forbidden' }); return;
+      }
+      const sn = req.params.sn;
+      const since = parseInt(String(req.query.since ?? '0'), 10) || 0;
+      const result = opts.relay?.getSessionBuffer(sn, since);
+      if (!result) { res.status(404).json({ error: 'no relay' }); return; }
+      res.json({ sn, ...result });
+    });
   }
 
   if (mode === 'agent') {
@@ -66,6 +85,7 @@ export function createRemoteSupportRouter(opts: RouterOpts): Router {
       res.json({
         enabled: readEnabledFlag(enabledFlagPath),
         pendingRequest: opts.getPendingRequest?.() ?? null,
+        sessionActive: opts.isSessionActive?.() ?? false,
       });
     });
 

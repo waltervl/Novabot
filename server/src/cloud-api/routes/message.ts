@@ -104,6 +104,14 @@ function readPagination(req: AuthRequest): { pageNo: number; pageSize: number; o
   return { pageNo, pageSize, offset: (pageNo - 1) * pageSize };
 }
 
+function toIsoT(sqliteDate: string | null | undefined): string {
+  if (!sqliteDate) return '';
+  // SQLite default: "YYYY-MM-DD HH:MM:SS" (local). Convert to ISO-8601 with T
+  // because the stock Novabot app's RobotMessageEntity display layer does a
+  // substring(5,16) on createrTime expecting an ISO-like format.
+  return sqliteDate.includes('T') ? sqliteDate : sqliteDate.replace(' ', 'T');
+}
+
 messageRouter.post('/queryRobotMsgPageByUserId', authMiddleware, (req: AuthRequest, res: Response) => {
   const { pageNo, pageSize, offset } = readPagination(req);
   const totalCount = messageRepo.countMessages(req.userId!);
@@ -114,8 +122,11 @@ messageRouter.post('/queryRobotMsgPageByUserId', authMiddleware, (req: AuthReque
     messageId: r.message_id,
     equipmentId: r.equipment_id,
     contentEn: r.robot_msg,
-    createrTime: r.robot_msg_date,
-    level: 0,
+    createrTime: toIsoT(r.robot_msg_date),
+    // KRITIEK: RobotMessageEntity.fromJson doet IsType_String cast op `level`
+    // (blutter robot_message_entity.dart 0x7d29c4). Integer hier → CastError →
+    // hele pageList parse faalt → lege Messages tab. Stuur als string.
+    level: '0',
     unread: r.robot_msg_unread === 1,
   }));
 

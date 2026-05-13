@@ -63,18 +63,21 @@ export function startAgent(opts: AgentOpts): AgentHandle {
     s.on('message', (data: Buffer | string) => {
       const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
       const str = buf.toString('utf8');
-      try {
-        const msg = JSON.parse(str);
-        if (msg.type === 'request' && typeof msg.requestId === 'string') {
-          opts.onRequest({ requestId: msg.requestId });
-          return;
-        }
-        // JSON we don't recognise — drop silently rather than pipe to pty.
-        return;
-      } catch {
-        // Non-JSON = raw pty bytes from operator (only valid after approve).
-        opts.onRawBytes?.(buf);
+      // Only treat as control frame if it looks like an object literal.
+      // JSON.parse("5") succeeds (valid number) so a parse-success guard
+      // swallows digits typed by the operator.
+      if (str.length > 0 && str.charCodeAt(0) === 0x7b /* '{' */) {
+        try {
+          const msg = JSON.parse(str);
+          if (msg && typeof msg === 'object' && typeof msg.type === 'string') {
+            if (msg.type === 'request' && typeof msg.requestId === 'string') {
+              opts.onRequest({ requestId: msg.requestId });
+            }
+            return;
+          }
+        } catch { /* fall through to raw bytes */ }
       }
+      opts.onRawBytes?.(buf);
     });
   };
 
@@ -243,9 +246,10 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
       token: opts.token,
       wsFactory: () => ws as unknown as AgentSocket,
       onRequest: ({ requestId }) => {
-        // Park the request; the admin UI polls /status to surface this
-        // and POSTs /approve or /deny to drive approvePending / denyPending.
+        // Toggle ON is the consent — auto-approve. User can pull plug
+        // via kill button or by flipping the toggle OFF.
         pendingRequest = { requestId, since: Date.now() };
+        try { approvePending(requestId); } catch { /* race with stop */ }
       },
       onRawBytes: (data) => {
         // Operator keystrokes — pipe them into the pty if one is active.
