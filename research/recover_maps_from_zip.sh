@@ -25,12 +25,14 @@ set -euo pipefail
 SN=""
 ROTATE_DEG="0"
 SET_ORIENTATION_DEG=""
+APPLY_VERBATIM="0"
 while [ $# -gt 0 ]; do
   case "$1" in
     --rotate-deg) ROTATE_DEG="$2"; shift 2 ;;
     --rotate-deg=*) ROTATE_DEG="${1#*=}"; shift ;;
     --set-orientation-deg) SET_ORIENTATION_DEG="$2"; shift 2 ;;
     --set-orientation-deg=*) SET_ORIENTATION_DEG="${1#*=}"; shift ;;
+    --apply-verbatim) APPLY_VERBATIM="1"; shift ;;
     -h|--help)
       echo "Usage: $0 [--rotate-deg N] <MOWER_SN>"
       echo ""
@@ -45,6 +47,14 @@ while [ $# -gt 0 ]; do
       echo "                             flip is suspected — e.g. ROS ENU vs compass"
       echo "                             handedness mismatch. Mutually exclusive with"
       echo "                             --rotate-deg."
+      echo "  --apply-verbatim           Skip bundle generation. Read the ZIP, then"
+      echo "                             directly publish write_map_files MQTT with"
+      echo "                             the original csv_files + map_info.json +"
+      echo "                             charging_station.yaml UNCHANGED. No Δ math,"
+      echo "                             no charging_pose override. Mower keeps the"
+      echo "                             exact state from when the ZIP was made. Use"
+      echo "                             when the mower's pos.json is still anchored"
+      echo "                             to the same UTM origin as the ZIP."
       echo ""
       echo "Examples:"
       echo "  $0 LFIN2231000633"
@@ -104,6 +114,52 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery${suffix}.nov
     if (f.type === 'File') entries[f.path] = (await f.buffer()).toString('utf8');
   }
   console.log('Source entries:', Object.keys(entries).length);
+
+  // ── Verbatim path (no bundle, no Δ math, no charging_pose override) ──
+  // Direct MQTT publish to broker on novabot/extended/<SN>. Mower's
+  // extended_commands.py write_map_files handler writes files 1-to-1
+  // to /userdata/lfi/maps/home0/{csv_file,x3_csv_file}/. map_info.json
+  // and charging_station.yaml stay exactly as captured in the ZIP.
+  if (process.env.APPLY_VERBATIM === '1') {
+    const mqtt = require('mqtt');
+    const csvFiles = {};
+    for (const [name, content] of Object.entries(entries)) {
+      if (name.startsWith('csv_file/')) {
+        const fname = name.slice('csv_file/'.length);
+        csvFiles[fname] = content;
+      }
+    }
+    const csYaml = entries['charging_station_file/charging_station.yaml']
+      || entries['charging_station.yaml']
+      || null;
+    console.log(`Verbatim publish: ${Object.keys(csvFiles).length} CSVs, charging_station.yaml=${csYaml ? 'present' : 'missing'}`);
+    const broker = process.env.MQTT_BROKER || 'mqtt://localhost:1883';
+    console.log(`Connecting to ${broker}...`);
+    const client = mqtt.connect(broker, { connectTimeout: 5000, clientId: `recover-verbatim-${Date.now()}` });
+    await new Promise((resolve, reject) => {
+      client.on('connect', resolve);
+      client.on('error', reject);
+      setTimeout(() => reject(new Error('mqtt connect timeout')), 10000);
+    });
+    const topic = `novabot/extended/${SN}`;
+    const payload = JSON.stringify({
+      write_map_files: {
+        csv_files: csvFiles,
+        charging_station_yaml: csYaml,
+        restart_mapping: true,
+      },
+    });
+    await new Promise((resolve, reject) => {
+      client.publish(topic, payload, { qos: 1 }, (err) => err ? reject(err) : resolve());
+    });
+    console.log(`Published to ${topic} (${payload.length} bytes)`);
+    // Wait briefly for ack before exiting
+    await new Promise((r) => setTimeout(r, 2000));
+    client.end();
+    console.log('Verbatim write dispatched. Check mower logs:');
+    console.log('  sshpass -p novabot ssh root@<mower-ip> "tail -30 /root/novabot/data/extended_commands.log"');
+    return;
+  }
 
   let chargingPose = { x: 0, y: 0, orientation: 0 };
   if (entries['csv_file/map_info.json']) {
@@ -232,7 +288,7 @@ const OUTPUT = `/data/storage/portable_backups/${SN}/${ts}_recovery${suffix}.nov
 JSEOF
 
 # Run the converter inside the container -------------------------------------
-docker exec -e SN="$SN" -e ROTATE_DEG="$ROTATE_DEG" -e SET_ORIENTATION_DEG="$SET_ORIENTATION_DEG" -e NODE_PATH=/app/server/node_modules "$CONTAINER" sh -c 'cd /app/server && node /tmp/recover_maps.js'
+docker exec -e SN="$SN" -e ROTATE_DEG="$ROTATE_DEG" -e SET_ORIENTATION_DEG="$SET_ORIENTATION_DEG" -e APPLY_VERBATIM="$APPLY_VERBATIM" -e NODE_PATH=/app/server/node_modules "$CONTAINER" sh -c 'cd /app/server && node /tmp/recover_maps.js'
 
 echo
 echo '=== Resulting bundles ==='
