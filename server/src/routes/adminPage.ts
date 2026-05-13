@@ -2681,6 +2681,9 @@ function portableStartRtkPoll(sn) {
 // where the operator left off instead of demanding a fresh upload (and then
 // rejecting it with a 409 because the server-side staging is still active).
 var portableExactRestore = false;
+var portableVerbatimRestore = false;
+var portableSourceSn = null;
+var portableSourceSnMatches = false;
 
 async function manualPortableBackup() {
   var sn = document.getElementById('mapMowerSelect').value;
@@ -2740,13 +2743,21 @@ async function restorePortableBackup(filename) {
   });
   var j = await r.json();
   if (!j.ok) { await appAlert('Restore failed: ' + j.error, { accent: 'danger' }); return; }
-  // Now apply via apply-exact (auto-step since exactRestore=true expected)
-  if (j.exactRestore) {
-    portableStagingId = j.stagingId;
-    portableExactRestore = true;
+  portableStagingId = j.stagingId;
+  portableExactRestore = !!j.exactRestore;
+  portableVerbatimRestore = !!j.verbatimRestore;
+  portableSourceSn = j.sourceSn || null;
+  portableSourceSnMatches = !!j.sourceSnMatches;
+  // Verbatim restore is the safer/preferred path when the bundle is from
+  // THIS mower AND has full mower-side state captured (pos.json + map
+  // files). It does not depend on liveDock pose so it works even when
+  // localization isn't initialized yet.
+  if (portableVerbatimRestore && portableSourceSnMatches) {
+    await portableApplyVerbatim();
+  } else if (portableExactRestore) {
     await portableApplyExact();
   } else {
-    await appAlert('Restore staged but not exact-restore — bundle missing mowerFiles. Use Import bundle wizard.', { accent: 'warning' });
+    await appAlert('Restore staged but bundle is missing mower-side data. Use Import bundle wizard.', { accent: 'warning' });
   }
 }
 
@@ -2770,10 +2781,16 @@ async function portableCheckActive(sn) {
     if (j && j.stagingId) {
       portableStagingId = j.stagingId;
       portableExactRestore = !!j.exactRestore;
+      portableVerbatimRestore = !!j.verbatimRestore;
+      portableSourceSn = j.sourceSn || null;
+      portableSourceSnMatches = !!j.sourceSnMatches;
       renderPortableImportWizard(sn, j.state || 'UPLOADED');
     } else {
       portableStagingId = null;
       portableExactRestore = false;
+      portableVerbatimRestore = false;
+      portableSourceSn = null;
+      portableSourceSnMatches = false;
       var panel = document.getElementById('portableImportPanel');
       if (panel) panel.style.display = 'none';
       if (portableRtkPoll) { clearInterval(portableRtkPoll); portableRtkPoll = null; }
@@ -2794,6 +2811,9 @@ async function startPortableImport() {
   if (!j.ok) { await appAlert('Import failed: ' + j.error, { accent: 'danger' }); return; }
   portableStagingId = j.stagingId;
   portableExactRestore = !!j.exactRestore;
+  portableVerbatimRestore = !!j.verbatimRestore;
+  portableSourceSn = j.sourceSn || null;
+  portableSourceSnMatches = !!j.sourceSnMatches;
   renderPortableImportWizard(sn, 'UPLOADED');
 }
 
@@ -2807,12 +2827,27 @@ function renderPortableImportWizard(sn, state) {
   html += '</div>';
   html += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
   if (state === 'UPLOADED') {
-    if (portableExactRestore) {
-      // Exact-restore bundles ship the export-time charging_pose verbatim,
-      // so Δ rotation is computed from stored vs current pose. One click —
-      // no drive, no manual snapshot, no preview/confirm dance.
-      html += '<div style="flex-basis:100%;font-size:10px;color:#86efac;margin-bottom:4px">Exact-restore bundle detected — one-click apply. Mower must be online with valid map_position.</div>';
-      html += '<button onclick="portableApplyExact()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Apply bundle (exact-restore)</button>';
+    if (portableVerbatimRestore && portableSourceSnMatches) {
+      // Verbatim restore — same mower + bundle has pos.json + map.yaml/pgm/png.
+      // Pushes everything 1-to-1 back to mower disk, no Δ math, no liveDock
+      // dependency. Deterministic — works even when localization isn't yet
+      // initialized.
+      html += '<div style="flex-basis:100%;font-size:10px;color:#86efac;margin-bottom:4px">Same-mower full-state bundle detected (sourceSn = ' + portableSourceSn + '). Verbatim restore pushes csv_file/ + pos.json + map.yaml/pgm/png back unchanged — no rotation math, no liveDock dependency.</div>';
+      html += '<button onclick="portableApplyVerbatim()" style="padding:6px 12px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Restore verbatim (recommended)</button>';
+      if (portableExactRestore) {
+        html += '<button onclick="portableApplyExact()" style="padding:6px 12px;background:rgba(99,102,241,.18);color:#a5b4fc;border:1px solid rgba(99,102,241,.45);border-radius:6px;font-size:11px;cursor:pointer" title="Use only when dock has been physically moved or rotated since the bundle was made.">Apply Δ-aware (advanced)</button>';
+      }
+      html += '<button onclick="portableShowSelective()" style="padding:6px 12px;background:rgba(99,102,241,.18);color:#a5b4fc;border:1px solid rgba(99,102,241,.45);border-radius:6px;font-size:11px;cursor:pointer">Selective…</button>';
+    } else if (portableExactRestore) {
+      // Δ-aware path — typical for cross-mower or moved-dock cases. Reads
+      // mower live charging_pose, transforms polygons before push.
+      var crossSn = portableSourceSn && !portableSourceSnMatches;
+      html += '<div style="flex-basis:100%;font-size:10px;color:' + (crossSn ? '#fbbf24' : '#86efac') + ';margin-bottom:4px">' +
+        (crossSn
+          ? 'Cross-mower bundle (source: ' + portableSourceSn + ', target: ' + (document.getElementById('mapMowerSelect') ? document.getElementById('mapMowerSelect').value : '?') + '). Δ rotation will be applied — verify polygons after restore.'
+          : 'Exact-restore bundle detected — Δ rotation applied. Mower must be online with valid map_position.')
+        + '</div>';
+      html += '<button onclick="portableApplyExact()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Apply bundle (Δ-aware)</button>';
       html += '<button onclick="portableShowSelective()" style="padding:6px 12px;background:rgba(99,102,241,.18);color:#a5b4fc;border:1px solid rgba(99,102,241,.45);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Selective import…</button>';
     } else {
       html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Start drive backward + RTK lock</button>';
@@ -2975,6 +3010,51 @@ async function portableApplyExact() {
   document.getElementById('portableImportPanel').style.display = 'none';
   portableStagingId = null;
   portableExactRestore = false;
+  portableVerbatimRestore = false;
+  loadMaps();
+}
+
+async function portableApplyVerbatim() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var msg = 'Restore VERBATIM: pushes csv_file/ + pos.json + map.yaml/pgm/png back to mower 1-to-1. No rotation math. Mower disk + UTM anchor returned to the exact state captured in the bundle. Continue?';
+  if (!(await appConfirm(msg, { okText: 'Restore verbatim' }))) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-verbatim', {
+    method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+  });
+  var j = await r.json();
+  if (!j.ok) {
+    // Cross-SN block — let the operator force if they really know what they're doing.
+    if (j.sourceSn && j.targetSn && j.sourceSn !== j.targetSn) {
+      var forceMsg = 'Bundle was made on ' + j.sourceSn + ', not ' + j.targetSn + '. Verbatim restore will overwrite pos.json with the source mower\'s UTM anchor. Only force if both mowers were provisioned to the same physical location. Continue?';
+      if (!(await appConfirm(forceMsg, { destructive: true, okText: 'Force verbatim' }))) {
+        portableCheckActive(sn);
+        return;
+      }
+      r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-verbatim?force=1', {
+        method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      });
+      j = await r.json();
+      if (!j.ok) { await appAlert('Apply (forced) failed: ' + j.error, { accent: 'danger' }); portableCheckActive(sn); return; }
+    } else {
+      await appAlert('Apply failed: ' + j.error, { accent: 'danger' });
+      portableCheckActive(sn);
+      return;
+    }
+  }
+  var w = j.written || {};
+  await appAlert(
+    'Verbatim restore applied.\\n\\n' +
+    'CSVs: ' + (w.csvFiles || 0) + '\\n' +
+    'pos.json: ' + (w.posJson ? 'yes' : 'no') + '\\n' +
+    'map text files: ' + (w.mapFilesText || 0) + '\\n' +
+    'map binary files: ' + (w.mapFilesB64 || 0) + '\\n' +
+    'charging_station.yaml: ' + (w.chargingStationYaml ? 'yes' : 'no'),
+    { accent: 'success' }
+  );
+  document.getElementById('portableImportPanel').style.display = 'none';
+  portableStagingId = null;
+  portableExactRestore = false;
+  portableVerbatimRestore = false;
   loadMaps();
 }
 

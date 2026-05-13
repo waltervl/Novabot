@@ -1461,16 +1461,23 @@ adminStatusRouter.post(
     fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
     importAuditRepo.append({ sn, staging_id: session.stagingId, from_state: '_NONE_', to_state: 'UPLOADED', reason: null });
     // Exact-restore = bundle ships verbatim mower files + valid charging_pose.
-    // Wizard can skip the RTK drive-back step and snapshot the dock pose
-    // directly because Δ rotation is computed from the stored vs current
-    // charging_pose (no need to derive heading from a GPS drive vector).
+    // Verbatim-restore = full mower state ALSO ships (pos.json + map.yaml/pgm).
     const exactRestore = !!(parsed.mowerFiles && parsed.metadata?.originalChargingPose
       && Number.isFinite(parsed.metadata.originalChargingPose.orientation));
+    const verbatimRestore = !!(parsed.mowerFiles && (
+      parsed.mowerFiles.posJson ||
+      (parsed.mowerFiles.mapFilesText && Object.keys(parsed.mowerFiles.mapFilesText).length > 0) ||
+      (parsed.mowerFiles.mapFilesB64 && Object.keys(parsed.mowerFiles.mapFilesB64).length > 0)
+    ));
+    const sourceSnMatches = parsed.metadata?.sourceSn === sn;
     res.json({
       ok: true,
       stagingId: session.stagingId,
       state: session.state,
       exactRestore,
+      verbatimRestore,
+      sourceSn: parsed.metadata?.sourceSn ?? null,
+      sourceSnMatches,
     });
   },
 );
@@ -1484,15 +1491,33 @@ adminStatusRouter.get('/maps/:sn/import-portable/active', (req: AuthRequest, res
   const sn = req.params.sn;
   const active = importStaging.getActive(sn);
   if (!active) { res.json({ stagingId: null, state: null }); return; }
-  // Surface exactRestore so the wizard can hide the drive-back step.
+  // Surface exactRestore + verbatimRestore + sourceSn match so the wizard
+  // can hide unnecessary steps and pick the right Apply path.
   let exactRestore = false;
+  let verbatimRestore = false;
+  let sourceSn: string | null = null;
+  let sourceSnMatches = false;
   try {
     const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, active.stagingId);
     const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
     exactRestore = !!(parsed?.mowerFiles && parsed?.metadata?.originalChargingPose
       && Number.isFinite(parsed.metadata.originalChargingPose.orientation));
-  } catch { /* bundle missing — leave exactRestore false */ }
-  res.json({ stagingId: active.stagingId, state: active.state, exactRestore });
+    verbatimRestore = !!(parsed?.mowerFiles && (
+      parsed.mowerFiles.posJson ||
+      (parsed.mowerFiles.mapFilesText && Object.keys(parsed.mowerFiles.mapFilesText).length > 0) ||
+      (parsed.mowerFiles.mapFilesB64 && Object.keys(parsed.mowerFiles.mapFilesB64).length > 0)
+    ));
+    sourceSn = parsed?.metadata?.sourceSn ?? null;
+    sourceSnMatches = sourceSn === sn;
+  } catch { /* bundle missing — leave flags false */ }
+  res.json({
+    stagingId: active.stagingId,
+    state: active.state,
+    exactRestore,
+    verbatimRestore,
+    sourceSn,
+    sourceSnMatches,
+  });
 });
 
 // GET /api/admin-status/maps/:sn/import-portable/:stagingId/inventory
@@ -2231,6 +2256,155 @@ adminStatusRouter.post(
       state: 'APPLIED',
       delta: { dx: dockMP.x - origPose.x, dy: dockMP.y - origPose.y, dtheta: dt },
       transformedFiles: Object.keys(transformedCsvs),
+    });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/import-portable/:stagingId/apply-verbatim
+//
+// Same-mower full state restore. Pushes csv_files + charging_station.yaml +
+// pos.json + map.yaml/pgm/png + per-slot mapN.yaml/pgm/png BACK to the
+// mower UNCHANGED (no Δ rotation, no translation, no charging_pose
+// override). The mower's pos.json anchors the local frame to UTM, so as
+// long as we restore the SAME pos.json that was in effect when the bundle
+// was captured, polygons sit at the same world coordinates and Nav2's
+// costmap matches.
+//
+// Refuses when bundle.metadata.sourceSn !== :sn unless ?force=1, since
+// cross-mower verbatim restore would overwrite the target's pos.json with
+// the wrong UTM anchor — guaranteed to put polygons in the wrong place.
+adminStatusRouter.post(
+  '/maps/:sn/import-portable/:stagingId/apply-verbatim',
+  async (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const force = req.query.force === '1' || req.body?.force === true;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown staging session' });
+      return;
+    }
+    if (session.state !== 'UPLOADED') {
+      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
+      return;
+    }
+
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
+    let parsed: {
+      metadata?: {
+        sourceSn?: string;
+        originalChargingPose?: { x: number; y: number; orientation: number };
+      };
+      polygons?: Array<{ name: string; alias: string; points: { x: number; y: number }[] }>;
+      polygon?: { name: string; alias: string; points: { x: number; y: number }[] };
+      obstacles?: Array<{ name: string; alias: string; points: { x: number; y: number }[] }>;
+      unicom?: Array<{ name: string; targetMapName: string; points: { x: number; y: number }[] }>;
+      mowerFiles?: {
+        csvFiles: Record<string, string>;
+        chargingStationYaml: string | null;
+        posJson?: string | null;
+        mapFilesText?: Record<string, string>;
+        mapFilesB64?: Record<string, string>;
+      };
+    };
+    try {
+      parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
+    } catch (err) {
+      res.status(500).json({ ok: false, error: `failed to read bundle: ${(err as Error).message}` });
+      return;
+    }
+    const mowerFiles = parsed.mowerFiles;
+    if (!mowerFiles || !mowerFiles.csvFiles || Object.keys(mowerFiles.csvFiles).length === 0) {
+      res.status(400).json({
+        ok: false,
+        error: 'bundle has no mowerFiles — was exported before the verbatim feature shipped',
+      });
+      return;
+    }
+
+    // SN match check (verbatim is only safe on same mower because pos.json
+    // is mower-specific — its UTM anchor is set by the mower's own GPS at
+    // first provisioning).
+    const sourceSn = parsed.metadata?.sourceSn;
+    if (sourceSn && sourceSn !== sn && !force) {
+      res.status(409).json({
+        ok: false,
+        error: `bundle was exported from ${sourceSn}, not ${sn}. Verbatim restore would overwrite this mower's pos.json with the wrong UTM anchor — polygons would end up in the wrong place. Pass force=1 to override (rarely correct).`,
+        sourceSn,
+        targetSn: sn,
+      });
+      return;
+    }
+
+    // Build write_map_files payload — verbatim, no transformation.
+    const writePayload: Record<string, unknown> = {
+      csv_files: mowerFiles.csvFiles,
+      charging_station_yaml: mowerFiles.chargingStationYaml ?? null,
+      restart_mapping: true,
+    };
+    if (mowerFiles.posJson) writePayload.pos_json = mowerFiles.posJson;
+    if (mowerFiles.mapFilesText && Object.keys(mowerFiles.mapFilesText).length > 0) {
+      writePayload.map_files_text = mowerFiles.mapFilesText;
+    }
+    if (mowerFiles.mapFilesB64 && Object.keys(mowerFiles.mapFilesB64).length > 0) {
+      writePayload.map_files_b64 = mowerFiles.mapFilesB64;
+    }
+    publishToExtended(sn, { write_map_files: writePayload });
+
+    // Update server DB so dashboard map view reflects what's now on disk.
+    // Polygon points come from the bundle untransformed (same frame as
+    // CSVs we just shipped back).
+    db.prepare(`DELETE FROM maps WHERE mower_sn = ?`).run(sn);
+    const ins = db.prepare(
+      `INSERT INTO maps (mower_sn, map_id, map_name, map_type, file_name, map_area, canonical_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const workPolys = parsed.polygons && parsed.polygons.length > 0
+      ? parsed.polygons
+      : (parsed.polygon ? [parsed.polygon] : []);
+    for (let i = 0; i < workPolys.length; i++) {
+      const wp = workPolys[i];
+      ins.run(sn, `imp_work_${i}`, wp.alias, 'work', wp.name + '.csv',
+        JSON.stringify(wp.points), wp.name);
+    }
+    for (let i = 0; i < (parsed.obstacles ?? []).length; i++) {
+      const o = parsed.obstacles![i];
+      ins.run(sn, `imp_obs_${i}`, o.alias, 'obstacle', o.name + '.csv',
+        JSON.stringify(o.points), o.name);
+    }
+    for (let i = 0; i < (parsed.unicom ?? []).length; i++) {
+      const u = parsed.unicom![i];
+      ins.run(sn, `imp_uni_${i}`, u.targetMapName, 'unicom', u.name + '.csv',
+        JSON.stringify(u.points), u.name);
+    }
+
+    // Keep DB's polygon_charging_orientation in sync with the bundle's
+    // stored value (the mower's old dock heading in its own frame).
+    const origOrient = parsed.metadata?.originalChargingPose?.orientation;
+    if (typeof origOrient === 'number' && Number.isFinite(origOrient)) {
+      mapRepo.setPolygonChargingOrientation(sn, origOrient);
+    }
+    mapRepo.setPolygonOffset(sn, 0, 0);
+
+    importStaging.transition(stagingId, 'APPLIED', { applyResult: {} });
+    importAuditRepo.append({
+      sn,
+      staging_id: stagingId,
+      from_state: 'UPLOADED',
+      to_state: 'APPLIED',
+      reason: force ? 'verbatim-restore (forced cross-SN)' : 'verbatim-restore same-SN',
+    });
+    res.json({
+      ok: true,
+      state: 'APPLIED',
+      mode: 'verbatim',
+      sourceSn,
+      forced: !!force,
+      written: {
+        csvFiles: Object.keys(mowerFiles.csvFiles).length,
+        posJson: !!mowerFiles.posJson,
+        mapFilesText: Object.keys(mowerFiles.mapFilesText ?? {}).length,
+        mapFilesB64: Object.keys(mowerFiles.mapFilesB64 ?? {}).length,
+        chargingStationYaml: !!mowerFiles.chargingStationYaml,
+      },
     });
   },
 );
