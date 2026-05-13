@@ -123,3 +123,49 @@ export function spawnPtySession(opts: PtyOpts): PtySession {
     close() { try { term.kill(); } catch { /* already exited */ } },
   };
 }
+
+import WebSocket from 'ws';
+import path from 'node:path';
+
+export interface BootstrapOpts {
+  sn: string;
+  token: string;
+  relayUrl: string;
+  enabledFlagPath?: string;
+  auditLogDir?: string;
+}
+
+let bootstrapHandle: AgentHandle | null = null;
+
+/** Connect to the central relay when the user has toggled support ON.
+ *  Polls the flag file every 5 s so toggling at runtime is picked up
+ *  without a restart. */
+export function bootstrapAgent(opts: BootstrapOpts): void {
+  const flagPath = opts.enabledFlagPath
+    ?? path.resolve(process.env.STORAGE_PATH ?? '/data', '.remote_support_enabled');
+
+  setInterval(() => {
+    const shouldBeOn = readEnabledFlag(flagPath);
+    if (shouldBeOn && !bootstrapHandle) startConnection();
+    if (!shouldBeOn && bootstrapHandle) { bootstrapHandle.stop(); bootstrapHandle = null; }
+  }, 5000);
+
+  function startConnection() {
+    const url = `${opts.relayUrl}?token=${encodeURIComponent(opts.token)}`;
+    const ws = new WebSocket(url);
+    bootstrapHandle = startAgent({
+      sn: opts.sn,
+      token: opts.token,
+      wsFactory: () => ws as unknown as AgentSocket,
+      onRequest: () => {
+        // The admin UI will pick this up via /api/remote-support/status
+        // and show the approve banner. The actual approve call happens
+        // when the user clicks the button.
+      },
+    });
+    ws.on('close', () => {
+      bootstrapHandle = null;
+      // Reconnect attempt next tick if still enabled.
+    });
+  }
+}

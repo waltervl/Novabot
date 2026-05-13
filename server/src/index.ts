@@ -61,6 +61,9 @@ import { setupRouter }        from './routes/setup.js';
 import { setupGuard, isSetupComplete } from './middleware/setupGuard.js';
 import { createRemoteSupportRouter, attachRemoteSupportWebSocket } from './routes/remoteSupport.js';
 import { Relay } from './services/remoteSupport/relay.js';
+import { bootstrapAgent, type BootstrapOpts } from './services/remoteSupport/agent.js';
+import { signAgentToken } from './services/remoteSupport/tokens.js';
+import { equipmentRepo } from './db/repositories/equipment.js';
 
 // ── DB is al geïnitialiseerd bij import van database.ts (module-level initDb())
 // zodat module-level db.prepare() calls in sensorData.ts etc. niet falen.
@@ -239,6 +242,22 @@ if (PROXY_MODE === 'cloud') {
     (app as any)._remoteSupportRouter = remoteSupportRouter;
     (app as any)._remoteSupportAuditLogDir = auditLogDir;
     console.log('[remote-support] relay enabled on /api/remote-support');
+  }
+
+  // Agent — runs on every NON-relay instance (i.e. user containers).
+  if (process.env.REMOTE_SUPPORT_ENABLED === 'true' && process.env.REMOTE_SUPPORT_RELAY_URL) {
+    try {
+      const ownSn = equipmentRepo.listAll()[0]?.mower_sn ?? `HOST-${process.env.HOSTNAME ?? 'unknown'}`;
+      const token = signAgentToken(ownSn, process.env.REMOTE_SUPPORT_SECRET ?? 'unsafe-default');
+      bootstrapAgent({
+        sn: ownSn,
+        token,
+        relayUrl: process.env.REMOTE_SUPPORT_RELAY_URL,
+      });
+      console.log(`[remote-support] agent registered for ${ownSn}`);
+    } catch (err) {
+      console.error('[remote-support] agent bootstrap failed:', err);
+    }
   }
 
   // Notification event ring (HTTP polling for HA / scripts)
