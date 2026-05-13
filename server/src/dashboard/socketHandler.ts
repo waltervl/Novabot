@@ -45,7 +45,29 @@ export function onLogEntry(fn: ((entry: MqttLogEntry) => void) | null): void {
   _logListener = fn;
 }
 
+/** Pull a serial number out of a string that contains it. Recognises both
+ * LFIN<batch:4><serial:5> and LFIC<batch:4><serial:5> patterns plus the
+ * single-digit type prefix used in v2 SNs (LFIN1, LFIN2, LFIC1, LFIC2).
+ * Used by pushMqttLog to backfill entry.sn when the caller didn't fill it. */
+const _SN_PATTERN = /LFI[CN]\d?\d{4}\d{5}/;
+function _backfillSn(entry: MqttLogEntry): string | null {
+  if (entry.sn && entry.sn.length > 0) return entry.sn;
+  const fromClientId = entry.clientId ? _SN_PATTERN.exec(entry.clientId)?.[0] : null;
+  if (fromClientId) return fromClientId;
+  const fromTopic = entry.topic ? _SN_PATTERN.exec(entry.topic)?.[0] : null;
+  if (fromTopic) return fromTopic;
+  return null;
+}
+
 export function pushMqttLog(entry: MqttLogEntry): void {
+  // Backfill sn at the source so logBuffer, socket.io listeners AND the
+  // remote-debug relay all see the same tagged entry. Without this,
+  // broker events like clientError or pre-CONNECT subscribe attempts
+  // landed with sn:null and the remote relay bucketed them under
+  // "unknown" — invisible in the receiver UI (live bug 2026-05-13).
+  if (!entry.sn) {
+    entry.sn = _backfillSn(entry);
+  }
   logBuffer.push(entry);
   if (logBuffer.length > MAX_LOG_ENTRIES) logBuffer.splice(0, logBuffer.length - MAX_LOG_ENTRIES);
   io?.emit('mqtt:log', entry);
