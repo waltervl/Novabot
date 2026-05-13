@@ -4682,12 +4682,27 @@ dashboardRouter.get('/remote-debug/status', (_req: Request, res: Response) => {
 const _remoteLogsBySn = new Map<string, unknown[]>();
 const MAX_REMOTE_LOGS = 2000;
 
+/** Derive a serial number from a log entry's clientId / topic when the
+ * sender forgot to populate `.sn`. Stock MQTT clientIds carry the SN
+ * (LFINxxxxxxxxxxxx_xxxx) and the broker topics include it
+ * (Dart/Send_mqtt/<SN>). Without this fallback an entry with `sn:null`
+ * gets bucketed under "unknown" and the UI hides it. */
+function _deriveSnFromEntry(entry: any): string | null {
+  if (!entry || typeof entry !== 'object') return null;
+  if (entry.sn && typeof entry.sn === 'string') return entry.sn;
+  const m1 = typeof entry.clientId === 'string' && entry.clientId.match(/LFI[CN]\d\d{4}\d{5}/);
+  if (m1) return m1[0];
+  const m2 = typeof entry.topic === 'string' && entry.topic.match(/LFI[CN]\d\d{4}\d{5}/);
+  if (m2) return m2[0];
+  return null;
+}
+
 dashboardRouter.post('/remote-debug/receive', (req: Request, res: Response) => {
   const { logs, sns } = req.body as { logs?: unknown[]; sns?: string[] };
   if (!Array.isArray(logs)) { res.json({ ok: false }); return; }
 
   for (const entry of logs) {
-    const sn = (entry as any).sn as string | undefined;
+    const sn = _deriveSnFromEntry(entry);
     const key = sn || (sns?.[0]) || 'unknown';
     if (!_remoteLogsBySn.has(key)) _remoteLogsBySn.set(key, []);
     const buf = _remoteLogsBySn.get(key)!;
@@ -4699,16 +4714,23 @@ dashboardRouter.post('/remote-debug/receive', (req: Request, res: Response) => {
   res.json({ ok: true, devices: _remoteLogsBySn.size, buffered: total });
 });
 
-// GET /remote-debug/devices — list all SNs with log counts
+// GET /remote-debug/devices — list all SNs with log counts.
+//
+// Returns all buckets including non-LFIN ones (chargers + "unknown"
+// for entries the receiver couldn't tag with an SN). Filtering by
+// device type happens client-side in the console so the operator can
+// see ALL incoming activity, not just mowers. Without this an entire
+// remote session can land under "unknown" and look like nothing came
+// in (live bug observed 2026-05-13: 700+ logs buffered, /devices empty
+// because every entry had sn=null and the LFIN filter dropped them).
 dashboardRouter.get('/remote-debug/devices', (_req: Request, res: Response) => {
-  // Alleen maaier SNs tonen (LFIN*) — charger en unknown logs zijn al
-  // gefilterd via de Mower/Charger/App/System checkboxen in de console
   const devices = [..._remoteLogsBySn.entries()]
-    .filter(([sn]) => sn.startsWith('LFIN'))
     .map(([sn, logs]) => ({
-      sn, count: logs.length,
+      sn,
+      count: logs.length,
       lastTs: logs.length > 0 ? (logs[logs.length - 1] as any).ts : null,
-    }));
+    }))
+    .sort((a, b) => (b.lastTs ?? 0) - (a.lastTs ?? 0));
   res.json({ devices });
 });
 
