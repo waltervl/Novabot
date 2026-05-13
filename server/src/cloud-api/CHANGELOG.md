@@ -2,6 +2,20 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-13 — Robot messages: send `level` as string
+
+- `routes/message.ts`: `queryRobotMsgPageByUserId` was returning `level: 0`
+  (integer). Novabot app v2.4.0 `RobotMessageEntity.fromJson` runs
+  `IsType_String` on all three fields (`contentEn`, `createrTime`, `level`)
+  — confirmed via blutter dump
+  (`asm/.../pages/user/message_page/model/robot_message_entity.dart`
+  0x7d2924 + 0x7d29c4). Integer here threw a `CastError`, the whole
+  pageList parse failed silently, and the Messages tab stayed empty. Also
+  format `createrTime` with `T` separator and ship `pageList`/`list` plus
+  `totalCount`/`total` aliases for older app builds that read the doc'd
+  shape. Work records were unaffected — `WorkMessageEntity.fromJson` boxes
+  numeric fields explicitly so an int `workTime` was always fine.
+
 ## 2026-05-09 — Work records: clock sanity check (issue #58)
 
 - `routes/equipmentState.ts`: stock firmware ≤6.x falls back to
