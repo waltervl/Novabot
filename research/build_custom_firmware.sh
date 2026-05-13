@@ -610,8 +610,22 @@ def srv(timeout=6):
                     rtype = struct.unpack('!H', data[off:off+2])[0]
                     rdlen = struct.unpack('!H', data[off+8:off+10])[0]
                     if rtype == 33 and off + 10 + 6 <= len(data):
+                        # SRV RDATA: priority(2) weight(2) port(2) target(name)
                         port = struct.unpack('!H', data[off+10+4:off+10+6])[0]
-                        s.close(); print(port); return
+                        target, _ = _parse_name(data, off + 10 + 6)
+                        target = (target or '').lower()
+                        # Only accept SRV records whose target is one of our
+                        # advertised hostnames. Other responders on the LAN
+                        # (CasaOS/ZimaOS apps, neighbouring containers) may
+                        # claim _opennova-http._tcp.local with their own
+                        # random ports — without this filter the mower picks
+                        # whichever responds first (race-condition,
+                        # live-observed wrong ports 6466 + 8009 on user LAN
+                        # 2026-05-13).
+                        VALID_TARGETS = ('opennova.local', 'opennovabot.local')
+                        is_ours = any(target == t or target.endswith('.'+t) for t in VALID_TARGETS)
+                        if is_ours:
+                            s.close(); print(port); return
                     off += 10 + rdlen
         except socket.timeout: pass
     s.close()
