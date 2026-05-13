@@ -111,17 +111,53 @@ export function attachRemoteSupportWebSocket(
 
     let auditLog: AuditLog | null = null;
     ws.on('message', (data) => {
+      // Try to parse as a JSON control frame first. If it parses and matches
+      // a known control type, drive the Relay state machine. Otherwise treat
+      // the bytes as session payload and append them to the audit log (the
+      // Relay's own pipe is what actually forwards them to the operator).
+      let parsed: { type?: string; requestId?: string } | null = null;
       try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === 'approve') {
+        parsed = JSON.parse(data.toString());
+      } catch {
+        parsed = null;
+      }
+
+      if (parsed && typeof parsed.type === 'string') {
+        if (parsed.type === 'approve') {
           if (!auditLog) {
             pruneAuditLogs(opts.auditLogDir, sn, 50);
             auditLog = new AuditLog(opts.auditLogDir, sn);
           }
+          try {
+            opts.relay.approveSession(sn);
+          } catch (e) {
+            // State-machine guard threw (e.g. not in REQUESTED, or operator
+            // not yet attached). Log + ignore — the WS connection stays up
+            // and the operator can retry the request.
+            // eslint-disable-next-line no-console
+            console.warn('[remote-support] approveSession failed:', (e as Error).message);
+          }
+          return;
         }
-      } catch {
-        if (auditLog) auditLog.appendOut(data as Buffer);
+        if (parsed.type === 'deny') {
+          try {
+            opts.relay.denySession(sn);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('[remote-support] denySession failed:', (e as Error).message);
+          }
+          return;
+        }
+        // Unknown control type — ignore. We intentionally do NOT log raw
+        // JSON to the audit log here; the Relay's pipe will surface real
+        // session bytes once ACTIVE.
+        return;
       }
+
+      // Non-JSON payload: append to audit log if the session has been
+      // approved. Forwarding to the operator is handled by Relay.wirePipe,
+      // not by this listener.
+      if (auditLog) auditLog.appendOut(data as Buffer);
     });
     ws.on('close', () => {
       reg._unregisterAgent(sn);
@@ -140,8 +176,9 @@ export function attachRemoteSupportWebSocket(
     catch (e) { ws.close(1011, (e as Error).message); return; }
     // Push the request frame to the agent so its admin UI shows the
     // approve banner. The agent replies with {type:'approve',requestId}
-    // → Relay.approveSession is called by the message handler above,
-    // bytes start piping.
+    // (or {type:'deny',requestId}); the agent ws.on('message') handler
+    // above drives Relay.approveSession / Relay.denySession, which in
+    // turn wires the byte pipe (or closes the session).
     const session = (opts.relay as any).sessions?.get(sn);
     const agentSocket = session?.agent;
     if (agentSocket) {

@@ -9,12 +9,11 @@
  * approve.
  *
  * Notes vs. the original plan draft:
- *   - The route's agent message handler does NOT itself call
- *     `relay.approveSession(sn)` — it only opens an AuditLog when it
- *     sees an `approve` JSON frame. The flip to ACTIVE is the operator
- *     side's responsibility (or, here, the test's). So we send the
- *     `approve` JSON for parity with the wire protocol AND call
- *     `relay.approveSession(sn)` afterwards to wire the byte pipe.
+ *   - The route's agent message handler drives the Relay directly: on
+ *     {type:'approve'} it calls `relay.approveSession(sn)`, on
+ *     {type:'deny'} it calls `relay.denySession(sn)`. The test only
+ *     sends the wire frame and polls `relay.getState(SN)` for the
+ *     transition to ACTIVE.
  *   - `ws` emits `message` as a Buffer regardless of whether the sender
  *     sent a string, so we normalize to utf8 string for the equality
  *     assertion.
@@ -110,12 +109,18 @@ describe('remote-support e2e', () => {
     expect(typeof requestFrame.requestId).toBe('string');
     expect(relay.getState(SN)).toBe('REQUESTED');
 
-    // 4. Agent approves on the wire (opens auditLog server-side) AND we
-    //    flip the relay to ACTIVE so the byte pipe wires up. In production
-    //    the operator UI calls a separate approve endpoint; in-process
-    //    we drive the relay directly.
+    // 4. Agent approves on the wire. The agent WS message handler in
+    //    routes/remoteSupport.ts is what calls relay.approveSession(sn)
+    //    — the test does NOT drive the relay directly, otherwise we'd
+    //    paper over a real bug if the handler regressed.
     agent.send(JSON.stringify({ type: 'approve', requestId: requestFrame.requestId }));
-    relay.approveSession(SN);
+
+    // Poll for the round-trip: the approve frame has to reach the server,
+    // get parsed, and call approveSession. Give it up to ~500ms.
+    const deadline = Date.now() + 500;
+    while (relay.getState(SN) !== 'ACTIVE' && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 10));
+    }
     expect(relay.getState(SN)).toBe('ACTIVE');
 
     // 5. Operator sends raw bytes → agent should see them verbatim.
