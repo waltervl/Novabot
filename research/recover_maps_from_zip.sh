@@ -291,9 +291,22 @@ JSEOF
 docker exec -e SN="$SN" -e ROTATE_DEG="$ROTATE_DEG" -e SET_ORIENTATION_DEG="$SET_ORIENTATION_DEG" -e APPLY_VERBATIM="$APPLY_VERBATIM" -e NODE_PATH=/app/server/node_modules "$CONTAINER" sh -c 'cd /app/server && node /tmp/recover_maps.js'
 
 echo
-echo '=== Resulting bundles ==='
-docker exec "$CONTAINER" ls -la "/data/storage/portable_backups/${SN}/"
-echo
-echo 'Next: open the OpenNova dashboard → Mowers → '"${SN}"' → Portable Map Bundle'
-echo '      section. Click Refresh, then Restore on the new <iso>_recovery'
-echo '      entry, then Apply Exact.'
+if [ "$APPLY_VERBATIM" = "1" ]; then
+  echo '=== Verbatim push complete ==='
+  echo "MQTT write_map_files was published to novabot/extended/${SN}."
+  echo 'No bundle was generated and no dashboard action is needed.'
+  echo 'Mower should now have the exact pre-wipe csv_file/ + x3_csv_file/ state.'
+  echo
+  echo 'Verify on the mower:'
+  echo "  ls /userdata/lfi/maps/home0/csv_file/"
+  echo "  cat /userdata/lfi/maps/home0/csv_file/map_info.json"
+  echo
+  echo 'Then force-quit + reopen the OpenNova app to see the maps.'
+else
+  echo '=== Resulting bundles ==='
+  docker exec "$CONTAINER" ls -la "/data/storage/portable_backups/${SN}/"
+  echo
+  echo 'Next: open the OpenNova dashboard → Mowers → '"${SN}"' → Portable Map Bundle'
+  echo '      section. Click Refresh, then Restore on the new <iso>_recovery'
+  echo '      entry, then Apply Exact.'
+fi
