@@ -4697,13 +4697,31 @@ function _deriveSnFromEntry(entry: any): string | null {
   return null;
 }
 
+/** Resolve a raw SN (mower or charger) to the bound MOWER SN. Charger
+ * entries get rerouted under their bound mower so the operator sees a
+ * single device per physical setup instead of separate mower + charger
+ * tiles. Falls back to the raw SN when no mapping is known. Mower SNs
+ * are returned unchanged. */
+function _resolveToMowerSn(raw: string | null): string | null {
+  if (!raw) return raw;
+  if (raw.startsWith('LFIN')) return raw;
+  if (raw.startsWith('LFIC')) {
+    try {
+      const eq = equipmentRepo.findByChargerSn(raw);
+      if (eq?.mower_sn) return eq.mower_sn;
+    } catch { /* DB lookup failed — fall through to raw */ }
+  }
+  return raw;
+}
+
 dashboardRouter.post('/remote-debug/receive', (req: Request, res: Response) => {
   const { logs, sns } = req.body as { logs?: unknown[]; sns?: string[] };
   if (!Array.isArray(logs)) { res.json({ ok: false }); return; }
 
   for (const entry of logs) {
-    const sn = _deriveSnFromEntry(entry);
-    const key = sn || (sns?.[0]) || 'unknown';
+    const rawSn = _deriveSnFromEntry(entry);
+    const resolved = _resolveToMowerSn(rawSn);
+    const key = resolved || (sns?.[0] ? _resolveToMowerSn(sns[0]) : null) || 'unknown';
     if (!_remoteLogsBySn.has(key)) _remoteLogsBySn.set(key, []);
     const buf = _remoteLogsBySn.get(key)!;
     buf.push(entry);
@@ -4714,17 +4732,17 @@ dashboardRouter.post('/remote-debug/receive', (req: Request, res: Response) => {
   res.json({ ok: true, devices: _remoteLogsBySn.size, buffered: total });
 });
 
-// GET /remote-debug/devices — list all SNs with log counts.
+// GET /remote-debug/devices — list mower SNs with log counts.
 //
-// Returns all buckets including non-LFIN ones (chargers + "unknown"
-// for entries the receiver couldn't tag with an SN). Filtering by
-// device type happens client-side in the console so the operator can
-// see ALL incoming activity, not just mowers. Without this an entire
-// remote session can land under "unknown" and look like nothing came
-// in (live bug observed 2026-05-13: 700+ logs buffered, /devices empty
-// because every entry had sn=null and the LFIN filter dropped them).
-dashboardRouter.get('/remote-debug/devices', (_req: Request, res: Response) => {
+// Only LFIN* buckets are surfaced. Charger logs (LFIC*) are rerouted
+// to their bound mower during /receive so they merge into the mower's
+// stream instead of showing up as a separate tile. "unknown" can be
+// inspected via ?all=1 when the operator needs to debug entries the
+// receiver couldn't tag with an SN.
+dashboardRouter.get('/remote-debug/devices', (req: Request, res: Response) => {
+  const all = req.query.all === '1';
   const devices = [..._remoteLogsBySn.entries()]
+    .filter(([sn]) => all || sn.startsWith('LFIN'))
     .map(([sn, logs]) => ({
       sn,
       count: logs.length,
