@@ -4634,6 +4634,8 @@ var rsOpTerm = null, rsOpWs = null;
 async function rsOpConnect() {
   var sn = document.getElementById("rsOpSn").value.trim();
   if (!sn) return;
+  if (rsOpWs) { try { rsOpWs.close(); } catch (_) {} rsOpWs = null; }
+  if (rsOpTerm) { try { rsOpTerm.dispose(); } catch (_) {} rsOpTerm = null; }
   var term = new Terminal({ cursorBlink: true, fontSize: 13 });
   var fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
@@ -4655,7 +4657,8 @@ async function rsOpConnect() {
   ws.onclose = function() { term.write("\\r\\n[session closed]"); };
   term.onData(function(d) { if (ws.readyState === 1) ws.send(d); });
 }
-if (document.getElementById("rsOperatorCard")) {
+var rsOpCard = document.getElementById("rsOperatorCard");
+if (rsOpCard && rsOpCard.style.display !== "none") {
   rsOpRefresh();
   setInterval(rsOpRefresh, 10000);
 }
