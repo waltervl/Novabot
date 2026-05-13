@@ -659,6 +659,28 @@ export function adminPageHtml(): string {
       <div id="relayStatus" style="margin-top:8px;font-size:12px;color:#666"></div>
     </div>
 
+    <div class="card" style="border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.04)">
+      <h2 style="color:#a5b4fc">Remote Support — Allow Ramon to assist</h2>
+      <p style="font-size:12px;color:#aaa;margin-bottom:12px">When enabled, Ramon can request an approved-by-you bash session inside this container to troubleshoot. Every keystroke is logged to disk for your review.</p>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label class="switch"><input type="checkbox" id="rsToggle" onchange="rsToggle()"><span class="slider"></span></label>
+        <span id="rsStatus" style="font-size:12px">Off</span>
+        <button class="btn btn-danger" id="rsKill" onclick="rsKill()" style="display:none">Kill Active Session</button>
+      </div>
+      <div id="rsBanner" style="display:none;margin-top:12px;padding:8px 12px;background:rgba(239,68,68,.1);border-radius:6px;border:1px solid rgba(239,68,68,.4)">
+        <div style="font-weight:600;color:#fca5a5">Remote Support request</div>
+        <div id="rsBannerMsg" style="font-size:12px;color:#fecaca;margin-top:4px"></div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn btn-success" onclick="rsApprove()">Approve</button>
+          <button class="btn btn-danger" onclick="rsDeny()">Deny</button>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <div style="font-size:12px;color:#aaa;margin-bottom:6px">Audit logs</div>
+        <ul id="rsAuditList" style="font-size:11px;color:#94a3b8;list-style:none;padding:0;margin:0"></ul>
+      </div>
+    </div>
+
     <div class="card" style="border:1px solid rgba(34,197,94,.3);background:rgba(34,197,94,.04)">
       <h2 style="color:#22c55e">Remote Debug — Receive Logs</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:8px">View logs received from other OpenNova users who are sharing their debug data with you.</p>
@@ -4534,6 +4556,54 @@ function loadRelayStatus() {
     }
   }).catch(function(){});
 }
+
+async function rsRefreshStatus() {
+  var r = await fetch('/api/remote-support/status').then(function(x) { return x.json(); }).catch(function() { return { enabled: false }; });
+  var t = document.getElementById('rsToggle');
+  if (t) t.checked = !!r.enabled;
+  var s = document.getElementById('rsStatus');
+  if (s) s.textContent = r.enabled ? 'On — waiting for request' : 'Off';
+}
+async function rsToggle() {
+  var enabled = document.getElementById('rsToggle').checked;
+  await fetch('/api/remote-support/toggle', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: enabled }),
+  });
+  rsRefreshStatus();
+}
+async function rsKill() {
+  var sel = document.getElementById('mapMowerSelect');
+  var sn = sel ? sel.value : '';
+  if (!sn) return;
+  await fetch('/api/remote-support/kill', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sn: sn }),
+  });
+}
+function rsApprove() {
+  var b = document.getElementById('rsBanner');
+  if (b) b.style.display = 'none';
+}
+function rsDeny() {
+  var b = document.getElementById('rsBanner');
+  if (b) b.style.display = 'none';
+}
+async function rsRefreshAuditLogs() {
+  var sel = document.getElementById('mapMowerSelect');
+  var sn = sel ? sel.value : '';
+  if (!sn) return;
+  var r = await fetch('/api/remote-support/audit-logs?sn=' + encodeURIComponent(sn)).then(function(x) { return x.json(); }).catch(function() { return { files: [] }; });
+  var list = document.getElementById('rsAuditList');
+  if (!list) return;
+  list.innerHTML = (r.files || []).slice(0, 10).map(function(f) {
+    return '<li><a href="/api/remote-support/audit-logs/' + f.filename + '" download style="color:#a5b4fc">' + f.filename + '</a> (' + Math.round(f.bytes / 1024) + ' KB)</li>';
+  }).join('');
+}
+rsRefreshStatus();
+rsRefreshAuditLogs();
+setInterval(rsRefreshStatus, 5000);
+setInterval(rsRefreshAuditLogs, 30000);
 
 function toggleRelay() {
   var urlInput = document.getElementById('relayUrl');
