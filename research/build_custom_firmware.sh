@@ -655,8 +655,48 @@ else
 fi
 
 # 1. HTTP server adres (firmware prepends "http://", dus ALLEEN host:port, GEEN prefix!)
+#
+# Veiligheids-probe: voor we http_address.txt overschrijven, valideren we
+# dat de gekozen poort ook ECHT bereikbaar is. Als de FALLBACK / SRV-poort
+# niet luistert (firewall, port-not-exposed, stale cache), retry met de
+# bekende safe defaults (80, 8080) zodat de mower niet vastloopt in een
+# INIT_NET_ERROR-loop bij een verkeerde mDNS-poort.
+probe_http() {
+    # \$1 = host, \$2 = port. 0 = OK, !=0 = unreachable.
+    python3 - "\$1" "\$2" << 'PROBE_EOF' 2>/dev/null
+import socket, sys
+host = sys.argv[1]; port = int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(2.0)
+try:
+    s.connect((host, port))
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PROBE_EOF
+}
+
 if [ -n "\${HTTP_ADDRESS}" ]; then
-    printf "%s" "\${HTTP_ADDRESS}" > "\${HTTP_ADDR_FILE}"
+    PROBE_HOST="\$SERVER_IP"
+    PROBE_PORT="\${HTTP_PORT_FINAL:-80}"
+    GOOD_PORT=""
+    for p in "\$PROBE_PORT" 80 8080 6466; do
+        if probe_http "\$PROBE_HOST" "\$p"; then
+            GOOD_PORT="\$p"
+            break
+        fi
+    done
+    if [ -n "\$GOOD_PORT" ]; then
+        if [ "\$GOOD_PORT" != "\$PROBE_PORT" ]; then
+            log "HTTP port \$PROBE_PORT unreachable — falling back to \$GOOD_PORT"
+            HTTP_ADDRESS="\${SERVER_IP}:\${GOOD_PORT}"
+        fi
+        printf "%s" "\${HTTP_ADDRESS}" > "\${HTTP_ADDR_FILE}"
+        log "http_address.txt → \${HTTP_ADDRESS}"
+    else
+        log "WARN: no HTTP port reachable on \$SERVER_IP (\$PROBE_PORT/80/8080/6466) — keeping previous http_address.txt"
+    fi
 fi
 
 # 2. Ethernet altijd beschikbaar voor noodherstel (RDK X3 default: 192.168.1.10)
