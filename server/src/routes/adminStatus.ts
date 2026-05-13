@@ -1334,6 +1334,9 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
     csvFiles?: Record<string, string>;
     chargingStationYaml?: string;
     chargingPose?: { x: number; y: number; orientation: number };
+    posJson?: string;
+    mapFilesText?: Record<string, string>;
+    mapFilesB64?: Record<string, string>;
   }>((resolve) => {
     let settled = false;
     const handler = (data: Record<string, unknown>) => {
@@ -1341,6 +1344,9 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
         result?: number;
         csv_files?: Record<string, string>;
         charging_station_yaml?: string;
+        pos_json?: string | null;
+        map_files_text?: Record<string, string>;
+        map_files_b64?: Record<string, string>;
       } | undefined;
       if (!r) return;
       if (settled) return;
@@ -1350,10 +1356,6 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
         resolve({});
         return;
       }
-      // Pull charging_pose out of the shipped map_info.json so the bundle
-      // metadata records what the mower actually had on disk at export
-      // time — not what the DB calibration field claims (which has drifted
-      // historically per polygon-rotation-bug.md).
       let chargingPose: { x: number; y: number; orientation: number } | undefined;
       const mapInfoStr = r.csv_files?.['map_info.json'];
       if (mapInfoStr) {
@@ -1371,16 +1373,21 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
         csvFiles: r.csv_files,
         chargingStationYaml: r.charging_station_yaml,
         chargingPose,
+        posJson: r.pos_json ?? undefined,
+        mapFilesText: r.map_files_text,
+        mapFilesB64: r.map_files_b64,
       });
     };
     onExtendedResponse(sn, handler);
     publishToExtended(sn, { read_map_files: {} });
+    // Bumped to 20 s so map.pgm + per-slot pgm/png base64 payload (~3 MB
+    // on a 3-map mower) can fit on the wire without truncation.
     setTimeout(() => {
       if (settled) return;
       settled = true;
       offExtendedResponse(sn, handler);
       resolve({});
-    }, 8000);
+    }, 20000);
   });
 
   // Prefer the LIVE charging_pose (from map_info.json on disk) over the DB
@@ -1416,6 +1423,9 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
     }),
     csvFilesRaw: mowerData.csvFiles,
     chargingStationYaml: mowerData.chargingStationYaml,
+    posJson: mowerData.posJson,
+    mapFilesText: mowerData.mapFilesText,
+    mapFilesB64: mowerData.mapFilesB64,
   });
 
   const fname = `${sn}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16)}-portable.novabotmap`;
@@ -2168,6 +2178,14 @@ adminStatusRouter.post(
     // robot_decision health-checks raise false-positive Error 140 that
     // aborted the in-progress coverage. Verified live LFIN1231000211
     // 2026-05-08.
+    //
+    // Bundle now also ships pos.json + map.yaml/pgm/png + per-slot pgm/png.
+    // For apply-exact the polygons get Δ-rotated against current dock, but
+    // we leave pos.json + occupancy grids alone here — those are only
+    // pushed when the bundle is being restored verbatim on the same SN
+    // (where Δ should be zero). Apply-exact use case is cross-dock or
+    // cross-mower migration; rebroadcasting old pos.json in that case
+    // would corrupt the new mower's UTM anchor.
     publishToExtended(sn, {
       write_map_files: {
         csv_files: transformedCsvs,

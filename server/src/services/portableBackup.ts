@@ -113,6 +113,9 @@ export async function createBackup(sn: string, reason: string): Promise<BackupEn
     csvFiles?: Record<string, string>;
     chargingStationYaml?: string;
     chargingPose?: { x: number; y: number; orientation: number };
+    posJson?: string;
+    mapFilesText?: Record<string, string>;
+    mapFilesB64?: Record<string, string>;
   }>((resolve) => {
     let settled = false;
     const handler = (data: Record<string, unknown>) => {
@@ -120,6 +123,9 @@ export async function createBackup(sn: string, reason: string): Promise<BackupEn
         result?: number;
         csv_files?: Record<string, string>;
         charging_station_yaml?: string;
+        pos_json?: string | null;
+        map_files_text?: Record<string, string>;
+        map_files_b64?: Record<string, string>;
       } | undefined;
       if (!r || settled) return;
       settled = true;
@@ -142,16 +148,22 @@ export async function createBackup(sn: string, reason: string): Promise<BackupEn
         csvFiles: r.csv_files,
         chargingStationYaml: r.charging_station_yaml,
         chargingPose,
+        posJson: r.pos_json ?? undefined,
+        mapFilesText: r.map_files_text,
+        mapFilesB64: r.map_files_b64,
       });
     };
     onExtendedResponse(sn, handler);
     publishToExtended(sn, { read_map_files: {} });
+    // Longer timeout — bundle now ships pgm/png base64 which can push the
+    // response payload past 3 MB on a 3-map mower. Old 8 s budget assumed
+    // CSV-only response which fit in <50 KB.
     setTimeout(() => {
       if (settled) return;
       settled = true;
       offExtendedResponse(sn, handler);
       resolve({});
-    }, 8000);
+    }, 20000);
   });
 
   if (!mowerData.csvFiles) {
@@ -190,6 +202,9 @@ export async function createBackup(sn: string, reason: string): Promise<BackupEn
     }),
     csvFilesRaw: mowerData.csvFiles,
     chargingStationYaml: mowerData.chargingStationYaml,
+    posJson: mowerData.posJson,
+    mapFilesText: mowerData.mapFilesText,
+    mapFilesB64: mowerData.mapFilesB64,
   });
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);

@@ -1430,21 +1430,34 @@ def handle_recalibrate_charging_pose(params, respond):
 
 
 def handle_read_map_files(params, respond):
-    """Return raw contents of all map files in home0/csv_file/ + charging_station.yaml.
+    """Return ALL mower-side files needed for a full state restore.
 
-    Used by the server-side portable export bundle: instead of reconstructing
-    polygon points from DB.maps.map_area (which can drift relative to what's
-    actually on disk), we ship verbatim the firmware-written CSVs along with
-    the firmware-written charging_pose. That way an import-side restore can
-    apply the polygon back to the same mower with rotation+translation
-    derived from the bundle's stored charging_pose vs the mower's live one.
+    Captures the canonical on-disk state so a same-mower verbatim restore is
+    deterministic. Without these, the older bundle shape (csv_file/ +
+    charging_station.yaml only) couldn't bring back the UTM anchor or the
+    Nav2 occupancy grids — and `write_map_files` had to fudge them.
+
+    Captured (response payload):
+      csv_files            {filename: text}   from /userdata/lfi/maps/<home>/csv_file/
+      charging_station_yaml string             from /userdata/lfi/charging_station_file/
+      pos_json             text or null        /userdata/pos.json — UTM origin anchor
+      map_files_text       {filename: text}    *.yaml under maps/<home>/ (map.yaml,
+                                                mapN.yaml — all per-slot YAMLs)
+      map_files_b64        {filename: b64}     *.pgm + *.png under maps/<home>/
+                                                (binary, base64 so it fits JSON)
+
+    The map.yaml/pgm/png files are the whole-area occupancy grid; the
+    mapN.yaml/pgm/png are per-slot copies (one per work map). Without the
+    pgm Nav2 has no costmap → coverage_planner Error 107/118.
 
     Optional params:
       home: str — home dir under /userdata/lfi/maps. Default "home0".
 
     Response:
-      result:0, csv_files: {filename: content_string}, charging_station_yaml: string
+      result:0, home, csv_files, charging_station_yaml, pos_json,
+      map_files_text, map_files_b64
     """
+    import base64 as _b64
     home = params.get("home", "home0") if isinstance(params, dict) else "home0"
     base = f"/userdata/lfi/maps/{home}/csv_file"
     files = {}
@@ -1458,17 +1471,58 @@ def handle_read_map_files(params, respond):
                 continue
             with open(full) as f:
                 files[fname] = f.read()
+
+        # charging_station.yaml
         yaml_path = "/userdata/lfi/charging_station_file/charging_station.yaml"
         cs_yaml = ""
         if os.path.exists(yaml_path):
             with open(yaml_path) as f:
                 cs_yaml = f.read()
-        log(f"read_map_files: {len(files)} csv files, charging_station.yaml={'yes' if cs_yaml else 'no'}")
+
+        # pos.json — UTM origin anchor. Without this the local frame's
+        # world coordinate is undefined. A bundle without pos.json can only
+        # be safely restored when the mower's current pos.json already
+        # matches the one in effect when the bundle was made.
+        pos_json = None
+        pj_path = "/userdata/pos.json"
+        if os.path.exists(pj_path):
+            try:
+                with open(pj_path) as f:
+                    pos_json = f.read()
+            except Exception as e:
+                log(f"read_map_files: pos.json read failed (continuing): {e}")
+
+        # map.yaml / mapN.yaml — text. map.pgm / map.png / mapN.pgm /
+        # mapN.png — binary, base64. Splitting by extension keeps the
+        # response payload directly inspectable on the server side for
+        # the text files.
+        home_dir = f"/userdata/lfi/maps/{home}"
+        map_files_text = {}
+        map_files_b64 = {}
+        try:
+            for fname in sorted(os.listdir(home_dir)):
+                full = os.path.join(home_dir, fname)
+                if not os.path.isfile(full):
+                    continue
+                if fname.endswith(".yaml"):
+                    with open(full) as f:
+                        map_files_text[fname] = f.read()
+                elif fname.endswith(".pgm") or fname.endswith(".png"):
+                    with open(full, "rb") as f:
+                        map_files_b64[fname] = _b64.b64encode(f.read()).decode("ascii")
+        except Exception as e:
+            log(f"read_map_files: home_dir scan failed (continuing): {e}")
+
+        log(f"read_map_files: {len(files)} csv files, charging_station.yaml={'yes' if cs_yaml else 'no'}, "
+            f"pos.json={'yes' if pos_json else 'no'}, map_text={len(map_files_text)}, map_bin={len(map_files_b64)}")
         respond("read_map_files_respond", {
             "result": 0,
             "home": home,
             "csv_files": files,
             "charging_station_yaml": cs_yaml,
+            "pos_json": pos_json,
+            "map_files_text": map_files_text,
+            "map_files_b64": map_files_b64,
         })
     except Exception as e:
         log(f"read_map_files error: {e}")
@@ -1497,9 +1551,13 @@ def handle_write_map_files(params, respond):
     Response:
       result:0, written: [paths], home
     """
+    import base64 as _b64
     home = params.get("home", "home0") if isinstance(params, dict) else "home0"
     csv_files = (params or {}).get("csv_files", {})
     cs_yaml = (params or {}).get("charging_station_yaml")
+    pos_json = (params or {}).get("pos_json")              # text content or null
+    map_files_text = (params or {}).get("map_files_text", {})  # {fname: text}
+    map_files_b64 = (params or {}).get("map_files_b64", {})    # {fname: base64}
 
     if not isinstance(csv_files, dict) or not csv_files:
         respond("write_map_files_respond", {"result": 1, "error": "csv_files object required"})
@@ -1550,6 +1608,55 @@ def handle_write_map_files(params, respond):
                 f.write(cs_yaml)
             written.append(yaml_path)
 
+        # pos.json — UTM origin anchor. Critical: this changes the local
+        # frame's world coordinate. Only write when explicitly provided AND
+        # caller has determined the bundle is from the same physical mower.
+        # Always back up existing pos.json before overwriting.
+        if isinstance(pos_json, str) and pos_json.strip():
+            pj_path = "/userdata/pos.json"
+            if os.path.exists(pj_path):
+                ts = int(time.time())
+                bak = f"{pj_path}.bak.{ts}"
+                try:
+                    import shutil as _shutil
+                    _shutil.copyfile(pj_path, bak)
+                    log(f"write_map_files: pos.json backed up to {bak}")
+                except Exception as e:
+                    log(f"write_map_files: pos.json backup failed (continuing): {e}")
+            with open(pj_path, "w") as f:
+                f.write(pos_json)
+            written.append(pj_path)
+            log("write_map_files: pos.json restored (UTM anchor)")
+
+        # Whole-area + per-slot map.yaml/pgm/png — when caller ships these
+        # explicitly we skip the auto-mirror fallback below. These files
+        # define the Nav2 costmap; without them coverage_planner aborts
+        # with Error 107/118.
+        explicit_map_files = False
+        if (isinstance(map_files_text, dict) and map_files_text) or \
+           (isinstance(map_files_b64, dict) and map_files_b64):
+            explicit_map_files = True
+            for fname, content in (map_files_text or {}).items():
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+", fname): continue
+                if not fname.endswith(".yaml"): continue
+                p = f"{base}/{fname}"
+                with open(p, "w") as f:
+                    f.write(content)
+                written.append(p)
+            for fname, b64 in (map_files_b64 or {}).items():
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+", fname): continue
+                if not (fname.endswith(".pgm") or fname.endswith(".png")): continue
+                try:
+                    raw = _b64.b64decode(b64)
+                except Exception as e:
+                    log(f"write_map_files: skip {fname} (bad base64): {e}")
+                    continue
+                p = f"{base}/{fname}"
+                with open(p, "wb") as f:
+                    f.write(raw)
+                written.append(p)
+            log(f"write_map_files: explicit map files: {len(map_files_text or {})} yaml, {len(map_files_b64 or {})} binary")
+
         # Per-map yaml/pgm/png — firmware looks for `map<N>.yaml` (etc.)
         # when planning navigation per work-area. The mapping-node normally
         # produces these during `save_map type:0` inside an active mapping
@@ -1561,51 +1668,48 @@ def handle_write_map_files(params, respond):
         # in the freshly-written csv_file/ so every map<N>.yaml resolves
         # to a real file. The image: field is rewritten so each yaml
         # points at its own pgm copy.
-        try:
-            import re as _re
-            whole_yaml = f"{base}/map.yaml"
-            whole_pgm = f"{base}/map.pgm"
-            whole_png = f"{base}/map.png"
-            if os.path.exists(whole_yaml) and os.path.exists(whole_pgm):
-                # Distinct work-map slots present in the newly-written CSV
-                # set — `map3_work.csv`, `map3.csv`, `map3_0_obstacle.csv`
-                # all collapse to slot "map3".
-                slots = set()
-                for fname in csv_files.keys():
-                    m = _re.match(r"^(map\d+)", fname)
-                    if m:
-                        slots.add(m.group(1))
-                with open(whole_yaml, "r") as f:
-                    whole_yaml_content = f.read()
-                for slot in slots:
-                    slot_yaml = f"{base}/{slot}.yaml"
-                    slot_pgm = f"{base}/{slot}.pgm"
-                    slot_png = f"{base}/{slot}.png"
-                    # Yaml: same content, image: line rewritten to <slot>.pgm
-                    rewritten = _re.sub(
-                        r"^image:\s*map\.pgm\s*$",
-                        f"image: {slot}.pgm",
-                        whole_yaml_content,
-                        flags=_re.MULTILINE,
-                    )
-                    with open(slot_yaml, "w") as f:
-                        f.write(rewritten)
-                    # PGM + PNG: byte-for-byte copy. All slots share the
-                    # whole-area bitmap; coverage_planner uses the polygon
-                    # CSV (csv_file/) for per-area boundaries, the pgm is
-                    # only consumed by Nav2 costmap which only needs an
-                    # occupancy grid covering the area.
-                    import shutil as _shutil2
-                    _shutil2.copyfile(whole_pgm, slot_pgm)
-                    if os.path.exists(whole_png):
-                        _shutil2.copyfile(whole_png, slot_png)
-                    written.extend([slot_yaml, slot_pgm, slot_png])
-                if slots:
-                    log(f"write_map_files: mirrored map.yaml/pgm/png to {len(slots)} per-map slots: {sorted(slots)}")
-            else:
-                log(f"write_map_files: whole-area map.yaml/pgm missing — skipping per-map mirror (recovery callers should trigger save_map type:1 first)")
-        except Exception as e:
-            log(f"write_map_files: per-map mirror failed (non-fatal): {e}")
+        if explicit_map_files:
+            log("write_map_files: skipping auto-mirror — explicit map files provided")
+        else:
+            try:
+                import re as _re
+                whole_yaml = f"{base}/map.yaml"
+                whole_pgm = f"{base}/map.pgm"
+                whole_png = f"{base}/map.png"
+                if os.path.exists(whole_yaml) and os.path.exists(whole_pgm):
+                    # Distinct work-map slots present in the newly-written CSV
+                    # set — `map3_work.csv`, `map3.csv`, `map3_0_obstacle.csv`
+                    # all collapse to slot "map3".
+                    slots = set()
+                    for fname in csv_files.keys():
+                        m = _re.match(r"^(map\d+)", fname)
+                        if m:
+                            slots.add(m.group(1))
+                    with open(whole_yaml, "r") as f:
+                        whole_yaml_content = f.read()
+                    for slot in slots:
+                        slot_yaml = f"{base}/{slot}.yaml"
+                        slot_pgm = f"{base}/{slot}.pgm"
+                        slot_png = f"{base}/{slot}.png"
+                        rewritten = _re.sub(
+                            r"^image:\s*map\.pgm\s*$",
+                            f"image: {slot}.pgm",
+                            whole_yaml_content,
+                            flags=_re.MULTILINE,
+                        )
+                        with open(slot_yaml, "w") as f:
+                            f.write(rewritten)
+                        import shutil as _shutil2
+                        _shutil2.copyfile(whole_pgm, slot_pgm)
+                        if os.path.exists(whole_png):
+                            _shutil2.copyfile(whole_png, slot_png)
+                        written.extend([slot_yaml, slot_pgm, slot_png])
+                    if slots:
+                        log(f"write_map_files: mirrored map.yaml/pgm/png to {len(slots)} per-map slots: {sorted(slots)}")
+                else:
+                    log(f"write_map_files: whole-area map.yaml/pgm missing — skipping per-map mirror (recovery callers should trigger save_map type:1 first)")
+            except Exception as e:
+                log(f"write_map_files: per-map mirror failed (non-fatal): {e}")
 
         # Restart novabot_mapping so the freshly-written CSVs are loaded
         # into memory. Without this, coverage_planner reads the previously

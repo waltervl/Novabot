@@ -60,6 +60,14 @@ export interface ExportInput {
   /** Verbatim contents of /userdata/lfi/charging_station_file/charging_station.yaml
    * at export time. Single line: `charging_pose: [x, y, theta]`. */
   chargingStationYaml?: string;
+  /** Verbatim /userdata/pos.json content (UTM origin anchor). Captured via
+   * extended read_map_files. Critical for same-mower restore — anchors
+   * polygon coords to world. Different pos.json → polygons in wrong UTM. */
+  posJson?: string;
+  /** Verbatim map.yaml + mapN.yaml content under maps/<home>/ (text). */
+  mapFilesText?: Record<string, string>;
+  /** Verbatim map.pgm/png + mapN.pgm/png as base64 (binary). */
+  mapFilesB64?: Record<string, string>;
 }
 
 const SCHEMA_VERSION = 1;
@@ -232,6 +240,25 @@ export async function exportBundle(input: ExportInput): Promise<Buffer> {
     if (input.chargingStationYaml) {
       archive.append(input.chargingStationYaml, { name: 'mower/charging_station.yaml' });
     }
+    // pos.json — UTM origin anchor. Without this a bundle restored on a
+    // freshly-provisioned mower (or after a UTM-origin reset) lands the
+    // polygons at the wrong world coords. Critical for true full-state
+    // restore.
+    if (input.posJson) {
+      archive.append(input.posJson, { name: 'mower/pos.json' });
+    }
+    // map.yaml / mapN.yaml — text content
+    if (input.mapFilesText) {
+      for (const [fname, content] of Object.entries(input.mapFilesText)) {
+        archive.append(content, { name: `mower/map_files/${fname}` });
+      }
+    }
+    // map.pgm / mapN.pgm / map.png / mapN.png — binary (decode b64 → buffer)
+    if (input.mapFilesB64) {
+      for (const [fname, b64] of Object.entries(input.mapFilesB64)) {
+        archive.append(Buffer.from(b64, 'base64'), { name: `mower/map_files/${fname}` });
+      }
+    }
 
     void archive.finalize();
   });
@@ -273,6 +300,13 @@ export interface ParsedBundle {
   mowerFiles?: {
     csvFiles: Record<string, string>;
     chargingStationYaml: string | null;
+    /** /userdata/pos.json content — UTM origin anchor. Absent on
+     * pre-2026-05-13 bundles. */
+    posJson?: string | null;
+    /** map.yaml + mapN.yaml content keyed by filename. */
+    mapFilesText?: Record<string, string>;
+    /** map.pgm + mapN.pgm + .png as base64 strings keyed by filename. */
+    mapFilesB64?: Record<string, string>;
   };
 }
 
@@ -306,7 +340,15 @@ export async function parseBundle(buf: Buffer): Promise<ParsedBundle> {
     const dir = await unzipper.Open.buffer(buf);
     entries = new Map();
     for (const f of dir.files) {
-      if (f.type === 'File') entries.set(f.path, (await f.buffer()).toString('utf8'));
+      if (f.type !== 'File') continue;
+      const raw = await f.buffer();
+      // Binary entries (pgm/png map artifacts) must NOT round-trip through
+      // utf8 — that would corrupt the bytes. Store base64 for those.
+      if (f.path.endsWith('.pgm') || f.path.endsWith('.png')) {
+        entries.set(f.path, raw.toString('base64'));
+      } else {
+        entries.set(f.path, raw.toString('utf8'));
+      }
     }
   } catch (e) {
     throw new BundleValidationError(`not a valid ZIP: ${(e as Error).message}`);
@@ -388,16 +430,36 @@ export async function parseBundle(buf: Buffer): Promise<ParsedBundle> {
   // DB-reconstructed CSVs.
   const csvFiles: Record<string, string> = {};
   let chargingStationYaml: string | null = null;
+  let posJson: string | null = null;
+  const mapFilesText: Record<string, string> = {};
+  const mapFilesB64: Record<string, string> = {};
   for (const [path, content] of entries.entries()) {
     if (path.startsWith('mower/csv_file/')) {
       const fname = path.slice('mower/csv_file/'.length);
       if (fname && !fname.includes('/')) csvFiles[fname] = content;
     } else if (path === 'mower/charging_station.yaml') {
       chargingStationYaml = content;
+    } else if (path === 'mower/pos.json') {
+      posJson = content;
+    } else if (path.startsWith('mower/map_files/')) {
+      const fname = path.slice('mower/map_files/'.length);
+      if (!fname || fname.includes('/')) continue;
+      if (fname.endsWith('.pgm') || fname.endsWith('.png')) {
+        // Already base64 from the parser above.
+        mapFilesB64[fname] = content;
+      } else {
+        mapFilesText[fname] = content;
+      }
     }
   }
-  const mowerFiles = Object.keys(csvFiles).length > 0 || chargingStationYaml !== null
-    ? { csvFiles, chargingStationYaml }
+  const hasAnyMowerFile =
+    Object.keys(csvFiles).length > 0 ||
+    chargingStationYaml !== null ||
+    posJson !== null ||
+    Object.keys(mapFilesText).length > 0 ||
+    Object.keys(mapFilesB64).length > 0;
+  const mowerFiles = hasAnyMowerFile
+    ? { csvFiles, chargingStationYaml, posJson, mapFilesText, mapFilesB64 }
     : undefined;
 
   return {
