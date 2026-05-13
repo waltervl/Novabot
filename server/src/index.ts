@@ -44,7 +44,8 @@ import { mountCloudApi } from './cloud-api/index.js';
 import { initDashboardSocket, pushMqttLog } from './dashboard/socketHandler.js';
 import { adminStatusRouter } from './routes/adminStatus.js';
 import { adminPageHtml } from './routes/adminPage.js';
-import { authMiddleware, adminMiddleware, dashboardMiddleware } from './middleware/auth.js';
+import { authMiddleware, adminMiddleware, dashboardMiddleware, verifyAuthToken } from './middleware/auth.js';
+import { userRepo } from './db/repositories/users.js';
 import { dashboardRouter, initFirmwareSync } from './routes/dashboard.js';
 import { eventsRouter } from './notifications/route.js';
 import { pushRegisterRouter } from './notifications/registerRoute.js';
@@ -230,10 +231,15 @@ if (PROXY_MODE === 'cloud') {
       secret: process.env.REMOTE_SUPPORT_SECRET ?? '',
       auditLogDir,
       isOperator: (req) => {
-        // Operator = any caller with admin role. The dashboard router
-        // sits behind authMiddleware so a verified user reaches here;
-        // central instance is also gated by Cloudflare access in front.
-        return (req as any).userRole === 'admin' || !!(req as any).user;
+        // Operator = authenticated admin. `authMiddleware` sets `userId`
+        // (a string) on the request — NOT `userRole` or `user`. We must
+        // re-check the admin flag from the DB rather than trusting any
+        // request property, since this callback can also be invoked from
+        // the raw WS upgrade path (see below) where Express middleware
+        // has not run.
+        const userId = (req as any).userId;
+        if (typeof userId !== 'string' || !userId) return false;
+        try { return userRepo.isAdmin(userId); } catch { return false; }
       },
     });
     app.use('/api/remote-support', authMiddleware, remoteSupportRouter);
@@ -323,7 +329,30 @@ if (process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true') {
     relay: (app as any)._remoteSupportRelay,
     secret: process.env.REMOTE_SUPPORT_SECRET ?? '',
     auditLogDir: (app as any)._remoteSupportAuditLogDir,
-    isOperator: () => true,
+    // The WS upgrade does NOT pass through `authMiddleware` — `req` is the
+    // raw IncomingMessage. Validate the JWT ourselves and require the
+    // caller to be an admin. Accept the token from either the
+    // `Authorization` header (Bearer / raw) or a `?token=` query param
+    // since browser WebSocket clients cannot set arbitrary headers.
+    isOperator: (req) => {
+      try {
+        const raw = req as unknown as { headers?: Record<string, string | string[] | undefined>; url?: string };
+        const authHeader = (raw.headers?.authorization as string | undefined) ?? '';
+        let token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+        if (!token && raw.url) {
+          try {
+            const u = new URL(raw.url, 'http://localhost');
+            token = u.searchParams.get('token') ?? '';
+          } catch { /* ignore malformed URL */ }
+        }
+        if (!token) return false;
+        const decoded = verifyAuthToken(token);
+        if (!decoded?.userId) return false;
+        return userRepo.isAdmin(decoded.userId);
+      } catch {
+        return false;
+      }
+    },
   });
 }
 

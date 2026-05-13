@@ -43,6 +43,16 @@ export function signToken(payload: JwtPayload): string {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 }
 
+/**
+ * Verify a JWT against the server secret and return the decoded payload.
+ * Throws if the token is missing, malformed, expired, or signed with a
+ * different secret. Use this from non-Express contexts (e.g. raw WebSocket
+ * upgrade handlers) where `authMiddleware` cannot be applied.
+ */
+export function verifyAuthToken(token: string): JwtPayload {
+  return jwt.verify(token, JWT_SECRET) as JwtPayload;
+}
+
 export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction): void {
   const header = req.headers.authorization ?? '';
 
