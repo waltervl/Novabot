@@ -13,6 +13,9 @@ export function adminPageHtml(): string {
 <link rel="icon" type="image/png" href="/assets/OpenNova.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
+<script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 <style>
   @font-face {
     font-family:'Posterama 1919';
@@ -679,6 +682,18 @@ export function adminPageHtml(): string {
         <div style="font-size:12px;color:#aaa;margin-bottom:6px">Audit logs</div>
         <ul id="rsAuditList" style="font-size:11px;color:#94a3b8;list-style:none;padding:0;margin:0"></ul>
       </div>
+    </div>
+
+    <div class="card" id="rsOperatorCard" style="display:${process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true' ? 'block' : 'none'};border:1px solid rgba(168,85,247,.3);background:rgba(168,85,247,.04)">
+      <h2 style="color:#c4b5fd">Remote Support — Operator</h2>
+      <p style="font-size:12px;color:#aaa;margin-bottom:12px">Online agents that have toggled remote support ON. Pick one or enter an SN manually.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="text" id="rsOpSn" placeholder="LFIN2231000656" style="flex:1;min-width:240px">
+        <button class="btn btn-primary" onclick="rsOpConnect()">Request Session</button>
+        <button class="btn btn-secondary" onclick="rsOpRefresh()">Refresh agents</button>
+      </div>
+      <ul id="rsOpAgents" style="margin-top:8px;font-size:12px;color:#94a3b8;list-style:none;padding:0"></ul>
+      <div id="rsOpTerminal" style="margin-top:12px;height:400px;background:#000;display:none"></div>
     </div>
 
     <div class="card" style="border:1px solid rgba(34,197,94,.3);background:rgba(34,197,94,.04)">
@@ -4604,6 +4619,46 @@ rsRefreshStatus();
 rsRefreshAuditLogs();
 setInterval(rsRefreshStatus, 5000);
 setInterval(rsRefreshAuditLogs, 30000);
+
+async function rsOpRefresh() {
+  var r = await fetch("/api/remote-support/active-agents").then(function(x) { return x.json(); }).catch(function() { return { agents: [] }; });
+  var list = document.getElementById("rsOpAgents");
+  if (!list) return;
+  var agents = r.agents || [];
+  list.innerHTML = agents.map(function(a) {
+    var t = new Date(a.registeredAt).toLocaleTimeString();
+    return "<li><a href=\\"#\\" onclick=\\"document.getElementById('rsOpSn').value='" + a.sn + "';return false\\">" + a.sn + "</a> (since " + t + ")</li>";
+  }).join("") || "<li>no agents connected</li>";
+}
+var rsOpTerm = null, rsOpWs = null;
+async function rsOpConnect() {
+  var sn = document.getElementById("rsOpSn").value.trim();
+  if (!sn) return;
+  var term = new Terminal({ cursorBlink: true, fontSize: 13 });
+  var fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  var el = document.getElementById("rsOpTerminal");
+  el.style.display = "block";
+  el.innerHTML = "";
+  term.open(el);
+  fit.fit();
+  rsOpTerm = term;
+  var proto = location.protocol === "https:" ? "wss:" : "ws:";
+  var ws = new WebSocket(proto + "//" + location.host + "/api/remote-support/operator/" + sn);
+  rsOpWs = ws;
+  ws.binaryType = "arraybuffer";
+  ws.onopen = function() { term.write("Waiting for user approval...\\r\\n"); };
+  ws.onmessage = function(ev) {
+    if (typeof ev.data === "string") term.write(ev.data);
+    else term.write(new Uint8Array(ev.data));
+  };
+  ws.onclose = function() { term.write("\\r\\n[session closed]"); };
+  term.onData(function(d) { if (ws.readyState === 1) ws.send(d); });
+}
+if (document.getElementById("rsOperatorCard")) {
+  rsOpRefresh();
+  setInterval(rsOpRefresh, 10000);
+}
 
 function toggleRelay() {
   var urlInput = document.getElementById('relayUrl');
