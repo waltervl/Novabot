@@ -653,7 +653,7 @@ export function adminPageHtml(): string {
       <h2 style="color:#3b82f6">Remote Debug — Send Logs</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">Share your MQTT logs in real-time with someone who can help you troubleshoot. Enter their relay URL and enable sharing.</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input type="text" id="relayUrl" placeholder="https://their-server/api/dashboard/remote-debug/receive" style="flex:1;min-width:250px">
+        <input type="text" id="relayUrl" value="https://opennova.ramonvanbruggen.nl/api/dashboard/remote-debug/receive" placeholder="https://their-server/api/dashboard/remote-debug/receive" style="flex:1;min-width:250px">
         <button class="btn btn-purple" id="relayToggle" onclick="toggleRelay()">Start Sharing</button>
       </div>
       <div id="relayStatus" style="margin-top:8px;font-size:12px;color:#666"></div>
