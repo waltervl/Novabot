@@ -53,3 +53,54 @@ describe('GET /api/remote-support/active-agents', () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe('POST /api/remote-support/toggle', () => {
+  let app: express.Express;
+  let relay: Relay;
+  beforeEach(() => {
+    relay = new Relay();
+    app = express();
+    app.use(express.json());
+    app.use('/api/remote-support', createRemoteSupportRouter({
+      relay, secret: TEST_SECRET, auditLogDir: '/tmp', isOperator: () => false,
+      enabledFlagPath: '/tmp/test-remote-support-flag',
+    }));
+  });
+
+  it('enables the agent flag', async () => {
+    const res = await request(app)
+      .post('/api/remote-support/toggle')
+      .send({ enabled: true });
+    expect(res.status).toBe(200);
+    expect(res.body.enabled).toBe(true);
+  });
+
+  it('disables the agent flag', async () => {
+    await request(app).post('/api/remote-support/toggle').send({ enabled: true });
+    const res = await request(app).post('/api/remote-support/toggle').send({ enabled: false });
+    expect(res.body.enabled).toBe(false);
+  });
+});
+
+describe('POST /api/remote-support/kill', () => {
+  let app: express.Express;
+  let relay: Relay;
+  beforeEach(() => {
+    relay = new Relay();
+    relay.registerAgent('LFIN2231000656');
+    app = express();
+    app.use(express.json());
+    app.use('/api/remote-support', createRemoteSupportRouter({
+      relay, secret: TEST_SECRET, auditLogDir: '/tmp', isOperator: () => false,
+    }));
+  });
+
+  it('closes the session for the calling SN', async () => {
+    relay.requestSession('LFIN2231000656');
+    const res = await request(app)
+      .post('/api/remote-support/kill')
+      .send({ sn: 'LFIN2231000656' });
+    expect(res.status).toBe(200);
+    expect(relay.getState('LFIN2231000656')).toBe('CLOSED');
+  });
+});
