@@ -1059,6 +1059,23 @@ dashboardRouter.delete('/maps/:sn/:mapId', (req: Request, res: Response) => {
     return;
   }
 
+  // Block delete when mower offline: otherwise the server-side DB row is
+  // gone but the mower's csv_file/ still holds the map, so the next
+  // sync_map upload silently re-creates it ("ghost map" reappearing
+  // after a fresh mapping session — live bug observed sandstroem
+  // 2026-05-13). The delete_map MQTT command has to actually reach the
+  // mower to clean its disk; without that we end up with a permanent
+  // desync. Force the operator to wait until the mower is reachable.
+  const force = req.query.force === '1' || (req.body as { force?: boolean })?.force === true;
+  if (!isDeviceOnline(sn) && !force) {
+    res.status(409).json({
+      error: 'mower offline — delete needs an online mower so it can wipe the map from disk',
+      offline: true,
+      mowerSn: sn,
+    });
+    return;
+  }
+
   const deleted = mapRepo.deleteWithCascade(mapId, sn);
 
   // STORAGE_PATH env var lands the ZIPs under e.g. /data/storage/maps in Docker.

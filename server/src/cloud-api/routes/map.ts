@@ -758,8 +758,19 @@ mapRouter.post('/uploadEquipmentMap', upload.any(), (req: Request, res: Response
       const workAreas = parsed.areas.filter(area => area.type === 'work');
       const workNameOverride = mapName && workAreas.length === 1 ? mapName : null;
 
+      // Track which existing rows actually map to an area in the new ZIP.
+      // Whatever is left in `staleIds` after the loop is in our DB but NOT
+      // on the mower's csv_file/ — that means the mower considers it gone
+      // (e.g. user deleted it via the app while mower was offline, then
+      // came back online and the next sync_map re-uploaded its current
+      // truth). Without this cleanup those rows stick around in the DB and
+      // the OpenNova app shows ghost maps the user already deleted (live
+      // bug observed dir26738 + sandstroem 2026-05-13).
+      const staleIds = new Set(existingRows.map(r => r.map_id));
+
       for (const area of parsed.areas) {
         const existingRow = existingRows.find(row => matchesParsedArea(row, area));
+        if (existingRow) staleIds.delete(existingRow.map_id);
         const canonicalName = parsedAreaName(area, area.type === 'work' ? workNameOverride : null);
         // Preserve user alias on re-upload: parsedAreaName() always returns
         // a canonical slot label (`map0`, `mapN_N_obstacle`, ...). If the
@@ -788,7 +799,19 @@ mapRouter.post('/uploadEquipmentMap', upload.any(), (req: Request, res: Response
         );
       }
 
-      console.log(`[MAP] ZIP geparsed: ${parsed.areas.length} gebieden geëxtraheerd voor ${sn}`);
+      // Delete rows the mower no longer ships — mower disk is the truth.
+      if (staleIds.size > 0) {
+        for (const id of staleIds) {
+          try {
+            mapRepo.deleteWithCascade(id, sn);
+            console.log(`[MAP] Removed stale row ${id} for ${sn} (not present in mower ZIP)`);
+          } catch (err) {
+            console.error(`[MAP] Failed to delete stale row ${id}:`, err);
+          }
+        }
+      }
+
+      console.log(`[MAP] ZIP geparsed: ${parsed.areas.length} gebieden geëxtraheerd voor ${sn} (verwijderd: ${staleIds.size})`);
     } else {
       // ZIP parsing geeft geen gebieden — sla alleen het bestand op
       console.log(`[MAP] Geen kaartgebieden in ZIP voor ${sn}, bestand opgeslagen`);
