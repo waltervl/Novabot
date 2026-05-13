@@ -3025,7 +3025,7 @@ async function portableApplyVerbatim() {
   if (!j.ok) {
     // Cross-SN block — let the operator force if they really know what they're doing.
     if (j.sourceSn && j.targetSn && j.sourceSn !== j.targetSn) {
-      var forceMsg = 'Bundle was made on ' + j.sourceSn + ', not ' + j.targetSn + '. Verbatim restore will overwrite pos.json with the source mower\'s UTM anchor. Only force if both mowers were provisioned to the same physical location. Continue?';
+      var forceMsg = "Bundle was made on " + j.sourceSn + ", not " + j.targetSn + ". Verbatim restore will overwrite pos.json with the source mower's UTM anchor. Only force if both mowers were provisioned to the same physical location. Continue?";
       if (!(await appConfirm(forceMsg, { destructive: true, okText: 'Force verbatim' }))) {
         portableCheckActive(sn);
         return;
