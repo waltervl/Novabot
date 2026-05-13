@@ -134,6 +134,27 @@ describe('remote-support e2e', () => {
     operator.send('ls\n');
     expect(await heard).toBe('ls\n');
 
+    // 6. Agent simulates pty output → operator should see it. AND both
+    //    directions must land in the audit log — the central promise to
+    //    the user is "every keystroke logged", which means in AND out.
+    const operatorHeard = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('reverse pipe timeout')), 5000);
+      operator.once('message', (m) => {
+        clearTimeout(timer);
+        resolve(toUtf8(m));
+      });
+    });
+    agent.send(Buffer.from('total 0\r\n'));
+    expect(await operatorHeard).toBe('total 0\r\n');
+
+    // Give the audit log a tick to flush the synchronous write.
+    await new Promise<void>((r) => setTimeout(r, 50));
+    const logFiles = fs.readdirSync(auditLogDir).filter((f) => f.endsWith('.log'));
+    expect(logFiles.length).toBeGreaterThan(0);
+    const logContent = fs.readFileSync(path.join(auditLogDir, logFiles[0]), 'utf8');
+    expect(logContent).toMatch(/<<\s*ls/);     // operator → agent
+    expect(logContent).toMatch(/>>\s*total 0/); // agent → operator
+
     // Clean teardown — close sockets, drain server, drop audit dir.
     agent.close();
     operator.close();

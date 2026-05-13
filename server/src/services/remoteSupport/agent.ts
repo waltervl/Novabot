@@ -38,6 +38,10 @@ export interface AgentOpts {
   token: string;
   wsFactory: () => AgentSocket;
   onRequest: (req: AgentRequest) => void;
+  /** Called for every non-JSON frame the agent receives from the relay
+   *  (i.e. operator keystrokes once a session is ACTIVE). Without this
+   *  hook the bytes were silently dropped — no shell ever saw the input. */
+  onRawBytes?: (data: Buffer) => void;
 }
 
 export interface AgentHandle {
@@ -57,14 +61,19 @@ export function startAgent(opts: AgentOpts): AgentHandle {
       s.send(JSON.stringify({ type: 'hello', sn: opts.sn, token: opts.token }));
     });
     s.on('message', (data: Buffer | string) => {
-      const str = Buffer.isBuffer(data) ? data.toString('utf8') : data;
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      const str = buf.toString('utf8');
       try {
         const msg = JSON.parse(str);
         if (msg.type === 'request' && typeof msg.requestId === 'string') {
           opts.onRequest({ requestId: msg.requestId });
+          return;
         }
+        // JSON we don't recognise — drop silently rather than pipe to pty.
+        return;
       } catch {
         // Non-JSON = raw pty bytes from operator (only valid after approve).
+        opts.onRawBytes?.(buf);
       }
     });
   };
@@ -137,6 +146,76 @@ export interface BootstrapOpts {
 
 let bootstrapHandle: AgentHandle | null = null;
 
+/** Pending approve-request the user must respond to. Populated when the
+ *  relay sends `{type:'request'}` and cleared once the user clicks
+ *  Approve / Deny in the admin UI (or the connection drops). */
+let pendingRequest: { requestId: string; since: number } | null = null;
+
+/** Active pty for the current approved session. Null between sessions.
+ *  Operator keystrokes go through this; killing it ends the shell. */
+let activePty: PtySession | null = null;
+
+export function getPendingRequest(): { requestId: string; since: number } | null {
+  return pendingRequest;
+}
+
+export function getActivePty(): PtySession | null {
+  return activePty;
+}
+
+/** Visible to tests so they can drive the approve flow without spawning
+ *  a real pty. Production code should call approvePending instead. */
+export function _setActivePtyForTest(p: PtySession | null): void { activePty = p; }
+export function _setPendingForTest(r: { requestId: string; since: number } | null): void { pendingRequest = r; }
+export function _getBootstrapHandleForTest(): AgentHandle | null { return bootstrapHandle; }
+export function _setBootstrapHandleForTest(h: AgentHandle | null): void { bootstrapHandle = h; }
+
+/** Approve the currently pending request: spawns a pty inside the
+ *  container, wires its stdout → relay socket, signals the relay so
+ *  byte-pipe activation completes, and clears the pending state. */
+export function approvePending(requestId: string): { ok: true } {
+  if (!pendingRequest || pendingRequest.requestId !== requestId) {
+    throw new Error('no matching pending request');
+  }
+  if (!bootstrapHandle) {
+    throw new Error('agent not connected');
+  }
+  const handle = bootstrapHandle;
+  // Spawn the pty BEFORE telling the relay to approve, so the very first
+  // operator keystroke (which the relay may flush immediately) has a
+  // shell to land in.
+  if (!activePty) {
+    activePty = spawnPtySession({
+      cols: 80,
+      rows: 24,
+      onOutput: (data) => handle.sendData(data),
+    });
+  }
+  handle.approveRequest(requestId);
+  pendingRequest = null;
+  return { ok: true };
+}
+
+/** Deny the currently pending request and tell the relay so it tears
+ *  down the operator-side socket immediately. */
+export function denyPending(requestId: string): { ok: true } {
+  if (!pendingRequest || pendingRequest.requestId !== requestId) {
+    throw new Error('no matching pending request');
+  }
+  bootstrapHandle?.denyRequest(requestId);
+  pendingRequest = null;
+  return { ok: true };
+}
+
+/** Close the active pty (if any). Used by `/kill` from the user-side
+ *  router so the user can pull the plug on Ramon mid-session. */
+export function killActiveSession(): void {
+  if (activePty) {
+    try { activePty.close(); } catch { /* already exited */ }
+    activePty = null;
+  }
+}
+
 /** Connect to the central relay when the user has toggled support ON.
  *  Polls the flag file every 5 s so toggling at runtime is picked up
  *  without a restart. */
@@ -147,7 +226,13 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
   setInterval(() => {
     const shouldBeOn = readEnabledFlag(flagPath);
     if (shouldBeOn && !bootstrapHandle) startConnection();
-    if (!shouldBeOn && bootstrapHandle) { bootstrapHandle.stop(); bootstrapHandle = null; }
+    if (!shouldBeOn && bootstrapHandle) {
+      // Tear down pty + handle so we leave no orphaned shells behind.
+      killActiveSession();
+      pendingRequest = null;
+      bootstrapHandle.stop();
+      bootstrapHandle = null;
+    }
   }, 5000);
 
   function startConnection() {
@@ -157,13 +242,21 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
       sn: opts.sn,
       token: opts.token,
       wsFactory: () => ws as unknown as AgentSocket,
-      onRequest: () => {
-        // The admin UI will pick this up via /api/remote-support/status
-        // and show the approve banner. The actual approve call happens
-        // when the user clicks the button.
+      onRequest: ({ requestId }) => {
+        // Park the request; the admin UI polls /status to surface this
+        // and POSTs /approve or /deny to drive approvePending / denyPending.
+        pendingRequest = { requestId, since: Date.now() };
+      },
+      onRawBytes: (data) => {
+        // Operator keystrokes — pipe them into the pty if one is active.
+        // If we're somehow receiving bytes without an active pty, drop:
+        // the relay state machine guarantees no bytes flow pre-approve.
+        if (activePty) activePty.write(data);
       },
     });
     ws.on('close', () => {
+      killActiveSession();
+      pendingRequest = null;
       bootstrapHandle = null;
       // Reconnect attempt next tick if still enabled.
     });

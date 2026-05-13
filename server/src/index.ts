@@ -62,7 +62,13 @@ import { setupRouter }        from './routes/setup.js';
 import { setupGuard, isSetupComplete } from './middleware/setupGuard.js';
 import { createRemoteSupportRouter, attachRemoteSupportWebSocket } from './routes/remoteSupport.js';
 import { Relay } from './services/remoteSupport/relay.js';
-import { bootstrapAgent, type BootstrapOpts } from './services/remoteSupport/agent.js';
+import {
+  bootstrapAgent,
+  approvePending,
+  denyPending,
+  getPendingRequest,
+  killActiveSession,
+} from './services/remoteSupport/agent.js';
 import { signAgentToken } from './services/remoteSupport/tokens.js';
 import { equipmentRepo } from './db/repositories/equipment.js';
 
@@ -222,14 +228,18 @@ if (PROXY_MODE === 'cloud') {
   // dashboard API — always mounted (setup/import routes needed by bootstrap wizard)
   app.use('/api/dashboard', dashboardRouter);
 
-  // Remote support tunnel — only enabled on Ramon's central instance.
+  // Remote support tunnel — relay side runs on Ramon's central instance.
+  const remoteSupportAuditLogDir = path.resolve(
+    process.env.STORAGE_PATH ?? '/data',
+    'remote-support-logs',
+  );
   if (process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true') {
     const remoteSupportRelay = new Relay();
-    const auditLogDir = path.resolve(process.env.STORAGE_PATH ?? '/data', 'remote-support-logs');
     const remoteSupportRouter = createRemoteSupportRouter({
+      mode: 'relay',
       relay: remoteSupportRelay,
       secret: process.env.REMOTE_SUPPORT_SECRET ?? '',
-      auditLogDir,
+      auditLogDir: remoteSupportAuditLogDir,
       isOperator: (req) => {
         // Operator = authenticated admin. `authMiddleware` sets `userId`
         // (a string) on the request — NOT `userRole` or `user`. We must
@@ -246,11 +256,16 @@ if (PROXY_MODE === 'cloud') {
     // WS upgrade wiring is deferred to after `server` is created below.
     (app as any)._remoteSupportRelay = remoteSupportRelay;
     (app as any)._remoteSupportRouter = remoteSupportRouter;
-    (app as any)._remoteSupportAuditLogDir = auditLogDir;
+    (app as any)._remoteSupportAuditLogDir = remoteSupportAuditLogDir;
     console.log('[remote-support] relay enabled on /api/remote-support');
   }
 
-  // Agent — runs on every NON-relay instance (i.e. user containers).
+  // Agent — runs on every instance with REMOTE_SUPPORT_ENABLED (user
+  // containers AND Ramon's central instance during dev/testing). Mounts
+  // the user-facing endpoints (/toggle, /status, /approve, /deny, /kill,
+  // /audit-logs*) so the admin UI in THIS container can drive its own
+  // local support state. Without this, the UI's fetch calls would 404
+  // on every non-relay deployment.
   if (process.env.REMOTE_SUPPORT_ENABLED === 'true' && process.env.REMOTE_SUPPORT_RELAY_URL) {
     try {
       const ownSn = equipmentRepo.listAll()[0]?.mower_sn ?? `HOST-${process.env.HOSTNAME ?? 'unknown'}`;
@@ -260,6 +275,15 @@ if (PROXY_MODE === 'cloud') {
         token,
         relayUrl: process.env.REMOTE_SUPPORT_RELAY_URL,
       });
+      const agentRouter = createRemoteSupportRouter({
+        mode: 'agent',
+        auditLogDir: remoteSupportAuditLogDir,
+        approveRequest: (requestId) => { approvePending(requestId); },
+        denyRequest: (requestId) => { denyPending(requestId); },
+        getPendingRequest: () => getPendingRequest(),
+        killSession: () => killActiveSession(),
+      });
+      app.use('/api/remote-support', authMiddleware, agentRouter);
       console.log(`[remote-support] agent registered for ${ownSn}`);
     } catch (err) {
       console.error('[remote-support] agent bootstrap failed:', err);

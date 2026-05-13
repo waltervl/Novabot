@@ -4572,12 +4572,31 @@ function loadRelayStatus() {
   }).catch(function(){});
 }
 
+var rsApproveRequestId = null;
 async function rsRefreshStatus() {
-  var r = await fetch('/api/remote-support/status').then(function(x) { return x.json(); }).catch(function() { return { enabled: false }; });
+  var r = await fetch('/api/remote-support/status').then(function(x) { return x.json(); }).catch(function() { return { enabled: false, pendingRequest: null }; });
   var t = document.getElementById('rsToggle');
   if (t) t.checked = !!r.enabled;
   var s = document.getElementById('rsStatus');
-  if (s) s.textContent = r.enabled ? 'On — waiting for request' : 'Off';
+  var pending = r.pendingRequest && r.pendingRequest.requestId;
+  if (s) {
+    s.textContent = pending
+      ? 'On — approval required'
+      : (r.enabled ? 'On — waiting for request' : 'Off');
+  }
+  var banner = document.getElementById('rsBanner');
+  var msg = document.getElementById('rsBannerMsg');
+  if (pending) {
+    rsApproveRequestId = r.pendingRequest.requestId;
+    if (banner) banner.style.display = 'block';
+    if (msg) {
+      var since = new Date(r.pendingRequest.since).toLocaleTimeString();
+      msg.textContent = 'Ramon van Bruggen requests a remote session (since ' + since + ').';
+    }
+  } else {
+    rsApproveRequestId = null;
+    if (banner) banner.style.display = 'none';
+  }
 }
 async function rsToggle() {
   var enabled = document.getElementById('rsToggle').checked;
@@ -4588,21 +4607,41 @@ async function rsToggle() {
   rsRefreshStatus();
 }
 async function rsKill() {
-  var sel = document.getElementById('mapMowerSelect');
-  var sn = sel ? sel.value : '';
-  if (!sn) return;
   await fetch('/api/remote-support/kill', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sn: sn }),
+    body: JSON.stringify({}),
   });
+  rsRefreshStatus();
 }
-function rsApprove() {
-  var b = document.getElementById('rsBanner');
-  if (b) b.style.display = 'none';
+async function rsApprove() {
+  if (!rsApproveRequestId) return;
+  var id = rsApproveRequestId;
+  try {
+    await fetch('/api/remote-support/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: id }),
+    });
+  } finally {
+    rsApproveRequestId = null;
+    var b = document.getElementById('rsBanner');
+    if (b) b.style.display = 'none';
+    rsRefreshStatus();
+  }
 }
-function rsDeny() {
-  var b = document.getElementById('rsBanner');
-  if (b) b.style.display = 'none';
+async function rsDeny() {
+  if (!rsApproveRequestId) return;
+  var id = rsApproveRequestId;
+  try {
+    await fetch('/api/remote-support/deny', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId: id }),
+    });
+  } finally {
+    rsApproveRequestId = null;
+    var b = document.getElementById('rsBanner');
+    if (b) b.style.display = 'none';
+    rsRefreshStatus();
+  }
 }
 async function rsRefreshAuditLogs() {
   var sel = document.getElementById('mapMowerSelect');

@@ -104,3 +104,76 @@ describe('POST /api/remote-support/kill', () => {
     expect(relay.getState('LFIN2231000656')).toBe('CLOSED');
   });
 });
+
+describe('agent-mode router', () => {
+  // The agent mode is what user containers mount. The four bugs that
+  // shipped before this commit set were rooted in the fact that this code
+  // path was never wired up — these tests pin it open so a regression
+  // shows up immediately.
+  let app: express.Express;
+  let pending: { requestId: string; since: number } | null = null;
+  let approved: string[] = [];
+  let denied: string[] = [];
+  let killed = 0;
+
+  beforeEach(() => {
+    pending = { requestId: 'req-1', since: 1700000000000 };
+    approved = [];
+    denied = [];
+    killed = 0;
+    app = express();
+    app.use(express.json());
+    app.use('/api/remote-support', createRemoteSupportRouter({
+      mode: 'agent',
+      auditLogDir: '/tmp',
+      enabledFlagPath: '/tmp/test-rs-agent-flag',
+      getPendingRequest: () => pending,
+      approveRequest: (id) => { approved.push(id); pending = null; },
+      denyRequest: (id) => { denied.push(id); pending = null; },
+      killSession: () => { killed += 1; },
+    }));
+  });
+
+  it('returns pendingRequest in /status', async () => {
+    const res = await request(app).get('/api/remote-support/status');
+    expect(res.status).toBe(200);
+    expect(res.body.pendingRequest).toEqual({ requestId: 'req-1', since: 1700000000000 });
+  });
+
+  it('returns null pendingRequest when nothing is pending', async () => {
+    pending = null;
+    const res = await request(app).get('/api/remote-support/status');
+    expect(res.body.pendingRequest).toBeNull();
+  });
+
+  it('POST /approve drives approveRequest with the requestId', async () => {
+    const res = await request(app)
+      .post('/api/remote-support/approve')
+      .send({ requestId: 'req-1' });
+    expect(res.status).toBe(200);
+    expect(approved).toEqual(['req-1']);
+  });
+
+  it('POST /approve rejects missing requestId', async () => {
+    const res = await request(app)
+      .post('/api/remote-support/approve')
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /deny drives denyRequest with the requestId', async () => {
+    const res = await request(app)
+      .post('/api/remote-support/deny')
+      .send({ requestId: 'req-1' });
+    expect(res.status).toBe(200);
+    expect(denied).toEqual(['req-1']);
+  });
+
+  it('POST /kill calls killSession (no SN needed)', async () => {
+    const res = await request(app)
+      .post('/api/remote-support/kill')
+      .send({});
+    expect(res.status).toBe(200);
+    expect(killed).toBe(1);
+  });
+});

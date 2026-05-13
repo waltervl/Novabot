@@ -108,4 +108,17 @@ describe('relay byte pipe', () => {
     expect(agent.closed).toBe(true);
     expect(operator.closed).toBe(true);
   });
+
+  it('invokes onByteIn / onByteOut hooks for both directions', () => {
+    const inBytes: Buffer[] = [];
+    const outBytes: Buffer[] = [];
+    relay.setSessionHooks(SN, {
+      onByteIn: (d) => inBytes.push(Buffer.isBuffer(d) ? d : Buffer.from(d)),
+      onByteOut: (d) => outBytes.push(Buffer.isBuffer(d) ? d : Buffer.from(d)),
+    });
+    operator.emit('message', Buffer.from('ls\n'));
+    agent.emit('message', Buffer.from('hello-back'));
+    expect(inBytes.map((b) => b.toString('utf8'))).toEqual(['ls\n']);
+    expect(outBytes.map((b) => b.toString('utf8'))).toEqual(['hello-back']);
+  });
 });

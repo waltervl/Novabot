@@ -8,6 +8,16 @@ export interface RelaySocket extends EventEmitter {
 
 export type SessionState = 'IDLE' | 'REQUESTED' | 'ACTIVE' | 'CLOSED';
 
+/** Hooks invoked synchronously inside wirePipe before forwarding bytes. The
+ *  audit log binds onByteIn (operator → agent) and onByteOut (agent →
+ *  operator) so every keystroke crossing the relay is recorded — without
+ *  this hook only one direction was logged and the "every keystroke logged"
+ *  promise to the user was false. */
+export interface SessionHooks {
+  onByteIn?: (data: Buffer | string) => void;
+  onByteOut?: (data: Buffer | string) => void;
+}
+
 interface Session {
   state: SessionState;
   agent: RelaySocket | null;
@@ -15,6 +25,7 @@ interface Session {
   agentMsgListener: ((data: Buffer | string) => void) | null;
   operatorMsgListener: ((data: Buffer | string) => void) | null;
   closeTimer: NodeJS.Timeout | null;
+  hooks: SessionHooks;
 }
 
 const HARD_TIMEOUT_MS = 30 * 60 * 1000;
@@ -29,6 +40,7 @@ export class Relay {
         state: 'IDLE', agent: null, operator: null,
         agentMsgListener: null, operatorMsgListener: null,
         closeTimer: null,
+        hooks: {},
       };
       this.sessions.set(sn, s);
     }
@@ -101,16 +113,38 @@ export class Relay {
     if (s.operator && s.operatorMsgListener) s.operator.off('message', s.operatorMsgListener);
     s.agentMsgListener = null;
     s.operatorMsgListener = null;
+    s.hooks = {};
     try { s.agent?.close(); } catch { /* already closed */ }
     try { s.operator?.close(); } catch { /* already closed */ }
+  }
+
+  /** Install audit / observability hooks for a session. Called from the
+   *  agent WS message handler when {type:'approve'} arrives so byte
+   *  forwarding starts logging both directions, not just agent→operator. */
+  setSessionHooks(sn: string, hooks: SessionHooks): void {
+    const s = this.getOrInit(sn);
+    s.hooks = { ...s.hooks, ...hooks };
+  }
+
+  /** Drop any installed hooks — called on session close so a subsequent
+   *  session does not inherit a stale audit log binding. */
+  clearSessionHooks(sn: string): void {
+    const s = this.sessions.get(sn);
+    if (s) s.hooks = {};
   }
 
   private wirePipe(sn: string, s: Session): void {
     if (!s.agent || !s.operator) return;
     const agent = s.agent;
     const operator = s.operator;
-    s.agentMsgListener = (data) => operator.send(data);
-    s.operatorMsgListener = (data) => agent.send(data);
+    s.agentMsgListener = (data) => {
+      try { s.hooks.onByteOut?.(data); } catch { /* hook failure must not break the pipe */ }
+      operator.send(data);
+    };
+    s.operatorMsgListener = (data) => {
+      try { s.hooks.onByteIn?.(data); } catch { /* hook failure must not break the pipe */ }
+      agent.send(data);
+    };
     agent.on('message', s.agentMsgListener);
     operator.on('message', s.operatorMsgListener);
   }

@@ -90,6 +90,72 @@ describe('agent connection', () => {
     expect(sock.sent.some((m) => m.includes('"type":"approve"') && m.includes('r-2'))).toBe(true);
     handle.stop();
   });
+
+  it('routes non-JSON frames into onRawBytes (not onRequest)', () => {
+    const sock = new MockWs();
+    let request: { requestId: string } | null = null;
+    const raw: Buffer[] = [];
+    const handle = startAgent({
+      sn: 'LFIN2231000656',
+      token: 't',
+      wsFactory: () => sock as any,
+      onRequest: (r) => { request = r; },
+      onRawBytes: (b) => { raw.push(b); },
+    });
+    sock.emit('open');
+    sock.emit('message', Buffer.from('ls\n'));
+    expect(request).toBeNull();
+    expect(raw.length).toBe(1);
+    expect(raw[0].toString('utf8')).toBe('ls\n');
+    handle.stop();
+  });
+});
+
+describe('approve/deny pending wiring', () => {
+  it('approvePending throws without a matching pending request', async () => {
+    const mod = await import('../../../services/remoteSupport/agent.js');
+    mod._setPendingForTest(null);
+    expect(() => mod.approvePending('whatever')).toThrow(/no matching/i);
+  });
+
+  it('denyPending throws without a matching pending request', async () => {
+    const mod = await import('../../../services/remoteSupport/agent.js');
+    mod._setPendingForTest(null);
+    expect(() => mod.denyPending('whatever')).toThrow(/no matching/i);
+  });
+
+  it('approvePending wires pty + sends approve frame', async () => {
+    const mod = await import('../../../services/remoteSupport/agent.js');
+    const sock = new MockWs();
+    // Re-use startAgent to build a real handle so the approve frame goes
+    // out on the wire we observe.
+    const handle = mod.startAgent({
+      sn: 'LFIN2231000656',
+      token: 't',
+      wsFactory: () => sock as any,
+      onRequest: () => {},
+    });
+    mod._setBootstrapHandleForTest(handle);
+    mod._setPendingForTest({ requestId: 'r-x', since: Date.now() });
+    // Stub the pty so we don't fork bash in CI.
+    let ptyWritten: (Buffer | string)[] = [];
+    let ptyClosed = false;
+    mod._setActivePtyForTest({
+      write(d) { ptyWritten.push(d); },
+      resize() {},
+      close() { ptyClosed = true; },
+    });
+
+    mod.approvePending('r-x');
+    expect(sock.sent.some((m) => m.includes('"type":"approve"') && m.includes('r-x'))).toBe(true);
+    expect(mod.getPendingRequest()).toBeNull();
+
+    // killActiveSession should close the pty.
+    mod.killActiveSession();
+    expect(ptyClosed).toBe(true);
+    handle.stop();
+    mod._setBootstrapHandleForTest(null);
+  });
 });
 
 describe('pty session', () => {
