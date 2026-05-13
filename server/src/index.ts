@@ -59,6 +59,8 @@ const PROXY_MODE = process.env.PROXY_MODE ?? 'local';
 import { adminRouter }        from './routes/admin.js';
 import { setupRouter }        from './routes/setup.js';
 import { setupGuard, isSetupComplete } from './middleware/setupGuard.js';
+import { createRemoteSupportRouter, attachRemoteSupportWebSocket } from './routes/remoteSupport.js';
+import { Relay } from './services/remoteSupport/relay.js';
 
 // ── DB is al geïnitialiseerd bij import van database.ts (module-level initDb())
 // zodat module-level db.prepare() calls in sensorData.ts etc. niet falen.
@@ -216,6 +218,29 @@ if (PROXY_MODE === 'cloud') {
   // dashboard API — always mounted (setup/import routes needed by bootstrap wizard)
   app.use('/api/dashboard', dashboardRouter);
 
+  // Remote support tunnel — only enabled on Ramon's central instance.
+  if (process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true') {
+    const remoteSupportRelay = new Relay();
+    const auditLogDir = path.resolve(process.env.STORAGE_PATH ?? '/data', 'remote-support-logs');
+    const remoteSupportRouter = createRemoteSupportRouter({
+      relay: remoteSupportRelay,
+      secret: process.env.REMOTE_SUPPORT_SECRET ?? '',
+      auditLogDir,
+      isOperator: (req) => {
+        // Operator = any caller with admin role. The dashboard router
+        // sits behind authMiddleware so a verified user reaches here;
+        // central instance is also gated by Cloudflare access in front.
+        return (req as any).userRole === 'admin' || !!(req as any).user;
+      },
+    });
+    app.use('/api/remote-support', authMiddleware, remoteSupportRouter);
+    // WS upgrade wiring is deferred to after `server` is created below.
+    (app as any)._remoteSupportRelay = remoteSupportRelay;
+    (app as any)._remoteSupportRouter = remoteSupportRouter;
+    (app as any)._remoteSupportAuditLogDir = auditLogDir;
+    console.log('[remote-support] relay enabled on /api/remote-support');
+  }
+
   // Notification event ring (HTTP polling for HA / scripts)
   app.use('/api/events', eventsRouter);
 
@@ -272,6 +297,17 @@ if (PROXY_MODE === 'cloud') {
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
 const server = http.createServer(app);
 initDashboardSocket(server);
+
+// Attach remote support WebSocket upgrade handler once `server` exists.
+if (process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true') {
+  attachRemoteSupportWebSocket(server, (app as any)._remoteSupportRouter, {
+    relay: (app as any)._remoteSupportRelay,
+    secret: process.env.REMOTE_SUPPORT_SECRET ?? '',
+    auditLogDir: (app as any)._remoteSupportAuditLogDir,
+    isOperator: () => true,
+  });
+}
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] OpenNova v${SERVER_VERSION} — HTTP + WebSocket listening on port ${PORT}`);
   console.log(`[SERVER] Verwacht nginx proxy manager voor TLS termination op app.lfibot.com`);

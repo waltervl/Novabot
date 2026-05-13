@@ -77,3 +77,85 @@ export function createRemoteSupportRouter(opts: RouterOpts): Router {
 
   return router;
 }
+
+import { WebSocketServer, type WebSocket } from 'ws';
+import type { Server as HttpServer, IncomingMessage } from 'node:http';
+import { verifyAgentToken } from '../services/remoteSupport/tokens.js';
+import { AuditLog, pruneAuditLogs } from '../services/remoteSupport/auditLog.js';
+
+/** Attach two WSS endpoints to an existing HTTP server:
+ *  - /api/remote-support/agent (token-auth) → relay agent socket
+ *  - /api/remote-support/operator/:sn (JWT-auth) → relay operator socket
+ *  Used on Ramon's central instance (REMOTE_SUPPORT_RELAY_ENABLED=true). */
+export function attachRemoteSupportWebSocket(
+  httpServer: HttpServer,
+  router: Router,
+  opts: RouterOpts,
+): void {
+  const agentWss = new WebSocketServer({ noServer: true });
+  const operatorWss = new WebSocketServer({ noServer: true });
+  const reg = router as unknown as {
+    _registerAgent: (sn: string) => void;
+    _unregisterAgent: (sn: string) => void;
+  };
+
+  agentWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+    const token = new URL(req.url!, 'http://localhost').searchParams.get('token') ?? '';
+    const verdict = verifyAgentToken(token, opts.secret);
+    if (!verdict.ok) { ws.close(1008, 'bad token'); return; }
+    const sn = verdict.sn;
+    reg._registerAgent(sn);
+
+    // Wire the WS into the Relay so byte pipes can take over post-approve.
+    (opts.relay as any).attachAgent?.(sn, ws);
+
+    let auditLog: AuditLog | null = null;
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'approve') {
+          if (!auditLog) {
+            pruneAuditLogs(opts.auditLogDir, sn, 50);
+            auditLog = new AuditLog(opts.auditLogDir, sn);
+          }
+        }
+      } catch {
+        if (auditLog) auditLog.appendOut(data as Buffer);
+      }
+    });
+    ws.on('close', () => {
+      reg._unregisterAgent(sn);
+      auditLog?.close();
+    });
+  });
+
+  operatorWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+    const url = new URL(req.url!, 'http://localhost');
+    const match = url.pathname.match(/\/operator\/(LFI[NC]\d+)$/);
+    if (!match) { ws.close(1008, 'bad path'); return; }
+    const sn = match[1];
+    if (!opts.isOperator(req as unknown as Request)) { ws.close(1008, 'not operator'); return; }
+    (opts.relay as any).attachOperator?.(sn, ws);
+    try { opts.relay.requestSession(sn); }
+    catch (e) { ws.close(1011, (e as Error).message); return; }
+    // Push the request frame to the agent so its admin UI shows the
+    // approve banner. The agent replies with {type:'approve',requestId}
+    // → Relay.approveSession is called by the message handler above,
+    // bytes start piping.
+    const session = (opts.relay as any).sessions?.get(sn);
+    const agentSocket = session?.agent;
+    if (agentSocket) {
+      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      agentSocket.send(JSON.stringify({ type: 'request', requestId }));
+    }
+  });
+
+  httpServer.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url!, 'http://localhost');
+    if (url.pathname === '/api/remote-support/agent') {
+      agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit('connection', ws, req));
+    } else if (url.pathname.startsWith('/api/remote-support/operator/')) {
+      operatorWss.handleUpgrade(req, socket, head, (ws) => operatorWss.emit('connection', ws, req));
+    }
+  });
+}
