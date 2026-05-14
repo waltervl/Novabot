@@ -20,7 +20,6 @@ export interface RouterOpts {
   isOperator?: (req: Request) => boolean;
   // relay-only
   relay?: Relay;
-  secret?: string;
   // agent-only
   approveRequest?: (requestId: string) => void;
   denyRequest?: (requestId: string) => void;
@@ -196,7 +195,9 @@ export function createRemoteSupportRouter(opts: RouterOpts): Router {
 
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
-import { verifyAgentToken } from '../services/remoteSupport/tokens.js';
+import { parseAgentQuery } from '../services/remoteSupport/tokens.js';
+import { tokenFingerprint } from '../services/remoteSupport/instanceToken.js';
+import { remoteSupportIdentitiesRepo } from '../db/repositories/index.js';
 import { AuditLog, pruneAuditLogs } from '../services/remoteSupport/auditLog.js';
 
 /** Attach two WSS endpoints to an existing HTTP server:
@@ -210,7 +211,6 @@ export function attachRemoteSupportWebSocket(
 ): void {
   if (!opts.relay) throw new Error('attachRemoteSupportWebSocket requires opts.relay');
   const relay = opts.relay;
-  const secret = opts.secret ?? '';
   const agentWss = new WebSocketServer({ noServer: true });
   const operatorWss = new WebSocketServer({ noServer: true });
   const reg = router as unknown as {
@@ -219,10 +219,19 @@ export function attachRemoteSupportWebSocket(
   };
 
   agentWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    const token = new URL(req.url!, 'http://localhost').searchParams.get('token') ?? '';
-    const verdict = verifyAgentToken(token, secret);
-    if (!verdict.ok) { ws.close(1008, 'bad token'); return; }
-    const sn = verdict.sn;
+    const parsed = parseAgentQuery(req.url ?? '');
+    if (!parsed.ok) { ws.close(1008, `bad credential: ${parsed.reason}`); return; }
+    const { sn, instanceToken } = parsed.cred;
+    const fp = tokenFingerprint(instanceToken);
+    const verdict = remoteSupportIdentitiesRepo.verifyOrRegister(sn, fp);
+    if (!verdict.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(`[remote-support] TOFU mismatch for ${sn} — rejecting`);
+      ws.close(1008, 'identity mismatch'); return;
+    }
+    if (verdict.firstSeen) {
+      console.log(`[remote-support] new agent registered: ${sn} (fp=${fp.slice(0, 12)}…)`);
+    }
     reg._registerAgent(sn);
 
     // Wire the WS into the Relay so byte pipes can take over post-approve.

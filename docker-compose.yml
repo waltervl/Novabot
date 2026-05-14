@@ -70,11 +70,13 @@ services:
       # Battery % crossing point for the low_battery event
       LOW_BATTERY_THRESHOLD: ${LOW_BATTERY_THRESHOLD:-20}
 
-      # Remote support tunnel — Ramon's central instance sets RELAY_ENABLED=true.
-      # User containers set REMOTE_SUPPORT_ENABLED=true + REMOTE_SUPPORT_RELAY_URL=wss://opennova.ramonvanbruggen.nl/api/remote-support/agent
+      # Remote support tunnel — built-in. Agent dials wss://opennova.ramonvanbruggen.nl
+      # automatically when the user toggles support ON via the admin UI (writes
+      # /data/.remote_support_enabled). First connect for a given SN records the
+      # agent's auto-generated token fingerprint (TOFU); reconnects must match.
+      # Ramon's relay instance is the only place that sets RELAY_ENABLED=true.
       REMOTE_SUPPORT_RELAY_ENABLED: "${REMOTE_SUPPORT_RELAY_ENABLED:-false}"
-      REMOTE_SUPPORT_ENABLED: "${REMOTE_SUPPORT_ENABLED:-false}"
+      # Optional: override the relay URL (dev / staging only).
       REMOTE_SUPPORT_RELAY_URL: "${REMOTE_SUPPORT_RELAY_URL:-}"
-      REMOTE_SUPPORT_SECRET: "${REMOTE_SUPPORT_SECRET:-}"
     volumes:
       - ./data:/data

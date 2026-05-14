@@ -70,7 +70,7 @@ import {
   killActiveSession,
   getActivePty,
 } from './services/remoteSupport/agent.js';
-import { signAgentToken } from './services/remoteSupport/tokens.js';
+import { getOrCreateInstanceToken } from './services/remoteSupport/instanceToken.js';
 import { equipmentRepo } from './db/repositories/equipment.js';
 
 // ── DB is al geïnitialiseerd bij import van database.ts (module-level initDb())
@@ -239,7 +239,6 @@ if (PROXY_MODE === 'cloud') {
     const remoteSupportRouter = createRemoteSupportRouter({
       mode: 'relay',
       relay: remoteSupportRelay,
-      secret: process.env.REMOTE_SUPPORT_SECRET ?? '',
       auditLogDir: remoteSupportAuditLogDir,
       isOperator: (req) => {
         // Operator = authenticated admin. `authMiddleware` sets `userId`
@@ -261,20 +260,23 @@ if (PROXY_MODE === 'cloud') {
     console.log('[remote-support] relay enabled on /api/remote-support');
   }
 
-  // Agent — runs on every instance with REMOTE_SUPPORT_ENABLED (user
-  // containers AND Ramon's central instance during dev/testing). Mounts
-  // the user-facing endpoints (/toggle, /status, /approve, /deny, /kill,
-  // /audit-logs*) so the admin UI in THIS container can drive its own
-  // local support state. Without this, the UI's fetch calls would 404
-  // on every non-relay deployment.
-  if (process.env.REMOTE_SUPPORT_ENABLED === 'true' && process.env.REMOTE_SUPPORT_RELAY_URL) {
+  // Agent — runs on EVERY user instance (relay-only instances skip this).
+  // Bootstrapping the agent is unconditional: the actual outbound dial is
+  // gated by the `/data/.remote_support_enabled` toggle file the user
+  // writes via the admin UI, so a freshly-installed container costs
+  // nothing until support is requested. Drop-in zero-config — users no
+  // longer need to set REMOTE_SUPPORT_ENABLED or REMOTE_SUPPORT_SECRET.
+  if (process.env.REMOTE_SUPPORT_RELAY_ENABLED !== 'true') {
     try {
+      const storagePath = process.env.STORAGE_PATH ?? '/data';
       const ownSn = equipmentRepo.listAll()[0]?.mower_sn ?? `HOST-${process.env.HOSTNAME ?? 'unknown'}`;
-      const token = signAgentToken(ownSn, process.env.REMOTE_SUPPORT_SECRET ?? 'unsafe-default');
+      const token = getOrCreateInstanceToken(storagePath);
+      const relayUrl = process.env.REMOTE_SUPPORT_RELAY_URL
+        ?? 'wss://opennova.ramonvanbruggen.nl/api/remote-support/agent';
       bootstrapAgent({
         sn: ownSn,
         token,
-        relayUrl: process.env.REMOTE_SUPPORT_RELAY_URL,
+        relayUrl,
       });
       const agentRouter = createRemoteSupportRouter({
         mode: 'agent',
@@ -353,7 +355,6 @@ initDashboardSocket(server);
 if (process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true') {
   attachRemoteSupportWebSocket(server, (app as any)._remoteSupportRouter, {
     relay: (app as any)._remoteSupportRelay,
-    secret: process.env.REMOTE_SUPPORT_SECRET ?? '',
     auditLogDir: (app as any)._remoteSupportAuditLogDir,
     // The WS upgrade does NOT pass through `authMiddleware` — `req` is the
     // raw IncomingMessage. Validate the JWT ourselves and require the

@@ -239,7 +239,12 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
   }, 5000);
 
   function startConnection() {
-    const url = `${opts.relayUrl}?token=${encodeURIComponent(opts.token)}`;
+    // New TOFU credential format — relay parses sn + token from query and
+    // verifies via remoteSupportIdentitiesRepo. Old `?token=<hmac>` format
+    // is gone with the shared REMOTE_SUPPORT_SECRET it relied on.
+    const sn = encodeURIComponent(opts.sn);
+    const token = encodeURIComponent(opts.token);
+    const url = `${opts.relayUrl}?sn=${sn}&token=${token}`;
     const ws = new WebSocket(url);
     bootstrapHandle = startAgent({
       sn: opts.sn,

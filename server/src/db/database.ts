@@ -252,6 +252,17 @@ export function initDb(): void {
       updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (token, sn)
     );
+
+    -- Remote support TOFU table. The relay records the sha256 of each
+    -- agent's instance token on first connect, then rejects subsequent
+    -- connects with a different fingerprint. This avoids needing a shared
+    -- REMOTE_SUPPORT_SECRET — each agent self-signs with a token it
+    -- generated at first boot.
+    CREATE TABLE IF NOT EXISTS remote_support_identities (
+      sn          TEXT    NOT NULL PRIMARY KEY,
+      token_fp    TEXT    NOT NULL,
+      first_seen  INTEGER NOT NULL
+    );
   `);
 
   // Voeg mac_address kolom toe aan equipment (migratie – veilig om te herhalen)

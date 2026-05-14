@@ -1,41 +1,46 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+/** Wire format for the remote-support agent → relay credential.
+ *
+ *  Old design: HMAC-signed token `sn.exp.hmac` with a shared secret on
+ *  both sides. Required users to set `REMOTE_SUPPORT_SECRET` matching
+ *  Ramon's central instance — not friendly.
+ *
+ *  New design: agent sends its raw 32-byte hex `instanceToken` together
+ *  with its SN as query params. The relay validates via TOFU
+ *  (`remoteSupportIdentitiesRepo`): first connect for an SN stores
+ *  sha256(token), subsequent connects must match. No shared secret. */
 
-/** Tokens look like `<sn>.<expiresUnixSec>.<base64url-hmac>` and are
- *  signed with REMOTE_SUPPORT_SECRET. The agent embeds its token in the
- *  Authorization header when it dials the relay; the relay re-derives
- *  the HMAC with its own copy of the secret and refuses to register the
- *  agent unless the signature matches and the timestamp is still in the
- *  future. The SN is part of the signed payload so a token issued for
- *  one mower can't be reused to impersonate another. */
-const DEFAULT_TTL_SEC = 60 * 60 * 24; // 24h — agent reconnect window.
-
-function hmac(payload: string, secret: string): string {
-  return createHmac('sha256', secret).update(payload).digest('base64url');
+export interface AgentCredential {
+  sn: string;
+  instanceToken: string;
 }
 
-export function signAgentToken(
-  sn: string,
-  secret: string,
-  expiresAtSec = Math.floor(Date.now() / 1000) + DEFAULT_TTL_SEC,
-): string {
-  const payload = `${sn}.${expiresAtSec}`;
-  return `${payload}.${hmac(payload, secret)}`;
+export function encodeAgentQuery(cred: AgentCredential): string {
+  const sn = encodeURIComponent(cred.sn);
+  const token = encodeURIComponent(cred.instanceToken);
+  return `sn=${sn}&token=${token}`;
 }
 
-export type VerifyResult = { ok: true; sn: string } | { ok: false; reason: string };
+export type ParseResult =
+  | { ok: true; cred: AgentCredential }
+  | { ok: false; reason: 'missing-sn' | 'missing-token' | 'malformed-token' };
 
-export function verifyAgentToken(token: string, secret: string): VerifyResult {
-  const parts = token.split('.');
-  if (parts.length !== 3) return { ok: false, reason: 'malformed' };
-  const [sn, expStr, sig] = parts;
-  const exp = Number(expStr);
-  if (!Number.isFinite(exp)) return { ok: false, reason: 'bad-exp' };
-  if (exp < Math.floor(Date.now() / 1000)) return { ok: false, reason: 'expired' };
-  const expected = hmac(`${sn}.${expStr}`, secret);
-  const a = Buffer.from(expected);
-  const b = Buffer.from(sig);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    return { ok: false, reason: 'bad-signature' };
+/** Parse `?sn=...&token=...` query params from an upgrade request URL.
+ *  Validates the token is a 64-char hex string (matches the format
+ *  `getOrCreateInstanceToken` writes) — anything else is rejected before
+ *  it can reach the TOFU table. */
+export function parseAgentQuery(rawUrl: string): ParseResult {
+  let params: URLSearchParams;
+  try {
+    params = new URL(rawUrl, 'http://localhost').searchParams;
+  } catch {
+    return { ok: false, reason: 'missing-sn' };
   }
-  return { ok: true, sn };
+  const sn = params.get('sn');
+  const token = params.get('token');
+  if (!sn) return { ok: false, reason: 'missing-sn' };
+  if (!token) return { ok: false, reason: 'missing-token' };
+  if (!/^[0-9a-f]{64}$/.test(token)) {
+    return { ok: false, reason: 'malformed-token' };
+  }
+  return { ok: true, cred: { sn, instanceToken: token } };
 }

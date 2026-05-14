@@ -30,10 +30,11 @@ import {
   createRemoteSupportRouter,
   attachRemoteSupportWebSocket,
 } from '../../routes/remoteSupport.js';
-import { signAgentToken } from '../../services/remoteSupport/tokens.js';
+import { encodeAgentQuery } from '../../services/remoteSupport/tokens.js';
+import { remoteSupportIdentitiesRepo } from '../../db/repositories/index.js';
 
-const SECRET = 'e2e-secret';
 const SN = 'LFIN2231000656';
+const INSTANCE_TOKEN = 'a'.repeat(64);
 
 function toUtf8(m: RawData): string {
   if (Buffer.isBuffer(m)) return m.toString('utf8');
@@ -48,9 +49,11 @@ describe('remote-support e2e', () => {
     const app = express();
     app.use(express.json());
     const relay = new Relay();
+    // Reset any leftover TOFU state — the in-memory test DB is shared so
+    // re-runs would otherwise see "mismatch" if we tweaked the token.
+    remoteSupportIdentitiesRepo.reset(SN);
     const opts = {
       relay,
-      secret: SECRET,
       auditLogDir,
       isOperator: () => true,
     };
@@ -64,11 +67,11 @@ describe('remote-support e2e', () => {
     if (!address || typeof address === 'string') throw new Error('no port');
     const { port } = address;
 
-    const token = signAgentToken(SN, SECRET);
+    const query = encodeAgentQuery({ sn: SN, instanceToken: INSTANCE_TOKEN });
 
     // 1. Agent connects.
     const agent = new WebSocket(
-      `ws://127.0.0.1:${port}/api/remote-support/agent?token=${encodeURIComponent(token)}`,
+      `ws://127.0.0.1:${port}/api/remote-support/agent?${query}`,
     );
     await new Promise<void>((resolve, reject) => {
       agent.once('open', () => resolve());

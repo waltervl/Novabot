@@ -1,33 +1,41 @@
 import { describe, it, expect } from 'vitest';
-import { signAgentToken, verifyAgentToken } from '../../../services/remoteSupport/tokens.js';
+import { parseAgentQuery, encodeAgentQuery } from '../../../services/remoteSupport/tokens.js';
 
-const SECRET = 'unit-test-secret-32-chars-long!!';
+const VALID_TOKEN = 'a'.repeat(64);
+const SN = 'LFIN2231000656';
 
-describe('agent token signing', () => {
-  it('round-trips a valid SN', () => {
-    const token = signAgentToken('LFIN2231000656', SECRET);
-    const result = verifyAgentToken(token, SECRET);
+describe('agent query credential', () => {
+  it('round-trips encode → parse', () => {
+    const url = '/api/remote-support/agent?' + encodeAgentQuery({ sn: SN, instanceToken: VALID_TOKEN });
+    const result = parseAgentQuery(url);
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.sn).toBe('LFIN2231000656');
+    if (result.ok) {
+      expect(result.cred.sn).toBe(SN);
+      expect(result.cred.instanceToken).toBe(VALID_TOKEN);
+    }
   });
 
-  it('rejects token signed with a different secret', () => {
-    const token = signAgentToken('LFIN2231000656', SECRET);
-    const result = verifyAgentToken(token, 'wrong-secret');
+  it('rejects missing sn', () => {
+    const result = parseAgentQuery(`/api/remote-support/agent?token=${VALID_TOKEN}`);
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('missing-sn');
   });
 
-  it('rejects tampered SN', () => {
-    const token = signAgentToken('LFIN2231000656', SECRET);
-    const tampered = token.replace('LFIN2231000656', 'LFIN9999999999');
-    const result = verifyAgentToken(tampered, SECRET);
+  it('rejects missing token', () => {
+    const result = parseAgentQuery(`/api/remote-support/agent?sn=${SN}`);
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('missing-token');
   });
 
-  it('rejects expired tokens', () => {
-    const past = Math.floor(Date.now() / 1000) - 3600;
-    const token = signAgentToken('LFIN2231000656', SECRET, past);
-    const result = verifyAgentToken(token, SECRET);
+  it('rejects non-hex token', () => {
+    const result = parseAgentQuery(`/api/remote-support/agent?sn=${SN}&token=not-hex-XYZ`);
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('malformed-token');
+  });
+
+  it('rejects short token', () => {
+    const result = parseAgentQuery(`/api/remote-support/agent?sn=${SN}&token=abc`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('malformed-token');
   });
 });

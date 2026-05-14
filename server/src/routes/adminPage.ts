@@ -662,7 +662,7 @@ export function adminPageHtml(): string {
       <div id="relayStatus" style="margin-top:8px;font-size:12px;color:#666"></div>
     </div>
 
-    <div class="card" id="rsUserCard" style="display:${process.env.REMOTE_SUPPORT_ENABLED === 'true' ? 'block' : 'none'};border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.04)">
+    <div class="card" id="rsUserCard" style="display:${process.env.REMOTE_SUPPORT_RELAY_ENABLED === 'true' ? 'none' : 'block'};border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.04)">
       <h2 style="color:#a5b4fc">Remote Support — Allow Ramon to assist</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">When enabled, Ramon can request an approved-by-you bash session inside this container to troubleshoot. Every keystroke is logged to disk for your review.</p>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">

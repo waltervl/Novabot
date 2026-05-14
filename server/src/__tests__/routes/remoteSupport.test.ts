@@ -15,7 +15,7 @@ describe('GET /api/remote-support/active-agents', () => {
     app = express();
     app.use('/api/remote-support', createRemoteSupportRouter({
       relay,
-      secret: TEST_SECRET,
+
       auditLogDir: '/tmp',
       isOperator: () => true,
     }));
@@ -30,7 +30,7 @@ describe('GET /api/remote-support/active-agents', () => {
   it('returns SN once an agent registers', async () => {
     const router = createRemoteSupportRouter({
       relay,
-      secret: TEST_SECRET,
+
       auditLogDir: '/tmp',
       isOperator: () => true,
     });
@@ -45,7 +45,7 @@ describe('GET /api/remote-support/active-agents', () => {
     app = express();
     app.use('/api/remote-support', createRemoteSupportRouter({
       relay,
-      secret: TEST_SECRET,
+
       auditLogDir: '/tmp',
       isOperator: () => false,
     }));
@@ -62,7 +62,7 @@ describe('POST /api/remote-support/toggle', () => {
     app = express();
     app.use(express.json());
     app.use('/api/remote-support', createRemoteSupportRouter({
-      relay, secret: TEST_SECRET, auditLogDir: '/tmp', isOperator: () => false,
+      relay, auditLogDir: '/tmp', isOperator: () => false,
       enabledFlagPath: '/tmp/test-remote-support-flag',
     }));
   });
@@ -91,7 +91,7 @@ describe('POST /api/remote-support/kill', () => {
     app = express();
     app.use(express.json());
     app.use('/api/remote-support', createRemoteSupportRouter({
-      relay, secret: TEST_SECRET, auditLogDir: '/tmp', isOperator: () => false,
+      relay, auditLogDir: '/tmp', isOperator: () => false,
     }));
   });
 

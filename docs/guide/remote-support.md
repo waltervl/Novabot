@@ -3,38 +3,40 @@
 Ramon can shell into a user's OpenNova container (and from there to their mower)
 with explicit per-session approval. This page documents how to enable both sides.
 
+## On user containers — zero config
+
+Nothing to set up. Every OpenNova container ships with the remote-support agent
+built in. The first time you toggle support ON in the admin UI, the container
+auto-generates a long-lived token (persisted to `/data/.rs_token`) and dials
+`wss://opennova.ramonvanbruggen.nl/api/remote-support/agent`. Subsequent
+connects must present the same token (trust-on-first-use) — a stolen SN cannot
+be used to impersonate the agent.
+
+To use a different relay during development override `REMOTE_SUPPORT_RELAY_URL`
+in your `.env`; otherwise leave it unset.
+
 ## On Ramon's central instance (opennova.ramonvanbruggen.nl)
 
-Generate a shared secret:
-
-    openssl rand -base64 32
-
-Add to the central instance `.env`:
+Set:
 
     REMOTE_SUPPORT_RELAY_ENABLED=true
-    REMOTE_SUPPORT_SECRET=<paste secret>
 
 Restart the container. The "Remote Support — Operator" card appears in the
-admin page when the flag is on.
+admin page when the flag is on. No shared secret needed — the relay's TOFU
+table (`remote_support_identities` in SQLite) records each agent's fingerprint
+the first time it connects.
 
-## On user containers
-
-Add to their `.env`:
-
-    REMOTE_SUPPORT_ENABLED=true
-    REMOTE_SUPPORT_RELAY_URL=wss://opennova.ramonvanbruggen.nl/api/remote-support/agent
-    REMOTE_SUPPORT_SECRET=<paste same secret as the central instance>
-
-The secret is shared so the central relay can verify HMAC tokens signed by user
-containers. Don't commit the `.env` to git.
+If an agent legitimately rotates its token (e.g. user wiped `/data` and
+re-paired the container), the operator must `DELETE FROM remote_support_identities
+WHERE sn = ?` so the next connect re-registers cleanly.
 
 ## Per-session flow
 
-1. User toggles "Allow Remote Support" ON in their admin page. The flag
-   auto-flips OFF after 4 hours.
+1. User toggles "Allow Remote Support" ON in their admin page. The agent
+   dials the relay and stays connected as long as the toggle is on.
 2. User shares their mower SN with Ramon out-of-band.
 3. Ramon enters the SN on the operator card and clicks "Request Session".
-4. The user's admin page shows an "Approve / Deny" banner. On Approve, a bash
+4. The agent auto-approves (the toggle being ON is the consent). A bash
    session opens in Ramon's browser.
 5. Either side can hit the kill button. The session auto-closes after 30
    minutes regardless.
@@ -68,16 +70,13 @@ Terminal A — relay (operator side):
     cd server
     PORT=3000 \
     REMOTE_SUPPORT_RELAY_ENABLED=true \
-    REMOTE_SUPPORT_SECRET=smoketest-secret \
     npm run dev
 
 Terminal B — agent (user side):
 
     cd server
     PORT=3001 \
-    REMOTE_SUPPORT_ENABLED=true \
     REMOTE_SUPPORT_RELAY_URL=ws://localhost:3000/api/remote-support/agent \
-    REMOTE_SUPPORT_SECRET=smoketest-secret \
     npm run dev
 
 In the agent instance admin page (`http://localhost:3001/admin`), toggle
@@ -87,9 +86,8 @@ In the relay instance admin page (`http://localhost:3000/admin`), find the
 "Remote Support — Operator" card. Enter the mower SN from the agent DB and
 click "Request Session".
 
-The agent admin page should display the approve banner within a couple of
-seconds. Click "Approve". A bash terminal should open in the operator
-browser tab. Type `whoami` and `pwd` and confirm output renders.
+The operator browser should connect within ~1s — the agent auto-approves once
+the toggle is ON. Type `whoami` and `pwd` and confirm output renders.
 
 ### 2. Kill switch verification
 

@@ -1,3 +1,7 @@
+# Issue data (contains personal info — owner email/name in every record)
+issues.jsonl
+memories.jsonl
+
 # Dolt database (managed by Dolt, not git)
 dolt/
 embeddeddolt/
