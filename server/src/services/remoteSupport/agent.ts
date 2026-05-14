@@ -263,6 +263,14 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
         if (activePty) activePty.write(data);
       },
     });
+    // CRITICAL: ws emits 'error' on TLS / upgrade / DNS failures. Without
+    // a handler Node treats it as an Unhandled 'error' event and crashes
+    // the process. The bootstrap polling loop will retry on the next tick,
+    // so we just log + let 'close' clear the handle below.
+    ws.on('error', (err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[remote-support] agent ws error: ${(err as Error).message}`);
+    });
     ws.on('close', () => {
       killActiveSession();
       pendingRequest = null;
