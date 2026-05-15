@@ -695,7 +695,15 @@ if [ -n "\${HTTP_ADDRESS}" ]; then
     PROBE_HOST="\$SERVER_IP"
     PROBE_PORT="\${HTTP_PORT_FINAL:-80}"
     GOOD_PORT=""
-    for p in "\$PROBE_PORT" 80 8080 6466; do
+    # Probe a tight whitelist of known-good OpenNova HTTP ports. Do NOT add
+    # anything else here: ports like 6466 (Google Cast V2) and 8009 (Google
+    # Cast control) belong to consumer media devices that happen to listen
+    # on the same LAN. Past versions of this list included 6466 to "rescue"
+    # rogue mDNS responses but that just caused the opposite problem — the
+    # probe succeeded against a Chromecast/TV at a stale last-known IP and
+    # the mower happily wrote `<TV-IP>:6466` into http_address.txt, then
+    # failed every HTTP request afterwards.
+    for p in "\$PROBE_PORT" 80 8080; do
         if probe_http "\$PROBE_HOST" "\$p"; then
             GOOD_PORT="\$p"
             break
@@ -709,7 +717,7 @@ if [ -n "\${HTTP_ADDRESS}" ]; then
         printf "%s" "\${HTTP_ADDRESS}" > "\${HTTP_ADDR_FILE}"
         log "http_address.txt → \${HTTP_ADDRESS}"
     else
-        log "WARN: no HTTP port reachable on \$SERVER_IP (\$PROBE_PORT/80/8080/6466) — keeping previous http_address.txt"
+        log "WARN: no HTTP port reachable on \$SERVER_IP (\$PROBE_PORT/80/8080) — keeping previous http_address.txt"
     fi
 fi
 
