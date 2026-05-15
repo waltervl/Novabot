@@ -462,36 +462,40 @@ fi
 # NB: Gebruik printf i.p.v. echo om trailing newline te voorkomen (breekt URL in curl)
 cat > "$NOVABOT_ROOT/scripts/set_server_urls.sh" << URLSCRIPT
 #!/bin/bash
-# CUSTOM: Stel lokale server URLs in bij elke boot + continue mDNS watch.
+# CUSTOM: Stel lokale server URLs in bij elke boot.
 #
-# Twee modes:
-#   set_server_urls.sh           → eenmalige discovery + write bij boot
-#   set_server_urls.sh --watch   → blijft draaien, 30s polling
+# Design (2026-05-15 herzien):
+#   http_address.txt bevat de HOSTNAME \`opennova.local:<port>\`, niet een IP.
+#   De mower-firmware gebruikt libcurl + libc resolver, en de mower heeft
+#   \`mdns4_minimal\` in /etc/nsswitch.conf + avahi-daemon, dus elke HTTP
+#   request resolvet \`opennova.local\` opnieuw via mDNS. Verhuist de server
+#   naar een andere host die ook \`opennova.local\` adverteert, dan switched
+#   de mower automatisch — geen polling, geen watch loop nodig.
 #
-# Aangeroepen vanuit run_novabot.sh — boot doet eerst een --once cycle
-# (synchroon) en spawn vervolgens een achtergrond --watch loop met
-# pidfile-guard zodat we maximaal één watcher draaien.
+#   Port discovery prioriteit (eerste die werkt wint):
+#     1. /userdata/lfi/server_port_override.txt   (manual override)
+#     2. mDNS SRV \`_opennova-http._tcp.local\`     (strict target filter)
+#     3. TCP probe op opennova.local: 8080 → 80 → 443
+#     4. Hardcoded FALLBACK_HTTP_PORT (8080)
 #
-# Discovery-regels:
-#   * HTTP poort komt UITSLUITEND uit mDNS SRV record \`_opennova-http._tcp.local\`.
-#     Geen hardcoded fallback list (probe 80/8080/6466) — dat veroorzaakte dat
-#     de mower per ongeluk een Chromecast IP:6466 in http_address.txt schreef.
-#   * Vinden we geen geldige (IP, port) tuple → log + skip write. Bestaande
-#     http_address.txt blijft staan.
-#   * Idempotent: alleen schrijven als gedetecteerde waarde verschilt van wat
-#     er al staat.
-#   * MQTT config update gebeurt alleen tijdens de eenmalige boot-pass omdat
-#     mqtt_node die alleen bij startup leest — \`--watch\` raakt MQTT niet aan.
+#   De target filter op stap 2 weigert rogue responders (Chromecast,
+#   neighbour-containers met \`_opennova-http._tcp.local\` collisions). Hij
+#   accepteert alleen SRV records met target opennova.local of opennovabot.local.
+#
+# MQTT broker adres in json_config.json blijft IP-based (libc gethostbyname
+# op \`opennova.local\` via getent, hosts: files mdns4_minimal). Dat is een
+# eenmalige resolutie aan de boot-side; mqtt_node-restart bij IP change
+# vereist een nieuwe boot OF handmatige rerun van dit script.
 
+FALLBACK_HOSTNAME="opennova.local"
 FALLBACK_HOST="${SERVER_HOST}"
 FALLBACK_HTTP_PORT="${SERVER_HTTP_PORT}"
 MQTT_PORT_NUM=${MQTT_PORT}
+PORT_OVERRIDE_FILE="/userdata/lfi/server_port_override.txt"
 LAST_KNOWN_FILE="/userdata/lfi/server_ip.txt"
 HTTP_ADDR_FILE="/userdata/lfi/http_address.txt"
 MQTT_CONFIG_FILE="/userdata/lfi/json_config.json"
 LOG_FILE="/userdata/ota/custom_firmware.log"
-WATCH_PIDFILE="/var/run/opennova-discovery.pid"
-WATCH_INTERVAL="\${OPENNOVA_WATCH_INTERVAL:-30}"
 
 mkdir -p /userdata/lfi /userdata/ota
 
@@ -507,68 +511,8 @@ for i in \$(seq 1 30); do
     sleep 1
 done
 
-# ── Discovery functies (callable, gebruikt door --watch loop + boot pass) ──
+# ── Discovery functies ──────────────────────────────────────
 # Elke functie print uitkomst op stdout zodat caller \$() kan capturen.
-
-discover_ip() {
-    python3 << 'MDNS_EOF'
-import socket, struct, time
-
-def mdns_query(timeout=4):
-    """Discover opennova(bot).local via raw mDNS A query.
-       Watch-loop gebruikt deze, dus we houden de timeout kort (4s) zodat de
-       30s cadence niet schuift bij gemist antwoord."""
-    qnames = [
-        b'\x08opennova\x05local\x00',
-        b'\x0bopennovabot\x05local\x00',
-    ]
-    query = struct.pack('!6H', 0, 0, len(qnames), 0, 0, 0)
-    for q in qnames:
-        query += q + struct.pack('!2H', 1, 1)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    except:
-        pass
-    sock.settimeout(2)
-    sock.bind(('', 5353))
-    mreq = struct.pack('4sL', socket.inet_aton('224.0.0.251'), socket.INADDR_ANY)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    end = time.time() + timeout
-    while time.time() < end:
-        sock.sendto(query, ('224.0.0.251', 5353))
-        try:
-            while True:
-                data, (addr, _) = sock.recvfrom(1024)
-                if len(data) < 12:
-                    continue
-                flags = struct.unpack('!H', data[2:4])[0]
-                ancount = struct.unpack('!H', data[6:8])[0]
-                if (flags & 0x8000) and ancount > 0 and b'opennova' in data:
-                    sock.close()
-                    print(addr)
-                    return
-        except socket.timeout:
-            pass
-    sock.close()
-
-mdns_query()
-MDNS_EOF
-}
-
-DNS_HOSTNAME="mqtt.lfibot.com"
-resolve_dns() {
-    python3 -c "
-import socket
-try:
-    ip = socket.gethostbyname('\$DNS_HOSTNAME')
-    if not ip.startswith('127.'):
-        print(ip)
-except:
-    pass
-" 2>/dev/null
-}
 
 discover_port() {
     python3 << 'SRV_EOF'
@@ -650,7 +594,7 @@ srv()
 SRV_EOF
 }
 
-# ── TCP probe helper (gebruikt bij idempotent reachability check) ─────
+# ── TCP probe helper ─────────────────────────────────────────────
 probe_http() {
     python3 - "\$1" "\$2" << 'PROBE_EOF' 2>/dev/null
 import socket, sys
@@ -666,98 +610,76 @@ except Exception:
 PROBE_EOF
 }
 
-# ── Eén discovery-cyclus (mDNS A + SRV + DNS fallback) ──────────
-# Vult globals DISCOVERED_IP / DISCOVERED_PORT / DNS_IP / SERVER_IP /
-# SERVER_IP_SOURCE. Roept geen schrijfacties aan — alleen lookups.
-run_discovery() {
-    DISCOVERED_IP="\$(discover_ip)"
-    DISCOVERED_PORT="\$(discover_port)"
-    DNS_IP="\$(resolve_dns)"
+# ── Port discovery cascade ───────────────────────────────────────
+# 1) override file (power-users met afwijkende port)
+# 2) mDNS SRV met strict target filter
+# 3) TCP probe op opennova.local: 8080 → 80 → 443
+# 4) FALLBACK_HTTP_PORT
+PORT=""
+PORT_SOURCE=""
 
-    # IP-bron cascade: mDNS A → DNS → last-known cache.
-    # DNS / last-known mag alleen worden gebruikt als SRV al een port heeft
-    # gevonden — zonder port wordt er toch niet geschreven.
-    if [ -n "\$DISCOVERED_IP" ]; then
-        SERVER_IP="\$DISCOVERED_IP"
-        SERVER_IP_SOURCE="mDNS"
-    elif [ -n "\$DNS_IP" ]; then
-        SERVER_IP="\$DNS_IP"
-        SERVER_IP_SOURCE="DNS"
-    elif [ -f "\$LAST_KNOWN_FILE" ]; then
-        SERVER_IP="\$(cat "\$LAST_KNOWN_FILE")"
-        SERVER_IP_SOURCE="last-known"
+if [ -f "\$PORT_OVERRIDE_FILE" ]; then
+    PORT="\$(tr -d '[:space:]' < "\$PORT_OVERRIDE_FILE")"
+    if [[ "\$PORT" =~ ^[0-9]+\$ ]] && [ "\$PORT" -gt 0 ] && [ "\$PORT" -lt 65536 ]; then
+        PORT_SOURCE="override"
     else
-        SERVER_IP=""
-        SERVER_IP_SOURCE=""
+        log "WARN: \$PORT_OVERRIDE_FILE bevat ongeldige port '\$PORT' — genegeerd"
+        PORT=""
     fi
-}
+fi
 
-# ── Idempotente HTTP update ──────────────────────────────────────
-# Retourneert 0 als http_address.txt geschreven werd (of al klopte),
-# 1 als geen geldige discovery → bestaande file blijft staan.
-http_update() {
-    if [ -z "\$DISCOVERED_PORT" ]; then
-        # Stil bij watch-mode (anders 2 logregels per 30s). Alleen op de
-        # eerste boot-pass logt het script zichzelf om diagnose mogelijk
-        # te maken bij eerste install.
-        [ "\$1" = "verbose" ] && log "geen SRV record voor _opennova-http._tcp.local — http_address.txt ongewijzigd"
-        return 1
+if [ -z "\$PORT" ]; then
+    SRV_PORT="\$(discover_port)"
+    if [ -n "\$SRV_PORT" ]; then
+        PORT="\$SRV_PORT"
+        PORT_SOURCE="mDNS SRV"
     fi
-    if [ -z "\$SERVER_IP" ]; then
-        [ "\$1" = "verbose" ] && log "geen server IP gevonden (mDNS/DNS/last-known) — http_address.txt ongewijzigd"
-        return 1
-    fi
-    if ! probe_http "\$SERVER_IP" "\$DISCOVERED_PORT"; then
-        [ "\$1" = "verbose" ] && log "WARN: \$SERVER_IP:\$DISCOVERED_PORT (uit \$SERVER_IP_SOURCE) niet bereikbaar — http_address.txt ongewijzigd"
-        return 1
-    fi
-    NEW_ADDRESS="\${SERVER_IP}:\${DISCOVERED_PORT}"
-    CURRENT_ADDRESS=""
-    if [ -f "\$HTTP_ADDR_FILE" ]; then
-        CURRENT_ADDRESS="\$(cat "\$HTTP_ADDR_FILE")"
-    fi
-    if [ "\$NEW_ADDRESS" = "\$CURRENT_ADDRESS" ]; then
-        return 0
-    fi
-    printf "%s" "\$NEW_ADDRESS" > "\$HTTP_ADDR_FILE"
-    echo "\$SERVER_IP" > "\$LAST_KNOWN_FILE"
-    log "http_address.txt → \$NEW_ADDRESS (port via SRV, IP via \$SERVER_IP_SOURCE)"
-    return 0
-}
+fi
 
-# ── tick_http: één volledige discover+write cyclus (zonder MQTT side-effects) ─
-tick_http() {
-    run_discovery
-    http_update "\$1"
-}
-
-# ── --watch mode: blijft draaien, doet alleen HTTP polling ─────────
-# MQTT config-writes raken we tijdens watch niet aan: dat is een dure
-# atomic-write die mqtt_node alleen bij startup leest. De boot-pass
-# verderop in dit script regelt MQTT eenmalig.
-if [ "\$1" = "--watch" ]; then
-    # Dedup: weiger te starten als er al een watcher leeft (zelfde script,
-    # eerder geforkt). Voorkomt dat elke run_novabot.sh een nieuwe poll
-    # daemon opspawnt.
-    if [ -f "\$WATCH_PIDFILE" ]; then
-        OLD_PID="\$(cat "\$WATCH_PIDFILE" 2>/dev/null)"
-        if [ -n "\$OLD_PID" ] && kill -0 "\$OLD_PID" 2>/dev/null; then
-            exit 0
+if [ -z "\$PORT" ]; then
+    for p in 8080 80 443; do
+        if probe_http "\$FALLBACK_HOSTNAME" "\$p"; then
+            PORT="\$p"
+            PORT_SOURCE="probe \$FALLBACK_HOSTNAME:\$p"
+            break
         fi
-    fi
-    echo "\$\$" > "\$WATCH_PIDFILE"
-    trap 'rm -f "\$WATCH_PIDFILE"' EXIT
-    log "watch: started (interval \${WATCH_INTERVAL}s)"
-    while true; do
-        tick_http silent
-        sleep "\$WATCH_INTERVAL"
     done
 fi
 
-# ── Eenmalige boot-pass: doe één discovery met verbose logging ─────
-tick_http verbose || true
-HTTP_ADDRESS="\$(cat "\$HTTP_ADDR_FILE" 2>/dev/null || true)"
-MQTT_ADDRESS="\${SERVER_IP:-}"
+if [ -z "\$PORT" ]; then
+    PORT="\$FALLBACK_HTTP_PORT"
+    PORT_SOURCE="fallback (geen discovery succesvol)"
+fi
+
+# ── Schrijf http_address.txt — hostname-based ────────────────────
+# We schrijven \`opennova.local:<port>\`, niet een IP. Dat betekent dat
+# libcurl in de firmware bij elke HTTP request opnieuw via libc resolver +
+# mDNS naar avahi-daemon vraagt waar opennova.local op draait. Verhuist
+# de server naar een ander IP (of vervang door andere host die ook
+# opennova.local adverteert) → mower switched automatisch zonder polling
+# of script-rerun.
+NEW_ADDRESS="\${FALLBACK_HOSTNAME}:\${PORT}"
+CURRENT_ADDRESS=""
+[ -f "\$HTTP_ADDR_FILE" ] && CURRENT_ADDRESS="\$(cat "\$HTTP_ADDR_FILE")"
+if [ "\$NEW_ADDRESS" != "\$CURRENT_ADDRESS" ]; then
+    printf "%s" "\$NEW_ADDRESS" > "\$HTTP_ADDR_FILE"
+    log "http_address.txt → \$NEW_ADDRESS (port via \$PORT_SOURCE)"
+else
+    log "http_address.txt → \$NEW_ADDRESS (unchanged, port via \$PORT_SOURCE)"
+fi
+HTTP_ADDRESS="\$NEW_ADDRESS"
+
+# ── MQTT broker IP via libc resolver ─────────────────────────────
+# mqtt_node leest json_config.json bij startup en kan zelf hostnames
+# resolven via NSS, maar voor backward-compat houden we hier een IP
+# en updaten alleen bij wijziging. \`getent hosts\` consulteert dezelfde
+# resolver-chain (files → mdns4_minimal → dns) als libcurl.
+MQTT_ADDRESS="\$(getent hosts \$FALLBACK_HOSTNAME 2>/dev/null | awk '{print \$1}' | head -1)"
+if [ -z "\$MQTT_ADDRESS" ] && [ -f "\$LAST_KNOWN_FILE" ]; then
+    MQTT_ADDRESS="\$(cat "\$LAST_KNOWN_FILE")"
+    log "getent miste — MQTT addr uit last-known: \$MQTT_ADDRESS"
+fi
+[ -n "\$MQTT_ADDRESS" ] && echo "\$MQTT_ADDRESS" > "\$LAST_KNOWN_FILE"
 
 # 2. Ethernet altijd beschikbaar voor noodherstel (RDK X3 default: 192.168.1.10)
 ip addr add 192.168.1.10/24 dev eth0 2>/dev/null || true
@@ -1070,13 +992,11 @@ if [ -f "/root/novabot/scripts/validate_config.sh" ]; then\
     bash /root/novabot/scripts/validate_config.sh\
 fi\
 \
-# CUSTOM: Stel lokale server URLs in bij elke boot (eenmalig synchroon).\
-# Daarna draait een 30s --watch loop op de achtergrond zodat de mower de\
-# OpenNova server alsnog vindt als die later online komt of van poort wisselt.\
+# CUSTOM: Stel lokale server URLs in bij elke boot. Hostname-based\
+# (opennova.local:<port>) zodat libcurl per request resolved en server\
+# verhuizingen automatisch worden opgepakt — geen polling nodig.\
 if [ -f "/root/novabot/scripts/set_server_urls.sh" ]; then\
     bash /root/novabot/scripts/set_server_urls.sh\
-    nohup bash /root/novabot/scripts/set_server_urls.sh --watch \\\
-        >> /userdata/ota/custom_firmware.log 2>&1 &\
 fi\
 ' "$RUN_NOVABOT"
         echo "  run_novabot.sh: validate_config.sh + set_server_urls.sh hooks toegevoegd"
