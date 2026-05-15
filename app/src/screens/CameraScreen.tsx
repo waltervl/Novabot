@@ -25,6 +25,7 @@ import { useActiveMower } from '../hooks/useActiveMower';
 import { useMowerState } from '../hooks/useMowerState';
 import { getServerUrl } from '../services/auth';
 import { useI18n } from '../i18n';
+import { isOpenNovaFirmware } from '../utils/firmwareCapability';
 
 const CAMERA_TOPICS = [
   { key: 'front', label: 'Front' },
@@ -141,6 +142,29 @@ img{max-width:100%;max-height:100%;object-fit:contain}
 </head><body>
 <img src="${streamUrl}" />
 </body></html>` : '';
+
+  // The camera stream is served by `camera_stream.py`, a Python daemon
+  // that only ships with the OpenNova custom mower firmware. On stock
+  // firmware the proxy returns 404 and the WebView renders a broken
+  // image icon — replace the screen with an explanation instead.
+  if (activeMower && !isOpenNovaFirmware(activeMower.firmwareVersion)) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', padding: 24 }]}>
+        <MaterialCommunityIcons name="camera-off-outline" size={64} color={colors.textMuted ?? '#999'} />
+        <Text style={{ marginTop: 16, color: colors.text ?? '#fff', fontSize: 18, fontWeight: '600', textAlign: 'center' }}>
+          {t('tabCamera')}
+        </Text>
+        <Text style={{ marginTop: 12, color: colors.textDim ?? '#888', textAlign: 'center', fontSize: 14, lineHeight: 20, maxWidth: 360 }}>
+          The camera stream is provided by a daemon that only runs on
+          OpenNova custom firmware. Stock LFI firmware doesn&apos;t ship
+          this service, so there&apos;s nothing to display.
+        </Text>
+        <Text style={{ marginTop: 16, color: colors.textMuted ?? '#999', textAlign: 'center', fontSize: 12, fontStyle: 'italic' }}>
+          Active mower firmware: {activeMower.firmwareVersion ?? 'unknown'}
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: isLandscape ? 0 : insets.top }]}>

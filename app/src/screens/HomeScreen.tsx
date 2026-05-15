@@ -27,6 +27,7 @@ import { useMowerState } from '../hooks/useMowerState';
 import { useActiveMower } from '../hooks/useActiveMower';
 import { useActiveMowerContext } from '../context/ActiveMowerContext';
 import { useMowQueue } from '../context/MowQueueContext';
+import { isOpenNovaFirmware } from '../utils/firmwareCapability';
 import { MowerPickerChevron } from '../components/MowerPickerChevron';
 import { ApiClient, type Schedule } from '../services/api';
 import { getServerUrl, getToken } from '../services/auth';
@@ -69,6 +70,9 @@ interface MowerDerived {
   mowerPosX: number | null;
   mowerPosY: number | null;
   mowerHeading: number | null;
+  /** Forwarded from `DeviceState.firmwareVersion` so the capability gates
+   *  (edge cut, joystick, camera) can read it without a second lookup. */
+  firmwareVersion: string | null;
 }
 
 // ── Cover path helpers ──────────────────────────────────────────────
@@ -297,6 +301,7 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
     mowerPosX: parseFloat(s.map_position_x ?? '') || null,
     mowerPosY: parseFloat(s.map_position_y ?? '') || null,
     mowerHeading: parseFloat(s.map_position_orientation ?? '') || null,
+    firmwareVersion: mower.firmwareVersion ?? null,
   };
 }
 
@@ -2504,11 +2509,21 @@ export default function HomeScreen() {
           });
         }
 
+        // Edge mowing requires the `start_edge_cut` extended command,
+        // which only exists in OpenNova custom firmware. On stock firmware
+        // the equivalent stock MQTT (start_patrol) is a no-op stub, so we
+        // disable the menu item and explain why instead of letting the
+        // tap silently do nothing.
+        const edgeNeedsCustomFw = !isOpenNovaFirmware(mower?.firmwareVersion);
         items.push({
           label: 'Edges only',
-          subtitle: 'Drive along the boundary once (boundary follow)',
+          subtitle: edgeNeedsCustomFw
+            ? 'Requires OpenNova custom firmware'
+            : 'Drive along the boundary once (boundary follow)',
           icon: 'ellipse-outline',
+          disabled: edgeNeedsCustomFw,
           onPress: () => {
+            if (edgeNeedsCustomFw) return;
             // User-spec: ook edge-mow vraagt om bevestiging + maaihoogte.
             setHeightPicker({
               mode: 'edge',

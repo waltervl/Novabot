@@ -34,6 +34,7 @@ import { ApiClient } from '../services/api';
 import { DemoBanner } from '../components/DemoBanner';
 import { useDemo } from '../context/DemoContext';
 import { useI18n } from '../i18n';
+import { isOpenNovaFirmware } from '../utils/firmwareCapability';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const JOYSTICK_SIZE = Math.min(SCREEN_W * 0.65, 260);
@@ -384,6 +385,29 @@ export default function JoystickScreen() {
       setStreamUrl(`${serverUrl}/api/dashboard/camera/${encodeURIComponent(sn)}/stream?topic=front`);
     })();
   }, [mower?.online, sn]);
+
+  // Stock firmware cannot drive `start_move` / `mst` reliably (the STM32
+  // PIN-lock in stock STM32 firmware refuses motor commands until the
+  // user enters the unlock password on the device) and has no
+  // `blade_on` / `blade_off` MQTT command at all — both are
+  // OpenNova-custom additions. Replace the manual-control UI with an
+  // explainer if the active mower is on stock firmware.
+  if (activeMower && !isOpenNovaFirmware(activeMower.firmwareVersion)) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', padding: 24 }]}>
+        <MaterialCommunityIcons name="lock-outline" size={64} color={colors.textMuted ?? '#999'} />
+        <Text style={[styles.title, { marginTop: 16, textAlign: 'center' }]}>{t('manualControl')}</Text>
+        <Text style={{ marginTop: 12, color: colors.textDim ?? '#888', textAlign: 'center', fontSize: 14, lineHeight: 20, maxWidth: 360 }}>
+          Manual control needs OpenNova custom firmware. Stock LFI firmware
+          PIN-locks the STM32 right after boot and refuses motor commands,
+          so the joystick would do nothing here.
+        </Text>
+        <Text style={{ marginTop: 16, color: colors.textMuted ?? '#999', textAlign: 'center', fontSize: 12, fontStyle: 'italic' }}>
+          Active mower firmware: {activeMower.firmwareVersion ?? 'unknown'}
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
