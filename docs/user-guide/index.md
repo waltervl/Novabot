@@ -39,8 +39,15 @@ You do **not** need a powerful machine. The mower does the hard work — the ser
 | Pair a fresh mower or charger | [Mower Provisioning Flow](../flows/mower-provisioning.md) |
 | Update mower firmware | [OTA Update Flow](../flows/ota-update.md) |
 | Fix common problems | [Troubleshooting](troubleshooting.md) |
+| Read the original LFI manuals + FAQ | [LFI Knowledge Base (archived)](../reference/NOVABOT-ZENDESK-WIKI.md) |
 | Send logs to someone helping you | [Remote Support](../guide/remote-support.md) |
 | Run the OpenNova app instead of the Novabot app | [App Updates](../guide/app-updates.md) |
+
+## LFI Knowledge Base archive
+
+Before LFI shut down their cloud, all their official manuals, FAQ entries, and error-code explanations lived on `lfibot.zendesk.com`. That site can go offline at any time, so we extracted the full content via the Zendesk API on 2026-03-08 and kept a local copy:
+
+**[LFI Knowledge Base (archived)](../reference/NOVABOT-ZENDESK-WIKI.md)** — installation, charger placement, mapping, schedules, OTA, every error code from the original manual. The content is in Dutch (translated from the original) and is what most non-technical questions are answered by.
 
 ## How help works
 

@@ -66,6 +66,7 @@ nav:
   - User Guide:
     - Overview: user-guide/index.md
     - Troubleshooting: user-guide/troubleshooting.md
+    - LFI Knowledge Base (archived): reference/NOVABOT-ZENDESK-WIKI.md
   - Getting Started:
     - Docker Container: guide/docker.md
     - DNS Setup: guide/dns-setup.md
