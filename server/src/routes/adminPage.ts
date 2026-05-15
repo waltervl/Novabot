@@ -583,6 +583,59 @@ export function adminPageHtml(): string {
       <div id="account">Loading...</div>
     </div>
 
+    <div class="card" style="border:1px solid rgba(34,197,94,.25);background:rgba(34,197,94,.03)">
+      <h2 style="color:#86efac">Resources &amp; Help</h2>
+      <p style="font-size:12px;color:#aaa;margin-bottom:12px">Documentation, source code, and community channels. Bookmark these — there is no LFI cloud support left, so the wiki + GitHub issues are how problems get solved.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">
+        <a href="https://wiki.ramonvanbruggen.nl/" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:8px;text-decoration:none;color:#dcfce7">
+          <span style="font-size:20px">📚</span>
+          <div>
+            <div style="font-weight:600;font-size:13px">User Guide &amp; Wiki</div>
+            <div style="font-size:11px;color:#86efac;opacity:.8">wiki.ramonvanbruggen.nl</div>
+          </div>
+        </a>
+        <a href="https://github.com/rvbcrs/Novabot" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;text-decoration:none;color:#e0e7ff">
+          <span style="font-size:20px">⌨</span>
+          <div>
+            <div style="font-weight:600;font-size:13px">Source Code</div>
+            <div style="font-size:11px;color:#a5b4fc;opacity:.8">github.com/rvbcrs/Novabot</div>
+          </div>
+        </a>
+        <a href="https://github.com/rvbcrs/Novabot/issues" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;text-decoration:none;color:#fecaca">
+          <span style="font-size:20px">🐛</span>
+          <div>
+            <div style="font-weight:600;font-size:13px">Report a Bug / Issue</div>
+            <div style="font-size:11px;color:#fca5a5;opacity:.8">github.com/rvbcrs/Novabot/issues</div>
+          </div>
+        </a>
+        <a href="https://hub.docker.com/r/rvbcrs/opennova" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(14,165,233,.08);border:1px solid rgba(14,165,233,.25);border-radius:8px;text-decoration:none;color:#bae6fd">
+          <span style="font-size:20px">🐳</span>
+          <div>
+            <div style="font-weight:600;font-size:13px">Docker Image</div>
+            <div style="font-size:11px;color:#7dd3fc;opacity:.8">hub.docker.com/r/rvbcrs/opennova</div>
+          </div>
+        </a>
+        <a href="https://github.com/rvbcrs/Novabot/releases" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;text-decoration:none;color:#fde68a">
+          <span style="font-size:20px">📦</span>
+          <div>
+            <div style="font-weight:600;font-size:13px">Releases &amp; Changelog</div>
+            <div style="font-size:11px;color:#fbbf24;opacity:.8">github.com/rvbcrs/Novabot/releases</div>
+          </div>
+        </a>
+        <a href="https://github.com/rvbcrs/Novabot/discussions" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:8px;text-decoration:none;color:#e9d5ff">
+          <span style="font-size:20px">💬</span>
+          <div>
+            <div style="font-weight:600;font-size:13px">Discussions &amp; Q&amp;A</div>
+            <div style="font-size:11px;color:#d8b4fe;opacity:.8">github.com/rvbcrs/Novabot/discussions</div>
+          </div>
+        </a>
+      </div>
+      <div style="margin-top:14px;padding:10px 12px;background:rgba(255,255,255,.03);border-radius:6px;font-size:11px;color:#888">
+        Server release: <span id="resVersionPill" style="color:#86efac;font-weight:600">loading…</span>
+        — see the wiki <a href="https://wiki.ramonvanbruggen.nl/" target="_blank" rel="noopener" style="color:#86efac">User Guide</a> section for non-technical instructions (pairing your mower, scheduling, troubleshooting common errors).
+      </div>
+    </div>
+
     <div class="card">
       <h2>Network &amp; DNS</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">Check that DNS is configured correctly so the Novabot app and mower connect to this server instead of the cloud.</p>
@@ -1615,6 +1668,8 @@ async function loadAccount() {
     const d = await api('/overview');
     const s = d.server;
     document.getElementById('serverInfo').innerHTML = renderServerChips(s);
+    var resPill = document.getElementById('resVersionPill');
+    if (resPill) resPill.textContent = 'v' + (s.version || '?');
     const u = d.currentUser || {};
     document.getElementById('account').innerHTML =
       '<div class="row"><span class="label">Email</span><span class="value">' + (u.email || '-') + '</span></div>' +

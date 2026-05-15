@@ -1,0 +1,59 @@
+# User Guide
+
+Welcome. This section is for **mower owners** — people who bought a Novabot, lost (or want to leave) the LFI cloud, and want their mower to keep working forever on their own network.
+
+It does **not** assume you have Docker experience, know what a JWT is, or want to read decompiled firmware. The Wiki's other tabs (HTTP API, MQTT Protocol, BLE Protocol, Firmware) exist for developers and reverse-engineers; this tab is for everyone else.
+
+## What is OpenNova?
+
+A local replacement for the Novabot cloud servers. Once it runs on your network:
+
+- Your **Novabot app keeps working** without LFI's servers being online.
+- The mower talks to **your** server instead of `mqtt.lfibot.com`.
+- Maps, schedules, work history, and OTA updates all stay inside your house.
+- New community features (multi-user, dashboards, Home Assistant, push notifications) are added on top.
+
+If LFI shuts down their cloud tomorrow, your mower keeps running. If their cloud is already gone for you, OpenNova brings it back.
+
+## What hardware does it need?
+
+A small always-on computer to run the server. Anything works as long as it has Docker:
+
+| Option | Notes |
+|--------|-------|
+| Synology / QNAP / ZimaOS / TrueNAS | Easiest — install Docker, run one container |
+| Raspberry Pi 4 or 5 | Cheap, low power, sits in a drawer |
+| Old laptop or PC running Linux | Free if you already have one |
+| Mac mini / Mac with Docker Desktop | Works for testing, but [mDNS is limited](#known-limitations) — better to run on Linux |
+| Windows PC running Docker | Same mDNS caveat as Mac |
+
+You do **not** need a powerful machine. The mower does the hard work — the server just stores data and routes messages.
+
+## Quick navigation
+
+| If you want to… | Read |
+|-----------------|------|
+| Get OpenNova running for the first time | [First-time setup](../guide/getting-started.md) |
+| Set up Docker on a NAS / Raspberry Pi | [Docker Guide](../guide/docker.md) |
+| Configure DNS so the app finds your server | [DNS Setup](../guide/dns-setup.md) |
+| Pair a fresh mower or charger | [Mower Provisioning Flow](../flows/mower-provisioning.md) |
+| Update mower firmware | [OTA Update Flow](../flows/ota-update.md) |
+| Fix common problems | [Troubleshooting](troubleshooting.md) |
+| Send logs to someone helping you | [Remote Support](../guide/remote-support.md) |
+| Run the OpenNova app instead of the Novabot app | [App Updates](../guide/app-updates.md) |
+
+## How help works
+
+There is **no LFI support hotline** for OpenNova users. The community handles support:
+
+- **Bug?** Open a [GitHub issue](https://github.com/rvbcrs/Novabot/issues/new/choose).
+- **Question?** Use [GitHub Discussions](https://github.com/rvbcrs/Novabot/discussions).
+- **Logs to share?** Use the **Remote Support** card in your admin page — that gives Ramon (the project maintainer) a one-session, you-approved shell into your container to diagnose. Every keystroke is logged on **your** disk for review.
+
+Before filing an issue: skim [Troubleshooting](troubleshooting.md). Most "mower offline" or "no maps" reports are one of the same five things.
+
+## Known limitations
+
+- **Mac / Windows Docker Desktop has limited mDNS.** Auto-discovery (`opennova.local`) may not work because the container runs inside a Linux VM. You can still use the server — just configure DNS manually so the mower knows where to find it.
+- **iOS app requires a real TLS certificate** for the Novabot stock app to connect (Apple blocks self-signed). The admin page has a Certificate Setup card that installs an OpenNova CA on the phone.
+- **The Novabot stock app is third-party software.** OpenNova mimics the cloud API so closely that the stock app usually works unchanged, but new app versions occasionally break things. The [OpenNova app](../guide/app-updates.md) is our own community build that we control end-to-end.

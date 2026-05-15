@@ -63,6 +63,9 @@ plugins:
 
 nav:
   - Home: index.md
+  - User Guide:
+    - Overview: user-guide/index.md
+    - Troubleshooting: user-guide/troubleshooting.md
   - Getting Started:
     - Docker Container: guide/docker.md
     - DNS Setup: guide/dns-setup.md
