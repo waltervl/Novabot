@@ -462,13 +462,26 @@ fi
 # NB: Gebruik printf i.p.v. echo om trailing newline te voorkomen (breekt URL in curl)
 cat > "$NOVABOT_ROOT/scripts/set_server_urls.sh" << URLSCRIPT
 #!/bin/bash
-# CUSTOM: Stel lokale server URLs in bij elke boot
-# Aangeroepen vanuit run_novabot.sh
+# CUSTOM: Stel lokale server URLs in bij elke boot + continue mDNS watch.
 #
-# Stap 1: Ontdek server via mDNS (opennovabot.local)
-# Stap 2: DNS resolve mqtt.lfibot.com (via systeem-DNS / AdGuard)
-# Stap 3: Fallback naar last-known IP of hardcoded waarden
-# Stap 4: Schrijf naar http_address.txt + json_config.json
+# Twee modes:
+#   set_server_urls.sh           → eenmalige discovery + write bij boot
+#   set_server_urls.sh --watch   → blijft draaien, 30s polling
+#
+# Aangeroepen vanuit run_novabot.sh — boot doet eerst een --once cycle
+# (synchroon) en spawn vervolgens een achtergrond --watch loop met
+# pidfile-guard zodat we maximaal één watcher draaien.
+#
+# Discovery-regels:
+#   * HTTP poort komt UITSLUITEND uit mDNS SRV record \`_opennova-http._tcp.local\`.
+#     Geen hardcoded fallback list (probe 80/8080/6466) — dat veroorzaakte dat
+#     de mower per ongeluk een Chromecast IP:6466 in http_address.txt schreef.
+#   * Vinden we geen geldige (IP, port) tuple → log + skip write. Bestaande
+#     http_address.txt blijft staan.
+#   * Idempotent: alleen schrijven als gedetecteerde waarde verschilt van wat
+#     er al staat.
+#   * MQTT config update gebeurt alleen tijdens de eenmalige boot-pass omdat
+#     mqtt_node die alleen bij startup leest — \`--watch\` raakt MQTT niet aan.
 
 FALLBACK_HOST="${SERVER_HOST}"
 FALLBACK_HTTP_PORT="${SERVER_HTTP_PORT}"
@@ -477,6 +490,8 @@ LAST_KNOWN_FILE="/userdata/lfi/server_ip.txt"
 HTTP_ADDR_FILE="/userdata/lfi/http_address.txt"
 MQTT_CONFIG_FILE="/userdata/lfi/json_config.json"
 LOG_FILE="/userdata/ota/custom_firmware.log"
+WATCH_PIDFILE="/var/run/opennova-discovery.pid"
+WATCH_INTERVAL="\${OPENNOVA_WATCH_INTERVAL:-30}"
 
 mkdir -p /userdata/lfi /userdata/ota
 
@@ -492,14 +507,17 @@ for i in \$(seq 1 30); do
     sleep 1
 done
 
-# ── mDNS discovery (Python, geen externe dependencies) ────────
-DISCOVERED_IP=\$(python3 << 'MDNS_EOF'
+# ── Discovery functies (callable, gebruikt door --watch loop + boot pass) ──
+# Elke functie print uitkomst op stdout zodat caller \$() kan capturen.
+
+discover_ip() {
+    python3 << 'MDNS_EOF'
 import socket, struct, time
 
-def mdns_query(timeout=8):
-    """Discover opennovabot.local via raw mDNS query."""
-    # Query both modern (opennova.local, label len 8) and legacy
-    # (opennovabot.local, label len 11) hostnames in one round-trip.
+def mdns_query(timeout=4):
+    """Discover opennova(bot).local via raw mDNS A query.
+       Watch-loop gebruikt deze, dus we houden de timeout kort (4s) zodat de
+       30s cadence niet schuift bij gemist antwoord."""
     qnames = [
         b'\x08opennova\x05local\x00',
         b'\x0bopennovabot\x05local\x00',
@@ -537,25 +555,23 @@ def mdns_query(timeout=8):
 
 mdns_query()
 MDNS_EOF
-)
+}
 
-# ── DNS resolution (mqtt.lfibot.com → IP via systeem-DNS / AdGuard) ────
 DNS_HOSTNAME="mqtt.lfibot.com"
-DNS_IP=\$(python3 -c "
+resolve_dns() {
+    python3 -c "
 import socket
 try:
     ip = socket.gethostbyname('\$DNS_HOSTNAME')
-    # Filter localhost/loopback — dat is de maaier zelf
     if not ip.startswith('127.'):
         print(ip)
 except:
     pass
-" 2>/dev/null)
+" 2>/dev/null
+}
 
-# ── mDNS SRV discovery: krijgt poort uit \`_opennova-http._tcp.local\` ─
-# Server adverteert SRV record met de echte HTTP port (default 8080).
-# Faalt query → DISCOVERED_PORT blijft leeg, valt terug op FALLBACK_HTTP_PORT.
-DISCOVERED_PORT=\$(python3 << 'SRV_EOF'
+discover_port() {
+    python3 << 'SRV_EOF'
 import socket, struct, time
 
 def _parse_name(data, offset):
@@ -580,7 +596,7 @@ def _parse_name(data, offset):
         cur += l
     return '.'.join(name), cur
 
-def srv(timeout=6):
+def srv(timeout=4):
     qname = b'\x0e_opennova-http\x04_tcp\x05local\x00'
     query = struct.pack('!6H', 0, 0, 1, 0, 0, 0) + qname + struct.pack('!2H', 33, 1)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -632,51 +648,10 @@ def srv(timeout=6):
 
 srv()
 SRV_EOF
-)
+}
 
-# ── Bepaal server IP (mDNS → DNS → last-known → hardcoded) ────
-if [ -n "\$DISCOVERED_IP" ]; then
-    log "Server ontdekt via mDNS: \$DISCOVERED_IP"
-    echo "\$DISCOVERED_IP" > "\$LAST_KNOWN_FILE"
-    SERVER_IP="\$DISCOVERED_IP"
-elif [ -n "\$DNS_IP" ]; then
-    log "Server ontdekt via DNS (\$DNS_HOSTNAME): \$DNS_IP"
-    echo "\$DNS_IP" > "\$LAST_KNOWN_FILE"
-    SERVER_IP="\$DNS_IP"
-elif [ -f "\$LAST_KNOWN_FILE" ]; then
-    SERVER_IP=\$(cat "\$LAST_KNOWN_FILE")
-    log "mDNS+DNS mislukt — gebruik last-known IP: \$SERVER_IP"
-elif [ -n "\$FALLBACK_HOST" ]; then
-    SERVER_IP="\$FALLBACK_HOST"
-    log "mDNS+DNS mislukt, geen last-known — gebruik fallback: \$SERVER_IP"
-else
-    SERVER_IP=""
-    log "WARN: geen server gevonden — configuratie niet bijgewerkt"
-fi
-
-# Kies poort: SRV-discovered → hardcoded fallback
-HTTP_PORT_FINAL="\${DISCOVERED_PORT:-\$FALLBACK_HTTP_PORT}"
-if [ -n "\$DISCOVERED_PORT" ]; then
-    log "HTTP port via SRV: \$DISCOVERED_PORT"
-fi
-
-if [ -n "\$SERVER_IP" ]; then
-    HTTP_ADDRESS="\${SERVER_IP}\$([ -n "\$HTTP_PORT_FINAL" ] && echo ":\$HTTP_PORT_FINAL")"
-    MQTT_ADDRESS="\$SERVER_IP"
-else
-    HTTP_ADDRESS=""
-    MQTT_ADDRESS=""
-fi
-
-# 1. HTTP server adres (firmware prepends "http://", dus ALLEEN host:port, GEEN prefix!)
-#
-# Veiligheids-probe: voor we http_address.txt overschrijven, valideren we
-# dat de gekozen poort ook ECHT bereikbaar is. Als de FALLBACK / SRV-poort
-# niet luistert (firewall, port-not-exposed, stale cache), retry met de
-# bekende safe defaults (80, 8080) zodat de mower niet vastloopt in een
-# INIT_NET_ERROR-loop bij een verkeerde mDNS-poort.
+# ── TCP probe helper (gebruikt bij idempotent reachability check) ─────
 probe_http() {
-    # \$1 = host, \$2 = port. 0 = OK, !=0 = unreachable.
     python3 - "\$1" "\$2" << 'PROBE_EOF' 2>/dev/null
 import socket, sys
 host = sys.argv[1]; port = int(sys.argv[2])
@@ -691,35 +666,98 @@ except Exception:
 PROBE_EOF
 }
 
-if [ -n "\${HTTP_ADDRESS}" ]; then
-    PROBE_HOST="\$SERVER_IP"
-    PROBE_PORT="\${HTTP_PORT_FINAL:-80}"
-    GOOD_PORT=""
-    # Probe a tight whitelist of known-good OpenNova HTTP ports. Do NOT add
-    # anything else here: ports like 6466 (Google Cast V2) and 8009 (Google
-    # Cast control) belong to consumer media devices that happen to listen
-    # on the same LAN. Past versions of this list included 6466 to "rescue"
-    # rogue mDNS responses but that just caused the opposite problem — the
-    # probe succeeded against a Chromecast/TV at a stale last-known IP and
-    # the mower happily wrote `<TV-IP>:6466` into http_address.txt, then
-    # failed every HTTP request afterwards.
-    for p in "\$PROBE_PORT" 80 8080; do
-        if probe_http "\$PROBE_HOST" "\$p"; then
-            GOOD_PORT="\$p"
-            break
-        fi
-    done
-    if [ -n "\$GOOD_PORT" ]; then
-        if [ "\$GOOD_PORT" != "\$PROBE_PORT" ]; then
-            log "HTTP port \$PROBE_PORT unreachable — falling back to \$GOOD_PORT"
-            HTTP_ADDRESS="\${SERVER_IP}:\${GOOD_PORT}"
-        fi
-        printf "%s" "\${HTTP_ADDRESS}" > "\${HTTP_ADDR_FILE}"
-        log "http_address.txt → \${HTTP_ADDRESS}"
+# ── Eén discovery-cyclus (mDNS A + SRV + DNS fallback) ──────────
+# Vult globals DISCOVERED_IP / DISCOVERED_PORT / DNS_IP / SERVER_IP /
+# SERVER_IP_SOURCE. Roept geen schrijfacties aan — alleen lookups.
+run_discovery() {
+    DISCOVERED_IP="\$(discover_ip)"
+    DISCOVERED_PORT="\$(discover_port)"
+    DNS_IP="\$(resolve_dns)"
+
+    # IP-bron cascade: mDNS A → DNS → last-known cache.
+    # DNS / last-known mag alleen worden gebruikt als SRV al een port heeft
+    # gevonden — zonder port wordt er toch niet geschreven.
+    if [ -n "\$DISCOVERED_IP" ]; then
+        SERVER_IP="\$DISCOVERED_IP"
+        SERVER_IP_SOURCE="mDNS"
+    elif [ -n "\$DNS_IP" ]; then
+        SERVER_IP="\$DNS_IP"
+        SERVER_IP_SOURCE="DNS"
+    elif [ -f "\$LAST_KNOWN_FILE" ]; then
+        SERVER_IP="\$(cat "\$LAST_KNOWN_FILE")"
+        SERVER_IP_SOURCE="last-known"
     else
-        log "WARN: no HTTP port reachable on \$SERVER_IP (\$PROBE_PORT/80/8080) — keeping previous http_address.txt"
+        SERVER_IP=""
+        SERVER_IP_SOURCE=""
     fi
+}
+
+# ── Idempotente HTTP update ──────────────────────────────────────
+# Retourneert 0 als http_address.txt geschreven werd (of al klopte),
+# 1 als geen geldige discovery → bestaande file blijft staan.
+http_update() {
+    if [ -z "\$DISCOVERED_PORT" ]; then
+        # Stil bij watch-mode (anders 2 logregels per 30s). Alleen op de
+        # eerste boot-pass logt het script zichzelf om diagnose mogelijk
+        # te maken bij eerste install.
+        [ "\$1" = "verbose" ] && log "geen SRV record voor _opennova-http._tcp.local — http_address.txt ongewijzigd"
+        return 1
+    fi
+    if [ -z "\$SERVER_IP" ]; then
+        [ "\$1" = "verbose" ] && log "geen server IP gevonden (mDNS/DNS/last-known) — http_address.txt ongewijzigd"
+        return 1
+    fi
+    if ! probe_http "\$SERVER_IP" "\$DISCOVERED_PORT"; then
+        [ "\$1" = "verbose" ] && log "WARN: \$SERVER_IP:\$DISCOVERED_PORT (uit \$SERVER_IP_SOURCE) niet bereikbaar — http_address.txt ongewijzigd"
+        return 1
+    fi
+    NEW_ADDRESS="\${SERVER_IP}:\${DISCOVERED_PORT}"
+    CURRENT_ADDRESS=""
+    if [ -f "\$HTTP_ADDR_FILE" ]; then
+        CURRENT_ADDRESS="\$(cat "\$HTTP_ADDR_FILE")"
+    fi
+    if [ "\$NEW_ADDRESS" = "\$CURRENT_ADDRESS" ]; then
+        return 0
+    fi
+    printf "%s" "\$NEW_ADDRESS" > "\$HTTP_ADDR_FILE"
+    echo "\$SERVER_IP" > "\$LAST_KNOWN_FILE"
+    log "http_address.txt → \$NEW_ADDRESS (port via SRV, IP via \$SERVER_IP_SOURCE)"
+    return 0
+}
+
+# ── tick_http: één volledige discover+write cyclus (zonder MQTT side-effects) ─
+tick_http() {
+    run_discovery
+    http_update "\$1"
+}
+
+# ── --watch mode: blijft draaien, doet alleen HTTP polling ─────────
+# MQTT config-writes raken we tijdens watch niet aan: dat is een dure
+# atomic-write die mqtt_node alleen bij startup leest. De boot-pass
+# verderop in dit script regelt MQTT eenmalig.
+if [ "\$1" = "--watch" ]; then
+    # Dedup: weiger te starten als er al een watcher leeft (zelfde script,
+    # eerder geforkt). Voorkomt dat elke run_novabot.sh een nieuwe poll
+    # daemon opspawnt.
+    if [ -f "\$WATCH_PIDFILE" ]; then
+        OLD_PID="\$(cat "\$WATCH_PIDFILE" 2>/dev/null)"
+        if [ -n "\$OLD_PID" ] && kill -0 "\$OLD_PID" 2>/dev/null; then
+            exit 0
+        fi
+    fi
+    echo "\$\$" > "\$WATCH_PIDFILE"
+    trap 'rm -f "\$WATCH_PIDFILE"' EXIT
+    log "watch: started (interval \${WATCH_INTERVAL}s)"
+    while true; do
+        tick_http silent
+        sleep "\$WATCH_INTERVAL"
+    done
 fi
+
+# ── Eenmalige boot-pass: doe één discovery met verbose logging ─────
+tick_http verbose || true
+HTTP_ADDRESS="\$(cat "\$HTTP_ADDR_FILE" 2>/dev/null || true)"
+MQTT_ADDRESS="\${SERVER_IP:-}"
 
 # 2. Ethernet altijd beschikbaar voor noodherstel (RDK X3 default: 192.168.1.10)
 ip addr add 192.168.1.10/24 dev eth0 2>/dev/null || true
@@ -1032,9 +1070,13 @@ if [ -f "/root/novabot/scripts/validate_config.sh" ]; then\
     bash /root/novabot/scripts/validate_config.sh\
 fi\
 \
-# CUSTOM: Stel lokale server URLs in bij elke boot\
+# CUSTOM: Stel lokale server URLs in bij elke boot (eenmalig synchroon).\
+# Daarna draait een 30s --watch loop op de achtergrond zodat de mower de\
+# OpenNova server alsnog vindt als die later online komt of van poort wisselt.\
 if [ -f "/root/novabot/scripts/set_server_urls.sh" ]; then\
     bash /root/novabot/scripts/set_server_urls.sh\
+    nohup bash /root/novabot/scripts/set_server_urls.sh --watch \\\
+        >> /userdata/ota/custom_firmware.log 2>&1 &\
 fi\
 ' "$RUN_NOVABOT"
         echo "  run_novabot.sh: validate_config.sh + set_server_urls.sh hooks toegevoegd"
