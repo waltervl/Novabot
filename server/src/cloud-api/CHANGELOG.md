@@ -2,6 +2,23 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-05-15 — Map rename: resolve by canonical_name (issue #66)
+
+- `routes/map.ts`: `updateEquipmentMapAlias` was resolving the target row
+  by parsing the index out of `fileName` (e.g. `map2_work.csv` → idx 2)
+  and reading `rows[idx]` from a sorted list. With multiple work-maps
+  sharing the same `file_name` (single ZIP upload), the sort's
+  `map_id` tiebreaker fell back to UUID order and the canonical
+  sequence got shuffled relative to the array index — rename hit the
+  wrong DB row. Fix: derive the canonical_name (`mapN`,
+  `mapN_M_obstacle`, `mapNtocharge_unicom`) from the fileName pattern
+  and resolve via `mapRepo.findBySnAndCanonical()`.
+- Also tightened the sort key in `findByMowerSnAndTypeWithArea` and
+  related queries to prefer `canonical_name` first, so the app's
+  display order tracks map0/map1/map2 instead of UUID order.
+- Existing shuffled DB rows are not auto-corrected; users need one
+  rename round to swap aliases back into the right canonical slots.
+
 ## 2026-05-13 — Robot messages: send `level` as string
 
 - `routes/message.ts`: `queryRobotMsgPageByUserId` was returning `level: 0`
