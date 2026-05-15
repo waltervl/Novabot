@@ -8,6 +8,10 @@
 site/
 site-public/
 
+# Screenshot tooling output (local dev only, not shipped)
+tools/screenshots/output/
+docs/user-guide/screenshots/
+
 # ── Binaries & packages ──────────────────────────────
 *.bin
 *.deb
