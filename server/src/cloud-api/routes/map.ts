@@ -640,18 +640,23 @@ mapRouter.post('/updateEquipmentMapAlias', authMiddleware, (req: AuthRequest, re
       const obstacleMatch = fileName.match(/^map(\d+)_(\d+)_obstacle\.csv$/);
       const unicomMatch = fileName.match(/^map(\d+)tocharge_unicom\.csv$/);
 
+      // Resolve via canonical_name (mapN, mapN_M_obstacle, mapNtocharge_unicom)
+      // instead of array index. The old idx-based lookup hit the wrong row
+      // whenever rows[] order did not match canonical order — e.g. issue #66:
+      // three work-maps with the same file_name (one ZIP) get tiebroken by
+      // map_id UUID, so canonical map2 could land at array index 1 and a
+      // rename request for fileName=map2_work.csv would update map0 instead.
+      let canonical: string | null = null;
       if (workMatch) {
-        const idx = parseInt(workMatch[1]);
-        const rows = mapRepo.findByMowerSnAndTypeWithArea(mowerSn, 'work');
-        resolvedMapId = rows[idx]?.map_id;
+        canonical = `map${workMatch[1]}`;
       } else if (obstacleMatch) {
-        const idx = parseInt(obstacleMatch[2]);
-        const rows = mapRepo.findByMowerSnAndTypeWithArea(mowerSn, 'obstacle');
-        resolvedMapId = rows[idx]?.map_id;
+        canonical = `map${obstacleMatch[1]}_${obstacleMatch[2]}_obstacle`;
       } else if (unicomMatch) {
-        const idx = parseInt(unicomMatch[1]);
-        const rows = mapRepo.findByMowerSnAndTypeWithArea(mowerSn, 'unicom');
-        resolvedMapId = rows[idx]?.map_id;
+        canonical = `map${unicomMatch[1]}tocharge_unicom`;
+      }
+      if (canonical) {
+        const row = mapRepo.findBySnAndCanonical(mowerSn, canonical);
+        resolvedMapId = row?.map_id;
       }
 
       console.log(`[MAP] updateEquipmentMapAlias: fileName=${fileName} sn=${mowerSn} → resolvedMapId=${resolvedMapId}`);

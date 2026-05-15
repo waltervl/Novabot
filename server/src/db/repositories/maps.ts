@@ -160,15 +160,21 @@ export class MapRepository {
     "SELECT * FROM maps WHERE mower_sn = ? AND map_type = 'work' AND map_area IS NOT NULL ORDER BY updated_at DESC"
   );
   private _findWithArea = db.prepare('SELECT * FROM maps WHERE mower_sn = ? AND map_area IS NOT NULL ORDER BY updated_at DESC');
+  // Sort prefers canonical_name when present (mapN / mapN_M_obstacle /
+  // mapNtocharge_unicom) so callers that index into the result get the same
+  // map every time, regardless of file_name collisions or map_id UUID
+  // tiebreaker order. Issue #66 showed that three work-maps sharing one
+  // file_name (single ZIP upload) landed in random UUID order, causing
+  // rename and display to mismatch the canonical map number.
   private _findWithAreaOrderByMapId = db.prepare(
-    'SELECT * FROM maps WHERE mower_sn = ? AND map_area IS NOT NULL ORDER BY COALESCE(file_name, map_name), map_id'
+    'SELECT * FROM maps WHERE mower_sn = ? AND map_area IS NOT NULL ORDER BY COALESCE(canonical_name, file_name, map_name), map_id'
   );
   private _findByMowerSnAndTypeWithArea = db.prepare(
-    'SELECT * FROM maps WHERE mower_sn = ? AND map_type = ? AND map_area IS NOT NULL ORDER BY COALESCE(file_name, map_name), map_id'
+    'SELECT * FROM maps WHERE mower_sn = ? AND map_type = ? AND map_area IS NOT NULL ORDER BY COALESCE(canonical_name, file_name, map_name), map_id'
   );
   // Unicom items hoeven geen map_area te hebben — de app checkt alleen fileName voor zone selectie
   private _findByMowerSnAndType2 = db.prepare(
-    'SELECT * FROM maps WHERE mower_sn = ? AND map_type = ? ORDER BY COALESCE(file_name, map_name), map_id'
+    'SELECT * FROM maps WHERE mower_sn = ? AND map_type = ? ORDER BY COALESCE(canonical_name, file_name, map_name), map_id'
   );
   private _listAll = db.prepare('SELECT * FROM maps ORDER BY updated_at DESC');
 
