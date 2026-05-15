@@ -1,38 +1,52 @@
-site_name: Novabot Reverse Engineering Wiki
-site_description: Complete documentation for the Novabot local server replacement project
-site_author: Novabot RE Team
+site_name: OpenNova Wiki
+site_description: Documentation for the OpenNova local cloud replacement for Novabot mowers
+site_author: OpenNova Community
+site_url: https://wiki.ramonvanbruggen.nl/
 
 theme:
   name: material
-  variant: modern
   custom_dir: docs/overrides
+  logo: assets/images/logo.png
+  favicon: assets/images/favicon.png
+  font:
+    text: Inter
+    code: JetBrains Mono
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: green
-      accent: light green
+      primary: custom
+      accent: custom
       toggle:
-        icon: material/brightness-7
+        icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: green
-      accent: light green
+      primary: custom
+      accent: custom
       toggle:
-        icon: material/brightness-4
+        icon: material/weather-sunny
         name: Switch to light mode
   features:
     - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
-    - navigation.expand
     - navigation.top
+    - navigation.indexes
+    - navigation.tracking
     - search.suggest
     - search.highlight
+    - search.share
     - content.code.copy
+    - content.code.annotate
     - content.tabs.link
     - toc.follow
+    - announce.dismiss
   icon:
     repo: fontawesome/brands/github
+    edit: material/pencil
+
+extra_css:
+  - assets/css/opennova.css
 
 markdown_extensions:
   - pymdownx.superfences:

@@ -1,0 +1,256 @@
+/*
+ * OpenNova wiki theme overrides for MkDocs Material.
+ *
+ * Mirrors the colour tokens of the OpenNova mobile app
+ * (`app/src/theme/colors.ts`) so the docs feel like a sibling product:
+ *   - emerald  #00d4aa  → primary accent
+ *   - bg       #030712  → dark-mode body
+ *   - card     #16213e  → dark-mode surfaces
+ *   - purple   #7c3aed  → secondary highlight
+ *
+ * Light mode uses a calmer ivory backdrop with the same emerald accent so
+ * brand recognition holds across themes.
+ */
+
+:root {
+  --on-emerald: #00d4aa;
+  --on-emerald-strong: #00b894;
+  --on-emerald-soft: rgba(0, 212, 170, 0.16);
+  --on-purple: #7c3aed;
+  --on-amber: #f59e0b;
+  --on-red: #ef4444;
+  --on-blue: #3b82f6;
+}
+
+/* ── Light scheme ─────────────────────────────────────────────────── */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        var(--on-emerald);
+  --md-primary-fg-color--light: #4ee3c4;
+  --md-primary-fg-color--dark:  var(--on-emerald-strong);
+  --md-accent-fg-color:         var(--on-purple);
+  --md-typeset-a-color:         var(--on-emerald-strong);
+
+  --md-default-bg-color:        #fdfaf2;
+  --md-default-fg-color:        #2a2620;
+  --md-default-fg-color--light: #8a7a4d;
+  --md-default-fg-color--lighter: rgba(42, 38, 32, 0.32);
+  --md-code-bg-color:           #f4ecda;
+  --md-code-fg-color:           #2a2620;
+}
+
+/* ── Dark scheme (slate) ──────────────────────────────────────────── */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        var(--on-emerald);
+  --md-primary-fg-color--light: #4ee3c4;
+  --md-primary-fg-color--dark:  var(--on-emerald-strong);
+  --md-accent-fg-color:         #a78bfa;
+  --md-typeset-a-color:         var(--on-emerald);
+
+  --md-default-bg-color:        #030712;
+  --md-default-bg-color--light: rgba(255, 255, 255, 0.04);
+  --md-default-fg-color:        #e0e0e0;
+  --md-default-fg-color--light: #9ca3af;
+  --md-default-fg-color--lighter: rgba(255, 255, 255, 0.22);
+  --md-code-bg-color:           #0f172a;
+  --md-code-fg-color:           #e2e8f0;
+  --md-footer-bg-color:         #030712;
+  --md-footer-bg-color--dark:   #020409;
+}
+
+/* ── Typography — Inter (matches the mobile app) ──────────────────── */
+:root {
+  --md-text-font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --md-code-font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+body, .md-typeset {
+  font-family: var(--md-text-font-family);
+  font-feature-settings: "ss01", "ss02", "cv01", "cv11";
+  letter-spacing: -0.005em;
+}
+.md-typeset code,
+.md-typeset pre code {
+  font-family: var(--md-code-font-family);
+  font-variant-ligatures: contextual;
+}
+.md-typeset h1, .md-typeset h2, .md-typeset h3 {
+  letter-spacing: -0.02em;
+}
+
+/* ── Header — soft gradient that nods to the app's hero ───────────── */
+.md-header {
+  background: linear-gradient(120deg, #030712 0%, #16213e 55%, #0f172a 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 4px 24px rgba(0, 0, 0, 0.4);
+  color: #ffffff;
+}
+[data-md-color-scheme="default"] .md-header {
+  background: linear-gradient(120deg, #0f172a 0%, #1e293b 55%, #0d3a40 100%);
+}
+.md-header__title {
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+.md-header__title .md-header__topic:first-child {
+  font-weight: 700;
+}
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  border-radius: 8px;
+}
+.md-search__form {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+}
+.md-search__form:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ── Tabs strip ───────────────────────────────────────────────────── */
+.md-tabs {
+  background: rgba(3, 7, 18, 0.92);
+  border-bottom: 1px solid rgba(0, 212, 170, 0.18);
+}
+[data-md-color-scheme="default"] .md-tabs {
+  background: #ffffff;
+  border-bottom: 1px solid rgba(0, 168, 136, 0.18);
+}
+.md-tabs__link {
+  opacity: 0.78;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.md-tabs__link:hover,
+.md-tabs__link--active {
+  opacity: 1;
+  color: var(--on-emerald) !important;
+}
+
+/* ── Content cards — admonitions get the OpenNova surface ─────────── */
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 12px;
+  border-left-width: 4px;
+  box-shadow: 0 6px 24px -8px rgba(0, 0, 0, 0.18);
+}
+[data-md-color-scheme="slate"] .md-typeset .admonition,
+[data-md-color-scheme="slate"] .md-typeset details {
+  background: #16213e;
+  border-left-color: var(--on-emerald);
+  box-shadow: 0 6px 24px -6px rgba(0, 0, 0, 0.55);
+}
+[data-md-color-scheme="default"] .md-typeset .admonition,
+[data-md-color-scheme="default"] .md-typeset details {
+  background: #fff8e8;
+  border-left-color: var(--on-emerald-strong);
+}
+.md-typeset .admonition-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ── Tables — softer borders, alternating zebra ───────────────────── */
+.md-typeset table:not([class]) {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+}
+.md-typeset table:not([class]) th {
+  background: var(--on-emerald-soft);
+  color: var(--on-emerald-strong);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: -0.01em;
+}
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  color: var(--on-emerald);
+}
+.md-typeset table:not([class]) tr:nth-child(even) {
+  background: rgba(0, 212, 170, 0.03);
+}
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ── Code blocks ──────────────────────────────────────────────────── */
+.md-typeset pre > code,
+.md-typeset .highlight pre {
+  border-radius: 10px;
+  border: 1px solid rgba(0, 212, 170, 0.1);
+}
+.md-typeset .highlight .filename {
+  background: var(--on-emerald-soft);
+  color: var(--on-emerald-strong);
+  border-radius: 6px 6px 0 0;
+  font-size: 0.78em;
+  font-weight: 500;
+}
+
+/* ── Sidebar / nav ────────────────────────────────────────────────── */
+.md-nav__item .md-nav__link--active {
+  color: var(--on-emerald) !important;
+  font-weight: 600;
+}
+.md-nav__item .md-nav__link:hover {
+  color: var(--on-emerald);
+}
+.md-sidebar__scrollwrap::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 170, 0.25);
+  border-radius: 6px;
+}
+
+/* ── Links + inline accents ───────────────────────────────────────── */
+.md-typeset a {
+  text-decoration-color: rgba(0, 212, 170, 0.45);
+  text-underline-offset: 3px;
+}
+.md-typeset a:hover {
+  text-decoration-color: var(--on-emerald);
+}
+.md-typeset mark {
+  background: rgba(0, 212, 170, 0.18);
+  color: inherit;
+  padding: 0 0.25em;
+  border-radius: 4px;
+}
+
+/* ── Buttons / chips ──────────────────────────────────────────────── */
+.md-button {
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.md-button--primary {
+  background: var(--on-emerald);
+  color: #00211a !important;
+  border: none;
+  box-shadow: 0 4px 16px -4px rgba(0, 212, 170, 0.5);
+}
+.md-button--primary:hover {
+  background: var(--on-emerald-strong);
+  box-shadow: 0 6px 20px -4px rgba(0, 212, 170, 0.7);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────── */
+.md-footer {
+  border-top: 1px solid rgba(0, 212, 170, 0.12);
+}
+[data-md-color-scheme="slate"] .md-footer-meta {
+  background: #020409;
+}
+
+/* ── Scroll-to-top button gets the emerald glow ───────────────────── */
+.md-top {
+  background: rgba(0, 212, 170, 0.92);
+  color: #00211a;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 8px 24px -8px rgba(0, 212, 170, 0.6);
+}
+.md-top:hover {
+  background: var(--on-emerald);
+}
+
+/* ── Mermaid diagrams — slate-friendly defaults ──────────────────── */
+.mermaid svg {
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 12px;
+}
