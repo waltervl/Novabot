@@ -67,6 +67,7 @@ nav:
     - Overview: user-guide/index.md
     - Admin Panel: user-guide/admin-panel.md
     - OpenNova App: user-guide/opennova-app.md
+    - Stock vs. Custom Firmware: user-guide/stock-vs-custom-firmware.md
     - Troubleshooting: user-guide/troubleshooting.md
     - LFI Knowledge Base (archived): reference/NOVABOT-ZENDESK-WIKI.md
   - Getting Started:
