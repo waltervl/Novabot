@@ -65,6 +65,8 @@ nav:
   - Home: index.md
   - User Guide:
     - Overview: user-guide/index.md
+    - Admin Panel: user-guide/admin-panel.md
+    - OpenNova App: user-guide/opennova-app.md
     - Troubleshooting: user-guide/troubleshooting.md
     - LFI Knowledge Base (archived): reference/NOVABOT-ZENDESK-WIKI.md
   - Getting Started:

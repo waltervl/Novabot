@@ -36,12 +36,14 @@ You do **not** need a powerful machine. The mower does the hard work — the ser
 | Get OpenNova running for the first time | [First-time setup](../guide/getting-started.md) |
 | Set up Docker on a NAS / Raspberry Pi | [Docker Guide](../guide/docker.md) |
 | Configure DNS so the app finds your server | [DNS Setup](../guide/dns-setup.md) |
+| Find your way around the server's admin web UI | [Admin Panel](admin-panel.md) |
+| Use the OpenNova app on your phone | [OpenNova App](opennova-app.md) |
 | Pair a fresh mower or charger | [Mower Provisioning Flow](../flows/mower-provisioning.md) |
 | Update mower firmware | [OTA Update Flow](../flows/ota-update.md) |
 | Fix common problems | [Troubleshooting](troubleshooting.md) |
 | Read the original LFI manuals + FAQ | [LFI Knowledge Base (archived)](../reference/NOVABOT-ZENDESK-WIKI.md) |
 | Send logs to someone helping you | [Remote Support](../guide/remote-support.md) |
-| Run the OpenNova app instead of the Novabot app | [App Updates](../guide/app-updates.md) |
+| Update the OpenNova app itself | [App Updates](../guide/app-updates.md) |
 
 ## LFI Knowledge Base archive
 
