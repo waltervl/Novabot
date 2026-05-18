@@ -165,7 +165,7 @@ export default function JoystickScreen() {
   const { brightness: headlightBrightness } = useHeadlightBrightness();
   // Modal state + last-used cutting height (user cm, 2-9, wire = cm-2)
   const [showBladeSheet, setShowBladeSheet] = useState(false);
-  const [bladeHeight, setBladeHeight] = useState(5); // 5cm = level 3 = 60mm
+  const [bladeHeight, setBladeHeight] = useState(5); // 5cm = level 3 = 50mm
   const activeRef = useRef(false);
   const lastSendRef = useRef(0);
   const speedRef = useRef(1);
@@ -244,13 +244,15 @@ export default function JoystickScreen() {
     setShowBladeSheet(true);
   }, [bladeSpeed, sn]);
 
-  // Start blade met gekozen hoogte. blade_on publisht naar
-  // /blade_height_set (chassis inverted index): mm = 90 − level*10,
-  // dus level = 9 − userCm. User 4cm → level 5 → 40mm physical.
-  // Default gebruiker-cm = 5 (50mm).
+  // Start blade met gekozen hoogte. `blade_on` neemt de wire-level
+  // enum (0..7). Firmware-mapping in extended_commands.py:_publish_blade_height
+  // is `mm = (level + 2) * 10`, dus userCm = 2 → level 0 (20mm), userCm
+  // = 9 → level 7 (90mm). Het oude `9 - userCm` was geïnverteerd en
+  // zette de blade altijd op (11-userCm)cm — bv 2cm gekozen → 9cm
+  // fysiek, blade raakte het gras nauwelijks (issue van 2026-05-16).
   const startBladeWithHeight = useCallback((userCm: number) => {
     setShowBladeSheet(false);
-    const level = Math.max(0, Math.min(7, 9 - userCm));
+    const level = Math.max(0, Math.min(7, userCm - 2));
     bladeOnRef.current = true;
     setBladeOn(true);
     (async () => {
@@ -386,21 +388,21 @@ export default function JoystickScreen() {
     })();
   }, [mower?.online, sn]);
 
-  // Stock firmware cannot drive `start_move` / `mst` reliably (the STM32
-  // PIN-lock in stock STM32 firmware refuses motor commands until the
-  // user enters the unlock password on the device) and has no
-  // `blade_on` / `blade_off` MQTT command at all — both are
-  // OpenNova-custom additions. Replace the manual-control UI with an
-  // explainer if the active mower is on stock firmware.
+  // Manual control depends on MQTT commands (`start_move`, `mst`,
+  // `blade_on`, `blade_off`) that ship in the OpenNova-custom mqtt_node
+  // additions. Stock LFI firmware doesn't accept them, so the joystick
+  // and blade toggle would silently do nothing. Replace the screen with
+  // an explainer when the active mower is on stock.
   if (activeMower && !isOpenNovaFirmware(activeMower.firmwareVersion)) {
     return (
       <View style={[styles.container, { paddingTop: insets.top, justifyContent: 'center', alignItems: 'center', padding: 24 }]}>
         <MaterialCommunityIcons name="lock-outline" size={64} color={colors.textMuted ?? '#999'} />
         <Text style={[styles.title, { marginTop: 16, textAlign: 'center' }]}>{t('manualControl')}</Text>
         <Text style={{ marginTop: 12, color: colors.textDim ?? '#888', textAlign: 'center', fontSize: 14, lineHeight: 20, maxWidth: 360 }}>
-          Manual control needs OpenNova custom firmware. Stock LFI firmware
-          PIN-locks the STM32 right after boot and refuses motor commands,
-          so the joystick would do nothing here.
+          Manual control needs OpenNova custom firmware. The MQTT commands
+          for driving the mower and toggling the blade aren&apos;t part of
+          the stock LFI firmware, so the joystick would have nothing to
+          talk to here.
         </Text>
         <Text style={{ marginTop: 16, color: colors.textMuted ?? '#999', textAlign: 'center', fontSize: 12, fontStyle: 'italic' }}>
           Active mower firmware: {activeMower.firmwareVersion ?? 'unknown'}
