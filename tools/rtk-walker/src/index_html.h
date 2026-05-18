@@ -13,6 +13,8 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RTK Walker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   :root {
     --bg: #030712;
@@ -46,10 +48,53 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   .track { display: flex; justify-content: space-between; padding: 10px 12px; background: rgba(255,255,255,0.03); border-radius: 8px; margin-bottom: 6px; font-size: 13px; align-items: center; }
   .track a { color: var(--emerald); text-decoration: none; font-weight: 600; }
   .track .meta { color: var(--text-dim); font-size: 11px; }
+  .track-actions { display: flex; flex-direction: column; gap: 4px; text-align: right; }
   .config { font-size: 12px; color: var(--text-dim); }
   .config input { width: 100%; padding: 8px; background: rgba(0,0,0,0.4); color: var(--text); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; margin-top: 4px; font-family: inherit; }
   .config label { display: block; margin-top: 8px; font-weight: 600; color: var(--text-dim); }
   .small { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
+  .map-card { padding: 0; overflow: hidden; }
+  #map {
+    width: 100%;
+    height: 320px;
+    background: #0b1220;
+  }
+  .map-overlay {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    pointer-events: none;
+    background: rgba(3, 7, 18, 0.7);
+    color: var(--text);
+    backdrop-filter: blur(4px);
+    z-index: 500;
+  }
+  .map-wrap { position: relative; }
+  .leaflet-container { background: #0b1220; }
+  .log-card { padding: 12px 14px; }
+  .log-card pre {
+    margin: 0;
+    background: #020409;
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    max-height: 280px;
+    overflow-y: auto;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .log-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 12px; }
+  .log-toolbar label { display: flex; gap: 4px; align-items: center; color: var(--text-dim); cursor: pointer; }
+  .log-toolbar .grow { flex: 1; }
+  .log-toolbar button { width: auto; padding: 4px 10px; font-size: 11px; font-weight: 600; background: rgba(255,255,255,0.06); color: var(--text); }
 </style>
 </head>
 <body>
@@ -81,6 +126,38 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <div class="small">Or press the BOOT button on the device.</div>
   </div>
 
+  <div class="card map-card">
+    <div class="map-wrap">
+      <div id="map"></div>
+      <div class="map-overlay" id="mapOverlay">no track yet</div>
+    </div>
+  </div>
+
+  <details class="card log-card">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">Console log</summary>
+    <div class="log-toolbar">
+      <label><input id="logFollow" type="checkbox" checked> follow tail</label>
+      <span class="grow"></span>
+      <button type="button" id="logClear">clear view</button>
+    </div>
+    <pre id="logView"></pre>
+
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06)">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">GNSS command (proprietary NMEA, checksum added automatically)</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <input id="gnssCmd" type="text" placeholder="PAIR021" style="flex:1;padding:8px;background:rgba(0,0,0,0.4);color:var(--text);border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px">
+        <button type="button" id="gnssSendBtn" style="width:auto;padding:8px 14px;font-size:12px">Send</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button type="button" class="gnss-quick" data-cmd="PAIR021" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">FW version</button>
+        <button type="button" class="gnss-quick" data-cmd="PAIR050,1000" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">1 Hz fix</button>
+        <button type="button" class="gnss-quick" data-cmd="PAIR050,200" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">5 Hz fix</button>
+        <button type="button" class="gnss-quick" data-cmd="PAIR432,1" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">Save config</button>
+        <button type="button" class="gnss-quick" data-cmd="PAIR002" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">Cold start</button>
+      </div>
+    </div>
+  </details>
+
   <div class="tracks">
     <h1>Saved tracks</h1>
     <div id="trackList"></div>
@@ -90,13 +167,14 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">WiFi &amp; NTRIP setup</summary>
     <form id="cfgForm">
       <label>WiFi SSID<input id="cfg_ssid" type="text"></label>
-      <label>WiFi password<input id="cfg_pass" type="password"></label>
+      <label>WiFi password <span style="color:var(--text-dim);font-weight:400;font-size:10px">(leave blank to keep stored value)</span><input id="cfg_pass" type="password" placeholder="••• (unchanged if empty)"></label>
       <label>NTRIP host<input id="cfg_host" type="text" placeholder="caster.centipede.fr"></label>
       <label>NTRIP port<input id="cfg_port" type="number" placeholder="2101"></label>
-      <label>NTRIP mountpoint<input id="cfg_mount" type="text" placeholder="closest base station code"></label>
+      <label>NTRIP mountpoint<input id="cfg_mount" type="text" placeholder="e.g. NLDB"></label>
       <label>NTRIP user<input id="cfg_user" type="text" placeholder="centipede"></label>
-      <label>NTRIP password<input id="cfg_npass" type="text" placeholder="centipede"></label>
+      <label>NTRIP password <span style="color:var(--text-dim);font-weight:400;font-size:10px">(leave blank to keep stored value)</span><input id="cfg_npass" type="text" placeholder="••• (unchanged if empty)"></label>
       <button type="submit" style="margin-top:12px">Save &amp; reboot</button>
+      <div id="cfgStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
     </form>
   </details>
 
@@ -155,13 +233,25 @@ function makeTrackRow(t) {
   left.appendChild(name);
   left.appendChild(meta);
 
-  const link = document.createElement('a');
-  link.href = '/track/' + encodeURIComponent(t.name);
-  link.setAttribute('download', '');
-  link.textContent = 'Download CSV';
+  const actions = document.createElement('div');
+  actions.className = 'track-actions';
+
+  const csv = document.createElement('a');
+  csv.href = '/track/' + encodeURIComponent(t.name);
+  csv.setAttribute('download', '');
+  csv.textContent = 'Download CSV';
+
+  const poly = document.createElement('a');
+  poly.href = '/track/' + encodeURIComponent(t.name) + '.polygon';
+  poly.setAttribute('download', '');
+  poly.textContent = 'Novabot polygon';
+  poly.title = 'lat,lng pairs only, deduped — drop into OpenNova polygon import';
+
+  actions.appendChild(csv);
+  actions.appendChild(poly);
 
   wrap.appendChild(left);
-  wrap.appendChild(link);
+  wrap.appendChild(actions);
   return wrap;
 }
 
@@ -183,6 +273,9 @@ async function loadConfig() {
 }
 
 async function saveConfig() {
+  const status = document.getElementById('cfgStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Saving...';
   const body = {
     ssid: document.getElementById('cfg_ssid').value,
     pass: document.getElementById('cfg_pass').value,
@@ -192,8 +285,27 @@ async function saveConfig() {
     user: document.getElementById('cfg_user').value,
     npass: document.getElementById('cfg_npass').value,
   };
-  await fetch('/api/config', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
-  alert('Saved. Rebooting...');
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!r.ok) {
+      status.style.color = 'var(--red)';
+      status.textContent = 'Save failed: HTTP ' + r.status;
+      return;
+    }
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Saved. Device rebooting — page will be unreachable for ~5 s.';
+  } catch (e) {
+    // Fetch promise rejects when the ESP closes the TCP connection on
+    // reboot. That happens AFTER the server has already accepted + saved
+    // the body (saveConfig() runs before ESP.restart()), so a thrown
+    // fetch error here is still a successful save.
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Save accepted; device rebooting.';
+  }
 }
 
 document.getElementById('recBtn').addEventListener('click', toggleRecord);
@@ -202,8 +314,189 @@ document.getElementById('cfgForm').addEventListener('submit', function(e) {
   saveConfig();
 });
 
+// ── Live map ──────────────────────────────────────────────────────
+// Default centre is somewhere on land; the first incoming fix or
+// track point shifts it to the real location and we never recenter
+// automatically after that — only on demand (button below the map
+// could be added later).
+let map = null;
+let trackLine = null;
+let trackMarker = null;
+let cursorMarker = null;
+let mapInitialised = false;
+let mapAutoFitDone = false;
+let lastPointCount = 0;
+
+function initMap() {
+  if (mapInitialised) return;
+  map = L.map('map', {
+    zoomControl: true,
+    attributionControl: false,
+    tap: true,
+  }).setView([52.1, 5.3], 8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 22,
+    crossOrigin: true,
+  }).addTo(map);
+  trackLine = L.polyline([], { color: '#00d4aa', weight: 4 }).addTo(map);
+  mapInitialised = true;
+}
+
+function setOverlay(text) {
+  const el = document.getElementById('mapOverlay');
+  if (el) el.textContent = text;
+}
+
+async function refreshMap() {
+  if (!mapInitialised) return;
+  try {
+    // Polyline from the active recording (server keeps it in RAM
+    // capped at LIVE_POINTS_MAX). We also drop a "cursor" marker on
+    // the latest known live position regardless of recording state.
+    const r = await fetch('/api/track/current');
+    const d = await r.json();
+    const pts = (d.points || []).map(function(p){ return [p[0], p[1]]; });
+
+    if (trackLine) trackLine.setLatLngs(pts);
+
+    // Marker for the current GNSS reading (from /api/status latest),
+    // even when not recording — handy to verify position before tap-Start.
+    const sresp = await fetch('/api/status');
+    const s = await sresp.json();
+    const liveOk = s.lat && s.lng && Math.abs(s.lat) > 0.0001;
+
+    if (liveOk) {
+      const here = [s.lat, s.lng];
+      const colourByFix = { 0: '#9ca3af', 1: '#9ca3af', 2: '#f59e0b', 4: '#00d4aa', 5: '#f59e0b' };
+      const colour = colourByFix[s.fix] || '#ef4444';
+      if (!cursorMarker) {
+        cursorMarker = L.circleMarker(here, {
+          radius: 7, color: colour, weight: 3, fillColor: colour, fillOpacity: 0.6
+        }).addTo(map);
+      } else {
+        cursorMarker.setLatLng(here);
+        cursorMarker.setStyle({ color: colour, fillColor: colour });
+      }
+    }
+
+    // Auto-fit once when we first have geometry. Don't keep recentring
+    // — it'd fight the user when they pan/zoom to look around.
+    if (!mapAutoFitDone) {
+      if (pts.length >= 2) {
+        map.fitBounds(trackLine.getBounds(), { padding: [30, 30], maxZoom: 21 });
+        mapAutoFitDone = true;
+      } else if (liveOk) {
+        map.setView([s.lat, s.lng], 19);
+        mapAutoFitDone = true;
+      }
+    }
+
+    if (d.recording) {
+      setOverlay(pts.length + ' pts · recording');
+    } else if (pts.length > 0) {
+      setOverlay(pts.length + ' pts · stopped');
+    } else if (liveOk) {
+      setOverlay('live ' + (s.fix === 4 ? 'RTK FIX' : (s.fix === 5 ? 'RTK FLOAT' : 'no RTK')));
+    } else {
+      setOverlay('no track yet');
+    }
+    lastPointCount = pts.length;
+  } catch (e) { /* ignore */ }
+}
+
+// Reset the one-shot auto-fit whenever the user (re)starts recording
+// so the next walk gets a fresh fit when it has enough geometry.
+const origToggleRecord = toggleRecord;
+toggleRecord = async function() {
+  await origToggleRecord();
+  mapAutoFitDone = false;
+  if (trackLine) trackLine.setLatLngs([]);
+};
+
+// ── Console log polling ──────────────────────────────────────────
+// Server keeps an 8 KB ring buffer; we ask for the current snapshot +
+// the monotonic byte offset of its newest byte. Between polls we know
+// `lastSeenSeq`, so we figure out which suffix of `buf` is new and
+// only append that. Buffer drops 25 % off the front when it fills up,
+// so a stale client gets a `firstSeq > lastSeenSeq` jump — handled by
+// replacing the whole view rather than appending.
+let lastSeenSeq = 0;
+
+async function refreshLog() {
+  try {
+    const r = await fetch('/api/log');
+    const d = await r.json();
+    const view = document.getElementById('logView');
+    if (!view) return;
+    const seq = d.seq | 0;
+    const firstSeq = d.firstSeq | 0;
+    const buf = d.buf || '';
+    if (firstSeq > lastSeenSeq && lastSeenSeq !== 0) {
+      // Server trimmed past our last-seen point — show full buffer.
+      view.textContent = buf;
+    } else if (lastSeenSeq === 0) {
+      view.textContent = buf;
+    } else {
+      const skip = lastSeenSeq - firstSeq;
+      if (skip < buf.length) {
+        view.textContent += buf.substring(skip);
+      }
+    }
+    lastSeenSeq = seq;
+    if (document.getElementById('logFollow').checked) {
+      view.scrollTop = view.scrollHeight;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+document.getElementById('logClear').addEventListener('click', function() {
+  document.getElementById('logView').textContent = '';
+});
+
+// ── GNSS command sender ─────────────────────────────────────────
+async function sendGnssCmd(cmd) {
+  if (!cmd) return;
+  await fetch('/api/gnss/send', {
+    method: 'POST',
+    body: JSON.stringify({ cmd: cmd }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  // Immediate poll so the [gnss-tx] line shows up without 1 s lag.
+  setTimeout(refreshLog, 100);
+}
+
+document.getElementById('gnssSendBtn').addEventListener('click', function() {
+  const cmd = document.getElementById('gnssCmd').value.trim();
+  sendGnssCmd(cmd);
+});
+document.getElementById('gnssCmd').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    sendGnssCmd(e.target.value.trim());
+  }
+});
+const quickButtons = document.querySelectorAll('.gnss-quick');
+for (let i = 0; i < quickButtons.length; i++) {
+  quickButtons[i].addEventListener('click', function(e) {
+    const cmd = e.currentTarget.getAttribute('data-cmd');
+    // Mirror into the textbox so users see what they just dispatched,
+    // and force-open the console + enable follow-tail so the response
+    // is actually visible.
+    document.getElementById('gnssCmd').value = cmd;
+    const det = document.querySelector('details.log-card');
+    if (det && !det.open) det.open = true;
+    const follow = document.getElementById('logFollow');
+    if (follow && !follow.checked) follow.checked = true;
+    sendGnssCmd(cmd);
+  });
+}
+
+initMap();
 setInterval(refresh, 500);
+setInterval(refreshMap, 1000);
+setInterval(refreshLog, 1000);
 refresh();
+refreshMap();
+refreshLog();
 loadTracks();
 loadConfig();
 </script>

@@ -42,15 +42,40 @@ start/stop-recording toggle — no extra wiring required.
 
 ## Build & flash
 
-Once, from this folder:
+Two targets share the same source tree:
+
+| Env | Hardware | UI |
+|-----|----------|----|
+| `esp32s3-walker`     | ESP32-S3-N16R8 dev board, no display | Web only (phone is the screen) |
+| `jc3248w535-walker`  | JC3248W535EN (3.5" 320×480 TFT + touch) | Standalone touch UI **and** the same web UI |
 
 ```bash
-pio run -e esp32s3-walker -t upload
+pio run -e esp32s3-walker      -t upload    # headless variant
+pio run -e jc3248w535-walker   -t upload    # with TFT
 pio device monitor -b 115200
 ```
 
 The same USB-C cable handles flashing and the runtime serial monitor
 (`ARDUINO_USB_CDC_ON_BOOT=1`).
+
+### TFT variant — what's on the screen
+
+- **Status + map** (default). Top bar with RTK fix pill, sat count,
+  HDOP, NTRIP up/down, current WiFi IP. Centre is a live-auto-zooming
+  polyline of the track you're walking, with a coloured cursor for
+  fix quality (emerald=RTK FIX, amber=FLOAT, blue=GPS). Bottom row
+  has Start/Stop recording, Tracks, Settings.
+- **Saved tracks**. List of CSVs on flash with point count + size, and
+  the IP to download them from in a browser. Download itself still
+  happens through the web UI — easier than offering files to a phone
+  off a USB MSC mount.
+- **Settings**. Tabbed WiFi + NTRIP forms with a soft keyboard. Saving
+  reboots so the new credentials take effect. Existing passwords are
+  preserved if you leave the field empty.
+
+The GNSS + NTRIP backend is shared between both targets, so a TFT
+device's `/api/*` endpoints behave identically to the headless one —
+you can still walk a route with a phone if you'd rather.
 
 ## First-time setup
 
