@@ -503,6 +503,21 @@ log() {
     echo "[\$(date)] set_server_urls: \$1" >> "\$LOG_FILE"
 }
 
+# ── --restart-mqtt: drop mqtt_node so ros2 launch respawns it ────
+# Used after a manual run when http_address.txt / json_config has
+# been updated and mqtt_node needs to re-read its config. mqtt_node
+# only reads config files at startup, so without a restart any
+# manual fix sits unused. The novabot_api launch file has
+# respawn=True so killing PID is safe — ROS spawns a fresh one in
+# ~5 sec with the new config. Without this flag, behavior is
+# unchanged (boot-pass path doesn't kill anything; mqtt_node simply
+# hasn't started yet when run_novabot.sh invokes us).
+RESTART_MQTT=0
+if [ "\$1" = "--restart-mqtt" ]; then
+    RESTART_MQTT=1
+    shift
+fi
+
 # ── Wacht op WiFi (max 30s) ──────────────────────────────────
 for i in \$(seq 1 30); do
     if ip addr show wlan0 2>/dev/null | grep -q 'inet '; then
@@ -540,20 +555,64 @@ def _parse_name(data, offset):
         cur += l
     return '.'.join(name), cur
 
+def _wlan0_ip():
+    # Get the wlan0 IPv4 address so we can pin multicast to it. Without
+    # this, the join + sendto both inherit INADDR_ANY, and on devices
+    # without a default 224.0.0.0/4 route in the kernel routing table
+    # (live-observed on LFIN2231000633 — RDK X3 + Galactic, no multicast
+    # route at all) sendto raises ENETUNREACH and IP_ADD_MEMBERSHIP
+    # raises ENODEV. Resolving the iface IP up front + IP_MULTICAST_IF
+    # tells the kernel which interface to use regardless of routes.
+    try:
+        with open('/proc/net/route') as f:
+            f.readline()  # skip header
+        # Cheap "ip addr" parse via the inet socket trick:
+        import fcntl
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            ip = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x8915, struct.pack('256s', b'wlan0'))[20:24])
+            return ip
+        finally:
+            s.close()
+    except Exception:
+        return None
+
 def srv(timeout=4):
     qname = b'\x0e_opennova-http\x04_tcp\x05local\x00'
     query = struct.pack('!6H', 0, 0, 1, 0, 0, 0) + qname + struct.pack('!2H', 33, 1)
+    wlan_ip = _wlan0_ip()
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except: pass
     s.settimeout(2)
-    s.bind(('', 5353))
-    mreq = struct.pack('4sL', socket.inet_aton('224.0.0.251'), socket.INADDR_ANY)
-    s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    try:
+        s.bind(('', 5353))
+    except OSError:
+        s.close(); return
+    # Pin multicast to wlan0 if we have its IP. Falls back to INADDR_ANY
+    # for non-wlan setups (e.g. ethernet-only test rigs) where the kernel
+    # routing table already has the multicast route.
+    if wlan_ip:
+        try: s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(wlan_ip))
+        except OSError: pass
+        mreq = struct.pack('4s4s', socket.inet_aton('224.0.0.251'), socket.inet_aton(wlan_ip))
+    else:
+        mreq = struct.pack('4sL', socket.inet_aton('224.0.0.251'), socket.INADDR_ANY)
+    try:
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except OSError:
+        # Kernel rejected the group join — bail out cleanly so the bash
+        # caller falls through to the TCP probe cascade.
+        s.close(); return
     end = time.time() + timeout
     while time.time() < end:
-        s.sendto(query, ('224.0.0.251', 5353))
+        try:
+            s.sendto(query, ('224.0.0.251', 5353))
+        except OSError:
+            # ENETUNREACH or similar — give up on mDNS and let the
+            # TCP probe cascade (8080→80→443) take over.
+            s.close(); return
         try:
             while True:
                 data, _ = s.recvfrom(4096)
@@ -870,6 +929,25 @@ if [ -n "\$SN_CODE" ] && [ -f /etc/avahi/avahi-daemon.conf ]; then
         hostname "\$SN_CODE" 2>/dev/null || true
         systemctl restart avahi-daemon 2>/dev/null || pkill -HUP avahi-daemon 2>/dev/null || true
         log "avahi host-name → \$SN_CODE.local (was \$CURRENT_HOST.local)"
+    fi
+fi
+
+# ── Restart mqtt_node when requested (--restart-mqtt) ─────────────
+# Only fires for manual invocations. mqtt_node's MQTT layer caches
+# its first network state, and a stale http_address.txt or stuck
+# net_check_fun loop survives even a config rewrite. Killing the
+# PID lets ros2 launch (respawn=True, respawn_delay=5) spawn a fresh
+# instance that picks up the new config. See LFIN2231000633 incident
+# 2026-05-20: http_address pointed at :8080 from a long-gone server
+# config, net_check failed, WiFi-reconnect loop kept tearing down
+# MQTT init; manual restart cleared it in seconds.
+if [ "\$RESTART_MQTT" = "1" ]; then
+    MQTT_PID=\$(pgrep -f '/mqtt_node ' 2>/dev/null | head -1)
+    if [ -n "\$MQTT_PID" ]; then
+        log "--restart-mqtt: killing mqtt_node PID \$MQTT_PID for ros2 respawn"
+        kill "\$MQTT_PID" 2>/dev/null
+    else
+        log "--restart-mqtt: no mqtt_node PID found (ros2 launch will start one)"
     fi
 fi
 URLSCRIPT

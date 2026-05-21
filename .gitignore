@@ -4,6 +4,19 @@
 *.db-wal
 *.db-shm
 
+# ── Python virtual envs ────────────────────────────────
+venv/
+.venv/
+**/venv/
+**/.venv/
+__pycache__/
+*.pyc
+
+# ── Local-only operational artifacts ───────────────────
+docker-compose.override.yml
+*.novabotmap
+track-*.csv
+
 # MkDocs build output (regenerate with: mkdocs build)
 site/
 site-public/
