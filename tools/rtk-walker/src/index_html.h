@@ -111,6 +111,7 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <div class="row"><span class="label">Longitude</span><span class="value" id="lng">-</span></div>
     <div class="row"><span class="label">Altitude</span><span class="value" id="alt">-</span></div>
     <div class="row"><span class="label">NTRIP bytes</span><span class="value" id="ntrip">0</span></div>
+    <div class="row" id="batteryRow" style="display:none"><span class="label">Battery</span><span class="value" id="battery">-</span></div>
   </div>
 
   <div class="card">
@@ -198,6 +199,13 @@ async function refresh() {
     setText('alt', d.alt != null ? (d.alt.toFixed(1) + ' m') : '-');
     setText('ntrip', d.ntripBytes != null ? d.ntripBytes : 0);
     setText('points', d.points != null ? d.points : 0);
+    const batRow = document.getElementById('batteryRow');
+    if (d.batteryVolts != null && d.batteryPercent != null) {
+      batRow.style.display = '';
+      setText('battery', d.batteryPercent + '% (' + d.batteryVolts.toFixed(2) + ' V)');
+    } else {
+      batRow.style.display = 'none';
+    }
     setText('recStatus', d.recording ? 'recording' : 'stopped');
     recording = !!d.recording;
     const btn = document.getElementById('recBtn');
@@ -227,6 +235,13 @@ function makeTrackRow(t) {
   const left = document.createElement('div');
   const name = document.createElement('div');
   name.textContent = t.name;
+  // Click the track name to load it onto the map. Cheaper than a
+  // separate "View" button; the .meta line below tells the user how
+  // many points are in there before they pull the trigger.
+  name.style.cursor = 'pointer';
+  name.style.color = 'var(--emerald)';
+  name.style.fontWeight = '600';
+  name.addEventListener('click', function() { viewTrack(t.name); });
   const meta = document.createElement('div');
   meta.className = 'meta';
   meta.textContent = (t.points != null ? t.points : 0) + ' pts · ' + (t.size != null ? t.size : 0) + ' bytes';
@@ -347,8 +362,70 @@ function setOverlay(text) {
   if (el) el.textContent = text;
 }
 
+// Viewing a saved track from the list pauses the live polyline poll
+// and renders the loaded points instead. null = live mode (default).
+let viewingTrack = null;
+
+async function viewTrack(name) {
+  try {
+    const r = await fetch('/track/' + encodeURIComponent(name) + '.json');
+    if (!r.ok) { alert('Could not load ' + name); return; }
+    const d = await r.json();
+    const pts = (d.points || []).map(function(p){ return [p[0], p[1]]; });
+    viewingTrack = name;
+    if (trackLine) trackLine.setLatLngs(pts);
+    if (pts.length >= 2) {
+      map.fitBounds(trackLine.getBounds(), { padding: [30, 30], maxZoom: 21 });
+    }
+    mapAutoFitDone = true;
+    setOverlay('viewing ' + name + ' · ' + pts.length + ' pts');
+    // Slip a back-to-live button into the overlay container.
+    const ov = document.getElementById('mapOverlay');
+    if (ov && !document.getElementById('backToLive')) {
+      const btn = document.createElement('button');
+      btn.id = 'backToLive';
+      btn.textContent = 'Back to live';
+      btn.style.cssText = 'margin-left:8px;padding:2px 8px;font-size:11px;border:0;border-radius:4px;background:rgba(0,212,170,0.2);color:var(--emerald);cursor:pointer';
+      btn.addEventListener('click', backToLive);
+      ov.appendChild(btn);
+    }
+  } catch (e) { alert('Failed to load track: ' + e); }
+}
+
+function backToLive() {
+  viewingTrack = null;
+  mapAutoFitDone = false;
+  if (trackLine) trackLine.setLatLngs([]);
+  const btn = document.getElementById('backToLive');
+  if (btn) btn.remove();
+}
+
 async function refreshMap() {
   if (!mapInitialised) return;
+  // While viewing a saved track, don't overwrite its polyline with the
+  // live recording's. The cursor still moves so the user can see where
+  // they are vs the loaded track.
+  if (viewingTrack) {
+    try {
+      const sresp = await fetch('/api/status');
+      const s = await sresp.json();
+      const liveOk = s.lat && s.lng && Math.abs(s.lat) > 0.0001;
+      if (liveOk) {
+        const here = [s.lat, s.lng];
+        const colourByFix = { 0: '#9ca3af', 1: '#9ca3af', 2: '#f59e0b', 4: '#00d4aa', 5: '#f59e0b' };
+        const colour = colourByFix[s.fix] || '#ef4444';
+        if (!cursorMarker) {
+          cursorMarker = L.circleMarker(here, {
+            radius: 7, color: colour, weight: 3, fillColor: colour, fillOpacity: 0.6
+          }).addTo(map);
+        } else {
+          cursorMarker.setLatLng(here);
+          cursorMarker.setStyle({ color: colour, fillColor: colour });
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return;
+  }
   try {
     // Polyline from the active recording (server keeps it in RAM
     // capped at LIVE_POINTS_MAX). We also drop a "cursor" marker on
@@ -408,6 +485,9 @@ async function refreshMap() {
 // so the next walk gets a fresh fit when it has enough geometry.
 const origToggleRecord = toggleRecord;
 toggleRecord = async function() {
+  // Starting a recording always drops you back into live mode - it'd
+  // be weird if Start Recording left a saved track on the map.
+  if (viewingTrack) backToLive();
   await origToggleRecord();
   mapAutoFitDone = false;
   if (trackLine) trackLine.setLatLngs([]);

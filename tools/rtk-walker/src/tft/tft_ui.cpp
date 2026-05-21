@@ -54,6 +54,7 @@ static lv_obj_t* lbl_sats = nullptr;
 static lv_obj_t* lbl_hdop = nullptr;
 static lv_obj_t* lbl_ntrip = nullptr;
 static lv_obj_t* lbl_wifi = nullptr;
+static lv_obj_t* lbl_battery = nullptr;
 static lv_obj_t* lbl_lat = nullptr;
 static lv_obj_t* lbl_lng = nullptr;
 static lv_obj_t* lbl_pts = nullptr;
@@ -144,7 +145,7 @@ static void dismiss_wifi_fail(lv_event_t* e);
 static void wifi_fail_open_settings(lv_event_t* e);
 static void on_textarea_focus(lv_event_t* e);
 static void on_save_settings(lv_event_t* e);
-static void redraw_map();
+static void redraw_map(const WalkerSnapshot& snap);
 static void load_settings_values();
 static void reload_tracks_list();
 static void apply_record_btn_state(RecordBtnState state);
@@ -273,8 +274,10 @@ static void build_main_screen() {
   lbl_hdop  = make_label(top, "",                          &lv_font_montserrat_14, COL_TEXT);
   lv_obj_add_flag(lbl_sats, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(lbl_hdop, LV_OBJ_FLAG_HIDDEN);
-  lbl_ntrip = make_label(top, LV_SYMBOL_UPLOAD " NTRIP -", &lv_font_montserrat_14, COL_DIM);
-  lbl_wifi  = make_label(top, LV_SYMBOL_WIFI   " -",       &lv_font_montserrat_14, COL_DIM);
+  lbl_ntrip   = make_label(top, LV_SYMBOL_UPLOAD       " NTRIP -", &lv_font_montserrat_14, COL_DIM);
+  lbl_wifi    = make_label(top, LV_SYMBOL_WIFI         " -",       &lv_font_montserrat_14, COL_DIM);
+  lbl_battery = make_label(top, LV_SYMBOL_BATTERY_FULL " -",       &lv_font_montserrat_14, COL_DIM);
+  lv_obj_add_flag(lbl_battery, LV_OBJ_FLAG_HIDDEN);
 
   // ── Map panel ──────────────────────────────────────────────────────────
   map_panel = make_card(scr_main,
@@ -320,6 +323,9 @@ static void build_main_screen() {
   lv_obj_add_flag(lbl_lng, LV_OBJ_FLAG_HIDDEN);
   lbl_pts = make_label(map_panel, LV_SYMBOL_DIRECTORY " 0 pts", &lv_font_montserrat_12, COL_EMERALD);
   lv_obj_align(lbl_pts, LV_ALIGN_BOTTOM_RIGHT, -4, -6);
+  // Multi-line, right-aligned so "75 pts / 12.3 m / 5 m to close" stays
+  // tight to the right edge instead of left-flushing each line.
+  lv_obj_set_style_text_align(lbl_pts, LV_TEXT_ALIGN_RIGHT, 0);
 
   // ── Bottom bar ─────────────────────────────────────────────────────────
   lv_obj_t* bot = lv_obj_create(scr_main);
@@ -898,6 +904,78 @@ static void on_save_settings(lv_event_t* e) {
 // ── Track list ────────────────────────────────────────────────────────────
 #include <LittleFS.h>
 
+// Saved-track viewing mode. When non-empty `viewing_track_name` flags
+// the map to render `viewing_buffer` (loaded from LittleFS) instead
+// of the live recording buffer. Reset by Start Recording or the user
+// hitting Back-to-live on the main screen.
+#define VIEWING_MAX MAP_POINT_MAX
+static WalkerLivePoint viewing_buffer[VIEWING_MAX];
+static size_t          viewing_count = 0;
+static String          viewing_track_name;
+
+// Load a saved CSV into viewing_buffer. Skips the header row and any
+// rows that fail the basic 7-column parse so a half-written or stale
+// file at boot can't blow up the buffer. Stops at VIEWING_MAX points;
+// long walks above that cap just truncate the tail (the map is too
+// small to show that much detail anyway).
+static bool load_saved_track(const String& name) {
+  String path = String("/tracks/") + name;
+  if (!LittleFS.exists(path)) return false;
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) return false;
+
+  viewing_count = 0;
+  bool firstLine = true;
+  while (f.available() && viewing_count < VIEWING_MAX) {
+    String line = f.readStringUntil('\n');
+    if (line.endsWith("\r")) line.remove(line.length() - 1);
+    if (line.length() == 0) continue;
+    if (firstLine) { firstLine = false; continue; }
+
+    int c1 = line.indexOf(',');
+    if (c1 < 0) continue;
+    int c2 = line.indexOf(',', c1 + 1);
+    if (c2 < 0) continue;
+    int c3 = line.indexOf(',', c2 + 1);
+    int c4 = (c3 > 0) ? line.indexOf(',', c3 + 1) : -1;
+    int c5 = (c4 > 0) ? line.indexOf(',', c4 + 1) : -1;
+    String lat = line.substring(c1 + 1, c2);
+    String lng = (c3 > 0) ? line.substring(c2 + 1, c3) : line.substring(c2 + 1);
+    String fixs = (c4 > 0 && c5 > 0) ? line.substring(c4 + 1, c5) : String("0");
+    viewing_buffer[viewing_count].lat = lat.toDouble();
+    viewing_buffer[viewing_count].lng = lng.toDouble();
+    viewing_buffer[viewing_count].fix = (uint8_t) fixs.toInt();
+    viewing_count++;
+  }
+  f.close();
+  return viewing_count > 0;
+}
+
+// Track row tap handler - row's user_data holds the strdup'd filename
+// so the LVGL event has a stable string regardless of when the list
+// gets rebuilt.
+static void on_track_row_clicked(lv_event_t* e) {
+  const char* name = (const char*) lv_event_get_user_data(e);
+  if (!name) return;
+  if (!load_saved_track(String(name))) return;
+  viewing_track_name = name;
+  lv_scr_load(scr_main);
+}
+
+// LV_EVENT_DELETE fires when lv_obj_clean tears the tracks list down.
+// Frees the strdup'd filename so re-opening Tracks doesn't leak.
+static void on_track_row_deleted(lv_event_t* e) {
+  void* data = lv_event_get_user_data(e);
+  if (data) free(data);
+}
+
+// Called by toggle_recording to drop out of viewing mode the moment a
+// new recording starts (the live polyline takes over).
+static void exit_viewing_mode() {
+  viewing_track_name = "";
+  viewing_count = 0;
+}
+
 static void reload_tracks_list() {
   // Wipe previous rows.
   lv_obj_clean(tracks_list);
@@ -943,6 +1021,13 @@ static void reload_tracks_list() {
     lv_obj_set_style_radius(row, 8, 0);
     lv_obj_set_style_pad_all(row, 6, 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    // strdup so the filename outlives this loop iteration; LVGL events
+    // carry the pointer verbatim and we want it valid until the next
+    // reload_tracks_list rebuilds the screen.
+    char* nameCopy = strdup(fname.c_str());
+    lv_obj_add_event_cb(row, on_track_row_clicked, LV_EVENT_CLICKED, nameCopy);
+    lv_obj_add_event_cb(row, on_track_row_deleted, LV_EVENT_DELETE,  nameCopy);
 
     lv_obj_t* lname = lv_label_create(row);
     lv_label_set_text(lname, fname.c_str());
@@ -978,6 +1063,10 @@ static void toggle_recording(lv_event_t* e) {
   // stray press from starting a recording with cm precision when only
   // metre-level autonomous GPS is available.
   if (current_record_state != RBS_START && current_record_state != RBS_STOP) return;
+  // Starting a fresh recording always drops the user out of saved-
+  // track viewing mode; otherwise the new live polyline would draw
+  // underneath the saved one and confuse the eye.
+  if (current_record_state == RBS_START) exit_viewing_mode();
   // Visual flip is done by refresh_status_cb's next tick (it'll see the
   // new snap.recording and call apply_record_btn_state(RBS_STOP/START)
   // accordingly). Just kick the backend here.
@@ -993,9 +1082,19 @@ static void toggle_recording(lv_event_t* e) {
 // .bss instead so the redraw is constant-stack.
 static WalkerLivePoint redraw_scratch[MAP_POINT_MAX];
 
-static void redraw_map() {
-  size_t n = walkerCopyLivePoints(redraw_scratch, MAP_POINT_MAX);
-  WalkerLivePoint* pts = redraw_scratch;
+static void redraw_map(const WalkerSnapshot& snap) {
+  size_t n;
+  WalkerLivePoint* pts;
+  if (viewing_track_name.length() > 0) {
+    // Viewing a previously-recorded track loaded from LittleFS. The
+    // buffer is already populated by load_saved_track(); just point
+    // the renderer at it.
+    pts = viewing_buffer;
+    n = viewing_count;
+  } else {
+    n = walkerCopyLivePoints(redraw_scratch, MAP_POINT_MAX);
+    pts = redraw_scratch;
+  }
 
   if (n == 0) {
     lv_obj_clear_flag(map_empty_label, LV_OBJ_FLAG_HIDDEN);
@@ -1004,7 +1103,15 @@ static void redraw_map() {
     // some LVGL builds dereference the point array unconditionally and
     // a count of 0 crashes the renderer on the next frame.
     lv_obj_add_flag(map_line, LV_OBJ_FLAG_HIDDEN);
-    if (lbl_pts) lv_label_set_text(lbl_pts, LV_SYMBOL_DIRECTORY " 0 pts");
+    if (lbl_pts) {
+      char buf[64];
+      if (snap.areaM2 > 0) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_DIRECTORY " 0 pts\nLast %.1f m2", snap.areaM2);
+      } else {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_DIRECTORY " 0 pts");
+      }
+      lv_label_set_text(lbl_pts, buf);
+    }
     if (lbl_lat) lv_obj_add_flag(lbl_lat, LV_OBJ_FLAG_HIDDEN);
     if (lbl_lng) lv_obj_add_flag(lbl_lng, LV_OBJ_FLAG_HIDDEN);
     map_pts_used = 0;
@@ -1013,22 +1120,23 @@ static void redraw_map() {
   lv_obj_add_flag(map_empty_label, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(map_line, LV_OBJ_FLAG_HIDDEN);
 
-  // BBox over the visible points.
-  float minLat = pts[0].lat, maxLat = pts[0].lat;
-  float minLng = pts[0].lng, maxLng = pts[0].lng;
+  // BBox over the visible points. Lat/lng are doubles - float at lat
+  // 52 loses ~42 cm per LSB which made the bbox wobble between ticks.
+  double minLat = pts[0].lat, maxLat = pts[0].lat;
+  double minLng = pts[0].lng, maxLng = pts[0].lng;
   for (size_t i = 1; i < n; i++) {
     if (pts[i].lat < minLat) minLat = pts[i].lat;
     if (pts[i].lat > maxLat) maxLat = pts[i].lat;
     if (pts[i].lng < minLng) minLng = pts[i].lng;
     if (pts[i].lng > maxLng) maxLng = pts[i].lng;
   }
-  float latSpan = maxLat - minLat;
-  float lngSpan = maxLng - minLng;
+  double latSpan = maxLat - minLat;
+  double lngSpan = maxLng - minLng;
   // Tiny spans (single fix, or fixes all within a few cm) → pretend the
   // bbox is a 5m square so the cursor lands in the middle instead of at
   // the (0,0) corner.
-  if (latSpan < 0.00005f) { float c = (minLat + maxLat) / 2; minLat = c - 0.000025f; maxLat = c + 0.000025f; latSpan = maxLat - minLat; }
-  if (lngSpan < 0.00005f) { float c = (minLng + maxLng) / 2; minLng = c - 0.000025f; maxLng = c + 0.000025f; lngSpan = maxLng - minLng; }
+  if (latSpan < 0.00005) { double c = (minLat + maxLat) / 2; minLat = c - 0.000025; maxLat = c + 0.000025; latSpan = maxLat - minLat; }
+  if (lngSpan < 0.00005) { double c = (minLng + maxLng) / 2; minLng = c - 0.000025; maxLng = c + 0.000025; lngSpan = maxLng - minLng; }
 
   lv_coord_t w = lv_obj_get_width(map_panel);
   lv_coord_t h = lv_obj_get_height(map_panel);
@@ -1089,8 +1197,27 @@ static void redraw_map() {
   }
 
   if (lbl_pts) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), LV_SYMBOL_DIRECTORY " %u pts", (unsigned) n);
+    char buf[160];
+    if (viewing_track_name.length() > 0) {
+      // Saved track on screen - identify it so the user knows what
+      // they're looking at. Tap Tracks again or hit Start Recording
+      // to drop back to live.
+      snprintf(buf, sizeof(buf),
+               LV_SYMBOL_DIRECTORY " %u pts\nViewing:\n%s",
+               (unsigned) n, viewing_track_name.c_str());
+    } else if (snap.recording) {
+      // Live: how far have we walked, how much further to the start.
+      snprintf(buf, sizeof(buf),
+               LV_SYMBOL_DIRECTORY " %u pts\n%.1f m walked\n%.1f m to close",
+               (unsigned) n, snap.walkedM, snap.closingM);
+    } else if (snap.areaM2 > 0) {
+      // Stopped: show the closed-polygon area + total path.
+      snprintf(buf, sizeof(buf),
+               LV_SYMBOL_DIRECTORY " %u pts\n%.1f m\nArea %.1f m2",
+               (unsigned) n, snap.walkedM, snap.areaM2);
+    } else {
+      snprintf(buf, sizeof(buf), LV_SYMBOL_DIRECTORY " %u pts", (unsigned) n);
+    }
     lv_label_set_text(lbl_pts, buf);
   }
   if (lbl_lat) {
@@ -1173,7 +1300,15 @@ static void refresh_status_cb(lv_timer_t* t) {
     lv_obj_add_flag(lbl_sats, LV_OBJ_FLAG_HIDDEN);
   }
   if (snap.hdop > 0 && snap.hdop < 99) {
-    snprintf(buf, sizeof(buf), "HDOP %.2f", snap.hdop);
+    // Append the measured GNSS rate so the field operator can confirm
+    // PAIR050,200 actually took effect. "1Hz" while expecting 5 = retry
+    // hasn't ACKed yet or the module refused. Once gnssRateHz settles
+    // at 5 the firmware is sampling 5x per second.
+    if (snap.gnssRateHz > 0) {
+      snprintf(buf, sizeof(buf), "HDOP %.2f  %uHz", snap.hdop, (unsigned) snap.gnssRateHz);
+    } else {
+      snprintf(buf, sizeof(buf), "HDOP %.2f", snap.hdop);
+    }
     lv_label_set_text(lbl_hdop, buf);
     lv_obj_clear_flag(lbl_hdop, LV_OBJ_FLAG_HIDDEN);
   } else {
@@ -1200,13 +1335,54 @@ static void refresh_status_cb(lv_timer_t* t) {
   }
   lv_label_set_text(lbl_wifi, buf);
 
+  // Battery pill - hide entirely on targets without a divider, otherwise
+  // pick the matching LV_SYMBOL_BATTERY_* glyph and colour it by health.
+  if (snap.batteryPresent) {
+    const char* icon;
+    lv_color_t col;
+    int pct = snap.batteryPercent;
+    if (snap.batteryCharging) {
+      // Lightning bolt overrides the level glyph - instant "USB power
+      // coming in" signal regardless of the cell's current state.
+      icon = LV_SYMBOL_CHARGE;
+      col  = COL_AMBER;
+    } else if (pct >= 75) { icon = LV_SYMBOL_BATTERY_FULL;  col = COL_EMERALD; }
+    else if  (pct >= 50)  { icon = LV_SYMBOL_BATTERY_3;     col = COL_EMERALD; }
+    else if  (pct >= 25)  { icon = LV_SYMBOL_BATTERY_2;     col = COL_AMBER;   }
+    else if  (pct >= 10)  { icon = LV_SYMBOL_BATTERY_1;     col = COL_AMBER;   }
+    else                  { icon = LV_SYMBOL_BATTERY_EMPTY; col = COL_RED;     }
+    snprintf(buf, sizeof(buf), "%s %d%%", icon, pct);
+    lv_label_set_text(lbl_battery, buf);
+    lv_obj_set_style_text_color(lbl_battery, col, 0);
+    lv_obj_clear_flag(lbl_battery, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(lbl_battery, LV_OBJ_FLAG_HIDDEN);
+  }
+
   g_lvgl_checkpoint = 5;
-  // RTK module presence — flag if we've seen no bytes for >3s. The
-  // grace window keeps the overlay from flashing during a stop-bit
-  // hiccup on the UART, and from showing during the first 1-2s of
-  // boot before the LC29HDA starts emitting.
-  bool missing = (!snap.gnssAlive && millis() > 3000) ||
-                 (snap.gnssAlive && snap.msSinceGnssByte > 3000);
+  // RTK module presence — flag only after a sustained outage, not on
+  // a single UART hiccup. Raw "no bytes for >5 s" is the trigger, but
+  // we additionally require the gap to persist across two consecutive
+  // status ticks (~2 s total) before showing the overlay, and require
+  // a steady byte stream before clearing it. That kills the
+  // "popup-every-4s" flicker pattern caused by short bursts of the
+  // buffer being drained at exactly the wrong moment.
+  static uint32_t missingSinceMs = 0;     // when the "no bytes" condition first turned true
+  static uint32_t presentSinceMs = 0;     // when bytes flowed cleanly again
+  static bool     overlayLatched = false; // sticky output of the debounce
+  bool rawMissing = (!snap.gnssAlive && millis() > 3000) ||
+                    (snap.gnssAlive && snap.msSinceGnssByte > 5000);
+  uint32_t nowOverlayMs = millis();
+  if (rawMissing) {
+    if (missingSinceMs == 0) missingSinceMs = nowOverlayMs;
+    presentSinceMs = 0;
+    if (nowOverlayMs - missingSinceMs >= 2000) overlayLatched = true;
+  } else {
+    if (presentSinceMs == 0) presentSinceMs = nowOverlayMs;
+    missingSinceMs = 0;
+    if (nowOverlayMs - presentSinceMs >= 1500) overlayLatched = false;
+  }
+  bool missing = overlayLatched;
   // Re-arm the overlay when the module came back: a fresh disappearance
   // after a previously good detection should bring it up again, even
   // if the user dismissed an earlier one.
@@ -1260,7 +1436,7 @@ static void refresh_status_cb(lv_timer_t* t) {
   // above; no per-tick duplication needed here.
 
   g_lvgl_checkpoint = 8;
-  redraw_map();
+  redraw_map(snap);
   g_lvgl_checkpoint = 9;
 }
 

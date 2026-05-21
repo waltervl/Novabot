@@ -23,10 +23,19 @@ struct WalkerSnapshot {
   bool     ntripUp;
   bool     gnssAlive;      // true once at least one byte arrived from the LC29HDA
   uint32_t msSinceGnssByte; // ms since the most recent byte from the GNSS module
+  uint16_t gnssRateHz;     // measured GGA updates per second (1 = default, 5 = PAIR050 confirmed)
+  bool     gnss5HzAcked;   // true once PAIR001,050,0 ACK seen (5 Hz config accepted by module)
   bool     wifiConnectFailed;  // true if a configured SSID was attempted at boot and timed out
   String   wifiFailReason;     // last STA-disconnect reason name (only meaningful when wifiConnectFailed)
   String   wifiIp;         // STA IP or AP IP, whichever applies
   String   wifiSsid;       // configured SSID (may be empty)
+  bool     batteryPresent;     // false until the first ADC sample lands (~1s after boot)
+  float    batteryVolts;       // V at the battery terminals (post divider correction)
+  int      batteryPercent;     // 0..100 estimate from a 3.0..4.2 V LiPo curve, clamped
+  bool     batteryCharging;    // true when USB is plugged in (detected via threshold + positive trend)
+  float    walkedM;            // running total path length while recording (Haversine sum)
+  float    closingM;           // distance from current position to the first recorded point
+  float    areaM2;             // Shoelace area of the closed polygon - only meaningful after stopRecording
 };
 
 struct WalkerConfigView {
@@ -59,6 +68,8 @@ bool walkerToggleRecording();                            // returns new state
 // Number of live points kept in RAM, and a copy of them. The TFT map
 // reads this each frame to redraw the polyline. Copy semantics keep
 // the LVGL thread away from the std::vector backing store in main.cpp.
-struct WalkerLivePoint { float lat; float lng; uint8_t fix; };
+// double, not float - float at lat ~52 quantises to ~42 cm per LSB
+// which is enough to make polygon area calculation lose tens of m^2.
+struct WalkerLivePoint { double lat; double lng; uint8_t fix; };
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount);

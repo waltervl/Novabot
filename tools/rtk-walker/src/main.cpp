@@ -96,6 +96,14 @@ struct Status {
 
 static File          trackFile;
 static String        currentTrackName;
+
+// Survey metrics - computed in appendPoint() and stopRecording() so
+// they always reflect what's actually in the track buffer rather than
+// being recomputed from scratch on each snapshot call.
+static double        firstLat = 0, firstLng = 0;  // first point of current track
+static double        prevLat  = 0, prevLng  = 0;  // last point appended (for incremental length)
+static double        walkedM  = 0;                // running path length while recording
+static double        lastAreaM2 = 0;              // Shoelace area, computed at stopRecording()
 static unsigned long ntripLastConnectAttemptMs = 0;
 static bool          ntripConnecting = false;
 static String        ntripRecvBuf;
@@ -107,7 +115,13 @@ static unsigned long lastButtonChangeMs = 0;
 // at LIVE_POINTS_MAX so a long walk (1 Hz × hours) can't run the heap
 // dry; the file on flash always has the full trace.
 #define LIVE_POINTS_MAX 4000
-struct LivePoint { float lat, lng; uint8_t fix; };
+// Lat/lng MUST be double here. Float has ~7 significant digits, which
+// at latitude 52 leaves only ~42 cm of resolution per LSB - the
+// resulting polygon is jittery and Shoelace area calc loses tens of
+// m^2 on a typical garden. Double brings the per-point quantisation
+// down to sub-mm. Costs ~16 KB extra RAM at the LIVE_POINTS_MAX cap,
+// fine on the 320 KB SRAM target.
+struct LivePoint { double lat, lng; uint8_t fix; };
 static std::vector<LivePoint> livePoints;
 
 // Guards every access to `livePoints` so the main task (push_back +
@@ -156,6 +170,14 @@ static void weblogf(const char* fmt, ...) {
 static char nmeaLineBuf[180];
 static size_t nmeaLineLen = 0;
 
+// Tracks the most recent PAIR001 ACK so the post-detect command flow
+// can verify that PAIR050 (5 Hz) was actually accepted. The LC29HDA
+// silently drops PAIR commands if its parser is busy, so we have to
+// look for `$PAIR001,050,0*XX` (cmd=050, result=0 → success).
+static int      lastPair001Cmd = -1;
+static int      lastPair001Result = -1;
+static uint32_t lastPair001AtMs = 0;
+
 static void sendGnssCommand(const String& payload) {
   uint8_t cs = 0;
   for (size_t i = 0; i < payload.length(); i++) cs ^= (uint8_t) payload[i];
@@ -177,6 +199,18 @@ static void gnssLineFeed(char c) {
       // request in the same web console.
       if (nmeaLineLen >= 3 && nmeaLineBuf[0] == '$' && nmeaLineBuf[1] == 'P') {
         weblogf("[gnss-rx] %s\n", nmeaLineBuf);
+        // PAIR001 ACK: "$PAIR001,<cmd>,<result>*HH" — cmd matches the
+        // PAIR<cmd> we sent (e.g. 050 for PAIR050), result=0 means OK.
+        // Parse it here so the retry loop in gnssPump() can see whether
+        // a config command actually landed.
+        if (strncmp(nmeaLineBuf, "$PAIR001,", 9) == 0) {
+          int cmd = -1, res = -1;
+          if (sscanf(nmeaLineBuf + 9, "%d,%d", &cmd, &res) == 2) {
+            lastPair001Cmd    = cmd;
+            lastPair001Result = res;
+            lastPair001AtMs   = millis();
+          }
+        }
       }
       nmeaLineLen = 0;
     }
@@ -223,6 +257,37 @@ static void saveConfig() {
   prefs.putString("npass", cfg.ntripPass);
 }
 
+// Haversine distance between two lat/lng points in metres. Accurate to
+// a few cm at our scales (boundary surveys typically <100 m across).
+static double haversineM(double lat1, double lon1, double lat2, double lon2) {
+  const double R = 6371000.0;
+  double dLat = (lat2 - lat1) * (M_PI / 180.0);
+  double dLon = (lon2 - lon1) * (M_PI / 180.0);
+  double a = sin(dLat / 2) * sin(dLat / 2) +
+             cos(lat1 * (M_PI / 180.0)) * cos(lat2 * (M_PI / 180.0)) *
+             sin(dLon / 2) * sin(dLon / 2);
+  return R * 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+}
+
+// Shoelace area on an equirectangular projection anchored at the first
+// point of the track. Good to ~0.1 % at the lat/lon extents of a back
+// garden. Returns m^2.
+static double polygonAreaM2() {
+  if (livePoints.size() < 3) return 0.0;
+  double cosLat0 = cos(firstLat * (M_PI / 180.0));
+  double sum = 0.0;
+  const double kLatM = 111320.0;  // metres per degree of latitude
+  for (size_t i = 0; i < livePoints.size(); i++) {
+    size_t j = (i + 1) % livePoints.size();
+    double x1 = (livePoints[i].lng - firstLng) * cosLat0 * kLatM;
+    double y1 = (livePoints[i].lat - firstLat) * kLatM;
+    double x2 = (livePoints[j].lng - firstLng) * cosLat0 * kLatM;
+    double y2 = (livePoints[j].lat - firstLat) * kLatM;
+    sum += (x1 * y2) - (x2 * y1);
+  }
+  return fabs(sum) / 2.0;
+}
+
 // ── Track recording ─────────────────────────────────────────────────
 static void startRecording() {
   if (st.recording) return;
@@ -247,6 +312,13 @@ static void startRecording() {
   livePoints.clear();
   livePoints.reserve(256);
   livePointsUnlock();
+  // Reset survey metrics for the new track. firstLat/Lng get set when
+  // appendPoint sees its first usable fix; until then closingM is 0
+  // because we have nothing to close against yet.
+  firstLat = firstLng = 0;
+  prevLat  = prevLng  = 0;
+  walkedM = 0;
+  lastAreaM2 = 0;
   weblogf("[rec] started %s\n", currentTrackName.c_str());
 }
 
@@ -257,14 +329,47 @@ static void stopRecording() {
     trackFile.close();
   }
   st.recording = false;
-  weblogf("[rec] stopped (%u points)\n", st.recPoints);
+  // Compute the closing area on stop. Stays as the "last area" until a
+  // new recording starts, so the UI can keep displaying the result.
+  livePointsLock();
+  lastAreaM2 = polygonAreaM2();
+  livePointsUnlock();
+  weblogf("[rec] stopped (%u points, %.1f m walked, area %.1f m2)\n",
+          st.recPoints, walkedM, lastAreaM2);
 }
+
+// Quality and motion filters that decide whether a fresh fix gets
+// written to the track. Tunable from the top of the file.
+//   MIN_FIX_QUALITY  - drop anything worse than RTK FIX (4). Setting
+//                      to 5 also accepts RTK FLOAT (decimeter-grade,
+//                      good enough for a lawn boundary if RTK FIX
+//                      momentarily drops). Lower values let in plain
+//                      GPS / DGPS which adds metres of noise.
+//   MIN_DISPLACEMENT_M - skip fixes that haven't moved at least N cm
+//                      from the previous accepted point. Cleans up
+//                      standstill jitter, but set too high and slow
+//                      walks lose samples — at 0.3 m/s × 200 ms = 6 cm
+//                      so a 5 cm filter dropped ~half the points. 2 cm
+//                      keeps enough margin against RTK FIX cm-noise
+//                      without starving the polygon on a slow lap.
+#define MIN_FIX_QUALITY     4
+#define MIN_DISPLACEMENT_M  0.02
 
 static void appendPoint() {
   if (!st.recording || !trackFile) return;
   // Only record actual GPS solutions. fix=0 means we have no usable
   // position; logging that would pollute the trail with zeros.
   if (st.fix == 0 || st.lat == 0 || st.lng == 0) return;
+  // Quality filter: drop everything below RTK FIX. Accepts FLOAT (5)
+  // as well since FLOAT is decimeter-grade and still useful for a
+  // lawn outline. Plain GPS or DGPS are way too noisy for cm work.
+  if (st.fix < MIN_FIX_QUALITY) return;
+  // Motion filter: skip fixes within 5 cm of the last accepted point
+  // (standstill RTK jitter at 5 Hz looks like a zigzag without this).
+  if (firstLat != 0 || firstLng != 0) {
+    double d = haversineM(prevLat, prevLng, st.lat, st.lng);
+    if (d < MIN_DISPLACEMENT_M) return;
+  }
 
   time_t now;
   time(&now);
@@ -283,8 +388,22 @@ static void appendPoint() {
   if (livePoints.size() >= LIVE_POINTS_MAX) {
     livePoints.erase(livePoints.begin());
   }
-  livePoints.push_back({ (float) st.lat, (float) st.lng, (uint8_t) st.fix });
+  livePoints.push_back({ st.lat, st.lng, (uint8_t) st.fix });
   livePointsUnlock();
+
+  // Incremental path length: distance from the previous accepted point
+  // to this one, summed over the whole walk. First point of the track
+  // initialises the anchor so closingM can be computed.
+  if (firstLat == 0 && firstLng == 0) {
+    firstLat = st.lat;
+    firstLng = st.lng;
+    prevLat  = st.lat;
+    prevLng  = st.lng;
+  } else {
+    walkedM += haversineM(prevLat, prevLng, st.lat, st.lng);
+    prevLat = st.lat;
+    prevLng = st.lng;
+  }
 
   // Flush every 8 rows so an unexpected reset doesn't lose the entire
   // walk — but skip the flush most of the time to spare flash writes.
@@ -402,8 +521,55 @@ bool     gnssDetected = false; // flips true on the first byte ever — gates PA
 static bool   wifiConnectFailed = false;
 static String wifiFailReason;
 
-static uint32_t gnssDetectedAtMs = 0; // millis() when first byte arrived (used to delay the post-detect PAIR query)
-static bool     pairQuerySent = false; // PAIR021 firmware-version query already sent for this detect cycle
+// Battery state — sampled by batteryPump() every BAT_SAMPLE_MS.
+// `BAT_ADC` arrives from platformio.ini; only the TFT target has the
+// JC3248W535 board with a divider on GPIO 5, so the sampling code is
+// gated behind that macro. EMA-smoothing kills the noise floor that
+// otherwise wobbles the percentage by ~2 % between samples.
+#ifdef BAT_ADC
+#define BAT_SAMPLE_MS  2000
+// Empirically calibrated against a multimeter on the JC3248W535EN
+// (USB unplugged, no charging current confusing the reading):
+//   V_bat = 4.10 V, ADC = 2.333 V → multiplier = 1.76
+// Plugging in USB raises the measured rail by ~120 mV, so the divider
+// isn't quite on the cell directly but on a node that follows VOUT-BAT.
+// Close enough for a % indicator. Re-calibrate this constant with a
+// fresh multimeter reading if the board layout changes.
+#define BAT_DIVIDER_MULT  1.76f
+static bool     batteryReady = false;
+static float    batteryVoltsEma = 0.0f;
+static uint32_t batteryLastSampleMs = 0;
+// Charging detection via a 30 s ring buffer + a hard 4.18 V threshold.
+// IP5306 has no I2C status pin on this PCB, so we infer charging from
+// the rail voltage: USB plugged in pushes the divider reading ~200 mV
+// higher (above what a LiPo at rest ever reaches), and during CC-phase
+// charging the cell trends upward by tens of mV per minute.
+#define BAT_HIST_LEN     15           // 15 samples * 2s = 30 s window
+#define BAT_CHARGE_TREND 0.030f       // rise of 30 mV over the window = charging
+#define BAT_CHARGE_THRESH 4.18f       // absolute voltage above this can only mean USB power
+static float    batteryHist[BAT_HIST_LEN] = {0};
+static uint8_t  batteryHistIdx = 0;
+static uint8_t  batteryHistFilled = 0;
+static bool     batteryCharging = false;
+#endif
+
+static uint32_t gnssDetectedAtMs = 0; // millis() when first byte arrived (used to delay the post-detect PAIR queries)
+static bool     pair021Sent = false; // firmware version query
+// PAIR050,200 (5 Hz) retry state. The LC29HDA silently drops the cmd
+// if its serial parser is busy, so resend up to 4 times spaced 2 s
+// apart and stop once PAIR001,050,0 ACK is observed. Confirmation goes
+// into gnssRateHz so the UI can show the real measured fix rate.
+static uint32_t pair050LastTxMs = 0;
+static uint8_t  pair050TxCount  = 0;
+static bool     pair050Acked    = false;
+
+// Measured GGA rate (location updates per second). Rolling counter
+// reset every 1000 ms; gnssRateHz holds the most recently completed
+// window's count so the UI sees a stable value rather than a partial
+// tally mid-window.
+static uint32_t gnssRateWinStartMs = 0;
+static uint16_t gnssRateWinCount   = 0;
+static uint16_t gnssRateHz         = 0;
 
 static void gnssPump() {
   while (gnssSerial.available()) {
@@ -426,13 +592,17 @@ static void gnssPump() {
   // moment a single byte arrives we drop back into normal flow.
   if (!gnssDetected) return;
 
-  // First-byte handshake: half a second after detection (lets the
-  // module finish its boot banner), ask for the firmware version. PAIR020
-  // reply lands in the proprietary-line surfacer and shows up in the web
-  // log — same diagnostic shape as a freshly-plugged hot-swap.
-  if (!pairQuerySent && (millis() - gnssDetectedAtMs >= 500)) {
+  // Post-detect commands. Only PAIR021 (firmware-version query) is
+  // sent now — PAIR050,200 (5 Hz) was tried but it choked the LC29HDA
+  // RTCM correction pipeline: the module couldn't keep RTK FLOAT→FIX
+  // lock when its position engine was running 5x faster, and the user
+  // lost RTK fix entirely (31 sats, HDOP 0.49, no fix in 5 min). At
+  // default 1 Hz the same setup fixes inside a minute. So we stay at
+  // 1 Hz, and density comes from the 2 cm displacement filter instead.
+  uint32_t sinceDetect = millis() - gnssDetectedAtMs;
+  if (!pair021Sent && sinceDetect >= 500) {
     sendGnssCommand("PAIR021");
-    pairQuerySent = true;
+    pair021Sent = true;
   }
 #if NMEA_HEARTBEAT
   // Periodic heartbeat so you can tell "no bytes" apart from "bytes
@@ -463,8 +633,143 @@ static void gnssPump() {
       st.fix = atoi(ggaFixQualityGP.value());
     }
     st.lastFixMs = millis();
+    // Rolling 1-second window counter so the UI can show the actual
+    // fix rate. Window closes when 1000 ms elapses; final count gets
+    // latched into gnssRateHz and the window restarts at the current
+    // sample. Lets the field confirm "5 Hz confirmed" log without
+    // needing serial access.
+    uint32_t nowRate = st.lastFixMs;
+    if (gnssRateWinStartMs == 0) gnssRateWinStartMs = nowRate;
+    gnssRateWinCount++;
+    if (nowRate - gnssRateWinStartMs >= 1000) {
+      gnssRateHz         = gnssRateWinCount;
+      gnssRateWinCount   = 0;
+      gnssRateWinStartMs = nowRate;
+    }
     appendPoint();
   }
+}
+
+// ── Battery monitor ─────────────────────────────────────────────────
+#ifdef BAT_ADC
+// 3.7 V LiPo discharge curve - piecewise linear, accurate enough for
+// a status pill. Voltages assume the cell is at rest (a few seconds
+// idle, no big TX bursts). Heavy WiFi load drops the rail ~50 mV;
+// the EMA smooths the spikes back out.
+static int batteryPercentFromVolts(float v) {
+  static const struct { float v; int pct; } curve[] = {
+    {4.20f, 100}, {4.10f, 90}, {4.00f, 80}, {3.90f, 70}, {3.80f, 60},
+    {3.70f, 50},  {3.60f, 35}, {3.50f, 20}, {3.40f, 10}, {3.30f, 5},
+    {3.00f, 0},
+  };
+  if (v >= curve[0].v) return 100;
+  for (size_t i = 0; i < sizeof(curve)/sizeof(curve[0]) - 1; i++) {
+    float vh = curve[i].v, vl = curve[i+1].v;
+    if (v >= vl) {
+      float frac = (v - vl) / (vh - vl);
+      int   ph = curve[i].pct, pl = curve[i+1].pct;
+      return (int) (pl + frac * (ph - pl));
+    }
+  }
+  return 0;
+}
+
+static void batteryPump() {
+  uint32_t nowMs = millis();
+  if (batteryReady && (nowMs - batteryLastSampleMs) < BAT_SAMPLE_MS) return;
+  batteryLastSampleMs = nowMs;
+
+  // analogReadMilliVolts uses the per-chip eFuse calibration so the
+  // reading is in real millivolts at the ADC pin without us doing the
+  // raw-to-volts maths.
+  uint32_t mv = analogReadMilliVolts(BAT_ADC);
+  float v = (mv / 1000.0f) * BAT_DIVIDER_MULT;
+  if (!batteryReady) {
+    batteryVoltsEma = v;
+    batteryReady = true;
+  } else {
+    // Exponential moving average, alpha = 0.2. Two seconds of samples
+    // converges in ~15 s, slow enough to ignore TX-burst spikes but
+    // quick enough that a USB plug-in is visible on the pill in 3-5 s.
+    batteryVoltsEma = batteryVoltsEma * 0.8f + v * 0.2f;
+  }
+
+  // Charging detection. Two parallel signals:
+  //   1. Absolute threshold (4.18 V) - a LiPo at rest never exceeds
+  //      4.20 V, so anything above 4.18 V must be USB-pumped current.
+  //      Catches "just plugged in" within ~5 s.
+  //   2. 30 s positive trend - oldest entry in the ring buffer vs the
+  //      current EMA. Catches mid-CC-phase charging where the cell
+  //      voltage rises tens of mV per minute without ever crossing
+  //      the absolute threshold.
+  // OR'd together: either condition is enough.
+  batteryHist[batteryHistIdx] = batteryVoltsEma;
+  batteryHistIdx = (batteryHistIdx + 1) % BAT_HIST_LEN;
+  if (batteryHistFilled < BAT_HIST_LEN) batteryHistFilled++;
+
+  bool aboveThreshold = batteryVoltsEma > BAT_CHARGE_THRESH;
+  bool risingTrend = false;
+  if (batteryHistFilled >= BAT_HIST_LEN) {
+    // The slot we're about to overwrite next iteration is the oldest.
+    float oldest = batteryHist[batteryHistIdx];
+    risingTrend = (batteryVoltsEma - oldest) > BAT_CHARGE_TREND;
+  }
+  batteryCharging = aboveThreshold || risingTrend;
+}
+#else
+static void batteryPump() {}
+#endif
+
+// ── I2C scanner + IP5306 probe ──────────────────────────────────────
+// The JC3248W535 BSP installs the touch panel's I2C controller via the
+// ESP-IDF native `i2c_driver_install(I2C_NUM_0)` on GPIO 4 (SDA) +
+// GPIO 8 (SCL). Arduino's Wire library can't take that bus over once
+// the IDF driver owns it - our first scan attempt with Wire returned
+// zero ACKs even though the touch chip is obviously alive. Switch the
+// probes over to the same IDF API so we ride on the bus the BSP already
+// brought up.
+
+#ifdef HAS_TFT_DISPLAY
+extern "C" {
+#include "driver/i2c.h"
+}
+#define I2C_AVAILABLE 1
+// Matches BSP_I2C_NUM in src/tft/drivers/jc_bsp.h.
+#define I2C_BUS_NUM   I2C_NUM_0
+#else
+#define I2C_AVAILABLE 0
+#endif
+
+static bool i2cProbe(uint8_t addr) {
+#if I2C_AVAILABLE
+  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  i2c_master_start(cmd);
+  i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+  i2c_master_stop(cmd);
+  esp_err_t ret = i2c_master_cmd_begin(I2C_BUS_NUM, cmd, pdMS_TO_TICKS(50));
+  i2c_cmd_link_delete(cmd);
+  return ret == ESP_OK;
+#else
+  return false;
+#endif
+}
+
+static bool i2cReadReg(uint8_t addr, uint8_t reg, uint8_t* out) {
+#if I2C_AVAILABLE
+  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  i2c_master_start(cmd);
+  i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+  i2c_master_write_byte(cmd, reg, true);
+  i2c_master_start(cmd);
+  i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_READ, true);
+  i2c_master_read_byte(cmd, out, I2C_MASTER_NACK);
+  i2c_master_stop(cmd);
+  esp_err_t ret = i2c_master_cmd_begin(I2C_BUS_NUM, cmd, pdMS_TO_TICKS(100));
+  i2c_cmd_link_delete(cmd);
+  return ret == ESP_OK;
+#else
+  return false;
+#endif
 }
 
 // ── Button ──────────────────────────────────────────────────────────
@@ -508,6 +813,20 @@ static void handleStatus() {
   doc["ntripBytes"] = st.ntripBytes;
   doc["wifiSsid"]   = cfg.ssid;
   doc["ntripUp"]    = ntrip.connected();
+  doc["walkedM"]    = walkedM;
+  if (firstLat != 0 || firstLng != 0) {
+    doc["closingM"] = haversineM(st.lat, st.lng, firstLat, firstLng);
+  }
+  doc["areaM2"]     = lastAreaM2;
+  doc["gnssHz"]     = gnssRateHz;
+  doc["gnss5HzAcked"] = pair050Acked && lastPair001Result == 0;
+#ifdef BAT_ADC
+  if (batteryReady) {
+    doc["batteryVolts"]    = batteryVoltsEma;
+    doc["batteryPercent"]  = batteryPercentFromVolts(batteryVoltsEma);
+    doc["batteryCharging"] = batteryCharging;
+  }
+#endif
   sendJson(200, doc);
 }
 
@@ -639,6 +958,10 @@ static void handleTrackDownload() {
   // /track/<name>.polygon    → reformatted to bare lat,lng pairs for
   //                            Novabot's polygon import (header stripped,
   //                            consecutive duplicate points collapsed).
+  // /track/<name>.json       → JSON points array, same shape as
+  //                            /api/track/current so the web UI can
+  //                            render a saved track with the existing
+  //                            Leaflet polyline code.
   String name = uri.substring(strlen("/track/"));
 
   const char* polygonSuffix = ".polygon";
@@ -646,9 +969,55 @@ static void handleTrackDownload() {
   bool polygonMode = name.endsWith(polygonSuffix);
   if (polygonMode) name = name.substring(0, name.length() - polygonSuffixLen);
 
+  const char* jsonSuffix = ".json";
+  const size_t jsonSuffixLen = strlen(jsonSuffix);
+  bool jsonMode = !polygonMode && name.endsWith(jsonSuffix);
+  if (jsonMode) name = name.substring(0, name.length() - jsonSuffixLen);
+
   String path = String("/tracks/") + name;
   if (!LittleFS.exists(path)) { server.send(404, "text/plain", "no such track"); return; }
   File f = LittleFS.open(path, FILE_READ);
+
+  if (jsonMode) {
+    // Stream JSON in chunked mode so we don't have to buffer the whole
+    // track in RAM. Same field shape as /api/track/current.
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "");
+    server.sendContent("{\"recording\":false,\"name\":\"");
+    server.sendContent(name);
+    server.sendContent("\",\"points\":[");
+    bool first = true;
+    bool firstLine = true;
+    while (f.available()) {
+      String line = f.readStringUntil('\n');
+      if (line.endsWith("\r")) line.remove(line.length() - 1);
+      if (line.length() == 0) continue;
+      if (firstLine) { firstLine = false; continue; }   // skip CSV header
+      int c1 = line.indexOf(',');
+      if (c1 < 0) continue;
+      int c2 = line.indexOf(',', c1 + 1);
+      if (c2 < 0) continue;
+      int c3 = line.indexOf(',', c2 + 1);
+      int c4 = (c3 > 0) ? line.indexOf(',', c3 + 1) : -1;
+      int c5 = (c4 > 0) ? line.indexOf(',', c4 + 1) : -1;
+      String lat = line.substring(c1 + 1, c2);
+      String lng = (c3 > 0) ? line.substring(c2 + 1, c3) : line.substring(c2 + 1);
+      String fix = (c4 > 0 && c5 > 0) ? line.substring(c4 + 1, c5) : String("0");
+      if (!first) server.sendContent(",");
+      server.sendContent("[");
+      server.sendContent(lat);
+      server.sendContent(",");
+      server.sendContent(lng);
+      server.sendContent(",");
+      server.sendContent(fix);
+      server.sendContent("]");
+      first = false;
+    }
+    server.sendContent("]}");
+    server.sendContent("");
+    f.close();
+    return;
+  }
 
   if (!polygonMode) {
     server.sendHeader("Content-Disposition", String("attachment; filename=\"") + name + "\"");
@@ -696,6 +1065,83 @@ static void handleTrackDownload() {
   }
   server.sendContent("");
   f.close();
+}
+
+static void handleI2cScan() {
+#if !I2C_AVAILABLE
+  server.send(503, "application/json", "{\"ok\":false,\"error\":\"no I2C bus on this target\"}");
+  return;
+#else
+  JsonDocument doc;
+  JsonArray arr = doc["found"].to<JsonArray>();
+  // 7-bit addresses 0x03..0x77 are the valid scan window; 0x00..0x02
+  // and 0x78..0x7F are reserved.
+  for (uint8_t a = 0x03; a <= 0x77; a++) {
+    if (i2cProbe(a)) arr.add((unsigned) a);
+  }
+  doc["sda"] = TOUCH_SDA;
+  doc["scl"] = TOUCH_SCL;
+  doc["bus"] = "IDF I2C_NUM_0 (touch bus)";
+  sendJson(200, doc);
+#endif
+}
+
+static void handleIp5306() {
+#if !I2C_AVAILABLE
+  server.send(503, "application/json", "{\"ok\":false,\"error\":\"no I2C bus on this target\"}");
+  return;
+#else
+  JsonDocument doc;
+  doc["present"] = i2cProbe(0x75);
+  if (doc["present"].as<bool>()) {
+    // Read the registers that the M5Stack / community drivers use to
+    // pull battery + charging state from the I2C-capable variant.
+    // Hex format helps when matching against the datasheet bits.
+    auto pushReg = [&](const char* key, uint8_t reg) {
+      uint8_t v = 0;
+      if (i2cReadReg(0x75, reg, &v)) {
+        char hex[6];
+        snprintf(hex, sizeof(hex), "0x%02X", v);
+        doc[key] = hex;
+      } else {
+        doc[key] = nullptr;
+      }
+    };
+    pushReg("sys_ctl0_0x00", 0x00);  // boost enable
+    pushReg("status_0x71",   0x71);  // charging finished flag
+    pushReg("status_0x72",   0x72);  // USB plugged flag
+    pushReg("led_0x21",      0x21);  // 4-LED battery level
+    pushReg("soc_0xa2",      0xA2);  // exact %SoC (I2C variant only)
+  }
+  sendJson(200, doc);
+#endif
+}
+
+// Diagnostic: dump raw ADC + mv + post-divider voltage so we can
+// confirm or correct the divider multiplier. Hit this with a known
+// battery voltage (multimeter on the cell) and the maths gives the
+// real divider ratio - the multiplier in the firmware can then be
+// matched to what's actually on the board.
+static void handleBatteryRaw() {
+#ifdef BAT_ADC
+  // Force max attenuation so the ADC range covers the LiPo span.
+  // 3.3 V max input becomes legible instead of clipping at 2.45 V.
+  analogSetPinAttenuation(BAT_ADC, ADC_11db);
+  int raw   = analogRead(BAT_ADC);
+  int mv    = analogReadMilliVolts(BAT_ADC);
+  float v   = (mv / 1000.0f) * BAT_DIVIDER_MULT;
+
+  JsonDocument doc;
+  doc["pin"]        = BAT_ADC;
+  doc["raw"]        = raw;
+  doc["mv"]         = mv;
+  doc["multiplier"] = BAT_DIVIDER_MULT;
+  doc["v_battery"]  = v;
+  doc["note"]       = "compare with multimeter: v_battery should match cell voltage";
+  sendJson(200, doc);
+#else
+  server.send(503, "application/json", "{\"ok\":false,\"error\":\"no BAT_ADC defined\"}");
+#endif
 }
 
 static void handleConfigGet() {
@@ -746,6 +1192,13 @@ void setup() {
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
+  // Default 256 B RX buffer is kept — gnssPump() runs twice per loop()
+  // iteration (start + after HTTP/NTRIP) and the main loop ticks every
+  // few ms, so 22 ms-to-fill-at-115200-baud is plenty. Tried bumping to
+  // 1 KB / 4 KB but that ate enough internal SRAM that LVGL's DMA-
+  // capable buffer alloc (~30 KB contiguous) failed during tftSetup()
+  // and crashed the board on boot. Leaving the buffer alone keeps the
+  // memory map LVGL needs intact.
   gnssSerial.begin(GNSS_BAUD, SERIAL_8N1, GNSS_RX_PIN, GNSS_TX_PIN);
 
   if (!LittleFS.begin(true)) {
@@ -852,6 +1305,9 @@ void setup() {
   server.on("/api/track/current", HTTP_GET,  handleTrackCurrent);
   server.on("/api/log",           HTTP_GET,  handleLog);
   server.on("/api/gnss/send",     HTTP_POST, handleGnssSend);
+  server.on("/api/i2c-scan",      HTTP_GET,  handleI2cScan);
+  server.on("/api/ip5306",        HTTP_GET,  handleIp5306);
+  server.on("/api/battery/raw",   HTTP_GET,  handleBatteryRaw);
   server.on("/api/config", HTTP_GET,  handleConfigGet);
   server.on("/api/config", HTTP_POST, handleConfigPost);
   server.onNotFound([]() {
@@ -880,10 +1336,16 @@ static uint32_t mainTickCount = 0;
 static uint32_t mainLastBeatMs = 0;
 
 void loop() {
+  // gnssPump() drains the UART RX buffer first — bytes flowing at
+  // 3-4 KB/s at 5 Hz overflow the (now 4 KB) FIFO if HTTP or NTRIP
+  // hogs a beat. Two drains per loop (start + after the slow ops)
+  // keep latency well under one GGA cycle (200 ms at 5 Hz).
+  gnssPump();
   server.handleClient();
   ntripPump();
   gnssPump();
   buttonPump();
+  batteryPump();
   tftTick();
 
   // Diagnostic heartbeat — paired with the LVGL task heartbeat printed
@@ -941,8 +1403,29 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   out.ntripUp    = ntrip.connected();
   out.gnssAlive  = (lastGnssByteMs != 0);
   out.msSinceGnssByte = lastGnssByteMs ? (millis() - lastGnssByteMs) : (uint32_t) 0xFFFFFFFF;
+  out.gnssRateHz   = gnssRateHz;
+  out.gnss5HzAcked = pair050Acked && lastPair001Result == 0;
   out.wifiConnectFailed = wifiConnectFailed;
   out.wifiFailReason    = wifiFailReason;
+#ifdef BAT_ADC
+  out.batteryPresent  = batteryReady;
+  out.batteryVolts    = batteryVoltsEma;
+  out.batteryPercent  = batteryReady ? batteryPercentFromVolts(batteryVoltsEma) : 0;
+  out.batteryCharging = batteryReady && batteryCharging;
+#else
+  out.batteryPresent  = false;
+  out.batteryVolts    = 0.0f;
+  out.batteryPercent  = 0;
+  out.batteryCharging = false;
+#endif
+  out.walkedM  = (float) walkedM;
+  // Only meaningful once the first point landed; before that, no anchor.
+  if ((firstLat != 0 || firstLng != 0) && st.fix != 0) {
+    out.closingM = (float) haversineM(st.lat, st.lng, firstLat, firstLng);
+  } else {
+    out.closingM = 0;
+  }
+  out.areaM2   = (float) lastAreaM2;
   out.wifiSsid   = cfg.ssid;
   if (out.wifiUp)        out.wifiIp = WiFi.localIP().toString();
   else if (out.apMode)   out.wifiIp = WiFi.softAPIP().toString();
