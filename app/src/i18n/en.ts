@@ -265,4 +265,5 @@ export default {
   paired: 'Paired!',
   noChargerFound: 'No charger found',
   provisionCharger: 'Provision a charger first before pairing a mower.',
+  bladesNotSpinning: 'Mower is driving but blades are NOT spinning — check cutter head / height, or power-cycle the mower',
 };

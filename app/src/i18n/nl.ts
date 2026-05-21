@@ -263,4 +263,5 @@ export default {
   paired: 'Gekoppeld!',
   noChargerFound: 'Geen laadstation gevonden',
   provisionCharger: 'Configureer eerst een laadstation voordat je een maaier koppelt.',
+  bladesNotSpinning: 'Maaier rijdt maar messen draaien NIET — check messenkop / hoogte, of zet de maaier uit en weer aan',
 };

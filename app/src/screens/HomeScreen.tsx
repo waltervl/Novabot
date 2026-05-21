@@ -58,6 +58,13 @@ interface MowerDerived {
   pathDirection: number;
   /** Blade RPM relayed via novabot/sensor/<SN> from /blade_speed_get. */
   bladeSpeed: number;
+  /** True when activity = mowing/edge_cutting AND blade RPM = 0 — the
+   *  mower thinks it's mowing but the blades aren't actually turning.
+   *  Caught the LFIN1231000211 incident 2026-05-21 where a stuck
+   *  state-machine left blades at height 7 (raised) so the cutter
+   *  motor never engaged. Warning prompts the user to power-cycle
+   *  before the mower drives the whole lawn without cutting. */
+  bladeStuckWarning: boolean;
   wifiRssi: string | undefined;
   rtkSat: string | undefined;
   errorStatus: string | undefined;
@@ -289,6 +296,11 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
     // actually cutting (blades on) versus driving (blades stopped during
     // an avoid manoeuvre or lane transition).
     bladeSpeed: parseInt(s.blade_speed ?? '0', 10) || 0,
+    bladeStuckWarning:
+      (activity === 'mowing' || activity === 'edge_cutting')
+      && s.blade_speed != null
+      && s.blade_speed !== ''
+      && parseInt(s.blade_speed, 10) === 0,
     wifiRssi: s.wifi_rssi,
     rtkSat: s.rtk_sat,
     errorStatus: s.error_status,
@@ -532,6 +544,48 @@ export default function HomeScreen() {
   const styles = useStyles(makeStyles);
   const hero = HERO_PALETTE[colorScheme];
   const mower = useMemo(() => deriveMower(activeMower), [activeMower]);
+  // Blade-not-spinning warning gets a 15s grace period: the mower routinely
+  // stops the cutter for a second or two during route re-planning and lane
+  // transitions, so an instant warning flashes noise. Only show when the
+  // condition has persisted long enough that "just a brief pause" is no
+  // longer a plausible explanation.
+  const BLADE_STUCK_GRACE_MS = 15000;
+  const [bladeStuckVisible, setBladeStuckVisible] = useState(false);
+  const bladeStuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const instantBladeStuck = mower?.bladeStuckWarning ?? false;
+  const activeMowerSnForBladeWarn = mower?.sn ?? null;
+  useEffect(() => {
+    // Reset whenever we switch mowers — fresh grace window per device.
+    setBladeStuckVisible(false);
+    if (bladeStuckTimerRef.current != null) {
+      clearTimeout(bladeStuckTimerRef.current);
+      bladeStuckTimerRef.current = null;
+    }
+  }, [activeMowerSnForBladeWarn]);
+  useEffect(() => {
+    if (instantBladeStuck) {
+      // Condition is true — start grace timer if not already running.
+      if (!bladeStuckVisible && bladeStuckTimerRef.current == null) {
+        bladeStuckTimerRef.current = setTimeout(() => {
+          setBladeStuckVisible(true);
+          bladeStuckTimerRef.current = null;
+        }, BLADE_STUCK_GRACE_MS);
+      }
+    } else {
+      // Condition cleared — cancel pending timer + hide if currently shown.
+      if (bladeStuckTimerRef.current != null) {
+        clearTimeout(bladeStuckTimerRef.current);
+        bladeStuckTimerRef.current = null;
+      }
+      if (bladeStuckVisible) setBladeStuckVisible(false);
+    }
+    return () => {
+      if (bladeStuckTimerRef.current != null) {
+        clearTimeout(bladeStuckTimerRef.current);
+        bladeStuckTimerRef.current = null;
+      }
+    };
+  }, [instantBladeStuck, bladeStuckVisible]);
   // Dismiss-state for the error banner. Issue #13: stock firmware re-emits
   // the same error_status on every report_state_robot tick, so even after
   // hitting Clear the banner reappears within milliseconds. We hide it
@@ -1552,6 +1606,13 @@ export default function HomeScreen() {
               </Text>
             )}
           </View>
+
+          {bladeStuckVisible && (
+            <View style={styles.bladeStuckBanner}>
+              <Ionicons name="warning" size={16} color={colors.red} />
+              <Text style={styles.bladeStuckBannerText}>{t('bladesNotSpinning')}</Text>
+            </View>
+          )}
 
           {/* Progress bar — ook tijdens terugkeren naar de dock, zodat je de
               laatste coverage-state blijft zien totdat een volgende taak start.
@@ -2997,6 +3058,25 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     gap: 6,
     justifyContent: 'center',
     flexWrap: 'wrap',
+  },
+  bladeStuckBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(239,68,68,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.45)',
+    borderRadius: 6,
+    alignSelf: 'stretch',
+  },
+  bladeStuckBannerText: {
+    fontSize: 12,
+    color: c.red,
+    fontWeight: '600',
+    flex: 1,
   },
   chip: {
     flexDirection: 'row',
