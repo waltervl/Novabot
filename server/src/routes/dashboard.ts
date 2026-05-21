@@ -3409,21 +3409,18 @@ dashboardRouter.post('/ota/trigger/:sn', (req: Request, res: Response) => {
     }
   }
 
-  // Forceer http:// — lokale server heeft geen TLS, maaier kan geen https
-  // Re-bouw URL met de host die de CALLER (app/dashboard) gebruikte om de
-  // server te bereiken. Stored download_url kan stale zijn als de admin
-  // download-helper de server-side baseUrl heeft berekend uit een verkeerde
-  // PORT (bijv. PORT=80 in container terwijl host-side mapping 8080:80
-  // gebruikt — live observed 2026-05-11 .247, OTA failde op /api/dashboard
-  // /firmware/...deb zonder poort). De request reikt sowieso server via de
-  // juiste host:port, dus die host:port klopt voor de maaier ook.
+  // Forceer http:// — lokale server heeft geen TLS, maaier kan geen https.
+  // Voor lokaal-gehoste firmware (/api/dashboard/firmware/...) altijd
+  // herbouwen via getOtaBaseUrl() (TARGET_IP/PORT env). NOOIT req.headers.host
+  // gebruiken: als admin via publieke FQDN binnenkomt (opennova.ramonvanbruggen.nl),
+  // route die door Cloudflare/NPM met 301 https-redirect — mower curl heeft
+  // geen FOLLOWLOCATION en download faalt.
   let downloadUrl = otaVersion.download_url!.replace(/^https:\/\//, 'http://');
   const filenameMatch = downloadUrl.match(/\/api\/dashboard\/firmware\/(.+)$/);
-  const reqHost = req.headers.host;
-  if (filenameMatch && reqHost) {
-    const rebuilt = `http://${reqHost}/api/dashboard/firmware/${filenameMatch[1]}`;
+  if (filenameMatch) {
+    const rebuilt = `${getOtaBaseUrl()}/api/dashboard/firmware/${filenameMatch[1]}`;
     if (rebuilt !== downloadUrl) {
-      console.warn(`\x1b[33m[OTA] ⚠ URL host rewrite: ${downloadUrl} → ${rebuilt}\x1b[0m`);
+      console.warn(`\x1b[33m[OTA] ⚠ URL host rewrite (LAN): ${downloadUrl} → ${rebuilt}\x1b[0m`);
       downloadUrl = rebuilt;
     }
   } else if (downloadUrl !== otaVersion.download_url) {
