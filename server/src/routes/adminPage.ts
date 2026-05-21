@@ -3108,7 +3108,7 @@ async function portableShowSelective() {
 
 async function portableApplyExact() {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!(await appConfirm('Apply exact-restore bundle? Reads mower live charging_pose, transforms polygon, pushes CSVs to mower. No drive needed.', { okText: 'Apply' }))) return;
+  if (!(await appConfirm('Apply exact-restore bundle? Reads mower live charging_pose, transforms polygon, pushes CSVs to mower. After applying you will be asked to dock-cycle the mower so the UTM anchor refreshes.', { okText: 'Apply' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-exact', {
     method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
   });
@@ -3120,6 +3120,7 @@ async function portableApplyExact() {
   portableExactRestore = false;
   portableVerbatimRestore = false;
   loadMaps();
+  if (j.requires_dock_anchor_refresh) await promptDockAnchorRefresh(sn);
 }
 
 async function portableApplyVerbatim() {
@@ -3164,6 +3165,86 @@ async function portableApplyVerbatim() {
   portableExactRestore = false;
   portableVerbatimRestore = false;
   loadMaps();
+  if (j.requires_dock_anchor_refresh) await promptDockAnchorRefresh(sn);
+}
+
+// After any restore, the mower's pos.json (UTM anchor) no longer matches
+// reality. The mower's own docking flow rewrites pos.json on a successful
+// dock cycle — we just need to nudge the user (or the mower) through one.
+async function promptDockAnchorRefresh(sn) {
+  var explanation =
+    'Polygons restored, but the mower\\'s UTM anchor is stale until the next docking. ' +
+    'Without a refresh, the local frame may be 1-2m off from physical reality and ' +
+    'polygons would land in the wrong spot. Pick one:';
+  var choice = await appModal({
+    title: 'Dock anchor refresh required',
+    body: explanation,
+    accent: 'warning',
+    dismissOnBackdrop: false,
+    buttons: [
+      { text: 'Skip (do later)', value: 'skip' },
+      { text: 'I will do it manually', value: 'manual' },
+      { text: 'Automatic (1m drive)', primary: true, value: 'auto' },
+    ],
+  });
+  if (choice === 'skip' || !choice) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/refresh-dock-anchor', {
+    method: 'POST',
+    headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: choice }),
+  });
+  var j = await r.json();
+  if (!j.ok) { await appAlert('Dock-anchor refresh failed: ' + (j.error || 'unknown'), { accent: 'danger' }); return; }
+  if (choice === 'manual') {
+    await appAlert(j.instruction || 'Move mower off dock briefly then dock again.', { accent: 'info', title: 'Refresh instruction' });
+    return;
+  }
+  // Auto: poll battery_state until Charging returns (or timeout).
+  await pollDockAnchorAuto(sn);
+}
+
+async function pollDockAnchorAuto(sn) {
+  var startMs = Date.now();
+  var timeoutMs = 90000;
+  var modal = appModal({
+    title: 'Auto-redock in progress',
+    body: 'Starting...',
+    accent: 'info',
+    dismissOnBackdrop: false,
+    buttons: [{ text: 'Cancel', value: 'cancel' }],
+  });
+  var cancelled = false;
+  modal.then(function(v) { if (v === 'cancel') cancelled = true; });
+  while (Date.now() - startMs < timeoutMs && !cancelled) {
+    await new Promise(function(r) { return setTimeout(r, 2000); });
+    try {
+      var r = await fetch('/api/admin-status/devices', { headers: { 'Authorization': token } });
+      var j = await r.json();
+      var devs = (j && j.data) || j || [];
+      var dev = (Array.isArray(devs) ? devs : []).find(function(d) { return d.sn === sn; });
+      var sensors = (dev && dev.sensors) || {};
+      var battery = String(sensors.battery_state || '');
+      var work = String(sensors.work_status || '');
+      var elapsed = Math.round((Date.now() - startMs) / 1000);
+      // Update modal body via textContent (XSS-safe).
+      var bodyEl = document.querySelector('.modal-box .modal-msg');
+      if (bodyEl) {
+        bodyEl.textContent =
+          'Elapsed: ' + elapsed + 's\\n' +
+          'work_status: ' + (work || '?') + '\\n' +
+          'battery_state: ' + (battery || '?');
+        bodyEl.style.whiteSpace = 'pre-line';
+      }
+      if (battery === 'Charging' && elapsed > 10) {
+        if (bodyEl) bodyEl.textContent += '\\n\\nDocked! UTM anchor refreshed via save_utm_origin.';
+        return;
+      }
+    } catch (e) { /* keep polling */ }
+  }
+  var bodyEl2 = document.querySelector('.modal-box .modal-msg');
+  if (bodyEl2 && !cancelled) {
+    bodyEl2.textContent += '\\n\\nTimeout - check mower state manually.';
+  }
 }
 
 async function portableStartDrive() {

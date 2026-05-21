@@ -1303,12 +1303,16 @@ adminStatusRouter.post('/maps/:sn/portable-backups/:filename/restore', async (re
   });
   const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, session.stagingId);
   fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
+  const sourceSn = parsed.metadata?.sourceSn ?? null;
   res.json({
     ok: true,
     stagingId: session.stagingId,
     state: session.state,
     exactRestore: !!(parsed.mowerFiles && parsed.metadata?.originalChargingPose),
-    note: 'staging created — POST /apply-exact next',
+    verbatimRestore: !!(parsed.mowerFiles?.csvFiles && Object.keys(parsed.mowerFiles.csvFiles).length > 0),
+    sourceSn,
+    sourceSnMatches: sourceSn === sn,
+    note: 'staging created — POST /apply-verbatim (same SN) or /apply-exact (Δ-rotated)',
   });
 });
 
@@ -2219,35 +2223,26 @@ adminStatusRouter.post(
       },
     });
 
-    // Generate raster from the new (transformed) polygons. Compute bbox
-    // from the transformed work polygon since coverage_planner rasterizes
-    // around the mower's current frame.
-    const allPoints: { x: number; y: number }[] = [];
-    for (const wp of workPolygons) allPoints.push(...transformPolygonPts(wp.points));
-    for (const o of parsed.obstacles) allPoints.push(...transformPolygonPts(o.points));
-    if (allPoints.length > 0) {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const p of allPoints) {
-        if (p.x < minX) minX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y > maxY) maxY = p.y;
-      }
-      const margin = 2.0;
-      const spanX = maxX - minX + 2 * margin;
-      const spanY = maxY - minY + 2 * margin;
-      const size = Math.max(spanX, spanY) > 30 ? 60 : 30;
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-      publishToExtended(sn, {
-        generate_empty_map: {
-          origin_x: cx - size / 2,
-          origin_y: cy - size / 2,
-          size,
-          index: 0,
-        },
-      });
-    }
+    // After write_map_files lands the fresh CSVs on disk, trigger the
+    // firmware's own save_map handler to regenerate map.yaml / map.pgm /
+    // map.png — the exact same path a real BLE mapping session takes for
+    // its final "total map" pass. This replaces the earlier custom
+    // generate_empty_map call, which produced a blank raster that
+    // coverage_planner couldn't actually use (Error 118 file_not_exists,
+    // verified on LFIN1231000211 2026-05-21). save_map type:1 makes the
+    // firmware read the new CSVs + emit the artefacts in its own native
+    // format. Same call that recovery-playbook 2026-04-23 + restore-and-
+    // realign (this file, line 1209) already use successfully.
+    // Fire-and-forget — caller doesn't need to await the respond.
+    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+    console.log(`[Admin] apply-exact ${sn}: save_map type:1 dispatched after write_map_files`);
+    // Mirror map.yaml/pgm/png into each map<N> slot so Nav2 can resolve
+    // start_navigation lookups for any work-map without hitting Error 107.
+    // 3s delay so save_map type:1 finishes writing map.yaml first.
+    setTimeout(() => {
+      publishToExtended(sn, { regenerate_per_map_files: {} });
+      console.log(`[Admin] apply-exact ${sn}: regenerate_per_map_files dispatched`);
+    }, 3000);
 
     importStaging.transition(stagingId, 'APPLIED', { applyResult: {} });
     importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'UPLOADED', to_state: 'APPLIED', reason: 'exact-restore one-click' });
@@ -2256,6 +2251,7 @@ adminStatusRouter.post(
       state: 'APPLIED',
       delta: { dx: dockMP.x - origPose.x, dy: dockMP.y - origPose.y, dtheta: dt },
       transformedFiles: Object.keys(transformedCsvs),
+      requires_dock_anchor_refresh: true,
     });
   },
 );
@@ -2336,12 +2332,31 @@ adminStatusRouter.post(
     }
 
     // Build write_map_files payload — verbatim, no transformation.
+    // restart_mapping: false — killing novabot_mapping + coverage_planner
+    // mid-flight leaks iceoryx shm chunks (pool sized 50). After a few
+    // restart cycles the pool fills up, new nodes can't acquire chunks
+    // and crash on init, triggering robot_decision Error 140. Verified
+    // live LFIN2230700238 2026-05-21: apply-verbatim with restart_mapping
+    // = true caused the cascade. Same mitigation apply-exact already uses
+    // (see comment at write_map_files call further up). Refresh of cached
+    // polygons happens via the save_map type:1 trigger below — firmware
+    // re-reads CSVs through its own native save flow without bouncing
+    // novabot_mapping.
+    //
+    // pos.json EXCLUDED — stock robot_decision rewrites /userdata/pos.json
+    // on every successful docking (open drop-in: mower/robot_decision.py
+    // line 2309 `self.save_utm_origin()` after result.code==100 SUCCESS).
+    // Restoring an old pos.json from a bundle clobbers the mower's current
+    // UTM anchor, putting the local frame out of sync with the physical
+    // world. Verified live LFIN2230700238 2026-05-21: apply-verbatim with
+    // bundle pos.json restored caused localization to report (-1.67, 0.88)
+    // while mower was physically on dock at (~0, 0.06). Let the mower's
+    // own docking flow refresh pos.json instead.
     const writePayload: Record<string, unknown> = {
       csv_files: mowerFiles.csvFiles,
       charging_station_yaml: mowerFiles.chargingStationYaml ?? null,
-      restart_mapping: true,
+      restart_mapping: false,
     };
-    if (mowerFiles.posJson) writePayload.pos_json = mowerFiles.posJson;
     if (mowerFiles.mapFilesText && Object.keys(mowerFiles.mapFilesText).length > 0) {
       writePayload.map_files_text = mowerFiles.mapFilesText;
     }
@@ -2349,6 +2364,20 @@ adminStatusRouter.post(
       writePayload.map_files_b64 = mowerFiles.mapFilesB64;
     }
     publishToExtended(sn, { write_map_files: writePayload });
+
+    // Trigger the firmware's own save_map handler so it regenerates
+    // map.yaml/pgm/png + per-slot artefacts through the same native path
+    // a real BLE mapping session uses. Refreshes novabot_mapping's cached
+    // polygons without bouncing the process. Followed by regenerate_per
+    // _map_files 3s later to mirror the artefacts into every mapN slot
+    // so start_navigation lookups resolve for each work-map (otherwise
+    // Error 107). Same pattern as apply-exact.
+    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+    console.log(`[Admin] apply-verbatim ${sn}: save_map type:1 dispatched after write_map_files`);
+    setTimeout(() => {
+      publishToExtended(sn, { regenerate_per_map_files: {} });
+      console.log(`[Admin] apply-verbatim ${sn}: regenerate_per_map_files dispatched`);
+    }, 3000);
 
     // Update server DB so dashboard map view reflects what's now on disk.
     // Polygon points come from the bundle untransformed (same frame as
@@ -2400,12 +2429,106 @@ adminStatusRouter.post(
       forced: !!force,
       written: {
         csvFiles: Object.keys(mowerFiles.csvFiles).length,
-        posJson: !!mowerFiles.posJson,
+        posJson: false,
         mapFilesText: Object.keys(mowerFiles.mapFilesText ?? {}).length,
         mapFilesB64: Object.keys(mowerFiles.mapFilesB64 ?? {}).length,
         chargingStationYaml: !!mowerFiles.chargingStationYaml,
       },
+      requires_dock_anchor_refresh: true,
     });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/refresh-dock-anchor
+//
+// After any restore (apply-verbatim or apply-exact) the mower's pos.json
+// UTM anchor on disk no longer matches reality: the bundle's polygons are
+// in their export-time local frame, but the mower's running localization
+// has its own current frame. The only way to make these coincide is to
+// force a fresh docking cycle — stock robot_decision calls
+// save_utm_origin_info on each successful dock (verified in open
+// drop-in: mower/robot_decision.py line 2309), rewriting pos.json with
+// the current UTM-to-local anchor. The next boot then reads the fresh
+// anchor and polygons land where they belong.
+//
+// Two modes:
+//   - manual: caller drives the mower off-and-on themselves (lift + place,
+//     or joystick). Server just returns an instruction text.
+//   - auto: server drives the mower off dock via the manual-control MQTT
+//     protocol (start_move:4 → mst back velocity → stop_move) then
+//     triggers go_to_charge so the docking sequence runs end-to-end with
+//     ArUco alignment. save_utm_origin fires automatically on SUCCESS.
+//
+// Response is immediate; the auto sequence runs async. Caller polls
+// battery_state via /devices to see when 'Charging' returns.
+adminStatusRouter.post(
+  '/maps/:sn/refresh-dock-anchor',
+  (req: AuthRequest, res: Response) => {
+    const sn = req.params.sn;
+    const mode = (req.body?.mode ?? '') as string;
+
+    if (mode === 'manual') {
+      console.log(`[Admin] refresh-dock-anchor ${sn}: manual mode acknowledged`);
+      res.json({
+        ok: true,
+        mode: 'manual',
+        instruction:
+          "Pick the mower up briefly and place it back on the dock, OR use the joystick to drive ~1m off and back. The mower's own docking flow refreshes the UTM anchor on successful contact. Wait until battery_state = Charging before mowing.",
+      });
+      return;
+    }
+
+    if (mode !== 'auto') {
+      res.status(400).json({ ok: false, error: "mode required: 'auto' or 'manual'" });
+      return;
+    }
+
+    const sensors = deviceCache.get(sn);
+    const battery = sensors?.get('battery_state') ?? '';
+    if (battery !== 'Charging') {
+      res.status(409).json({
+        ok: false,
+        error: `auto mode requires mower currently on dock (battery_state='Charging'), got '${battery}'`,
+      });
+      return;
+    }
+
+    // Respond immediately; the sequence runs over ~40s.
+    res.json({
+      ok: true,
+      mode: 'auto',
+      message: 'auto-redock sequence started: back 1m → stop → go_to_charge. Poll /devices for battery_state → Charging.',
+      estimated_duration_s: 45,
+    });
+
+    // Fire-and-forget async sequence.
+    (async () => {
+      try {
+        console.log(`[Admin] refresh-dock-anchor ${sn}: auto sequence start`);
+
+        // 1. Enter manual mode, back direction.
+        publishToDevice(sn, { start_move: 4 });
+        await new Promise((r) => setTimeout(r, 300));
+
+        // 2. Spam mst @ 200ms × 25 = ~5s × 0.2 m/s ≈ 1m back.
+        for (let i = 0; i < 25; i++) {
+          publishToDevice(sn, { mst: { x_w: 0.2, y_v: 0, z_g: 0 } });
+          await new Promise((r) => setTimeout(r, 200));
+        }
+
+        // 3. Exit manual mode.
+        publishToDevice(sn, { stop_move: {} });
+        await new Promise((r) => setTimeout(r, 1500));
+
+        // 4. Auto-redock — full ArUco-aligned approach. robot_decision
+        //    fires save_utm_origin_info on SUCCESS (result.code == 100),
+        //    rewriting /userdata/pos.json with the current UTM anchor.
+        publishToDevice(sn, { go_to_charge: {} });
+        console.log(`[Admin] refresh-dock-anchor ${sn}: go_to_charge dispatched`);
+      } catch (err) {
+        console.error(`[Admin] refresh-dock-anchor ${sn}: sequence failed`, err);
+      }
+    })();
   },
 );
 
