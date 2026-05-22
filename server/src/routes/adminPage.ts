@@ -18,19 +18,31 @@ export function adminPageHtml(): string {
 <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 <style>
   @font-face {
+    font-family:'Departure Mono';
+    src:url('/fonts/DepartureMono-Regular.woff2') format('woff2'),
+        url('/fonts/DepartureMono-Regular.woff') format('woff');
+    font-weight:normal;font-style:normal;font-display:swap;
+  }
+  /* Legacy Posterama kept for any inline overrides that still reference
+     it. New work should use Departure Mono. */
+  @font-face {
     font-family:'Posterama 1919';
     src:url('/fonts/Posterama1919.woff2') format('woff2'),
         url('/fonts/Posterama1919.ttf') format('truetype');
     font-weight:normal;font-style:normal;font-display:swap;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:system-ui,-apple-system,sans-serif;background:#030712;color:#e0e0e0;min-height:100vh}
-  /* Display font for headers, tabs, chips, badges, buttons — body stays system-ui */
-  h1,h2,h3,.tab,.chip,.badge,.btn,button{font-family:'Posterama 1919',system-ui,sans-serif;letter-spacing:0.08em}
-  h1{letter-spacing:0.18em;text-transform:uppercase}
-  h2{letter-spacing:0.16em}
-  .tab{letter-spacing:0.12em;text-transform:uppercase}
-  .badge{letter-spacing:0.08em;text-transform:uppercase}
+  /* Departure Mono throughout, in honcho.dev style. The pixel monospace
+     feel matches the OpenNova terminal aesthetic. Fallback chain ends in
+     system monospace so the page stays readable if the font fails to
+     load. Letter-spacing slightly relaxed since Departure Mono is wider
+     than Posterama; the old 0.08em looked stretched. */
+  body{font-family:'Departure Mono',ui-monospace,SFMono-Regular,Monaco,Consolas,Liberation Mono,Menlo,monospace;background:#030712;color:#e0e0e0;min-height:100vh}
+  h1,h2,h3,.tab,.chip,.badge,.btn,button{font-family:'Departure Mono',ui-monospace,SFMono-Regular,monospace;letter-spacing:0.04em}
+  h1{letter-spacing:0.12em;text-transform:uppercase}
+  h2{letter-spacing:0.10em}
+  .tab{letter-spacing:0.08em;text-transform:uppercase}
+  .badge{letter-spacing:0.06em;text-transform:uppercase}
   .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:1000;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s}
   .modal-overlay.show{opacity:1}
   .modal-box{background:#1a1a2e;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:24px;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
