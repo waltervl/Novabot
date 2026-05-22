@@ -36,12 +36,14 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <TinyGPS++.h>
 #include <ArduinoJson.h>
 #include <time.h>
 #include <base64.h>
+#include <esp_heap_caps.h>
 
 #include <vector>
 
@@ -86,6 +88,13 @@ struct Config {
   String ntripMount;          // mountpoint, e.g. "CT3F00FRA0"
   String ntripUser = "centipede";
   String ntripPass = "centipede";
+
+  // Server upload target — used by /api/upload and the TFT "Upload to server"
+  // button. Empty until the user fills the new section in /api/config/server.
+  // The token is a JWT Bearer; the bundle endpoint requires admin auth.
+  String serverUrl;           // e.g. "http://192.168.0.247:8080"
+  String mowerSn;             // e.g. "LFIN2230700238"
+  String adminToken;          // raw bearer, NEVER printed/logged
 } cfg;
 
 struct Status {
@@ -250,6 +259,11 @@ static void loadConfig() {
   cfg.ntripMount = prefs.getString("nmount", "");
   cfg.ntripUser  = prefs.getString("nuser", "centipede");
   cfg.ntripPass  = prefs.getString("npass", "centipede");
+  // Server upload target (Task 10). NVS key budget: 15 chars, so we use
+  // short keys ("surl", "msn", "atok").
+  cfg.serverUrl   = prefs.getString("surl", "");
+  cfg.mowerSn     = prefs.getString("msn", "");
+  cfg.adminToken  = prefs.getString("atok", "");
 }
 
 static void saveConfig() {
@@ -260,6 +274,9 @@ static void saveConfig() {
   prefs.putString("nmount", cfg.ntripMount);
   prefs.putString("nuser", cfg.ntripUser);
   prefs.putString("npass", cfg.ntripPass);
+  prefs.putString("surl", cfg.serverUrl);
+  prefs.putString("msn", cfg.mowerSn);
+  prefs.putString("atok", cfg.adminToken);
 }
 
 // Haversine distance between two lat/lng points in metres. Accurate to
@@ -1200,6 +1217,176 @@ static void handleConfigPost() {
   ESP.restart();
 }
 
+// ── Server upload target config (Task 10) ────────────────────────────
+// Separate endpoint from /api/config so the WiFi/NTRIP form can be saved
+// (with a reboot) independently from the upload target (no reboot needed
+// — the values are read fresh on every upload).
+static void handleConfigServerGet() {
+  JsonDocument doc;
+  doc["serverUrl"] = cfg.serverUrl;
+  doc["mowerSn"]   = cfg.mowerSn;
+  // The token is sensitive — only expose its tail so the UI can confirm
+  // a value is stored without dumping the JWT into the DOM. An attacker
+  // with read-access to the form would otherwise own the admin account.
+  String t = cfg.adminToken;
+  if (t.length() > 8) {
+    doc["tokenPreview"] = String("...") + t.substring(t.length() - 8);
+  } else if (t.length() > 0) {
+    doc["tokenPreview"] = "set";
+  } else {
+    doc["tokenPreview"] = "";
+  }
+  sendJson(200, doc);
+}
+
+static void handleConfigServerPost() {
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  // Treat empty incoming strings as "leave stored value alone" — same
+  // semantics as the WiFi/NTRIP form. That lets the user update only
+  // the mower SN without re-pasting the JWT every time.
+  auto maybeSet = [&](const char* key, String& target) {
+    if (!body[key].is<const char*>()) return;
+    String v = String((const char*) body[key]);
+    if (v.length() == 0) return;
+    target = v;
+  };
+  maybeSet("serverUrl",  cfg.serverUrl);
+  maybeSet("mowerSn",    cfg.mowerSn);
+  maybeSet("adminToken", cfg.adminToken);
+  saveConfig();
+  // DELIBERATELY do not log token length here — even the length leaks
+  // a tiny amount of info to anyone tailing weblog/Serial.
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// uploadBundleToServer — build a fresh .novabundle from the current
+// /session/ state and POST it as multipart/form-data to the admin-import
+// endpoint. Synchronous: caller (HTTP handler or LVGL button) blocks for
+// the whole upload. ESP32-S3 N16R8 has 8 MB PSRAM; typical bundles are
+// <1 MB so we load the whole thing into PSRAM and ship it in one write.
+//
+// On non-PSRAM builds we fall back to internal heap with a 256 KB cap —
+// both walker targets currently have BOARD_HAS_PSRAM set so the fallback
+// is just safety net.
+bool uploadBundleToServer(String& outMsg) {
+  if (cfg.serverUrl.isEmpty() || cfg.mowerSn.isEmpty() || cfg.adminToken.isEmpty()) {
+    outMsg = "Server config missing";
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    outMsg = "WiFi not connected";
+    return false;
+  }
+
+  BundleBuilder bb(sessionStore);
+  String path = bb.build();
+  if (path.isEmpty()) { outMsg = "Bundle build failed"; return false; }
+
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) { outMsg = "Cannot open bundle"; return false; }
+  size_t fileSize = f.size();
+  if (fileSize == 0) { f.close(); outMsg = "Bundle is empty"; return false; }
+
+  // Helper that prefers PSRAM but falls back to internal heap when no
+  // SPIRAM is available. ps_malloc() returns NULL on non-PSRAM boards
+  // since v2 of arduino-esp32, so explicit MALLOC_CAP_SPIRAM check.
+  auto allocBuf = [](size_t n) -> uint8_t* {
+    void* p = nullptr;
+    if (psramFound()) {
+      p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+    }
+    if (!p) {
+      // Non-PSRAM fallback. Cap at 256 KB to avoid OOM on a 320 KB SRAM
+      // device — anything beyond that should not exist as a single
+      // upload anyway.
+      if (n > 256 * 1024) return nullptr;
+      p = malloc(n);
+    }
+    return (uint8_t*) p;
+  };
+
+  uint8_t* fileBuf = allocBuf(fileSize);
+  if (!fileBuf) {
+    f.close();
+    outMsg = "Bundle alloc failed (" + String((unsigned) fileSize) + " B)";
+    return false;
+  }
+  size_t got = f.read(fileBuf, fileSize);
+  f.close();
+  if (got != fileSize) {
+    free(fileBuf);
+    outMsg = "Short read";
+    return false;
+  }
+
+  String boundary = "----RtkWalkerBoundary7K9zQp";
+  String head = "--" + boundary + "\r\n"
+                "Content-Disposition: form-data; name=\"bundle\"; filename=\"walker.novabundle\"\r\n"
+                "Content-Type: application/zip\r\n\r\n";
+  String tail = "\r\n--" + boundary + "--\r\n";
+
+  size_t totalLen = head.length() + fileSize + tail.length();
+  uint8_t* body = allocBuf(totalLen);
+  if (!body) {
+    free(fileBuf);
+    outMsg = "Body alloc failed (" + String((unsigned) totalLen) + " B)";
+    return false;
+  }
+  memcpy(body, head.c_str(), head.length());
+  memcpy(body + head.length(), fileBuf, fileSize);
+  memcpy(body + head.length() + fileSize, tail.c_str(), tail.length());
+  free(fileBuf);
+
+  String url = cfg.serverUrl;
+  // Allow user to enter the host with or without a trailing slash.
+  if (url.endsWith("/")) url.remove(url.length() - 1);
+  url += "/api/admin-status/maps/";
+  url += cfg.mowerSn;
+  url += "/import-walker-bundle";
+  weblogf("[upload] POST %s (%u B)\n", url.c_str(), (unsigned) totalLen);
+
+  HTTPClient http;
+  if (!http.begin(url)) {
+    free(body);
+    outMsg = "HTTPClient begin failed";
+    return false;
+  }
+  http.addHeader("Authorization", String("Bearer ") + cfg.adminToken);
+  http.addHeader("Content-Type", String("multipart/form-data; boundary=") + boundary);
+  http.setTimeout(30000);
+
+  int code = http.POST(body, totalLen);
+  String resp = http.getString();
+  http.end();
+  free(body);
+
+  // NOTE: we deliberately do not echo the request headers in the log —
+  // that would print the Authorization header (full Bearer token) to
+  // both Serial and the web log buffer. Keep the JWT off the wire log.
+  weblogf("[upload] HTTP %d, %u B reply\n", code, (unsigned) resp.length());
+
+  if (code < 200 || code >= 300) {
+    outMsg = "HTTP " + String(code) + ": " + resp.substring(0, 100);
+    return false;
+  }
+  outMsg = "Upload OK (" + String((unsigned) fileSize) + " B): " + resp.substring(0, 80);
+  return true;
+}
+
+// HTTP wrapper around uploadBundleToServer() for the web UI / curl tests.
+static void handleUploadPost() {
+  String msg;
+  bool ok = uploadBundleToServer(msg);
+  JsonDocument doc;
+  doc["ok"] = ok;
+  doc["msg"] = msg;
+  sendJson(ok ? 200 : 500, doc);
+}
+
 // ── Setup ───────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
@@ -1334,6 +1521,12 @@ void setup() {
   server.on("/api/battery/raw",   HTTP_GET,  handleBatteryRaw);
   server.on("/api/config", HTTP_GET,  handleConfigGet);
   server.on("/api/config", HTTP_POST, handleConfigPost);
+  // Server upload target (separate from WiFi/NTRIP — no reboot on save).
+  server.on("/api/config/server", HTTP_GET,  handleConfigServerGet);
+  server.on("/api/config/server", HTTP_POST, handleConfigServerPost);
+  // Trigger an upload to the configured server. POSTs the freshly-built
+  // .novabundle to /api/admin-status/maps/:sn/import-walker-bundle.
+  server.on("/api/upload", HTTP_POST, handleUploadPost);
   // Walker bundle export — produces a .novabundle zip and streams it back.
   // Server-side (Task 8) consumes the same file to materialise a portable
   // mower bundle. Always rebuilds on request so the latest /session/ state

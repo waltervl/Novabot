@@ -1499,6 +1499,7 @@ static lv_timer_t* s_recTimer    = nullptr;
 static void onAddMapClicked(lv_event_t* e);
 static void onMapRowClicked(lv_event_t* e);
 static void onExportClicked(lv_event_t* e);
+static void onUploadClicked(lv_event_t* e);
 static void onBackToGpsClicked(lv_event_t* e);
 static void onAddChannelClicked(lv_event_t* e);
 static void onAddObstacleClicked(lv_event_t* e);
@@ -1541,21 +1542,37 @@ static void buildSessionMainScreen() {
     lv_obj_set_size(s_mapList, LV_PCT(94), LV_PCT(60));
     lv_obj_align(s_mapList, LV_ALIGN_TOP_MID, 0, 40);
 
+    // Three bottom buttons in a single row: Add work area / Export bundle /
+    // Upload to server. We shrink the work-area button to ~38% so the
+    // smaller export + upload pair fit on the right; the text fonts stay
+    // readable at the smaller widths.
     lv_obj_t* btnAdd = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnAdd, LV_PCT(45), 50);
+    lv_obj_set_size(btnAdd, LV_PCT(38), 50);
     lv_obj_align(btnAdd, LV_ALIGN_BOTTOM_LEFT, 6, -10);
     lv_obj_t* lblAdd = lv_label_create(btnAdd);
-    lv_label_set_text(lblAdd, "+ Add work area");
+    lv_label_set_text(lblAdd, "+ Add area");
     lv_obj_center(lblAdd);
     lv_obj_add_event_cb(btnAdd, onAddMapClicked, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t* btnExport = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnExport, LV_PCT(45), 50);
-    lv_obj_align(btnExport, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
+    lv_obj_set_size(btnExport, LV_PCT(28), 50);
+    lv_obj_align(btnExport, LV_ALIGN_BOTTOM_MID, 0, -10);
     lv_obj_t* lblExp = lv_label_create(btnExport);
-    lv_label_set_text(lblExp, "Export bundle");
+    lv_label_set_text(lblExp, "Export");
     lv_obj_center(lblExp);
     lv_obj_add_event_cb(btnExport, onExportClicked, LV_EVENT_CLICKED, nullptr);
+
+    // Upload to server — POSTs the freshly-built bundle to the configured
+    // Novabot server. Synchronous; the title flips to "Uploading..." while
+    // the call is in flight, then to a result banner.
+    lv_obj_t* btnUpload = lv_btn_create(s_screenMain);
+    lv_obj_set_size(btnUpload, LV_PCT(28), 50);
+    lv_obj_align(btnUpload, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
+    lv_obj_set_style_bg_color(btnUpload, lv_color_hex(0x2563eb), 0);
+    lv_obj_t* lblUp = lv_label_create(btnUpload);
+    lv_label_set_text(lblUp, "Upload");
+    lv_obj_center(lblUp);
+    lv_obj_add_event_cb(btnUpload, onUploadClicked, LV_EVENT_CLICKED, nullptr);
 }
 
 static void buildDetailScreen() {
@@ -1952,6 +1969,23 @@ static void onExportClicked(lv_event_t* /*e*/) {
     char msg[128];
     snprintf(msg, sizeof(msg), "Bundle ready: %s", path.c_str());
     if (s_mainTitle) lv_label_set_text(s_mainTitle, msg);
+}
+
+static void onUploadClicked(lv_event_t* /*e*/) {
+    // Direct POST to the configured server. Synchronous on the LVGL task;
+    // typical bundles upload in a few seconds over WiFi. The title flip
+    // lets the user know something is happening — without lv_refr_now()
+    // the screen wouldn't repaint until after the blocking POST returned.
+    if (s_mainTitle) {
+        lv_label_set_text(s_mainTitle, "Uploading...");
+        lv_refr_now(nullptr);
+    }
+    String msg;
+    bool ok = uploadBundleToServer(msg);
+    char banner[160];
+    snprintf(banner, sizeof(banner), "%s%s",
+             ok ? "" : "ERR: ", msg.c_str());
+    if (s_mainTitle) lv_label_set_text(s_mainTitle, banner);
 }
 
 static void onBackToGpsClicked(lv_event_t* /*e*/) {

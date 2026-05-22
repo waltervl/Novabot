@@ -73,3 +73,9 @@ bool walkerToggleRecording();                            // returns new state
 struct WalkerLivePoint { double lat; double lng; uint8_t fix; };
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount);
+
+// Upload the current /session/ bundle to the configured Novabot server.
+// Synchronous: blocks the calling task for the full POST (typically a
+// few seconds over WiFi). `outMsg` receives a short user-facing status
+// line — success or the first chunk of the server's error response.
+bool uploadBundleToServer(String& outMsg);
