@@ -322,3 +322,8 @@ ssh <server> "sqlite3 /opt/novabot/novabot.db \
   (clean slate) before assuming the code is broken. Walker bundles are
   cheap to regenerate; the most common failure modes are stale local
   state, not a code bug.
+
+## Firmware updates
+
+The walker can update itself over the air. See
+[Walker firmware updates (OTA)](walker-ota.md) for the publishing flow.
