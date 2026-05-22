@@ -587,6 +587,7 @@ static bool     batteryCharging = false;
 
 static uint32_t gnssDetectedAtMs = 0; // millis() when first byte arrived (used to delay the post-detect PAIR queries)
 static bool     pair021Sent = false; // firmware version query
+static bool     pair050_1HzSent = false; // force 1 Hz fix rate (override NV)
 // PAIR050,200 (5 Hz) retry state. The LC29HDA silently drops the cmd
 // if its serial parser is busy, so resend up to 4 times spaced 2 s
 // apart and stop once PAIR001,050,0 ACK is observed. Confirmation goes
@@ -624,17 +625,27 @@ static void gnssPump() {
   // moment a single byte arrives we drop back into normal flow.
   if (!gnssDetected) return;
 
-  // Post-detect commands. Only PAIR021 (firmware-version query) is
-  // sent now — PAIR050,200 (5 Hz) was tried but it choked the LC29HDA
-  // RTCM correction pipeline: the module couldn't keep RTK FLOAT→FIX
-  // lock when its position engine was running 5x faster, and the user
-  // lost RTK fix entirely (31 sats, HDOP 0.49, no fix in 5 min). At
-  // default 1 Hz the same setup fixes inside a minute. So we stay at
-  // 1 Hz, and density comes from the 2 cm displacement filter instead.
+  // Post-detect commands. PAIR021 (firmware-version query) for diagnostics,
+  // plus PAIR050,1000 to force the LC29HDA back to 1 Hz fix rate every
+  // boot. The module persists its last PAIR050 setting in NV memory, so
+  // an older firmware that wrote 200 ms (5 Hz) keeps that rate across
+  // power cycles even after we strip the 5 Hz command from this code.
+  // PAIR050,200 (5 Hz) was tried but it choked the RTCM correction
+  // pipeline: the module couldn't keep RTK FLOAT->FIX lock when its
+  // position engine was running 5x faster, and the user lost RTK fix
+  // entirely (31 sats, HDOP 0.49, no fix in 5 min). At 1 Hz the same
+  // setup fixes inside a minute. So we stay at 1 Hz, and density comes
+  // from the 2 cm displacement filter instead.
   uint32_t sinceDetect = millis() - gnssDetectedAtMs;
   if (!pair021Sent && sinceDetect >= 500) {
     sendGnssCommand("PAIR021");
     pair021Sent = true;
+  }
+  if (!pair050_1HzSent && sinceDetect >= 700) {
+    // 1000 ms = 1 Hz. Explicit re-assert each boot so the module doesn't
+    // keep an older 200 ms (5 Hz) NV setting that ruins RTK FIX lock.
+    sendGnssCommand("PAIR050,1000");
+    pair050_1HzSent = true;
   }
 #if NMEA_HEARTBEAT
   // Periodic heartbeat so you can tell "no bytes" apart from "bytes
