@@ -406,6 +406,30 @@ export function initDb(): void {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_import_audit_sn ON import_audit(sn, ts DESC)`);
   } catch {}
 
+  // Walker bundle library — SN-agnostic store for .novabundle uploads from
+  // the RTK walker. Each row is one uploaded bundle on disk; the operator
+  // assigns it to a specific mower later via the admin UI. This lets the
+  // walker stay agnostic of mower identity at survey time.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS walker_bundles (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename          TEXT    NOT NULL UNIQUE,
+      uploaded_at       TEXT    NOT NULL,
+      walker_id         TEXT,
+      size_bytes        INTEGER,
+      polygon_count     INTEGER DEFAULT 0,
+      obstacle_count    INTEGER DEFAULT 0,
+      unicom_count      INTEGER DEFAULT 0,
+      bounds_min_x      REAL,
+      bounds_max_x      REAL,
+      bounds_min_y      REAL,
+      bounds_max_y      REAL,
+      last_assigned_sn  TEXT,
+      last_assigned_at  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_walker_bundles_uploaded_at ON walker_bundles(uploaded_at DESC);
+  `);
+
   // Voeg map_type kolom toe aan maps (migratie – work/obstacle/unicom)
   try {
     db.exec(`ALTER TABLE maps ADD COLUMN map_type TEXT NOT NULL DEFAULT 'work'`);

@@ -8,11 +8,13 @@ import os from 'os';
 import dns from 'dns';
 import crypto from 'crypto';
 import path from 'path';
+import fs from 'fs';
 import { execSync } from 'child_process';
 import { db } from '../db/database.js';
 import { isDeviceOnline, banishSn, unbanSn, listBannedSns } from '../mqtt/broker.js';
 import { awaitCommand, publishToDevice, publishToExtended, onExtendedResponse, offExtendedResponse } from '../mqtt/mapSync.js';
-import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo } from '../db/repositories/index.js';
+import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo, walkerBundleRepo } from '../db/repositories/index.js';
+import type { WalkerBundleRow } from '../db/repositories/index.js';
 import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
 import { parseMapZip, MapArea } from '../mqtt/mapConverter.js';
@@ -36,6 +38,7 @@ import { gpsToLocal, metersPerDegLat, metersPerDegLng } from '../mqtt/mapConvert
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
+import unzipper from 'unzipper';
 
 export const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.json';
 
@@ -69,9 +72,18 @@ const importStaging = new ImportStagingStore(
 );
 const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
+// Walker bundle library — SN-agnostic store on disk. The walker uploads here
+// once; the operator assigns the bundle to a specific mower later via the
+// admin UI. Directory is created on first use so a fresh install doesn't
+// need an extra bootstrap step.
+const walkerBundlesDir = process.env.WALKER_BUNDLES_PATH ?? path.resolve(
+  process.env.STORAGE_PATH ?? './storage',
+  'walker-bundles',
+);
+try { fs.mkdirSync(walkerBundlesDir, { recursive: true }); } catch { /* ignore — handler will throw on write */ }
+
 
 // Read version once at startup
-import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 const __dirname_admin = dirname(fileURLToPath(import.meta.url));
@@ -1608,6 +1620,349 @@ adminStatusRouter.post(
         pointCount: p.points.length,
       })),
       transformedTo: currentDockPose,
+    });
+  },
+);
+
+// ── Walker bundle library — SN-agnostic store + assign-to-mower ────────────
+//
+// Flow: walker POSTs a `.novabundle` to /walker-bundles without knowing the
+// target mower. The bundle lives on disk + a metadata row in `walker_bundles`.
+// The admin UI lists everything and lets the operator pick a target mower,
+// which feeds the bundle through the existing synthesizePortableFromWalker
+// pipeline — same shape as /maps/:sn/import-walker-bundle, just without the
+// walker having to know the SN at upload time.
+
+interface WalkerBundleSummary {
+  walkerId: string | null;
+  polygons: number;
+  obstacles: number;
+  unicom: number;
+  bounds: { minX: number; maxX: number; minY: number; maxY: number } | null;
+}
+
+async function inspectWalkerBundle(buf: Buffer): Promise<WalkerBundleSummary> {
+  let dir;
+  try {
+    dir = await unzipper.Open.buffer(buf);
+  } catch (err) {
+    throw new Error(`not a valid ZIP: ${(err as Error).message}`);
+  }
+  const fileMap = new Map<string, string>();
+  for (const f of dir.files) {
+    if (f.type !== 'File') continue;
+    if (!f.path.endsWith('.json')) continue;
+    const raw = await f.buffer();
+    fileMap.set(f.path, raw.toString('utf8'));
+  }
+
+  function parseArr(name: string): unknown[] {
+    const raw = fileMap.get(name);
+    if (raw == null) return [];
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v : [];
+    } catch { return []; }
+  }
+
+  const polygons = parseArr('polygons.json');
+  const obstacles = parseArr('obstacles.json');
+  const unicom = parseArr('unicom.json');
+
+  let walkerId: string | null = null;
+  let bounds: WalkerBundleSummary['bounds'] = null;
+  const metaRaw = fileMap.get('metadata.json');
+  if (metaRaw) {
+    try {
+      const meta = JSON.parse(metaRaw) as Record<string, unknown>;
+      if (typeof meta.walkerId === 'string') walkerId = meta.walkerId;
+      const b = meta.boundsM as Record<string, unknown> | undefined;
+      if (b && typeof b === 'object') {
+        const minX = Number(b.minX);
+        const maxX = Number(b.maxX);
+        const minY = Number(b.minY);
+        const maxY = Number(b.maxY);
+        if ([minX, maxX, minY, maxY].every(Number.isFinite)) {
+          bounds = { minX, maxX, minY, maxY };
+        }
+      }
+    } catch { /* ignore — bundle without metadata.json still uploads */ }
+  }
+
+  return {
+    walkerId,
+    polygons: polygons.length,
+    obstacles: obstacles.length,
+    unicom: unicom.length,
+    bounds,
+  };
+}
+
+function walkerBundleToDto(row: WalkerBundleRow) {
+  return {
+    id: row.id,
+    filename: row.filename,
+    uploadedAt: row.uploaded_at,
+    walkerId: row.walker_id,
+    sizeBytes: row.size_bytes,
+    polygons: row.polygon_count,
+    obstacles: row.obstacle_count,
+    unicom: row.unicom_count,
+    bounds:
+      row.bounds_min_x != null &&
+      row.bounds_max_x != null &&
+      row.bounds_min_y != null &&
+      row.bounds_max_y != null
+        ? {
+            minX: row.bounds_min_x,
+            maxX: row.bounds_max_x,
+            minY: row.bounds_min_y,
+            maxY: row.bounds_max_y,
+          }
+        : null,
+    lastAssignedSn: row.last_assigned_sn,
+    lastAssignedAt: row.last_assigned_at,
+  };
+}
+
+// POST /api/admin-status/walker-bundles — walker uploads the .novabundle.
+// Multipart, single field `bundle`. Saved to disk; metadata row inserted.
+// Returns the freshly created DTO so the caller can show the new entry.
+adminStatusRouter.post(
+  '/walker-bundles',
+  bundleUpload.single('bundle'),
+  async (req: AuthRequest, res: Response) => {
+    if (!req.file) {
+      res.status(400).json({ ok: false, error: 'bundle file required' });
+      return;
+    }
+
+    let summary: WalkerBundleSummary;
+    try {
+      summary = await inspectWalkerBundle(req.file.buffer);
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+      return;
+    }
+
+    // Unique filename = timestamp + 4-byte random hex; readable + collision-safe.
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const rnd = crypto.randomBytes(3).toString('hex');
+    const safeWalker = summary.walkerId
+      ? summary.walkerId.replace(/[^A-Za-z0-9_-]/g, '')
+      : 'walker';
+    const filename = `${stamp}_${safeWalker}_${rnd}.novabundle`;
+    const filePath = path.join(walkerBundlesDir, filename);
+
+    try {
+      fs.mkdirSync(walkerBundlesDir, { recursive: true });
+      fs.writeFileSync(filePath, req.file.buffer);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: `failed to persist bundle: ${(err as Error).message}` });
+      return;
+    }
+
+    const id = walkerBundleRepo.create({
+      filename,
+      uploaded_at: new Date().toISOString(),
+      walker_id: summary.walkerId,
+      size_bytes: req.file.size,
+      polygon_count: summary.polygons,
+      obstacle_count: summary.obstacles,
+      unicom_count: summary.unicom,
+      bounds_min_x: summary.bounds?.minX ?? null,
+      bounds_max_x: summary.bounds?.maxX ?? null,
+      bounds_min_y: summary.bounds?.minY ?? null,
+      bounds_max_y: summary.bounds?.maxY ?? null,
+    });
+
+    const row = walkerBundleRepo.findById(id);
+    res.json({
+      ok: true,
+      id,
+      filename,
+      size: req.file.size,
+      polygons: summary.polygons,
+      obstacles: summary.obstacles,
+      unicom: summary.unicom,
+      walkerId: summary.walkerId,
+      bundle: row ? walkerBundleToDto(row) : null,
+    });
+  },
+);
+
+// GET /api/admin-status/walker-bundles — list every uploaded bundle.
+adminStatusRouter.get('/walker-bundles', (_req: AuthRequest, res: Response) => {
+  const rows = walkerBundleRepo.listAll();
+  res.json({ bundles: rows.map(walkerBundleToDto) });
+});
+
+// GET /api/admin-status/walker-bundles/:id — stream the raw .novabundle.
+adminStatusRouter.get('/walker-bundles/:id', (req: AuthRequest, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ ok: false, error: 'invalid id' });
+    return;
+  }
+  const row = walkerBundleRepo.findById(id);
+  if (!row) {
+    res.status(404).json({ ok: false, error: 'bundle not found' });
+    return;
+  }
+  const safe = path.basename(row.filename);
+  const filePath = path.join(walkerBundlesDir, safe);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ ok: false, error: 'bundle file missing on disk' });
+    return;
+  }
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
+// DELETE /api/admin-status/walker-bundles/:id — remove disk file + DB row.
+adminStatusRouter.delete('/walker-bundles/:id', (req: AuthRequest, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ ok: false, error: 'invalid id' });
+    return;
+  }
+  const row = walkerBundleRepo.findById(id);
+  if (!row) {
+    res.status(404).json({ ok: false, error: 'bundle not found' });
+    return;
+  }
+  const safe = path.basename(row.filename);
+  const filePath = path.join(walkerBundlesDir, safe);
+  try { fs.unlinkSync(filePath); } catch { /* file already gone is fine */ }
+  const removed = walkerBundleRepo.delete(id);
+  res.json({ ok: removed });
+});
+
+// POST /api/admin-status/walker-bundles/:id/apply — pick the target mower for a
+// stored bundle. Reads the file off disk, runs the same synthesize +
+// parseBundle + create-staging pipeline the per-SN endpoint uses, and marks
+// the DB row as assigned. Returns the staging shape so the admin page can
+// continue straight into apply-verbatim.
+adminStatusRouter.post(
+  '/walker-bundles/:id/apply',
+  async (req: AuthRequest, res: Response) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ ok: false, error: 'invalid id' });
+      return;
+    }
+    const sn = typeof req.body?.sn === 'string' ? req.body.sn.trim() : '';
+    if (!sn) {
+      res.status(400).json({ ok: false, error: 'sn required in body' });
+      return;
+    }
+    const row = walkerBundleRepo.findById(id);
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'bundle not found' });
+      return;
+    }
+
+    // Target mower must be a real device on this server.
+    const equipment = equipmentRepo.findBySn(sn);
+    if (!equipment) {
+      res.status(404).json({ ok: false, error: `mower ${sn} not bound on this server` });
+      return;
+    }
+
+    const active = importStaging.getActive(sn);
+    if (active) {
+      res.status(409).json({
+        ok: false,
+        error: 'active import already in progress for that mower',
+        stagingId: active.stagingId,
+      });
+      return;
+    }
+
+    const sensors = deviceCache.get(sn);
+    const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+    const my = parseFloat(sensors?.get('map_position_y') ?? '');
+    const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+    if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
+      res.status(409).json({
+        ok: false,
+        error: 'no live map_position in sensor cache; is the mower online and docked?',
+      });
+      return;
+    }
+    const currentDockPose = { x: mx, y: my, orientation: mo };
+
+    const safe = path.basename(row.filename);
+    const filePath = path.join(walkerBundlesDir, safe);
+    let buf: Buffer;
+    try {
+      buf = fs.readFileSync(filePath);
+    } catch {
+      res.status(404).json({ ok: false, error: 'bundle file missing on disk' });
+      return;
+    }
+
+    let synth;
+    try {
+      synth = await synthesizePortableFromWalker(buf, {
+        currentDockPose,
+        resolution: 0.05,
+        marginM: 1.0,
+      });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = await parseBundle(synth.portableZip);
+    } catch (e) {
+      if (e instanceof BundleValidationError) {
+        res.status(400).json({ ok: false, error: e.message });
+        return;
+      }
+      throw e;
+    }
+
+    const session = importStaging.create(sn, {
+      sourceSn: `walker-${row.id}`,
+      polygonAreaM2: parsed.polygon.areaM2,
+    });
+    const stagingDir = path.join(
+      process.env.STORAGE_PATH ?? './storage',
+      'imports',
+      sn,
+      session.stagingId,
+    );
+    fs.writeFileSync(path.join(stagingDir, 'bundle.json'), JSON.stringify(parsed));
+    importAuditRepo.append({
+      sn,
+      staging_id: session.stagingId,
+      from_state: '_NONE_',
+      to_state: 'UPLOADED',
+      reason: `walker bundle library id=${row.id}`,
+    });
+
+    walkerBundleRepo.markAssigned(row.id, sn, new Date().toISOString());
+
+    res.json({
+      ok: true,
+      stagingId: session.stagingId,
+      state: session.state,
+      verbatimRestore: true,
+      exactRestore: true,
+      sourceSn: sn,
+      sourceSnMatches: true,
+      note: 'walker bundle synthesized into portable bundle. POST /apply-verbatim next.',
+      polygons: synth.transformedPolygons.map((p) => ({
+        name: p.name,
+        alias: p.alias,
+        pointCount: p.points.length,
+      })),
+      transformedTo: currentDockPose,
+      bundle: walkerBundleToDto({ ...row, last_assigned_sn: sn, last_assigned_at: new Date().toISOString() }),
     });
   },
 );

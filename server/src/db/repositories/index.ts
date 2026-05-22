@@ -25,3 +25,5 @@ export { VirtualWallRepository, virtualWallRepo } from './virtualWalls.js';
 export { OtaVersionRepository, otaVersionRepo } from './otaVersions.js';
 export { pushTokensRepo, type PushTokenRow } from './pushTokens.js';
 export { remoteSupportIdentitiesRepo } from './remoteSupportIdentities.js';
+export { WalkerBundleRepository, walkerBundleRepo } from './walkerBundles.js';
+export type { WalkerBundleRow, CreateWalkerBundleData } from './walkerBundles.js';
