@@ -152,6 +152,7 @@ static lv_obj_t* lbl_save_status = nullptr;
 static lv_obj_t* s_otaVersionLabel = nullptr;
 static lv_obj_t* s_otaStatusLabel = nullptr;
 static lv_obj_t* s_otaCheckBtn = nullptr;
+static lv_obj_t* s_settingsIpLabel = nullptr;
 
 // Maps list widgets.
 static lv_obj_t* maps_list = nullptr;
@@ -419,38 +420,39 @@ static void build_main_screen() {
   // recording completed and produced at least 5 captured points.
   lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
 
-  // +Channel / +Obstacle floating buttons. Anchored above the save-as-area
-  // button so the three never overlap when all are visible (which never
-  // happens in practice — Save-as-area only appears right after a stop,
-  // the others only appear when a saved map is currently being viewed).
+  // +Channel / +Obstacle floating buttons. Icon-only square tiles anchored
+  // in the top-left corner of the map panel so they don't compete with the
+  // bottom Save-as-area / Delete / Back buttons. LVGL's built-in symbol
+  // set has no river or cone glyph — SHUFFLE (zigzag) is the closest match
+  // for a meandering channel, WARNING (triangle with !) reads as a cone.
   // Both are hidden until update_map_action_buttons() un-hides them.
   btn_add_channel = lv_btn_create(map_panel);
-  lv_obj_set_size(btn_add_channel, 110, 36);
-  lv_obj_align(btn_add_channel, LV_ALIGN_BOTTOM_MID, -60, -44);
+  lv_obj_set_size(btn_add_channel, 44, 44);
+  lv_obj_align(btn_add_channel, LV_ALIGN_TOP_LEFT, 8, 8);
   lv_obj_set_style_bg_color(btn_add_channel, lv_color_hex(0x6366f1), 0);
   lv_obj_set_style_radius(btn_add_channel, 8, 0);
   lv_obj_set_style_border_width(btn_add_channel, 0, 0);
   lv_obj_set_style_shadow_width(btn_add_channel, 0, 0);
   lv_obj_add_event_cb(btn_add_channel, on_add_channel_clicked, LV_EVENT_CLICKED, NULL);
   lbl_add_channel = lv_label_create(btn_add_channel);
-  lv_label_set_text(lbl_add_channel, LV_SYMBOL_REFRESH "  +Chan");
+  lv_label_set_text(lbl_add_channel, LV_SYMBOL_SHUFFLE);
   lv_obj_set_style_text_color(lbl_add_channel, lv_color_white(), 0);
-  lv_obj_set_style_text_font(lbl_add_channel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(lbl_add_channel, &lv_font_montserrat_20, 0);
   lv_obj_center(lbl_add_channel);
   lv_obj_add_flag(btn_add_channel, LV_OBJ_FLAG_HIDDEN);
 
   btn_add_obstacle = lv_btn_create(map_panel);
-  lv_obj_set_size(btn_add_obstacle, 110, 36);
-  lv_obj_align(btn_add_obstacle, LV_ALIGN_BOTTOM_MID, 60, -44);
+  lv_obj_set_size(btn_add_obstacle, 44, 44);
+  lv_obj_align(btn_add_obstacle, LV_ALIGN_TOP_LEFT, 60, 8);
   lv_obj_set_style_bg_color(btn_add_obstacle, lv_color_hex(0xb91c1c), 0);
   lv_obj_set_style_radius(btn_add_obstacle, 8, 0);
   lv_obj_set_style_border_width(btn_add_obstacle, 0, 0);
   lv_obj_set_style_shadow_width(btn_add_obstacle, 0, 0);
   lv_obj_add_event_cb(btn_add_obstacle, on_add_obstacle_clicked, LV_EVENT_CLICKED, NULL);
   lbl_add_obstacle = lv_label_create(btn_add_obstacle);
-  lv_label_set_text(lbl_add_obstacle, LV_SYMBOL_CLOSE "  +Obs");
+  lv_label_set_text(lbl_add_obstacle, LV_SYMBOL_WARNING);
   lv_obj_set_style_text_color(lbl_add_obstacle, lv_color_white(), 0);
-  lv_obj_set_style_text_font(lbl_add_obstacle, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(lbl_add_obstacle, &lv_font_montserrat_20, 0);
   lv_obj_center(lbl_add_obstacle);
   lv_obj_add_flag(btn_add_obstacle, LV_OBJ_FLAG_HIDDEN);
 
@@ -768,6 +770,20 @@ static void build_settings_screen() {
   make_field(tab_wifi, "SSID", &ta_wifi_ssid, false, "Home WiFi");
   make_field(tab_wifi, "Password", &ta_wifi_pass, true, "(blank = keep stored)");
 
+  // Live IP label at the bottom of the WiFi tab. Topbar no longer
+  // shows the address (just the WiFi icon coloured by link state),
+  // so we surface the connection IP here for anyone who needs to
+  // hit the walker's web UI from a host on the LAN.
+  lv_obj_t* ipRow = lv_label_create(tab_wifi);
+  lv_label_set_text(ipRow, "IP address");
+  lv_obj_set_style_text_color(ipRow, COL_DIM, 0);
+  lv_obj_set_style_text_font(ipRow, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_pad_top(ipRow, 12, 0);
+  s_settingsIpLabel = lv_label_create(tab_wifi);
+  lv_label_set_text(s_settingsIpLabel, "(not connected)");
+  lv_obj_set_style_text_color(s_settingsIpLabel, COL_TEXT, 0);
+  lv_obj_set_style_text_font(s_settingsIpLabel, &lv_font_montserrat_14, 0);
+
   lv_obj_set_flex_flow(tab_ntrip, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(tab_ntrip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
   make_field(tab_ntrip, "Host",       &ta_ntrip_host,  false, "caster.centipede.fr");
@@ -1060,6 +1076,22 @@ static void load_settings_values() {
   if (s_otaStatusLabel) {
     lv_label_set_text(s_otaStatusLabel, "");
     lv_obj_set_style_text_color(s_otaStatusLabel, COL_TEXT, 0);
+  }
+
+  if (s_settingsIpLabel) {
+    WalkerSnapshot snap;
+    walkerGetSnapshot(snap);
+    if (snap.wifiUp && snap.wifiIp.length() > 0) {
+      lv_label_set_text(s_settingsIpLabel, snap.wifiIp.c_str());
+      lv_obj_set_style_text_color(s_settingsIpLabel, COL_TEXT, 0);
+    } else if (snap.apMode && snap.wifiIp.length() > 0) {
+      String txt = String("AP ") + snap.wifiIp;
+      lv_label_set_text(s_settingsIpLabel, txt.c_str());
+      lv_obj_set_style_text_color(s_settingsIpLabel, COL_AMBER, 0);
+    } else {
+      lv_label_set_text(s_settingsIpLabel, "(not connected)");
+      lv_obj_set_style_text_color(s_settingsIpLabel, COL_DIM, 0);
+    }
   }
 }
 
@@ -1420,26 +1452,32 @@ static void update_map_action_buttons(const WalkerSnapshot& snap) {
   }
 }
 
-// +Channel — push the recorder into Channel mode targeting the special
-// "charge" pseudo-target (same shortcut the old MapDetail screen used).
-// Channels FROM a map TO another map can be added later via the web UI
-// if needed; for the MVP "to charger" covers the common case.
+// +Channel / +Obstacle don't start the recorder on the spot anymore. The
+// old flow auto-started recording the moment the user tapped the icon,
+// which meant they had to literally stand next to the start point with a
+// hand on the screen — no time to walk to where they actually wanted to
+// begin the capture. The new flow stashes the pending start in
+// `s_pendingRec*` globals and hands off to the Recording screen in armed
+// state. The user then presses "Start record" on that screen once they
+// have walked to their start location, which fires the actual
+// recorder.startObstacle / startChannel call.
+static RecordingMode s_pendingRecMode      = RecordingMode::Idle;
+static int           s_pendingRecParent    = -1;
+static String        s_pendingRecChannelTo = "";
+
 static void on_add_channel_clicked(lv_event_t* /*e*/) {
   if (viewing_map_slot < 0) return;
-  if (!recorder.startChannel(viewing_map_slot, "charge")) return;
-  // Stop the live recording polyline rendering: the user is now in a
-  // dedicated sub-recording, the saved-polygon view stays in place
-  // mentally but the Recording screen takes over the foreground.
+  s_pendingRecMode      = RecordingMode::Channel;
+  s_pendingRecParent    = viewing_map_slot;
+  s_pendingRecChannelTo = "charge";
   tft_ui_set_screen(UiScreen::Recording);
 }
 
-// +Obstacle — allocate the next free obstacle index for the current
-// viewed map and start an Obstacle recording. Fails silently if all
-// 32 obstacle slots are full (the user should delete some via the
-// Maps list long-press).
 static void on_add_obstacle_clicked(lv_event_t* /*e*/) {
   if (viewing_map_slot < 0) return;
-  if (!recorder.startObstacle(viewing_map_slot)) return;
+  s_pendingRecMode      = RecordingMode::Obstacle;
+  s_pendingRecParent    = viewing_map_slot;
+  s_pendingRecChannelTo = "";
   tft_ui_set_screen(UiScreen::Recording);
 }
 
@@ -1797,15 +1835,10 @@ static void refresh_status_cb(lv_timer_t* t) {
     lv_obj_add_flag(lbl_sats, LV_OBJ_FLAG_HIDDEN);
   }
   if (snap.hdop > 0 && snap.hdop < 99) {
-    // Append the measured GNSS rate so the field operator can confirm
-    // PAIR050,200 actually took effect. "1Hz" while expecting 5 = retry
-    // hasn't ACKed yet or the module refused. Once gnssRateHz settles
-    // at 5 the firmware is sampling 5x per second.
-    if (snap.gnssRateHz > 0) {
-      snprintf(buf, sizeof(buf), "HDOP %.2f  %uHz", snap.hdop, (unsigned) snap.gnssRateHz);
-    } else {
-      snprintf(buf, sizeof(buf), "HDOP %.2f", snap.hdop);
-    }
+    // Hz indicator dropped from the topbar — the operator can read the
+    // measured rate from the GPS panel below if they need to confirm
+    // PAIR050 took effect. The topbar gets the bare HDOP value only.
+    snprintf(buf, sizeof(buf), "HDOP %.2f", snap.hdop);
     lv_label_set_text(lbl_hdop, buf);
     lv_obj_clear_flag(lbl_hdop, LV_OBJ_FLAG_HIDDEN);
   } else {
@@ -1820,17 +1853,18 @@ static void refresh_status_cb(lv_timer_t* t) {
     lv_obj_set_style_text_color(lbl_ntrip, COL_DIM, 0);
   }
 
+  // Topbar shows the WiFi icon only — colour communicates link state:
+  // emerald = associated to an SSID, amber = falling back to AP mode,
+  // dim = off / failed. The IP address moved to the Settings tab so
+  // the topbar stays uncluttered.
   if (snap.wifiUp) {
-    snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " %s", snap.wifiIp.c_str());
     lv_obj_set_style_text_color(lbl_wifi, COL_EMERALD, 0);
   } else if (snap.apMode) {
-    snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " AP %s", snap.wifiIp.c_str());
     lv_obj_set_style_text_color(lbl_wifi, COL_AMBER, 0);
   } else {
-    snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " off");
     lv_obj_set_style_text_color(lbl_wifi, COL_DIM, 0);
   }
-  lv_label_set_text(lbl_wifi, buf);
+  lv_label_set_text(lbl_wifi, LV_SYMBOL_WIFI);
 
   // Battery pill - hide entirely on targets without a divider, otherwise
   // pick the matching LV_SYMBOL_BATTERY_* glyph and colour it by health.
@@ -1968,63 +2002,158 @@ static lv_obj_t* s_screenRecord = nullptr;
 
 // Recording-screen widgets — mutated by refreshRecordingScreen() at 4 Hz
 // via s_recTimer. All allocated once in buildRecordingScreen().
-static lv_obj_t* s_recBanner     = nullptr;
-static lv_obj_t* s_recPoints     = nullptr;
-static lv_obj_t* s_recDropped    = nullptr;
-static lv_obj_t* s_recRtkDot     = nullptr;
-static lv_obj_t* s_recRtkLabel   = nullptr;
-static lv_obj_t* s_recBadOverlay = nullptr;
-static lv_timer_t* s_recTimer    = nullptr;
+static lv_obj_t* s_recBanner       = nullptr;
+static lv_obj_t* s_recPoints       = nullptr;
+static lv_obj_t* s_recClosure      = nullptr;  // distance-to-start hint while recording
+static lv_obj_t* s_recRtkDot       = nullptr;
+static lv_obj_t* s_recRtkLabel     = nullptr;
+static lv_obj_t* s_recMapPanel     = nullptr;  // bordered card hosting the polylines + cursor
+static lv_obj_t* s_recParentLine   = nullptr;  // parent map polygon (translucent backdrop)
+static lv_obj_t* s_recLiveLine     = nullptr;  // obstacle/channel polyline being walked
+static lv_obj_t* s_recStartDot     = nullptr;  // start vertex — turns green when closeable
+static lv_obj_t* s_recCursor       = nullptr;  // current GPS position
+static lv_obj_t* s_recBadOverlay   = nullptr;  // big red "Bad RTK signal" warning
+static lv_obj_t* s_recBtnStart     = nullptr;  // armed-state full-width Start button
+static lv_obj_t* s_recBtnSave      = nullptr;  // recording-state Save button (left)
+static lv_obj_t* s_recBtnCancel    = nullptr;  // armed AND recording: Cancel/Back (right)
+static lv_obj_t* s_recLblCancel    = nullptr;  // text gets toggled "Back" / "Cancel"
+static lv_timer_t* s_recTimer      = nullptr;
 
+// Armed = the screen is up but the recorder has NOT been started yet.
+// Set when entering Recording from a +Chan/+Obs tap; cleared when the
+// user presses Start. The whole point is letting the user walk to their
+// chosen start location before any points get logged.
+static bool s_recArmed = false;
+
+// Persistent point buffers for the map renderer. lv_line keeps a pointer
+// into these — they must outlive the line widget, hence file-static.
+// Obstacles + channels are always small (a few dozen points; the spec
+// caps live ring at ~256 in practice), so we don't need MAP_POINT_MAX
+// here. 384 leaves margin for decimated parent polygons too without
+// duplicating MAP_POINT_MAX's 6 KB.
+#define REC_PTS_MAX 384
+static lv_point_t s_recParentPts[REC_PTS_MAX];
+static uint16_t   s_recParentPtsUsed = 0;
+static lv_point_t s_recLivePts[REC_PTS_MAX];
+static uint16_t   s_recLivePtsUsed = 0;
+
+// Bounding-box origin captured on Start, used so the live polyline and
+// the parent polygon share the same map projection. Without a fixed
+// origin the auto-zoom would re-center each frame and the parent
+// polygon would visually slide around as the live polyline grew.
+static double s_recMinLat = 0, s_recMaxLat = 0, s_recMinLng = 0, s_recMaxLng = 0;
+static bool   s_recBboxValid = false;
+
+static void onStartRecordClicked(lv_event_t* e);
 static void onSaveClicked(lv_event_t* e);
 static void onCancelClicked(lv_event_t* e);
 static void refreshRecordingScreen();
+static void recArmUi();
+static void recRecordingUi();
+static void recComputeMapBbox();
+static void recRebuildParentPts();
+static void recRebuildLivePts(const WalkerSnapshot& snap);
 
 static void buildRecordingScreen() {
     s_screenRecord = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(s_screenRecord, lv_color_hex(0x111111), 0);
     lv_obj_clear_flag(s_screenRecord, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Banner — the big mode/parent label across the top. Text colour is
-    // updated per-mode in refreshRecordingScreen(); the background stays
-    // the dark screen colour so the text colour reads as the indicator.
+    // Banner — mode + parent map context (e.g. "OBSTACLE in map0"). Text
+    // colour swaps per mode in refreshRecordingScreen(). Compact at the
+    // very top so the map panel below gets every pixel it can.
     s_recBanner = lv_label_create(s_screenRecord);
     lv_label_set_text(s_recBanner, "(idle)");
     lv_obj_set_style_text_color(s_recBanner, lv_color_hex(0x86efac), 0);
     lv_obj_set_style_text_font(s_recBanner, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recBanner, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_align(s_recBanner, LV_ALIGN_TOP_MID, 0, 6);
 
-    // Captured / dropped counters — left aligned, stacked.
+    // Captured count (top-left) + RTK dot/label (top-right) flank the
+    // banner row. Two compact strings — the user wants the map prominent.
     s_recPoints = lv_label_create(s_screenRecord);
-    lv_label_set_text(s_recPoints, "Captured: 0 pts");
+    lv_label_set_text(s_recPoints, "0 pts");
     lv_obj_set_style_text_color(s_recPoints, lv_color_hex(0xeeeeee), 0);
     lv_obj_set_style_text_font(s_recPoints, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recPoints, LV_ALIGN_TOP_LEFT, 14, 60);
+    lv_obj_align(s_recPoints, LV_ALIGN_TOP_LEFT, 8, 8);
 
-    s_recDropped = lv_label_create(s_screenRecord);
-    lv_label_set_text(s_recDropped, "Dropped (low qual): 0");
-    lv_obj_set_style_text_color(s_recDropped, lv_color_hex(0x9ca3af), 0);
-    lv_obj_set_style_text_font(s_recDropped, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recDropped, LV_ALIGN_TOP_LEFT, 14, 84);
-
-    // RTK quality dot + label — right side. The dot is just a small
-    // square-ish lv_obj with a high radius (visually a circle); colour is
-    // swapped by refresh.
     s_recRtkDot = lv_obj_create(s_screenRecord);
-    lv_obj_set_size(s_recRtkDot, 16, 16);
+    lv_obj_set_size(s_recRtkDot, 10, 10);
     lv_obj_set_style_radius(s_recRtkDot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_recRtkDot, lv_color_hex(0xdc2626), 0);
     lv_obj_set_style_border_width(s_recRtkDot, 0, 0);
     lv_obj_clear_flag(s_recRtkDot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(s_recRtkDot, LV_ALIGN_TOP_RIGHT, -88, 62);
+    lv_obj_align(s_recRtkDot, LV_ALIGN_TOP_RIGHT, -54, 12);
 
     s_recRtkLabel = lv_label_create(s_screenRecord);
     lv_label_set_text(s_recRtkLabel, "BAD");
     lv_obj_set_style_text_color(s_recRtkLabel, lv_color_hex(0xeeeeee), 0);
     lv_obj_set_style_text_font(s_recRtkLabel, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recRtkLabel, LV_ALIGN_TOP_RIGHT, -14, 62);
+    lv_obj_align(s_recRtkLabel, LV_ALIGN_TOP_RIGHT, -8, 8);
 
-    // Bad-signal overlay — visible only when the most recent fix was bad.
+    // Map panel: bordered card that hosts the parent backdrop, the live
+    // polyline, the start vertex and the cursor. Sized to leave room for
+    // the banner above and the action buttons below.
+    s_recMapPanel = lv_obj_create(s_screenRecord);
+    lv_obj_set_size(s_recMapPanel, LV_PCT(96), 200);
+    lv_obj_align(s_recMapPanel, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_style_bg_color(s_recMapPanel, lv_color_hex(0x1f2937), 0);
+    lv_obj_set_style_border_width(s_recMapPanel, 1, 0);
+    lv_obj_set_style_border_color(s_recMapPanel, lv_color_hex(0x374151), 0);
+    lv_obj_set_style_radius(s_recMapPanel, 8, 0);
+    lv_obj_clear_flag(s_recMapPanel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(s_recMapPanel, 0, 0);
+
+    // Parent map polygon — drawn first so it sits behind the live line.
+    // Muted blue, thinner stroke; the user reads it as "the area I'm
+    // working inside" without it competing visually with the obstacle
+    // being drawn.
+    s_recParentLine = lv_line_create(s_recMapPanel);
+    lv_obj_set_style_line_color(s_recParentLine, lv_color_hex(0x60a5fa), 0);
+    lv_obj_set_style_line_width(s_recParentLine, 2, 0);
+    lv_obj_set_style_line_rounded(s_recParentLine, true, 0);
+    lv_obj_set_style_line_opa(s_recParentLine, LV_OPA_50, 0);
+    lv_obj_add_flag(s_recParentLine, LV_OBJ_FLAG_HIDDEN);
+
+    // Live obstacle/channel polyline — vivid red, full opacity. Hidden
+    // until the recorder has logged its first point.
+    s_recLiveLine = lv_line_create(s_recMapPanel);
+    lv_obj_set_style_line_color(s_recLiveLine, lv_color_hex(0xef4444), 0);
+    lv_obj_set_style_line_width(s_recLiveLine, 3, 0);
+    lv_obj_set_style_line_rounded(s_recLiveLine, true, 0);
+    lv_obj_add_flag(s_recLiveLine, LV_OBJ_FLAG_HIDDEN);
+
+    // Start vertex marker — appears at the first captured point. Red by
+    // default; flips emerald once the cursor is within closure range.
+    s_recStartDot = lv_obj_create(s_recMapPanel);
+    lv_obj_set_size(s_recStartDot, 12, 12);
+    lv_obj_set_style_radius(s_recStartDot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_recStartDot, lv_color_hex(0xef4444), 0);
+    lv_obj_set_style_border_width(s_recStartDot, 2, 0);
+    lv_obj_set_style_border_color(s_recStartDot, lv_color_hex(0xffffff), 0);
+    lv_obj_clear_flag(s_recStartDot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_recStartDot, LV_OBJ_FLAG_HIDDEN);
+
+    // Current-position cursor — yellow/white halo, redrawn every frame.
+    s_recCursor = lv_obj_create(s_recMapPanel);
+    lv_obj_set_size(s_recCursor, 14, 14);
+    lv_obj_set_style_radius(s_recCursor, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_recCursor, lv_color_hex(0xfde047), 0);
+    lv_obj_set_style_border_width(s_recCursor, 2, 0);
+    lv_obj_set_style_border_color(s_recCursor, lv_color_hex(0xffffff), 0);
+    lv_obj_clear_flag(s_recCursor, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_recCursor, LV_OBJ_FLAG_HIDDEN);
+
+    // Closure hint — under the map panel. Shows "Closure: X.X m" while
+    // walking, switches to a green "Polygon closeable — tap Save"
+    // message when the cursor returns within 1.5 m of the start vertex.
+    s_recClosure = lv_label_create(s_screenRecord);
+    lv_label_set_text(s_recClosure, "");
+    lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xcbd5f5), 0);
+    lv_obj_set_style_text_font(s_recClosure, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_recClosure, LV_ALIGN_TOP_MID, 0, 238);
+
+    // Bad-signal overlay — sits over the map panel when the latest fix
+    // is below RTK quality.
     s_recBadOverlay = lv_label_create(s_screenRecord);
     lv_label_set_text(s_recBadOverlay, "Bad RTK signal");
     lv_obj_set_style_text_color(s_recBadOverlay, lv_color_hex(0xdc2626), 0);
@@ -2032,32 +2161,47 @@ static void buildRecordingScreen() {
     lv_obj_align(s_recBadOverlay, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
 
-    // Save / Cancel buttons across the bottom.
-    lv_obj_t* btnSave = lv_btn_create(s_screenRecord);
-    lv_obj_set_size(btnSave, LV_PCT(42), 50);
-    lv_obj_align(btnSave, LV_ALIGN_BOTTOM_LEFT, 6, -10);
-    lv_obj_set_style_bg_color(btnSave, lv_color_hex(0x16a34a), 0);
-    lv_obj_set_style_radius(btnSave, 6, 0);
-    lv_obj_set_style_border_width(btnSave, 0, 0);
-    lv_obj_set_style_shadow_width(btnSave, 0, 0);
-    lv_obj_add_event_cb(btnSave, onSaveClicked, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t* lblSave = lv_label_create(btnSave);
+    // Action row. Armed state: one wide Start (left) + Back (right).
+    // Recording state: Save (left) + Cancel (right). The widgets exist
+    // once; recArmUi / recRecordingUi swap labels + visibility.
+    s_recBtnStart = lv_btn_create(s_screenRecord);
+    lv_obj_set_size(s_recBtnStart, LV_PCT(60), 50);
+    lv_obj_align(s_recBtnStart, LV_ALIGN_BOTTOM_LEFT, 6, -10);
+    lv_obj_set_style_bg_color(s_recBtnStart, lv_color_hex(0xef4444), 0);
+    lv_obj_set_style_radius(s_recBtnStart, 6, 0);
+    lv_obj_set_style_border_width(s_recBtnStart, 0, 0);
+    lv_obj_set_style_shadow_width(s_recBtnStart, 0, 0);
+    lv_obj_add_event_cb(s_recBtnStart, onStartRecordClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lblStart = lv_label_create(s_recBtnStart);
+    lv_label_set_text(lblStart, LV_SYMBOL_PLAY "  Start record");
+    lv_obj_set_style_text_color(lblStart, lv_color_hex(0xffffff), 0);
+    lv_obj_center(lblStart);
+
+    s_recBtnSave = lv_btn_create(s_screenRecord);
+    lv_obj_set_size(s_recBtnSave, LV_PCT(42), 50);
+    lv_obj_align(s_recBtnSave, LV_ALIGN_BOTTOM_LEFT, 6, -10);
+    lv_obj_set_style_bg_color(s_recBtnSave, lv_color_hex(0x16a34a), 0);
+    lv_obj_set_style_radius(s_recBtnSave, 6, 0);
+    lv_obj_set_style_border_width(s_recBtnSave, 0, 0);
+    lv_obj_set_style_shadow_width(s_recBtnSave, 0, 0);
+    lv_obj_add_event_cb(s_recBtnSave, onSaveClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lblSave = lv_label_create(s_recBtnSave);
     lv_label_set_text(lblSave, "Save");
     lv_obj_set_style_text_color(lblSave, lv_color_hex(0xffffff), 0);
     lv_obj_center(lblSave);
 
-    lv_obj_t* btnCancel = lv_btn_create(s_screenRecord);
-    lv_obj_set_size(btnCancel, LV_PCT(42), 50);
-    lv_obj_align(btnCancel, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
-    lv_obj_set_style_bg_color(btnCancel, lv_color_hex(0xdc2626), 0);
-    lv_obj_set_style_radius(btnCancel, 6, 0);
-    lv_obj_set_style_border_width(btnCancel, 0, 0);
-    lv_obj_set_style_shadow_width(btnCancel, 0, 0);
-    lv_obj_add_event_cb(btnCancel, onCancelClicked, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t* lblCancel = lv_label_create(btnCancel);
-    lv_label_set_text(lblCancel, "Cancel");
-    lv_obj_set_style_text_color(lblCancel, lv_color_hex(0xffffff), 0);
-    lv_obj_center(lblCancel);
+    s_recBtnCancel = lv_btn_create(s_screenRecord);
+    lv_obj_set_size(s_recBtnCancel, LV_PCT(36), 50);
+    lv_obj_align(s_recBtnCancel, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
+    lv_obj_set_style_bg_color(s_recBtnCancel, lv_color_hex(0x4b5563), 0);
+    lv_obj_set_style_radius(s_recBtnCancel, 6, 0);
+    lv_obj_set_style_border_width(s_recBtnCancel, 0, 0);
+    lv_obj_set_style_shadow_width(s_recBtnCancel, 0, 0);
+    lv_obj_add_event_cb(s_recBtnCancel, onCancelClicked, LV_EVENT_CLICKED, nullptr);
+    s_recLblCancel = lv_label_create(s_recBtnCancel);
+    lv_label_set_text(s_recLblCancel, "Back");
+    lv_obj_set_style_text_color(s_recLblCancel, lv_color_hex(0xffffff), 0);
+    lv_obj_center(s_recLblCancel);
 
     // 250ms refresh timer — runs continuously but the callback short-
     // circuits when the recording screen isn't active. Only created once.
@@ -2068,54 +2212,340 @@ static void buildRecordingScreen() {
     }
 }
 
+// Armed → user has navigated to Recording but hasn't pressed Start. Big
+// red Start button gets the spotlight. Cancel button becomes "Back" so
+// the user knows tapping it just navigates home, no recording was
+// pending to lose.
+static void recArmUi() {
+    if (s_recBtnStart) lv_obj_clear_flag(s_recBtnStart, LV_OBJ_FLAG_HIDDEN);
+    if (s_recBtnSave)  lv_obj_add_flag(s_recBtnSave, LV_OBJ_FLAG_HIDDEN);
+    if (s_recLblCancel) lv_label_set_text(s_recLblCancel, "Back");
+    if (s_recPoints)   lv_label_set_text(s_recPoints, "Ready");
+    if (s_recClosure)  lv_label_set_text(s_recClosure,
+        "Walk to your start position, then tap Start.");
+    if (s_recLiveLine) lv_obj_add_flag(s_recLiveLine, LV_OBJ_FLAG_HIDDEN);
+    if (s_recStartDot) lv_obj_add_flag(s_recStartDot, LV_OBJ_FLAG_HIDDEN);
+    s_recLivePtsUsed = 0;
+}
+
+// Recording → recorder is running, points are accumulating. Hide Start,
+// show Save + Cancel.
+static void recRecordingUi() {
+    if (s_recBtnStart) lv_obj_add_flag(s_recBtnStart, LV_OBJ_FLAG_HIDDEN);
+    if (s_recBtnSave)  lv_obj_clear_flag(s_recBtnSave, LV_OBJ_FLAG_HIDDEN);
+    if (s_recLblCancel) lv_label_set_text(s_recLblCancel, "Cancel");
+    if (s_recClosure)  lv_label_set_text(s_recClosure, "");
+}
+
+// Compute the bbox once on Start record. Uses the parent map polygon
+// (loaded into viewing_buffer when the user opened the parent's detail)
+// so the projection stays stable regardless of where the cursor wanders.
+// If the parent has no polygon yet (e.g. armed inside an empty slot)
+// we'll lazily expand the bbox in recRebuildLivePts from the live walk.
+static void recComputeMapBbox() {
+    s_recBboxValid = false;
+    if (viewing_count > 0) {
+        s_recMinLat = s_recMaxLat = viewing_buffer[0].lat;
+        s_recMinLng = s_recMaxLng = viewing_buffer[0].lng;
+        for (size_t i = 1; i < viewing_count; i++) {
+            if (viewing_buffer[i].lat < s_recMinLat) s_recMinLat = viewing_buffer[i].lat;
+            if (viewing_buffer[i].lat > s_recMaxLat) s_recMaxLat = viewing_buffer[i].lat;
+            if (viewing_buffer[i].lng < s_recMinLng) s_recMinLng = viewing_buffer[i].lng;
+            if (viewing_buffer[i].lng > s_recMaxLng) s_recMaxLng = viewing_buffer[i].lng;
+        }
+        s_recBboxValid = true;
+    }
+}
+
+// Equal-aspect projector: lat/lng → pixel inside s_recMapPanel.
+static void rec_project(double lat, double lng, float& outX, float& outY) {
+    lv_coord_t w = lv_obj_get_width(s_recMapPanel);
+    lv_coord_t h = lv_obj_get_height(s_recMapPanel);
+    const lv_coord_t pad = 10;
+    lv_coord_t innerW = w - 2 * pad;
+    lv_coord_t innerH = h - 2 * pad;
+    if (innerW < 20) innerW = 20;
+    if (innerH < 20) innerH = 20;
+
+    double latSpan = s_recMaxLat - s_recMinLat;
+    double lngSpan = s_recMaxLng - s_recMinLng;
+    if (latSpan < 0.00005) { double c = (s_recMinLat + s_recMaxLat) / 2; s_recMinLat = c - 0.000025; s_recMaxLat = c + 0.000025; latSpan = s_recMaxLat - s_recMinLat; }
+    if (lngSpan < 0.00005) { double c = (s_recMinLng + s_recMaxLng) / 2; s_recMinLng = c - 0.000025; s_recMaxLng = c + 0.000025; lngSpan = s_recMaxLng - s_recMinLng; }
+
+    float latM = (float) innerH / latSpan;
+    float lngM = (float) innerW / lngSpan;
+    float scale = (latM < lngM) ? latM : lngM;
+    float drawW = lngSpan * scale;
+    float drawH = latSpan * scale;
+    float offX = pad + (innerW - drawW) / 2;
+    float offY = pad + (innerH - drawH) / 2;
+
+    outX = offX + (lng - s_recMinLng) * scale;
+    outY = offY + (s_recMaxLat - lat) * scale;  // invert: north up
+}
+
+static void recRebuildParentPts() {
+    if (!s_recBboxValid || viewing_count < 2) {
+        if (s_recParentLine) lv_obj_add_flag(s_recParentLine, LV_OBJ_FLAG_HIDDEN);
+        s_recParentPtsUsed = 0;
+        return;
+    }
+    size_t step = 1;
+    size_t outN = viewing_count;
+    // Reserve one slot for the visual close-the-polygon repeat below.
+    const size_t kCap = REC_PTS_MAX - 1;
+    if (viewing_count > kCap) {
+        step = (viewing_count + kCap - 1) / kCap;
+        outN = (viewing_count + step - 1) / step;
+        if (outN > kCap) outN = kCap;
+    }
+    uint16_t wi = 0;
+    for (size_t i = 0; i < viewing_count && wi < outN && wi < kCap; i += step) {
+        float fx, fy;
+        rec_project(viewing_buffer[i].lat, viewing_buffer[i].lng, fx, fy);
+        s_recParentPts[wi].x = (lv_coord_t) fx;
+        s_recParentPts[wi].y = (lv_coord_t) fy;
+        wi++;
+    }
+    // Close the polygon visually by repeating the first point at the end.
+    if (wi > 0 && wi < REC_PTS_MAX) {
+        s_recParentPts[wi] = s_recParentPts[0];
+        wi++;
+    }
+    s_recParentPtsUsed = wi;
+    lv_line_set_points(s_recParentLine, s_recParentPts, s_recParentPtsUsed);
+    lv_obj_clear_flag(s_recParentLine, LV_OBJ_FLAG_HIDDEN);
+}
+
+static double rec_haversineM(double lat1, double lng1, double lat2, double lng2) {
+    const double R = 6371000.0;
+    double dLat = (lat2 - lat1) * (M_PI / 180.0);
+    double dLng = (lng2 - lng1) * (M_PI / 180.0);
+    double a = sin(dLat/2) * sin(dLat/2)
+             + cos(lat1 * M_PI / 180.0) * cos(lat2 * M_PI / 180.0)
+             * sin(dLng/2) * sin(dLng/2);
+    return 2 * R * asin(sqrt(a));
+}
+
+static void recRebuildLivePts(const WalkerSnapshot& snap) {
+    // Share the main screen's redraw_scratch — the two screens are never
+    // active at the same time, so they can both reuse the same 25 KB bss
+    // buffer instead of duplicating it.
+    size_t n = walkerCopyLivePoints(redraw_scratch, MAP_POINT_MAX);
+
+    if (n == 0) {
+        if (s_recLiveLine) lv_obj_add_flag(s_recLiveLine, LV_OBJ_FLAG_HIDDEN);
+        if (s_recStartDot) lv_obj_add_flag(s_recStartDot, LV_OBJ_FLAG_HIDDEN);
+        // While recording with no points yet but we DO have a current
+        // fix, still place the cursor where the user is standing — gives
+        // immediate "yes the GPS is alive" feedback.
+        if (snap.fix >= 4 && s_recBboxValid && s_recCursor) {
+            float fx, fy;
+            rec_project(snap.lat, snap.lng, fx, fy);
+            lv_obj_set_pos(s_recCursor, (lv_coord_t)(fx - 7), (lv_coord_t)(fy - 7));
+            lv_obj_clear_flag(s_recCursor, LV_OBJ_FLAG_HIDDEN);
+        } else if (s_recCursor) {
+            lv_obj_add_flag(s_recCursor, LV_OBJ_FLAG_HIDDEN);
+        }
+        s_recLivePtsUsed = 0;
+        return;
+    }
+
+    // If the parent polygon never gave us a bbox (rare: recording into
+    // a slot with no boundary yet), seed from the first live point so
+    // the projection works on the first frame instead of blank.
+    if (!s_recBboxValid) {
+        s_recMinLat = s_recMaxLat = redraw_scratch[0].lat;
+        s_recMinLng = s_recMaxLng = redraw_scratch[0].lng;
+        s_recBboxValid = true;
+    }
+
+    // Expand bbox as the walk drifts past the parent extent. Without
+    // this the cursor would slide off the panel edge if the obstacle
+    // sits near a parent corner. Re-project parent line whenever the
+    // bbox grows so the backdrop stays aligned.
+    bool grew = false;
+    for (size_t i = 0; i < n; i++) {
+        if (redraw_scratch[i].lat < s_recMinLat) { s_recMinLat = redraw_scratch[i].lat; grew = true; }
+        if (redraw_scratch[i].lat > s_recMaxLat) { s_recMaxLat = redraw_scratch[i].lat; grew = true; }
+        if (redraw_scratch[i].lng < s_recMinLng) { s_recMinLng = redraw_scratch[i].lng; grew = true; }
+        if (redraw_scratch[i].lng > s_recMaxLng) { s_recMaxLng = redraw_scratch[i].lng; grew = true; }
+    }
+    if (grew) recRebuildParentPts();
+
+    // Render the live polyline. Decimate to REC_PTS_MAX because the live
+    // ring (walkerCopyLivePoints up to MAP_POINT_MAX) can be much wider
+    // than what the small map line widget needs.
+    size_t step = 1;
+    size_t outN = n;
+    if (n > REC_PTS_MAX) {
+        step = (n + REC_PTS_MAX - 1) / REC_PTS_MAX;
+        outN = (n + step - 1) / step;
+        if (outN > REC_PTS_MAX) outN = REC_PTS_MAX;
+    }
+    uint16_t wi = 0;
+    for (size_t i = 0; i < n && wi < outN && wi < REC_PTS_MAX; i += step) {
+        float fx, fy;
+        rec_project(redraw_scratch[i].lat, redraw_scratch[i].lng, fx, fy);
+        s_recLivePts[wi].x = (lv_coord_t) fx;
+        s_recLivePts[wi].y = (lv_coord_t) fy;
+        wi++;
+    }
+    s_recLivePtsUsed = wi;
+    if (s_recLivePtsUsed >= 2) {
+        lv_line_set_points(s_recLiveLine, s_recLivePts, s_recLivePtsUsed);
+        lv_obj_clear_flag(s_recLiveLine, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_recLiveLine, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Start vertex.
+    {
+        float fx, fy;
+        rec_project(redraw_scratch[0].lat, redraw_scratch[0].lng, fx, fy);
+        lv_obj_set_pos(s_recStartDot, (lv_coord_t)(fx - 6), (lv_coord_t)(fy - 6));
+        lv_obj_clear_flag(s_recStartDot, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Cursor — last point.
+    {
+        float fx, fy;
+        rec_project(redraw_scratch[n - 1].lat, redraw_scratch[n - 1].lng, fx, fy);
+        lv_obj_set_pos(s_recCursor, (lv_coord_t)(fx - 7), (lv_coord_t)(fy - 7));
+        lv_obj_clear_flag(s_recCursor, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Closure detection: need at least 8 points so the polygon has a
+    // real shape (not just standstill jitter) before we tell the user
+    // "you can close this now". 1.5 m is a generous threshold but well
+    // inside RTK FIX noise floor, so the green state only triggers when
+    // the operator actually walked back close to the start vertex.
+    if (n >= 8) {
+        double d = rec_haversineM(
+            redraw_scratch[0].lat, redraw_scratch[0].lng,
+            redraw_scratch[n - 1].lat, redraw_scratch[n - 1].lng);
+        char buf[64];
+        if (d < 1.5) {
+            lv_obj_set_style_bg_color(s_recStartDot, lv_color_hex(0x16a34a), 0);
+            snprintf(buf, sizeof(buf),
+                     LV_SYMBOL_OK "  Polygon closeable (%.1f m). Tap Save.", d);
+            lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0x86efac), 0);
+        } else {
+            lv_obj_set_style_bg_color(s_recStartDot, lv_color_hex(0xef4444), 0);
+            snprintf(buf, sizeof(buf), "Closure: %.1f m", d);
+            lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xcbd5f5), 0);
+        }
+        lv_label_set_text(s_recClosure, buf);
+    } else {
+        lv_obj_set_style_bg_color(s_recStartDot, lv_color_hex(0xef4444), 0);
+        lv_label_set_text(s_recClosure, "Walk the perimeter, return to start to close.");
+        lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xcbd5f5), 0);
+    }
+}
+
 static void refreshRecordingScreen() {
     if (!s_recBanner) return;
-    const auto& st = recorder.state();
+    WalkerSnapshot snap;
+    walkerGetSnapshot(snap);
+
+    // Banner: while armed we show the pending mode + parent. Once the
+    // recorder is running we mirror the recorder's own state in case
+    // the slot allocation tweaked anything (obstacle index, etc.).
+    RecordingMode bannerMode = s_recArmed ? s_pendingRecMode : recorder.state().mode;
+    int parentSlot = s_recArmed ? s_pendingRecParent : recorder.state().parentSlot;
+    const String& chTarget = s_recArmed ? s_pendingRecChannelTo : recorder.state().channelTarget;
+
     const char* modeStr = "?";
     uint32_t color = 0x86efac;
-    switch (st.mode) {
+    switch (bannerMode) {
         case RecordingMode::Work:     modeStr = "BOUNDARY"; color = 0x86efac; break;
         case RecordingMode::Obstacle: modeStr = "OBSTACLE"; color = 0xfca5a5; break;
         case RecordingMode::Channel:  modeStr = "CHANNEL";  color = 0xa5b4fc; break;
         default: break;
     }
-    char banner[64];
-    if (st.mode == RecordingMode::Work) {
-        snprintf(banner, sizeof(banner), "%s map%d", modeStr, st.parentSlot);
-    } else if (st.mode == RecordingMode::Obstacle) {
-        snprintf(banner, sizeof(banner), "%s in map%d", modeStr, st.parentSlot);
-    } else if (st.mode == RecordingMode::Channel) {
-        snprintf(banner, sizeof(banner), "%s map%d->%s",
-                 modeStr, st.parentSlot, st.channelTarget.c_str());
+    char banner[80];
+    if (bannerMode == RecordingMode::Work) {
+        snprintf(banner, sizeof(banner), "%s map%d", modeStr, parentSlot);
+    } else if (bannerMode == RecordingMode::Obstacle) {
+        snprintf(banner, sizeof(banner), "%s in map%d", modeStr, parentSlot);
+    } else if (bannerMode == RecordingMode::Channel) {
+        snprintf(banner, sizeof(banner), "%s map%d -> %s",
+                 modeStr, parentSlot, chTarget.c_str());
     } else {
         snprintf(banner, sizeof(banner), "(idle)");
     }
     lv_label_set_text(s_recBanner, banner);
     lv_obj_set_style_text_color(s_recBanner, lv_color_hex(color), 0);
 
-    char ptsTxt[64];
-    snprintf(ptsTxt, sizeof(ptsTxt), "Captured: %lu pts", st.pointsCaptured);
-    lv_label_set_text(s_recPoints, ptsTxt);
-
-    char dropTxt[64];
-    snprintf(dropTxt, sizeof(dropTxt), "Dropped (low qual): %lu", st.pointsDropped);
-    lv_label_set_text(s_recDropped, dropTxt);
-
-    uint32_t dotColor = 0xdc2626; const char* lbl = "BAD";
-    if (st.lastFixQuality == FixQuality::Fix)   { dotColor = 0x16a34a; lbl = "FIX"; }
-    if (st.lastFixQuality == FixQuality::Float) { dotColor = 0xeab308; lbl = "FLOAT"; }
+    // RTK pill — from the live snapshot (recorder.state().lastFixQuality
+    // only updates on accepted points, which doesn't help when we're
+    // armed and not yet recording).
+    uint32_t dotColor = 0xdc2626; const char* qLbl = "BAD";
+    if (snap.fix == 4) { dotColor = 0x16a34a; qLbl = "FIX"; }
+    if (snap.fix == 5) { dotColor = 0xeab308; qLbl = "FLOAT"; }
     lv_obj_set_style_bg_color(s_recRtkDot, lv_color_hex(dotColor), 0);
-    lv_label_set_text(s_recRtkLabel, lbl);
+    lv_label_set_text(s_recRtkLabel, qLbl);
 
-    if (st.lastFixQuality == FixQuality::Bad) {
+    // Bad-signal overlay only while recording — during armed state the
+    // user is just walking to the start, no need to scream BAD at them.
+    if (!s_recArmed && snap.fix < 4) {
         lv_obj_clear_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
     }
+
+    // Live counters + map render are only meaningful when recording.
+    if (s_recArmed) {
+        // Keep cursor visible during arm so the user can see where they
+        // are relative to the parent polygon as they walk to the start.
+        recRebuildLivePts(snap);
+        return;
+    }
+    const auto& st = recorder.state();
+    char ptsTxt[32];
+    snprintf(ptsTxt, sizeof(ptsTxt), "%lu pts", st.pointsCaptured);
+    lv_label_set_text(s_recPoints, ptsTxt);
+
+    recRebuildLivePts(snap);
+}
+
+static void onStartRecordClicked(lv_event_t* /*e*/) {
+    if (!s_recArmed) return;
+    if (s_pendingRecParent < 0) return;
+
+    // Clear the live-points ring so the polyline starts at the user's
+    // current position. Without this the buffer would still contain
+    // wherever the home-screen walk last drifted.
+    walkerClearLivePoints();
+    s_recLivePtsUsed = 0;
+
+    bool ok = false;
+    switch (s_pendingRecMode) {
+        case RecordingMode::Obstacle:
+            ok = recorder.startObstacle(s_pendingRecParent);
+            break;
+        case RecordingMode::Channel:
+            ok = recorder.startChannel(s_pendingRecParent, s_pendingRecChannelTo);
+            break;
+        default:
+            ok = false; break;
+    }
+    if (!ok) {
+        // Slot allocation or origin failure — leave the screen armed so
+        // the user can hit Back. Closure label communicates the failure.
+        if (s_recClosure) {
+            lv_label_set_text(s_recClosure, "Could not start recording (slot full?).");
+            lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xef4444), 0);
+        }
+        return;
+    }
+    s_recArmed = false;
+    recRecordingUi();
 }
 
 static void onSaveClicked(lv_event_t* /*e*/) {
     recorder.stop(false);  // discard=false -> keeps the file
+    s_recArmed = false;
     tft_ui_set_screen(UiScreen::Main);
     // Refresh the maps list so the new obstacle/channel count shows up
     // the next time the user opens the Maps tab. Done here rather than
@@ -2127,7 +2557,11 @@ static void onSaveClicked(lv_event_t* /*e*/) {
 }
 
 static void onCancelClicked(lv_event_t* /*e*/) {
-    recorder.stop(true);   // discard=true -> removes the file
+    // In armed state Cancel is just "Back" — no recording to discard.
+    if (!s_recArmed) {
+        recorder.stop(true);   // discard=true -> removes the file
+    }
+    s_recArmed = false;
     tft_ui_set_screen(UiScreen::Main);
     reload_maps_list();
 }
@@ -2145,6 +2579,16 @@ void tft_ui_set_screen(UiScreen s, int /*detailSlot*/) {
             if (scr_main) lv_scr_load(scr_main);
             break;
         case UiScreen::Recording:
+            // Each time we re-enter the screen, re-arm and re-project
+            // the parent polygon. Recomputing the bbox here (rather than
+            // on Start) means the user already sees the parent outline
+            // + their current position while walking to the start
+            // location — that's the whole point of the armed state.
+            s_recArmed = (s_pendingRecMode != RecordingMode::Idle);
+            recComputeMapBbox();
+            recRebuildParentPts();
+            if (s_recArmed) recArmUi();
+            else            recRecordingUi();
             if (s_screenRecord) lv_scr_load(s_screenRecord);
             refreshRecordingScreen();
             break;

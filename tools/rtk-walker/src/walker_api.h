@@ -92,6 +92,13 @@ struct WalkerLivePoint { double lat; double lng; uint8_t fix; };
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount);
 
+// Reset the live-points ring buffer to empty. Used by the Recording
+// screen's "Start record" button: clearing on arm-to-record transition
+// means the obstacle/channel polyline starts fresh and the user sees
+// exactly the shape they walked from the moment they pressed Start
+// (not whatever drift the previous home-screen view had accumulated).
+void walkerClearLivePoints();
+
 // Upload the current /session/ bundle to the configured Novabot server.
 // Synchronous: blocks the calling task for the full POST (typically a
 // few seconds over WiFi). `outMsg` receives a short user-facing status

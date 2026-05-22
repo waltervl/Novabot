@@ -1927,3 +1927,9 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
   livePointsUnlock();
   return result;
 }
+
+void walkerClearLivePoints() {
+  livePointsLock();
+  livePoints.clear();
+  livePointsUnlock();
+}
