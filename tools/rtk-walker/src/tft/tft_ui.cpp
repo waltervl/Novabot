@@ -1485,6 +1485,16 @@ static lv_obj_t* s_detailBoundary = nullptr;
 static lv_obj_t* s_detailChannelList = nullptr;
 static lv_obj_t* s_detailObstacleList = nullptr;
 
+// Recording-screen widgets — mutated by refreshRecordingScreen() at 4 Hz
+// via s_recTimer. All allocated once in buildRecordingScreen().
+static lv_obj_t* s_recBanner     = nullptr;
+static lv_obj_t* s_recPoints     = nullptr;
+static lv_obj_t* s_recDropped    = nullptr;
+static lv_obj_t* s_recRtkDot     = nullptr;
+static lv_obj_t* s_recRtkLabel   = nullptr;
+static lv_obj_t* s_recBadOverlay = nullptr;
+static lv_timer_t* s_recTimer    = nullptr;
+
 static void onAddMapClicked(lv_event_t* e);
 static void onMapRowClicked(lv_event_t* e);
 static void onExportClicked(lv_event_t* e);
@@ -1492,8 +1502,11 @@ static void onBackToGpsClicked(lv_event_t* e);
 static void onAddChannelClicked(lv_event_t* e);
 static void onAddObstacleClicked(lv_event_t* e);
 static void onDetailBackClicked(lv_event_t* e);
+static void onSaveClicked(lv_event_t* e);
+static void onCancelClicked(lv_event_t* e);
 static void refreshMainScreen();
 static void refreshDetailScreen(int slot);
+static void refreshRecordingScreen();
 
 static void buildSessionMainScreen() {
     s_screenMain = lv_obj_create(nullptr);
@@ -1715,14 +1728,150 @@ static void refreshDetailScreen(int slot) {
     }
 }
 
-static void buildSessionRecordingPlaceholder() {
+static void buildRecordingScreen() {
     s_screenRecord = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(s_screenRecord, lv_color_hex(0x111111), 0);
     lv_obj_clear_flag(s_screenRecord, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t* lbl = lv_label_create(s_screenRecord);
-    lv_label_set_text(lbl, "Recording (built in Task 5)");
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0xeeeeee), 0);
-    lv_obj_center(lbl);
+
+    // Banner — the big mode/parent label across the top. Text colour is
+    // updated per-mode in refreshRecordingScreen(); the background stays
+    // the dark screen colour so the text colour reads as the indicator.
+    s_recBanner = lv_label_create(s_screenRecord);
+    lv_label_set_text(s_recBanner, "(idle)");
+    lv_obj_set_style_text_color(s_recBanner, lv_color_hex(0x86efac), 0);
+    lv_obj_set_style_text_font(s_recBanner, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_recBanner, LV_ALIGN_TOP_MID, 0, 12);
+
+    // Captured / dropped counters — left aligned, stacked.
+    s_recPoints = lv_label_create(s_screenRecord);
+    lv_label_set_text(s_recPoints, "Captured: 0 pts");
+    lv_obj_set_style_text_color(s_recPoints, lv_color_hex(0xeeeeee), 0);
+    lv_obj_set_style_text_font(s_recPoints, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_recPoints, LV_ALIGN_TOP_LEFT, 14, 60);
+
+    s_recDropped = lv_label_create(s_screenRecord);
+    lv_label_set_text(s_recDropped, "Dropped (low qual): 0");
+    lv_obj_set_style_text_color(s_recDropped, lv_color_hex(0x9ca3af), 0);
+    lv_obj_set_style_text_font(s_recDropped, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_recDropped, LV_ALIGN_TOP_LEFT, 14, 84);
+
+    // RTK quality dot + label — right side. The dot is just a small
+    // square-ish lv_obj with a high radius (visually a circle); colour is
+    // swapped by refresh.
+    s_recRtkDot = lv_obj_create(s_screenRecord);
+    lv_obj_set_size(s_recRtkDot, 16, 16);
+    lv_obj_set_style_radius(s_recRtkDot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_recRtkDot, lv_color_hex(0xdc2626), 0);
+    lv_obj_set_style_border_width(s_recRtkDot, 0, 0);
+    lv_obj_clear_flag(s_recRtkDot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(s_recRtkDot, LV_ALIGN_TOP_RIGHT, -88, 62);
+
+    s_recRtkLabel = lv_label_create(s_screenRecord);
+    lv_label_set_text(s_recRtkLabel, "BAD");
+    lv_obj_set_style_text_color(s_recRtkLabel, lv_color_hex(0xeeeeee), 0);
+    lv_obj_set_style_text_font(s_recRtkLabel, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_recRtkLabel, LV_ALIGN_TOP_RIGHT, -14, 62);
+
+    // Bad-signal overlay — visible only when the most recent fix was bad.
+    s_recBadOverlay = lv_label_create(s_screenRecord);
+    lv_label_set_text(s_recBadOverlay, "Bad RTK signal");
+    lv_obj_set_style_text_color(s_recBadOverlay, lv_color_hex(0xdc2626), 0);
+    lv_obj_set_style_text_font(s_recBadOverlay, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_recBadOverlay, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
+
+    // Save / Cancel buttons across the bottom.
+    lv_obj_t* btnSave = lv_btn_create(s_screenRecord);
+    lv_obj_set_size(btnSave, LV_PCT(42), 50);
+    lv_obj_align(btnSave, LV_ALIGN_BOTTOM_LEFT, 6, -10);
+    lv_obj_set_style_bg_color(btnSave, lv_color_hex(0x16a34a), 0);
+    lv_obj_set_style_radius(btnSave, 6, 0);
+    lv_obj_set_style_border_width(btnSave, 0, 0);
+    lv_obj_set_style_shadow_width(btnSave, 0, 0);
+    lv_obj_add_event_cb(btnSave, onSaveClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lblSave = lv_label_create(btnSave);
+    lv_label_set_text(lblSave, "Save");
+    lv_obj_set_style_text_color(lblSave, lv_color_hex(0xffffff), 0);
+    lv_obj_center(lblSave);
+
+    lv_obj_t* btnCancel = lv_btn_create(s_screenRecord);
+    lv_obj_set_size(btnCancel, LV_PCT(42), 50);
+    lv_obj_align(btnCancel, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
+    lv_obj_set_style_bg_color(btnCancel, lv_color_hex(0xdc2626), 0);
+    lv_obj_set_style_radius(btnCancel, 6, 0);
+    lv_obj_set_style_border_width(btnCancel, 0, 0);
+    lv_obj_set_style_shadow_width(btnCancel, 0, 0);
+    lv_obj_add_event_cb(btnCancel, onCancelClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lblCancel = lv_label_create(btnCancel);
+    lv_label_set_text(lblCancel, "Cancel");
+    lv_obj_set_style_text_color(lblCancel, lv_color_hex(0xffffff), 0);
+    lv_obj_center(lblCancel);
+
+    // 250ms refresh timer — runs continuously but the callback short-
+    // circuits when the recording screen isn't active. Only created once.
+    if (!s_recTimer) {
+        s_recTimer = lv_timer_create([](lv_timer_t*) {
+            if (s_currentScreen == UiScreen::Recording) refreshRecordingScreen();
+        }, 250, nullptr);
+    }
+}
+
+static void refreshRecordingScreen() {
+    if (!s_recBanner) return;
+    const auto& st = recorder.state();
+    const char* modeStr = "?";
+    uint32_t color = 0x86efac;
+    switch (st.mode) {
+        case RecordingMode::Work:     modeStr = "BOUNDARY"; color = 0x86efac; break;
+        case RecordingMode::Obstacle: modeStr = "OBSTACLE"; color = 0xfca5a5; break;
+        case RecordingMode::Channel:  modeStr = "CHANNEL";  color = 0xa5b4fc; break;
+        default: break;
+    }
+    char banner[64];
+    if (st.mode == RecordingMode::Work) {
+        snprintf(banner, sizeof(banner), "%s map%d", modeStr, st.parentSlot);
+    } else if (st.mode == RecordingMode::Obstacle) {
+        snprintf(banner, sizeof(banner), "%s in map%d", modeStr, st.parentSlot);
+    } else if (st.mode == RecordingMode::Channel) {
+        snprintf(banner, sizeof(banner), "%s map%d->%s",
+                 modeStr, st.parentSlot, st.channelTarget.c_str());
+    } else {
+        snprintf(banner, sizeof(banner), "(idle)");
+    }
+    lv_label_set_text(s_recBanner, banner);
+    lv_obj_set_style_text_color(s_recBanner, lv_color_hex(color), 0);
+
+    char ptsTxt[64];
+    snprintf(ptsTxt, sizeof(ptsTxt), "Captured: %lu pts", st.pointsCaptured);
+    lv_label_set_text(s_recPoints, ptsTxt);
+
+    char dropTxt[64];
+    snprintf(dropTxt, sizeof(dropTxt), "Dropped (low qual): %lu", st.pointsDropped);
+    lv_label_set_text(s_recDropped, dropTxt);
+
+    uint32_t dotColor = 0xdc2626; const char* lbl = "BAD";
+    if (st.lastFixQuality == FixQuality::Fix)   { dotColor = 0x16a34a; lbl = "FIX"; }
+    if (st.lastFixQuality == FixQuality::Float) { dotColor = 0xeab308; lbl = "FLOAT"; }
+    lv_obj_set_style_bg_color(s_recRtkDot, lv_color_hex(dotColor), 0);
+    lv_label_set_text(s_recRtkLabel, lbl);
+
+    if (st.lastFixQuality == FixQuality::Bad) {
+        lv_obj_clear_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void onSaveClicked(lv_event_t* /*e*/) {
+    recorder.stop(false);  // discard=false -> keeps the file
+    if (s_detailSlot >= 0) tft_ui_set_screen(UiScreen::MapDetail, s_detailSlot);
+    else                   tft_ui_set_screen(UiScreen::Main);
+}
+
+static void onCancelClicked(lv_event_t* /*e*/) {
+    recorder.stop(true);   // discard=true -> removes the file
+    if (s_detailSlot >= 0) tft_ui_set_screen(UiScreen::MapDetail, s_detailSlot);
+    else                   tft_ui_set_screen(UiScreen::Main);
 }
 
 static void refreshMainScreen() {
@@ -1763,6 +1912,7 @@ void tft_ui_set_screen(UiScreen s, int detailSlot) {
     if (target) lv_scr_load(target);
     if (s == UiScreen::Main) refreshMainScreen();
     else if (s == UiScreen::MapDetail) refreshDetailScreen(s_detailSlot);
+    else if (s == UiScreen::Recording) refreshRecordingScreen();
 }
 
 UiScreen tft_ui_current_screen() { return s_currentScreen; }
@@ -1770,7 +1920,7 @@ UiScreen tft_ui_current_screen() { return s_currentScreen; }
 void tft_ui_refresh_current() {
     if (s_currentScreen == UiScreen::Main) refreshMainScreen();
     else if (s_currentScreen == UiScreen::MapDetail) refreshDetailScreen(s_detailSlot);
-    // recording refresh hooked up by T5.
+    else if (s_currentScreen == UiScreen::Recording) refreshRecordingScreen();
 }
 
 static void onAddMapClicked(lv_event_t* /*e*/) {
@@ -1830,7 +1980,7 @@ static void onDetailBackClicked(lv_event_t* /*e*/) {
 static void buildSessionScreens() {
     buildSessionMainScreen();
     buildDetailScreen();
-    buildSessionRecordingPlaceholder();
+    buildRecordingScreen();
     // NOTE: we deliberately do NOT call tft_ui_set_screen(UiScreen::Main)
     // here — the legacy scr_main stays the boot default so the live
     // GPS/RTK display keeps working until Tasks 4 + 5 wire transitions.
