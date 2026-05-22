@@ -380,12 +380,18 @@ static void stopRecording() {
 //   MIN_DISPLACEMENT_M - skip fixes that haven't moved at least N cm
 //                      from the previous accepted point. Cleans up
 //                      standstill jitter, but set too high and slow
-//                      walks lose samples — at 0.3 m/s × 200 ms = 6 cm
+//                      walks lose samples - at 0.3 m/s x 200 ms = 6 cm
 //                      so a 5 cm filter dropped ~half the points. 2 cm
-//                      keeps enough margin against RTK FIX cm-noise
-//                      without starving the polygon on a slow lap.
+//                      kept enough margin against RTK FIX cm-noise.
+//                      Tightened to 1 cm because the DA chip is locked
+//                      to 1 Hz RTK (Quectel hardware limit, see PAIR050
+//                      comment near gnssPump). At 1 Hz we need every
+//                      real-movement sample to keep polygon density
+//                      reasonable. RTK FIX noise is ~1 cm too so this
+//                      sits at the edge but standstill jitter still
+//                      filters because cm-level noise stays in place.
 #define MIN_FIX_QUALITY     4
-#define MIN_DISPLACEMENT_M  0.02
+#define MIN_DISPLACEMENT_M  0.01
 
 static void appendPoint() {
   if (!st.recording || !trackFile) return;
@@ -642,13 +648,17 @@ static void gnssPump() {
     pair021Sent = true;
   }
   if (!pair050_1HzSent && sinceDetect >= 700) {
-    // 500 ms = 2 Hz. Compromise: 1 Hz gave the user only 104 points on a
-    // 204 m^2 polygon (140 m^2 captured, 30% area lost to corner-cutting
-    // between samples). 5 Hz broke RTK FIX entirely (only FLOAT). 2 Hz
-    // doubles sample density while keeping the RTCM-to-position cycle
-    // ratio within what the LC29HDA's RTK engine handles. Explicit
-    // re-assert each boot in case NV memory holds an older 5 Hz setting.
-    sendGnssCommand("PAIR050,500");
+    // 1000 ms = 1 Hz. The LC29HDA *-DA* variant is hardware-locked to 1 Hz
+    // RTK regardless of what PAIR050 says (Quectel LC29H Hardware Design
+    // datasheet + DR&RTK App Note v1.2.0: "LC29H (DA) only supports RTK
+    // (Max update rate: 1 Hz)"). Sending a faster value makes the parser
+    // ACK but the RTK engine still runs at 1 Hz and interpolates PVT
+    // epochs between, which corrupts the FLOAT->FIX lock entirely. Our
+    // 5 Hz / 2 Hz attempts both fell back to FLOAT-only with 28+ sats.
+    // True 5 Hz RTK requires LC29HEA (different SKU, same footprint).
+    // Density at 1 Hz is recovered server-side via polygon densification
+    // + a tight displacement filter that keeps real-but-small movements.
+    sendGnssCommand("PAIR050,1000");
     pair050_1HzSent = true;
   }
 #if NMEA_HEARTBEAT
