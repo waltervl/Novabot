@@ -20,6 +20,7 @@ import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from 
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
 import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase } from '../services/portableMap.js';
+import { synthesizePortableFromWalker } from '../maps/walkerBundleImporter.js';
 import { ImportStagingStore } from '../services/importStaging.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
 import { classifyBundle, type ClassifyResult } from '../services/bundleClassifier.js';
@@ -1482,6 +1483,110 @@ adminStatusRouter.post(
       verbatimRestore,
       sourceSn: parsed.metadata?.sourceSn ?? null,
       sourceSnMatches,
+    });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/import-walker-bundle
+//
+// Accepts a `.novabundle` exported by the RTK Walker. The walker captured
+// polygons in its own session-local frame (origin = session start, +X = East,
+// +Y = North). We need to align them with the mower's CURRENT local frame
+// before handing the data off to the existing portable-bundle pipeline.
+//
+// Pipeline:
+//   1. Read mower's live map_position from deviceCache (dock pose).
+//   2. synthesizePortableFromWalker Δ-rotates + translates every walker point
+//      against that pose and rasterizes a fresh map.pgm/map.yaml.
+//   3. Pipe the synthetic ZIP through parseBundle and create a staging
+//      session — identical shape to /import-portable so apply-verbatim
+//      consumes it without modification.
+adminStatusRouter.post(
+  '/maps/:sn/import-walker-bundle',
+  bundleUpload.single('bundle'),
+  async (req: AuthRequest, res: Response) => {
+    const sn = req.params.sn;
+    if (!req.file) {
+      res.status(400).json({ ok: false, error: 'bundle file required' });
+      return;
+    }
+    const active = importStaging.getActive(sn);
+    if (active) {
+      res.status(409).json({
+        ok: false,
+        error: 'active import already in progress',
+        stagingId: active.stagingId,
+      });
+      return;
+    }
+
+    // Read mower's live map_position from sensor cache.
+    const sensors = deviceCache.get(sn);
+    const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+    const my = parseFloat(sensors?.get('map_position_y') ?? '');
+    const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+    if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
+      res.status(409).json({
+        ok: false,
+        error: 'no live map_position in sensor cache; is the mower online and docked?',
+      });
+      return;
+    }
+    const currentDockPose = { x: mx, y: my, orientation: mo };
+
+    let synth;
+    try {
+      synth = await synthesizePortableFromWalker(req.file.buffer, {
+        currentDockPose,
+        resolution: 0.05,
+        marginM: 1.0,
+      });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+      return;
+    }
+
+    // Pipe the synthetic bundle through the existing portable-bundle pipeline
+    // so apply-verbatim sees it as just another .novabotmap.
+    let parsed;
+    try {
+      parsed = await parseBundle(synth.portableZip);
+    } catch (e) {
+      if (e instanceof BundleValidationError) {
+        res.status(400).json({ ok: false, error: e.message });
+        return;
+      }
+      throw e;
+    }
+    const session = importStaging.create(sn, {
+      sourceSn: `walker-${Date.now()}`,
+      polygonAreaM2: parsed.polygon.areaM2,
+    });
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, session.stagingId);
+    fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
+    importAuditRepo.append({
+      sn,
+      staging_id: session.stagingId,
+      from_state: '_NONE_',
+      to_state: 'UPLOADED',
+      reason: 'walker bundle synthesized',
+    });
+
+    res.json({
+      ok: true,
+      stagingId: session.stagingId,
+      state: session.state,
+      verbatimRestore: true,
+      exactRestore: true,
+      sourceSn: sn,
+      sourceSnMatches: true,
+      note: 'walker bundle synthesized into portable bundle. POST /apply-verbatim next.',
+      polygons: synth.transformedPolygons.map((p) => ({
+        name: p.name,
+        alias: p.alias,
+        pointCount: p.points.length,
+      })),
+      transformedTo: currentDockPose,
     });
   },
 );
