@@ -564,6 +564,13 @@ export function adminPageHtml(): string {
           <tbody id="fwTableBody"><tr><td colspan="5" style="color:#aaa">Loading...</td></tr></tbody>
         </table>
       </div>
+
+      <details id="walkerFwDetails" style="padding:8px 12px;background:rgba(0,212,170,.04);border:1px solid rgba(0,212,170,.15);border-radius:8px;margin-top:16px">
+        <summary style="font-size:12px;font-weight:600;color:#5eead4;cursor:pointer;list-style:none">Walker firmware</summary>
+        <div style="font-size:10px;color:#94a3b8;margin:6px 0">RTK boundary walker (ESP32-S3) OTA binaries. The walker polls /api/walker-firmware/latest and downloads via the admin token stored in NVS. Use Refresh from manifest to pull a freshly published .bin from downloads.ramonvanbruggen.nl, or scp the .bin into the firmware directory and reload this list.</div>
+        <div id="walker-fw-list" style="margin-bottom:8px"><span style="color:#888;font-size:11px">Not loaded. Click Refresh to fetch the manifest.</span></div>
+        <button onclick="checkWalkerFirmware()" class="btn" style="padding:6px 14px;font-size:12px">Refresh from manifest</button>
+      </details>
     </div>
 
     <div class="card">
@@ -900,7 +907,21 @@ function switchTab(name) {
   if (name === 'mowerdebug') { mdPopulateDropdown(); }
   // Load maps when switching to maps tab
   if (name === 'maps') { populateMowerDropdown(); }
-  if (name === 'firmware') { loadFirmwareVersions(); populateOtaDeviceDropdown(); }
+  if (name === 'firmware') { loadFirmwareVersions(); populateOtaDeviceDropdown(); wireWalkerFwToggle(); }
+}
+
+// Lazy-load walker firmware list the first time the operator expands the
+// "Walker firmware" details panel. Mirrors how other sections defer fetch
+// until visible — avoids hammering the remote manifest on every tab open.
+var _walkerFwWired = false;
+function wireWalkerFwToggle() {
+  if (_walkerFwWired) return;
+  var el = document.getElementById('walkerFwDetails');
+  if (!el) return;
+  _walkerFwWired = true;
+  el.addEventListener('toggle', function() {
+    if (el.open) checkWalkerFirmware();
+  });
 }
 
 // ── MQTT Console ──────────────────────────────────────────────────
@@ -4540,6 +4561,180 @@ async function downloadFirmware(fw, btnIdx) {
   } catch(e) {
     modalAlert('Download Failed', e.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Download'; btn.style.opacity = '1'; }
+  }
+}
+
+// Walker firmware section — lists walker entries from the remote manifest +
+// already-installed local versions. Mirrors checkFirmwareUpdates() but lives
+// in its own collapsible so operators can find walker builds without scrolling
+// the mower/charger update list. Safe DOM helpers only (no innerHTML with
+// dynamic content — admin page CSP/security hook rejects it).
+async function checkWalkerFirmware() {
+  var list = document.getElementById('walker-fw-list');
+  if (!list) return;
+  while (list.firstChild) list.removeChild(list.firstChild);
+  var loading = document.createElement('span');
+  loading.style.color = '#888';
+  loading.style.fontSize = '11px';
+  loading.textContent = 'Loading manifest...';
+  list.appendChild(loading);
+
+  var d;
+  try {
+    d = await api('/check-firmware-updates');
+  } catch (e) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var err = document.createElement('span');
+    err.style.color = '#ef4444';
+    err.style.fontSize = '11px';
+    err.textContent = 'Failed to fetch manifest: ' + (e && e.message ? e.message : 'unknown error');
+    list.appendChild(err);
+    return;
+  }
+
+  while (list.firstChild) list.removeChild(list.firstChild);
+  var all = (d && d.available) ? d.available : [];
+  var walkers = all.filter(function(fw) { return fw.device_type === 'walker'; });
+  var installedAll = (d && d.installed) ? d.installed : [];
+  var walkersInstalled = installedAll.filter(function(v) { return v.device_type === 'walker'; });
+
+  if (walkers.length === 0 && walkersInstalled.length === 0) {
+    var p = document.createElement('span');
+    p.style.color = '#aaa';
+    p.style.fontSize = '11px';
+    p.textContent = 'No walker firmware in manifest or local DB. Publish a build via the release script or scp the .bin into the firmware directory and click Refresh.';
+    list.appendChild(p);
+    return;
+  }
+
+  if (walkersInstalled.length > 0) {
+    var head = document.createElement('div');
+    head.style.color = '#94a3b8';
+    head.style.fontSize = '10px';
+    head.style.textTransform = 'uppercase';
+    head.style.letterSpacing = '0.5px';
+    head.style.margin = '4px 0';
+    head.textContent = 'Installed locally';
+    list.appendChild(head);
+    walkersInstalled.forEach(function(v) {
+      var row = document.createElement('div');
+      row.style.margin = '2px 0';
+      row.style.fontSize = '12px';
+      var verSpan = document.createElement('span');
+      verSpan.style.color = '#fff';
+      verSpan.style.fontWeight = '600';
+      verSpan.textContent = v.version;
+      var md5Span = document.createElement('span');
+      md5Span.style.color = '#666';
+      md5Span.style.fontFamily = 'monospace';
+      md5Span.style.fontSize = '10px';
+      md5Span.style.marginLeft = '8px';
+      md5Span.textContent = v.md5 ? (v.md5.substring(0, 10) + '...') : '';
+      row.appendChild(verSpan);
+      row.appendChild(md5Span);
+      list.appendChild(row);
+    });
+  }
+
+  var pendingHead = document.createElement('div');
+  pendingHead.style.color = '#94a3b8';
+  pendingHead.style.fontSize = '10px';
+  pendingHead.style.textTransform = 'uppercase';
+  pendingHead.style.letterSpacing = '0.5px';
+  pendingHead.style.margin = '8px 0 4px 0';
+  pendingHead.textContent = 'In manifest';
+  list.appendChild(pendingHead);
+
+  if (walkers.length === 0) {
+    var none = document.createElement('span');
+    none.style.color = '#888';
+    none.style.fontSize = '11px';
+    none.textContent = 'No walker entries in remote manifest.';
+    list.appendChild(none);
+    return;
+  }
+
+  walkers.forEach(function(fw) {
+    var row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.alignItems = 'center';
+    row.style.padding = '6px 0';
+    row.style.borderTop = '1px solid rgba(255,255,255,.04)';
+
+    var left = document.createElement('div');
+    var verSpan = document.createElement('span');
+    verSpan.style.color = '#fff';
+    verSpan.style.fontWeight = '600';
+    verSpan.textContent = fw.version;
+    left.appendChild(verSpan);
+
+    var sizeSpan = document.createElement('span');
+    sizeSpan.style.color = '#94a3b8';
+    sizeSpan.style.fontSize = '11px';
+    sizeSpan.style.marginLeft = '8px';
+    sizeSpan.textContent = '(' + (fw.size ? Math.round(fw.size / 1024) + ' KB' : '?') + ')';
+    left.appendChild(sizeSpan);
+
+    if (fw.installed) {
+      var tag = document.createElement('span');
+      tag.style.marginLeft = '8px';
+      tag.style.fontSize = '10px';
+      tag.style.color = '#00d4aa';
+      tag.textContent = 'installed';
+      left.appendChild(tag);
+    }
+    if (fw.description) {
+      var desc = document.createElement('div');
+      desc.style.fontSize = '11px';
+      desc.style.color = '#888';
+      desc.style.marginTop = '2px';
+      desc.textContent = fw.description;
+      left.appendChild(desc);
+    }
+
+    row.appendChild(left);
+
+    var btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.style.padding = '4px 12px';
+    btn.style.fontSize = '12px';
+    btn.textContent = fw.installed ? 'Re-download' : 'Download to server';
+    btn.onclick = function() { downloadWalkerFw(fw, btn); };
+    row.appendChild(btn);
+
+    list.appendChild(row);
+  });
+}
+
+async function downloadWalkerFw(fw, btn) {
+  var ok = await modalConfirm('Download walker firmware', 'Download walker firmware ' + fw.version + ' to the server? This fetches the .bin from the manifest URL and registers it locally.');
+  if (!ok) return;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Downloading...';
+    btn.style.opacity = '0.8';
+  }
+  try {
+    var d = await api('/download-firmware', 'POST', {
+      url: fw.url,
+      filename: fw.filename,
+      version: fw.version,
+      device_type: 'walker',
+      md5: fw.md5,
+      description: fw.description || '',
+    });
+    if (d && d.ok) {
+      showToast('Walker firmware ' + fw.version + ' downloaded (' + ((d.size || 0) / 1024).toFixed(1) + ' KB)', 'green');
+      loadFirmwareVersions();
+      checkWalkerFirmware();
+    } else {
+      modalAlert('Download Failed', (d && d.error) ? d.error : 'Unknown error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Download to server'; btn.style.opacity = '1'; }
+    }
+  } catch (e) {
+    modalAlert('Download Failed', e && e.message ? e.message : 'Unknown error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Download to server'; btn.style.opacity = '1'; }
   }
 }
 
