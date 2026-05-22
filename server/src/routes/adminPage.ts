@@ -542,6 +542,14 @@ export function adminPageHtml(): string {
         </div>
       </details>
     </div>
+
+    <div class="card">
+      <h2>Walker Maps <span class="refresh-btn" onclick="loadWalkerBundles()">&#x21BB;</span></h2>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;line-height:1.55">
+        Library of <code>.novabundle</code> files uploaded by the RTK walker. Each row is one survey session. Pick "Assign to mower..." to run the apply-verbatim pipeline against that mower's live charging pose. Uploads are SN-agnostic, so you can walk once and decide which mower gets the map later.
+      </div>
+      <div id="walkerBundleList" style="font-size:12px;color:#cbd5e1">Loading...</div>
+    </div>
   </div>
 
   <!-- Tab: Firmware -->
@@ -906,7 +914,7 @@ function switchTab(name) {
   if (name === 'settings') { checkDns(); checkDnsmasqStatus(); }
   if (name === 'mowerdebug') { mdPopulateDropdown(); }
   // Load maps when switching to maps tab
-  if (name === 'maps') { populateMowerDropdown(); }
+  if (name === 'maps') { populateMowerDropdown(); loadWalkerBundles(); }
   if (name === 'firmware') { loadFirmwareVersions(); populateOtaDeviceDropdown(); wireWalkerFwToggle(); }
 }
 
@@ -3007,6 +3015,352 @@ async function startWalkerImport() {
   if (!(await appConfirm(msg, { okText: 'Apply' }))) return;
 
   await portableApplyVerbatim();
+}
+
+// ── Walker bundle library — SN-agnostic uploads + assign-to-mower ─────────
+// The walker POSTs .novabundle files to /walker-bundles. The list below lets
+// the operator inspect each upload and pick a target mower to run the
+// apply-verbatim pipeline against. DOM is built with createElement /
+// textContent only — no innerHTML with computed content — so a malicious
+// filename or walker id can never inject markup.
+
+function fmtBytes(n) {
+  if (n == null || !isFinite(n)) return '?';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function fmtWalkerDate(iso) {
+  if (!iso) return '?';
+  try {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  } catch (e) { return iso; }
+}
+
+async function loadWalkerBundles() {
+  var host = document.getElementById('walkerBundleList');
+  if (!host) return;
+  host.textContent = 'Loading...';
+  try {
+    var d = await api('/walker-bundles');
+    var bundles = d.bundles || [];
+    host.textContent = '';
+    if (bundles.length === 0) {
+      var empty = document.createElement('div');
+      empty.style.color = '#888';
+      empty.style.fontStyle = 'italic';
+      empty.textContent = 'No walker bundles yet. Hit "Upload to server" on the walker once a survey is finished.';
+      host.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < bundles.length; i++) {
+      host.appendChild(renderWalkerBundleRow(bundles[i]));
+    }
+  } catch (e) {
+    host.textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+function renderWalkerBundleRow(b) {
+  var row = document.createElement('div');
+  row.style.padding = '10px 12px';
+  row.style.background = 'rgba(168,139,250,.06)';
+  row.style.border = '1px solid rgba(168,139,250,.25)';
+  row.style.borderRadius = '8px';
+  row.style.marginBottom = '8px';
+  row.style.display = 'flex';
+  row.style.flexWrap = 'wrap';
+  row.style.gap = '12px';
+  row.style.alignItems = 'center';
+
+  var left = document.createElement('div');
+  left.style.flex = '1 1 360px';
+  left.style.minWidth = '0';
+
+  var name = document.createElement('div');
+  name.style.fontWeight = '600';
+  name.style.color = '#e9d5ff';
+  name.style.fontFamily = 'monospace';
+  name.style.fontSize = '12px';
+  name.style.wordBreak = 'break-all';
+  name.textContent = b.filename;
+  left.appendChild(name);
+
+  var meta = document.createElement('div');
+  meta.style.fontSize = '11px';
+  meta.style.color = '#94a3b8';
+  meta.style.marginTop = '4px';
+  var parts = [
+    'Uploaded ' + fmtWalkerDate(b.uploadedAt),
+    'Walker ' + (b.walkerId || 'unknown'),
+    fmtBytes(b.sizeBytes),
+    (b.polygons || 0) + ' polygon(s)',
+    (b.obstacles || 0) + ' obstacle(s)',
+    (b.unicom || 0) + ' channel(s)',
+  ];
+  meta.textContent = parts.join(' · ');
+  left.appendChild(meta);
+
+  if (b.lastAssignedSn) {
+    var assigned = document.createElement('div');
+    assigned.style.fontSize = '11px';
+    assigned.style.color = '#86efac';
+    assigned.style.marginTop = '4px';
+    assigned.textContent = 'Last assigned to ' + b.lastAssignedSn + ' at ' + fmtWalkerDate(b.lastAssignedAt);
+    left.appendChild(assigned);
+  }
+
+  row.appendChild(left);
+
+  var actions = document.createElement('div');
+  actions.style.display = 'flex';
+  actions.style.gap = '6px';
+  actions.style.flexWrap = 'wrap';
+
+  var assignBtn = document.createElement('button');
+  assignBtn.textContent = 'Assign to mower...';
+  assignBtn.style.padding = '6px 12px';
+  assignBtn.style.background = 'rgba(16,185,129,.18)';
+  assignBtn.style.color = '#86efac';
+  assignBtn.style.border = '1px solid rgba(16,185,129,.45)';
+  assignBtn.style.borderRadius = '6px';
+  assignBtn.style.fontSize = '11px';
+  assignBtn.style.fontWeight = '600';
+  assignBtn.style.cursor = 'pointer';
+  assignBtn.onclick = function() { assignWalkerBundle(b); };
+  actions.appendChild(assignBtn);
+
+  var downloadBtn = document.createElement('a');
+  downloadBtn.textContent = 'Download';
+  downloadBtn.href = 'javascript:void(0)';
+  downloadBtn.style.padding = '6px 12px';
+  downloadBtn.style.background = 'rgba(99,102,241,.15)';
+  downloadBtn.style.color = '#a5b4fc';
+  downloadBtn.style.border = '1px solid rgba(99,102,241,.4)';
+  downloadBtn.style.borderRadius = '6px';
+  downloadBtn.style.fontSize = '11px';
+  downloadBtn.style.fontWeight = '600';
+  downloadBtn.style.cursor = 'pointer';
+  downloadBtn.style.textDecoration = 'none';
+  downloadBtn.onclick = function() { downloadWalkerBundle(b); };
+  actions.appendChild(downloadBtn);
+
+  var deleteBtn = document.createElement('button');
+  deleteBtn.textContent = 'Delete';
+  deleteBtn.style.padding = '6px 12px';
+  deleteBtn.style.background = 'rgba(239,68,68,.12)';
+  deleteBtn.style.color = '#fca5a5';
+  deleteBtn.style.border = '1px solid rgba(239,68,68,.35)';
+  deleteBtn.style.borderRadius = '6px';
+  deleteBtn.style.fontSize = '11px';
+  deleteBtn.style.fontWeight = '600';
+  deleteBtn.style.cursor = 'pointer';
+  deleteBtn.onclick = function() { deleteWalkerBundle(b); };
+  actions.appendChild(deleteBtn);
+
+  row.appendChild(actions);
+  return row;
+}
+
+async function downloadWalkerBundle(b) {
+  try {
+    var r = await fetch('/api/admin-status/walker-bundles/' + b.id, {
+      headers: { 'Authorization': token },
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var blob = await r.blob();
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = b.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    await appAlert('Download failed: ' + e.message, { accent: 'danger' });
+  }
+}
+
+async function deleteWalkerBundle(b) {
+  if (!(await appConfirm('Delete walker bundle ' + b.filename + '?', { okText: 'Delete', accent: 'danger' }))) return;
+  try {
+    var r = await fetch('/api/admin-status/walker-bundles/' + b.id, {
+      method: 'DELETE',
+      headers: { 'Authorization': token },
+    });
+    var j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'delete failed');
+    loadWalkerBundles();
+  } catch (e) {
+    await appAlert('Delete failed: ' + e.message, { accent: 'danger' });
+  }
+}
+
+async function assignWalkerBundle(b) {
+  // Fetch the list of mowers (devices) and let the operator pick one.
+  var devices;
+  try {
+    var r = await fetch('/api/admin-status/devices', { headers: { 'Authorization': token } });
+    var jd = await r.json();
+    devices = (jd.devices || []).filter(function(d) { return d.device_type === 'mower'; });
+  } catch (e) {
+    await appAlert('Failed to load mowers: ' + e.message, { accent: 'danger' });
+    return;
+  }
+  if (!devices.length) {
+    await appAlert('No mowers bound on this server. Bind one first via the Devices tab.', { accent: 'danger' });
+    return;
+  }
+
+  var picked = await pickMowerForBundle(b, devices);
+  if (!picked) return;
+
+  // Run the apply step against the picked SN.
+  var resp;
+  try {
+    var r2 = await fetch('/api/admin-status/walker-bundles/' + b.id + '/apply', {
+      method: 'POST',
+      headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sn: picked }),
+    });
+    resp = await r2.json();
+  } catch (e) {
+    await appAlert('Apply request failed: ' + e.message, { accent: 'danger' });
+    return;
+  }
+  if (!resp.ok) {
+    await appAlert('Apply failed: ' + (resp.error || 'unknown'), { accent: 'danger' });
+    return;
+  }
+
+  // Sync the rest of the import wizard state so portableApplyVerbatim picks
+  // up the freshly created staging session. mapMowerSelect MUST be set to
+  // the same SN — that's the input portableApplyVerbatim reads.
+  var sel = document.getElementById('mapMowerSelect');
+  if (sel) {
+    if (!sel.querySelector('option[value="' + picked + '"]')) {
+      var opt = document.createElement('option');
+      opt.value = picked;
+      opt.textContent = picked;
+      sel.appendChild(opt);
+    }
+    sel.value = picked;
+  }
+  portableStagingId = resp.stagingId;
+  portableVerbatimRestore = !!resp.verbatimRestore;
+  portableExactRestore = !!resp.exactRestore;
+  portableSourceSnMatches = true;
+  portableSourceSn = resp.sourceSn || null;
+
+  var polygonSummary = (resp.polygons || [])
+    .map(function(p) { return '· ' + (p.alias || p.name) + ' (' + p.pointCount + ' pts)'; })
+    .join('\\n');
+  var msg = 'Walker bundle staged for ' + picked + '.\\n\\n' +
+            (polygonSummary || '(no polygon details returned)') + '\\n\\n' +
+            'Apply verbatim now? The dock-anchor refresh modal will follow.';
+  if (!(await appConfirm(msg, { okText: 'Apply' }))) {
+    loadWalkerBundles();
+    return;
+  }
+  await portableApplyVerbatim();
+  loadWalkerBundles();
+}
+
+function pickMowerForBundle(b, devices) {
+  return new Promise(function(resolve) {
+    var overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.background = 'rgba(0,0,0,0.6)';
+    overlay.style.zIndex = '5000';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+
+    var box = document.createElement('div');
+    box.style.background = '#0d0d20';
+    box.style.border = '1px solid rgba(168,139,250,.4)';
+    box.style.borderRadius = '12px';
+    box.style.padding = '20px';
+    box.style.maxWidth = '440px';
+    box.style.width = '90%';
+    box.style.color = '#fff';
+    box.style.boxShadow = '0 8px 40px rgba(0,0,0,0.5)';
+
+    var title = document.createElement('div');
+    title.style.fontWeight = '600';
+    title.style.fontSize = '15px';
+    title.style.marginBottom = '6px';
+    title.textContent = 'Assign walker bundle';
+    box.appendChild(title);
+
+    var sub = document.createElement('div');
+    sub.style.fontSize = '12px';
+    sub.style.color = '#94a3b8';
+    sub.style.marginBottom = '12px';
+    sub.textContent = b.filename;
+    box.appendChild(sub);
+
+    var info = document.createElement('div');
+    info.style.fontSize = '11px';
+    info.style.color = '#cbd5e1';
+    info.style.marginBottom = '12px';
+    info.style.lineHeight = '1.55';
+    info.textContent = 'Pick the mower that this bundle should be staged for. The server reads the mower live charging pose, rotates + translates the polygons into its frame, then runs apply-verbatim. The mower must be online and docked with a non-zero map_position.';
+    box.appendChild(info);
+
+    var list = document.createElement('div');
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '6px';
+    list.style.maxHeight = '300px';
+    list.style.overflowY = 'auto';
+    list.style.marginBottom = '12px';
+    for (var i = 0; i < devices.length; i++) {
+      (function(dev) {
+        var btn = document.createElement('button');
+        btn.style.padding = '10px 12px';
+        btn.style.background = 'rgba(99,102,241,.12)';
+        btn.style.border = '1px solid rgba(99,102,241,.35)';
+        btn.style.borderRadius = '8px';
+        btn.style.color = '#e0e7ff';
+        btn.style.fontSize = '12px';
+        btn.style.fontWeight = '600';
+        btn.style.cursor = 'pointer';
+        btn.style.textAlign = 'left';
+        btn.textContent = dev.sn + (dev.is_online ? ' (online)' : ' (offline)');
+        btn.onclick = function() {
+          document.body.removeChild(overlay);
+          resolve(dev.sn);
+        };
+        list.appendChild(btn);
+      })(devices[i]);
+    }
+    box.appendChild(list);
+
+    var cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.style.padding = '8px 14px';
+    cancel.style.background = 'rgba(239,68,68,.12)';
+    cancel.style.color = '#fca5a5';
+    cancel.style.border = '1px solid rgba(239,68,68,.35)';
+    cancel.style.borderRadius = '6px';
+    cancel.style.fontSize = '12px';
+    cancel.style.fontWeight = '600';
+    cancel.style.cursor = 'pointer';
+    cancel.onclick = function() {
+      document.body.removeChild(overlay);
+      resolve(null);
+    };
+    box.appendChild(cancel);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  });
 }
 
 function renderPortableImportWizard(sn, state) {
