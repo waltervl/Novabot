@@ -23,6 +23,13 @@
 #include "lvgl.h"
 #include "jc3248w535.h"
 #include "../walker_api.h"
+#include "tft_ui.h"
+#include "../session.h"
+#include "../recording.h"
+
+// Multi-file session globals — owned by main.cpp.
+extern SessionStore sessionStore;
+extern Recorder recorder;
 
 // ── Theme ───────────────────────────────────────────────────────────────────
 // Same palette as the web UI so the device feels like one product.
@@ -151,6 +158,7 @@ static void reload_tracks_list();
 static void apply_record_btn_state(RecordBtnState state);
 static void on_keyboard_event(lv_event_t* e);
 static void focus_textarea(lv_obj_t* ta);
+static void buildSessionScreens();
 
 // ── Public entry points ────────────────────────────────────────────────────
 void tftSetup() {
@@ -181,6 +189,7 @@ void tftSetup() {
   build_main_screen();
   build_settings_screen();
   build_tracks_screen();
+  buildSessionScreens();
 
   lv_scr_load(scr_main);
 
@@ -1438,6 +1447,151 @@ static void refresh_status_cb(lv_timer_t* t) {
   g_lvgl_checkpoint = 8;
   redraw_map(snap);
   g_lvgl_checkpoint = 9;
+}
+
+// ── Multi-file session screens (Tasks 3/4/5) ──────────────────────────
+//
+// These three screens coexist with the legacy live-GPS scr_main built
+// in tftSetup(). For now the legacy screen stays the boot default so we
+// don't regress the working GPS/RTK display while Tasks 4 + 5 finish
+// wiring navigation. The new API (tft_ui_set_screen / refresh) is fully
+// callable so a future entry point (or a CLI command) can switch over.
+
+static UiScreen s_currentScreen = UiScreen::Main;
+static int      s_detailSlot    = -1;
+static lv_obj_t* s_screenMain   = nullptr;
+static lv_obj_t* s_screenDetail = nullptr;  // T4 fills in
+static lv_obj_t* s_screenRecord = nullptr;  // T5 fills in
+
+// Main-screen widgets we mutate from refresh.
+static lv_obj_t* s_mapList = nullptr;
+static lv_obj_t* s_mainTitle = nullptr;
+
+static void onAddMapClicked(lv_event_t* e);
+static void onMapRowClicked(lv_event_t* e);
+static void onExportClicked(lv_event_t* e);
+static void refreshMainScreen();
+
+static void buildSessionMainScreen() {
+    s_screenMain = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(s_screenMain, lv_color_hex(0x111111), 0);
+    lv_obj_clear_flag(s_screenMain, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_mainTitle = lv_label_create(s_screenMain);
+    lv_label_set_text(s_mainTitle, "RTK Walker");
+    lv_obj_set_style_text_color(s_mainTitle, lv_color_hex(0xeeeeee), 0);
+    lv_obj_align(s_mainTitle, LV_ALIGN_TOP_MID, 0, 8);
+
+    s_mapList = lv_list_create(s_screenMain);
+    lv_obj_set_size(s_mapList, LV_PCT(94), LV_PCT(60));
+    lv_obj_align(s_mapList, LV_ALIGN_TOP_MID, 0, 40);
+
+    lv_obj_t* btnAdd = lv_btn_create(s_screenMain);
+    lv_obj_set_size(btnAdd, LV_PCT(45), 50);
+    lv_obj_align(btnAdd, LV_ALIGN_BOTTOM_LEFT, 6, -10);
+    lv_obj_t* lblAdd = lv_label_create(btnAdd);
+    lv_label_set_text(lblAdd, "+ Add work area");
+    lv_obj_center(lblAdd);
+    lv_obj_add_event_cb(btnAdd, onAddMapClicked, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* btnExport = lv_btn_create(s_screenMain);
+    lv_obj_set_size(btnExport, LV_PCT(45), 50);
+    lv_obj_align(btnExport, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
+    lv_obj_t* lblExp = lv_label_create(btnExport);
+    lv_label_set_text(lblExp, "Export bundle");
+    lv_obj_center(lblExp);
+    lv_obj_add_event_cb(btnExport, onExportClicked, LV_EVENT_CLICKED, nullptr);
+}
+
+static void buildSessionDetailPlaceholder() {
+    s_screenDetail = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(s_screenDetail, lv_color_hex(0x111111), 0);
+    lv_obj_clear_flag(s_screenDetail, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* lbl = lv_label_create(s_screenDetail);
+    lv_label_set_text(lbl, "MapDetail (built in Task 4)");
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xeeeeee), 0);
+    lv_obj_center(lbl);
+}
+
+static void buildSessionRecordingPlaceholder() {
+    s_screenRecord = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(s_screenRecord, lv_color_hex(0x111111), 0);
+    lv_obj_clear_flag(s_screenRecord, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* lbl = lv_label_create(s_screenRecord);
+    lv_label_set_text(lbl, "Recording (built in Task 5)");
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xeeeeee), 0);
+    lv_obj_center(lbl);
+}
+
+static void refreshMainScreen() {
+    if (!s_mapList) return;
+    lv_obj_clean(s_mapList);
+    MapEntry entries[3];
+    size_t count = 0;
+    sessionStore.listMaps(entries, 3, count);
+    if (count == 0) {
+        lv_list_add_text(s_mapList, "No maps yet - tap + Add work area");
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        char text[96];
+        snprintf(text, sizeof(text), "map%d  %s  %d pts  obs:%d  ch:%d",
+                 entries[i].slot, entries[i].alias.c_str(),
+                 entries[i].boundaryPoints, entries[i].obstacleCount,
+                 entries[i].channelCount);
+        lv_obj_t* btn = lv_list_add_btn(s_mapList, LV_SYMBOL_FILE, text);
+        lv_obj_set_user_data(btn, (void*)(intptr_t)entries[i].slot);
+        lv_obj_add_event_cb(btn, onMapRowClicked, LV_EVENT_CLICKED, nullptr);
+    }
+}
+
+void tft_ui_set_screen(UiScreen s, int detailSlot) {
+    s_currentScreen = s;
+    s_detailSlot = detailSlot;
+    lv_obj_t* target = nullptr;
+    switch (s) {
+        case UiScreen::Main:      target = s_screenMain;   break;
+        case UiScreen::MapDetail: target = s_screenDetail; break;
+        case UiScreen::Recording: target = s_screenRecord; break;
+    }
+    if (target) lv_scr_load(target);
+    if (s == UiScreen::Main) refreshMainScreen();
+}
+
+UiScreen tft_ui_current_screen() { return s_currentScreen; }
+
+void tft_ui_refresh_current() {
+    if (s_currentScreen == UiScreen::Main) refreshMainScreen();
+    // detail + recording refresh hooked up by T4/T5.
+}
+
+static void onAddMapClicked(lv_event_t* /*e*/) {
+    int slot;
+    if (!recorder.startWork(slot)) {
+        if (s_mainTitle) lv_label_set_text(s_mainTitle, "Max 3 maps reached");
+        return;
+    }
+    tft_ui_set_screen(UiScreen::Recording);
+}
+
+static void onMapRowClicked(lv_event_t* e) {
+    int slot = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+    tft_ui_set_screen(UiScreen::MapDetail, slot);
+}
+
+static void onExportClicked(lv_event_t* /*e*/) {
+    if (s_mainTitle) lv_label_set_text(s_mainTitle, "Export - Task 6");
+}
+
+// Build the new screens once after tftSetup() has finished its LVGL
+// init. Called from tftSetup() at the very end.
+static void buildSessionScreens() {
+    buildSessionMainScreen();
+    buildSessionDetailPlaceholder();
+    buildSessionRecordingPlaceholder();
+    // NOTE: we deliberately do NOT call tft_ui_set_screen(UiScreen::Main)
+    // here — the legacy scr_main stays the boot default so the live
+    // GPS/RTK display keeps working until Tasks 4 + 5 wire transitions.
 }
 
 #endif  // HAS_TFT_DISPLAY
