@@ -12,6 +12,11 @@ namespace {
 constexpr int kMaxWorkSlots = 3;
 constexpr int kMaxObstacles = 32;
 
+// listMaps() decodes the slot via `name.charAt(3) - '0'`, which only works
+// for single-digit slot numbers. If kMaxWorkSlots ever grows past 10 that
+// decoder breaks silently — guard it.
+static_assert(kMaxWorkSlots <= 10, "Single-digit slot encoding assumed in listMaps");
+
 String workPath(int slot) {
     return String("/session/map") + slot + "_work.csv";
 }
@@ -34,20 +39,27 @@ int countRows(const String& path) {
     if (!LittleFS.exists(path)) return 0;
     File f = LittleFS.open(path, FILE_READ);
     if (!f) return 0;
+    uint8_t buf[128];
     int rows = 0;
     while (f.available()) {
-        if (f.read() == '\n') rows++;
+        int n = f.read(buf, sizeof(buf));
+        if (n <= 0) break;
+        for (int i = 0; i < n; i++) {
+            if (buf[i] == '\n') rows++;
+        }
     }
     f.close();
     return rows;
 }
 
 bool appendLine(const String& path, const String& line) {
+    // FILE_APPEND on Arduino-LittleFS already creates the file if missing —
+    // do NOT fall back to FILE_WRITE here, that would truncate any existing
+    // data on a transient open failure.
     File f = LittleFS.open(path, FILE_APPEND);
     if (!f) {
-        // Try create.
-        f = LittleFS.open(path, FILE_WRITE);
-        if (!f) return false;
+        Serial.printf("[session] appendLine open failed: %s\n", path.c_str());
+        return false;
     }
     size_t want = line.length();
     size_t wrote = f.print(line);
@@ -211,7 +223,12 @@ bool SessionStore::appendChannelPoint(int parentSlot, const String& target, doub
 
 bool SessionStore::appendRawRow(const String& baseName, unsigned long ts, double lat,
                                  double lng, double alt, int fix, int sats, double hdop) {
-    if (baseName.length() == 0) return false;
+    // Reject path-traversal attempts before composing a filesystem path.
+    if (baseName.length() == 0 || baseName.indexOf('/') >= 0 ||
+        baseName.indexOf('\\') >= 0 || baseName.startsWith(".")) {
+        Serial.printf("[session] appendRawRow rejected baseName: %s\n", baseName.c_str());
+        return false;
+    }
     String path = rawPath(baseName);
     bool needHeader = !LittleFS.exists(path);
     if (!needHeader) {
@@ -348,9 +365,28 @@ bool SessionStore::readMetadata(JsonDocument& doc) {
 }
 
 bool SessionStore::writeMetadata(const JsonDocument& doc) {
-    File f = LittleFS.open(kMetaFile, FILE_WRITE);
-    if (!f) return false;
-    size_t wrote = serializeJson(doc, f);
+    // Atomic-ish write: serialize to a temp file first, then remove+rename.
+    // LittleFS doesn't have true atomic rename semantics under power loss,
+    // but this is strictly better than truncating kMetaFile up-front and
+    // crashing mid-serialize — which would wipe every alias.
+    const char* tmpPath = "/session/metadata.json.tmp";
+    File f = LittleFS.open(tmpPath, FILE_WRITE);
+    if (!f) {
+        Serial.println("[session] writeMetadata: tmp open failed");
+        return false;
+    }
+    if (serializeJson(doc, f) == 0) {
+        f.close();
+        LittleFS.remove(tmpPath);
+        Serial.println("[session] writeMetadata: serialize wrote 0 bytes");
+        return false;
+    }
     f.close();
-    return wrote > 0;
+    if (LittleFS.exists(kMetaFile)) LittleFS.remove(kMetaFile);
+    if (!LittleFS.rename(tmpPath, kMetaFile)) {
+        Serial.println("[session] writeMetadata: rename failed");
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    return true;
 }
