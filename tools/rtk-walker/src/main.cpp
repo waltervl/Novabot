@@ -1646,7 +1646,6 @@ void setup() {
 
 // ── Loop ────────────────────────────────────────────────────────────
 static uint32_t mainTickCount = 0;
-static uint32_t mainLastBeatMs = 0;
 
 void loop() {
   // gnssPump() drains the UART RX buffer first — bytes flowing at
@@ -1661,38 +1660,11 @@ void loop() {
   batteryPump();
   tftTick();
 
-  // Diagnostic heartbeat — paired with the LVGL task heartbeat printed
-  // every 5 s from refresh_status_cb. If one disappears we know exactly
-  // which task is stuck.
+  // Diagnostic heartbeats were noisy on the serial console after the UI
+  // refactor — both [main-tick] and [lvgl-tick] are removed. If a future
+  // hang investigation needs them back, the previous block recorded a
+  // per-task counter + heap + LVGL checkpoint every 5 s.
   mainTickCount++;
-  uint32_t nowMs = millis();
-  if (nowMs - mainLastBeatMs >= 5000) {
-#ifdef HAS_TFT_DISPLAY
-    // Pull the LVGL task's latest checkpoint into this print so when
-    // the [lvgl-tick] stream stops we still know where it died. The
-    // age (ms since last LVGL refresh callback fired) confirms whether
-    // it's truly stuck or just slow.
-    extern volatile uint8_t  g_lvgl_checkpoint;
-    extern volatile uint32_t g_lvgl_last_tick_ms;
-    uint32_t lvglAgeMs = nowMs - g_lvgl_last_tick_ms;
-    Serial.printf("[main-tick] count=%u heap=%u min=%u uptime=%lus core=%d lvgl_cp=%u lvgl_age=%ums\n",
-                  (unsigned) mainTickCount,
-                  (unsigned) ESP.getFreeHeap(),
-                  (unsigned) ESP.getMinFreeHeap(),
-                  (unsigned long) (nowMs / 1000),
-                  xPortGetCoreID(),
-                  (unsigned) g_lvgl_checkpoint,
-                  (unsigned) lvglAgeMs);
-#else
-    Serial.printf("[main-tick] count=%u heap=%u min=%u uptime=%lus core=%d\n",
-                  (unsigned) mainTickCount,
-                  (unsigned) ESP.getFreeHeap(),
-                  (unsigned) ESP.getMinFreeHeap(),
-                  (unsigned long) (nowMs / 1000),
-                  xPortGetCoreID());
-#endif
-    mainLastBeatMs = nowMs;
-  }
 
   // Temporary session debug shell — remove in Task 5 cleanup
   if (Serial.available()) {

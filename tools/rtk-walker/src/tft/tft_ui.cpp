@@ -1774,23 +1774,9 @@ volatile uint32_t g_lvgl_last_tick_ms = 0;
 static void refresh_status_cb(lv_timer_t* t) {
   g_lvgl_checkpoint = 1; g_lvgl_last_tick_ms = millis();
 
-  // Diagnostic heartbeat from the LVGL task — every ~5 s log a marker
-  // with free heap. If this stream stops while the main loop's marker
-  // keeps printing, the LVGL task itself is wedged (deadlock, flush
-  // stall) rather than the whole system being crashed.
-  static uint32_t lvglTickCount = 0;
-  static uint32_t lvglLastBeatMs = 0;
-  lvglTickCount++;
-  uint32_t nowMs = millis();
-  if (nowMs - lvglLastBeatMs >= 5000) {
-    Serial.printf("[lvgl-tick] count=%u heap=%u min=%u uptime=%lus core=%d\n",
-                  (unsigned) lvglTickCount,
-                  (unsigned) ESP.getFreeHeap(),
-                  (unsigned) ESP.getMinFreeHeap(),
-                  (unsigned long) (nowMs / 1000),
-                  xPortGetCoreID());
-    lvglLastBeatMs = nowMs;
-  }
+  // [lvgl-tick] heartbeat removed (console noise after the UI refactor).
+  // g_lvgl_last_tick_ms above is still updated so a future heartbeat can
+  // be reattached without touching the rest of the refresh path.
 
   g_lvgl_checkpoint = 2;
   WalkerSnapshot snap;
