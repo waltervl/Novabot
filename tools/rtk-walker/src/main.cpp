@@ -47,6 +47,7 @@
 
 #include "index_html.h"
 #include "walker_api.h"
+#include "session.h"
 #include "tft/tft_ui.h"
 
 // ── Pins / hardware ─────────────────────────────────────────────────
@@ -72,6 +73,7 @@ TinyGPSPlus    gps;
 WebServer      server(80);
 WiFiClient     ntrip;
 Preferences    prefs;
+SessionStore   sessionStore;
 
 struct Config {
   String ssid;
@@ -1205,6 +1207,14 @@ void setup() {
     weblogf("[fs] mount failed\n");
   }
 
+  // SessionStore mounts LittleFS too (idempotent — second begin() is a no-op
+  // when already mounted) and ensures /session/ + metadata.json exist. We
+  // leave the explicit LittleFS.begin() above untouched so any error logging
+  // around the legacy /tracks flow continues to work.
+  if (!sessionStore.begin()) {
+    weblogf("[session] init failed\n");
+  }
+
   livePointsMux = xSemaphoreCreateRecursiveMutex();
 
   loadConfig();
@@ -1379,6 +1389,27 @@ void loop() {
                   xPortGetCoreID());
 #endif
     mainLastBeatMs = nowMs;
+  }
+
+  // Temporary session debug shell — remove in Task 5 cleanup
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd == "session-list") {
+      MapEntry entries[3];
+      size_t count = 0;
+      sessionStore.listMaps(entries, 3, count);
+      Serial.printf("Maps: %d\n", count);
+      for (size_t i = 0; i < count; i++) {
+        Serial.printf("  slot=%d alias=%s pts=%d obs=%d ch=%d\n",
+                      entries[i].slot, entries[i].alias.c_str(),
+                      entries[i].boundaryPoints, entries[i].obstacleCount,
+                      entries[i].channelCount);
+      }
+    } else if (cmd == "session-reset") {
+      sessionStore.reset();
+      Serial.println("session reset");
+    }
   }
 
   delay(1);
