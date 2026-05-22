@@ -1870,6 +1870,10 @@ bool walkerToggleRecording() {
 
 String walkerLastTrackPath() { return lastTrackPath; }
 uint32_t walkerLastTrackPoints() { return lastTrackPoints; }
+void walkerSetLastTrack(const String& path, uint32_t points) {
+  lastTrackPath = path;
+  lastTrackPoints = points;
+}
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
   livePointsLock();

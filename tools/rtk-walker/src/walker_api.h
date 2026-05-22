@@ -80,6 +80,12 @@ bool walkerToggleRecording();                            // returns new state
 String walkerLastTrackPath();
 uint32_t walkerLastTrackPoints();
 
+// Lets the TFT track-viewer adopt a previously-recorded track so the
+// "Save as area" button on the legacy screen treats a loaded CSV the
+// same as one we just stopped recording. Pass an empty path + 0 count
+// to clear (e.g. when leaving viewing mode).
+void walkerSetLastTrack(const String& path, uint32_t points);
+
 // Number of live points kept in RAM, and a copy of them. The TFT map
 // reads this each frame to redraw the polyline. Copy semantics keep
 // the LVGL thread away from the std::vector backing store in main.cpp.

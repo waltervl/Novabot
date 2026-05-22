@@ -1152,6 +1152,11 @@ static void on_track_row_clicked(lv_event_t* e) {
   if (!name) return;
   if (!load_saved_track(String(name))) return;
   viewing_track_name = name;
+  // Adopt this CSV as the "last track" so the legacy screen's
+  // "Save as area" button treats it the same as a track we just
+  // stopped recording. Without this the button stays hidden when
+  // viewing a saved track and the user can't convert it.
+  walkerSetLastTrack(String("/tracks/") + name, (uint32_t) viewing_count);
   lv_scr_load(scr_main);
 }
 
