@@ -26,6 +26,7 @@
 #include "tft_ui.h"
 #include "../session.h"
 #include "../recording.h"
+#include "../bundle.h"
 
 // Multi-file session globals — owned by main.cpp.
 extern SessionStore sessionStore;
@@ -1938,7 +1939,19 @@ static void onMapRowClicked(lv_event_t* e) {
 }
 
 static void onExportClicked(lv_event_t* /*e*/) {
-    if (s_mainTitle) lv_label_set_text(s_mainTitle, "Export - Task 6");
+    // Build a .novabundle zip from the current /session/ state. The build
+    // is synchronous on the LVGL task — typical sessions are tiny so the
+    // few-hundred-ms blip is acceptable. If it grows we'll move the call
+    // off-task and stash the result for the next refresh tick.
+    BundleBuilder bb(sessionStore);
+    String path = bb.build();
+    if (path.isEmpty()) {
+        if (s_mainTitle) lv_label_set_text(s_mainTitle, "Export failed");
+        return;
+    }
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Bundle ready: %s", path.c_str());
+    if (s_mainTitle) lv_label_set_text(s_mainTitle, msg);
 }
 
 static void onBackToGpsClicked(lv_event_t* /*e*/) {

@@ -49,6 +49,7 @@
 #include "walker_api.h"
 #include "session.h"
 #include "recording.h"
+#include "bundle.h"
 #include "tft/tft_ui.h"
 
 // ── Pins / hardware ─────────────────────────────────────────────────
@@ -1333,6 +1334,27 @@ void setup() {
   server.on("/api/battery/raw",   HTTP_GET,  handleBatteryRaw);
   server.on("/api/config", HTTP_GET,  handleConfigGet);
   server.on("/api/config", HTTP_POST, handleConfigPost);
+  // Walker bundle export — produces a .novabundle zip and streams it back.
+  // Server-side (Task 8) consumes the same file to materialise a portable
+  // mower bundle. Always rebuilds on request so the latest /session/ state
+  // is reflected; the build cost is ~hundreds of ms for typical sessions.
+  server.on("/bundle.novabundle", HTTP_GET, []() {
+    BundleBuilder bb(sessionStore);
+    String path = bb.build();
+    if (path.isEmpty()) {
+      server.send(500, "text/plain", "bundle build failed");
+      return;
+    }
+    File f = LittleFS.open(path, FILE_READ);
+    if (!f) {
+      server.send(500, "text/plain", "bundle open failed");
+      return;
+    }
+    server.sendHeader("Content-Disposition",
+                      "attachment; filename=\"walker.novabundle\"");
+    server.streamFile(f, "application/zip");
+    f.close();
+  });
   server.onNotFound([]() {
     if (server.uri().startsWith("/track/")) {
       handleTrackDownload();
