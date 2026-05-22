@@ -1376,20 +1376,33 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
   String alias = String("Area ") + (previewSlot >= 0 ? (previewSlot + 1) : 1);
 
   int written = import_track_as_area(path, alias);
-  if (lbl_pts) {
-    char msg[96];
-    if (written > 0) {
-      snprintf(msg, sizeof(msg),
-               LV_SYMBOL_OK "  Saved as %s\n(%d points)",
-               alias.c_str(), written);
-    } else {
-      snprintf(msg, sizeof(msg),
-               LV_SYMBOL_WARNING "  Save failed - no\nRTK FIX rows in track");
-    }
-    lv_label_set_text(lbl_pts, msg);
-  }
-  // Hide the button so a double-tap can't double-import the same track.
+
+  // Clear walkerLastTrack so the "Save as area" button guard keeps it
+  // hidden on the next refresh tick. Without this clearance the button
+  // re-appears via update_save_area_button() and the user can re-import
+  // the same track into a second slot by accident.
+  walkerSetLastTrack(String(""), 0);
   if (btn_save_area) lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+
+  // Proper modal confirmation so the user has to actively acknowledge
+  // the result. The previous label-text approach was too easy to miss
+  // and led to duplicate imports when users tapped Save twice quickly.
+  static const char* msgbox_buttons[] = { "OK", "" };
+  char title[64];
+  char body[160];
+  if (written > 0) {
+    snprintf(title, sizeof(title), "Saved as %s", alias.c_str());
+    snprintf(body, sizeof(body),
+             "%d RTK FIX points imported.\nVisible on the Maps tab.",
+             written);
+  } else {
+    snprintf(title, sizeof(title), "Save failed");
+    snprintf(body, sizeof(body),
+             "No RTK FIX rows in the track.\nWalk again with FIX active.");
+  }
+  lv_obj_t* mbox = lv_msgbox_create(NULL, title, body, msgbox_buttons, false);
+  lv_obj_center(mbox);
+
   // Best-effort refresh of the Maps screen so the new entry is visible
   // when the user navigates over there.
   tft_ui_refresh_current();
@@ -1821,6 +1834,8 @@ static void onBackToGpsClicked(lv_event_t* e);
 static void onAddChannelClicked(lv_event_t* e);
 static void onAddObstacleClicked(lv_event_t* e);
 static void onDetailBackClicked(lv_event_t* e);
+static void onDetailDeleteClicked(lv_event_t* e);
+static void onDetailDeleteConfirmed(lv_event_t* e);
 static void onSaveClicked(lv_event_t* e);
 static void onCancelClicked(lv_event_t* e);
 static void refreshMainScreen();
@@ -1960,13 +1975,27 @@ static void buildDetailScreen() {
 
     lv_obj_t* btnBack = lv_btn_create(s_screenDetail);
     lv_obj_set_size(btnBack, LV_PCT(40), 40);
-    lv_obj_align(btnBack, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_align(btnBack, LV_ALIGN_BOTTOM_MID, -LV_PCT(22), -6);
     lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x374151), 0);
     lv_obj_t* lblBack = lv_label_create(btnBack);
     lv_label_set_text(lblBack, LV_SYMBOL_LEFT "  Back");
     lv_obj_set_style_text_color(lblBack, lv_color_hex(0xeeeeee), 0);
     lv_obj_center(lblBack);
     lv_obj_add_event_cb(btnBack, onDetailBackClicked, LV_EVENT_CLICKED, nullptr);
+
+    // Destructive Delete button — sits next to Back so accidental presses
+    // are less likely than placing it inline with the row list. Red bg +
+    // trash icon to telegraph the action. The handler shows a yes/no
+    // msgbox so a single tap can't erase a map.
+    lv_obj_t* btnDel = lv_btn_create(s_screenDetail);
+    lv_obj_set_size(btnDel, LV_PCT(40), 40);
+    lv_obj_align(btnDel, LV_ALIGN_BOTTOM_MID, LV_PCT(22), -6);
+    lv_obj_set_style_bg_color(btnDel, lv_color_hex(0x7f1d1d), 0);
+    lv_obj_t* lblDel = lv_label_create(btnDel);
+    lv_label_set_text(lblDel, LV_SYMBOL_TRASH "  Delete");
+    lv_obj_set_style_text_color(lblDel, lv_color_hex(0xfecaca), 0);
+    lv_obj_center(lblDel);
+    lv_obj_add_event_cb(btnDel, onDetailDeleteClicked, LV_EVENT_CLICKED, nullptr);
 }
 
 // Count newline-terminated rows in a LittleFS file. Mirrors the helper
@@ -2342,6 +2371,33 @@ static void onAddObstacleClicked(lv_event_t* /*e*/) {
 }
 
 static void onDetailBackClicked(lv_event_t* /*e*/) {
+    tft_ui_set_screen(UiScreen::Main);
+}
+
+// Tap on Delete shows a yes/no msgbox. The confirm callback walks
+// every msgbox button event and only fires the destructive action
+// when button index == 1 (Yes).
+static void onDetailDeleteClicked(lv_event_t* /*e*/) {
+    static const char* btns[] = { "Cancel", "Delete", "" };
+    char body[160];
+    snprintf(body, sizeof(body),
+             "Delete map%d and all of its obstacles + channels?\nThis cannot be undone.",
+             s_detailSlot);
+    lv_obj_t* mbox = lv_msgbox_create(NULL, "Confirm delete", body, btns, false);
+    lv_obj_add_event_cb(mbox, onDetailDeleteConfirmed, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_center(mbox);
+}
+
+static void onDetailDeleteConfirmed(lv_event_t* e) {
+    lv_obj_t* mbox = lv_event_get_current_target(e);
+    uint16_t idx = lv_msgbox_get_active_btn(mbox);
+    lv_msgbox_close(mbox);
+    if (idx != 1) return;  // Cancel
+    int slot = s_detailSlot;
+    if (slot < 0) return;
+    sessionStore.deleteMap(slot);
+    // Back to the Maps overview — the just-deleted slot's detail screen
+    // would otherwise show stale data until the next refresh tick.
     tft_ui_set_screen(UiScreen::Main);
 }
 

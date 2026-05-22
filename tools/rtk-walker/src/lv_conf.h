@@ -227,7 +227,7 @@
 #define LV_USE_LIST       1
 #define LV_USE_MENU       0
 #define LV_USE_METER      0
-#define LV_USE_MSGBOX     0
+#define LV_USE_MSGBOX     1  // Save-as-area confirmation + delete confirmation
 #define LV_USE_SPAN       0
 #define LV_USE_SPINBOX    0
 #define LV_USE_SPINNER    1
