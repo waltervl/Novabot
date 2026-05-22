@@ -1,64 +1,9 @@
 # Navigation Commands
 
+!!! info "Mowing-session control lives elsewhere"
+    `start_navigation`, `pause_navigation`, `resume_navigation`, and `stop_navigation` are the v6.x firmware mowing-session commands. See [Mowing Commands - start_navigation](mowing-commands.md#start_navigation) for the real payloads and `cmd_num` requirements. They are NOT point-to-point goto commands.
+
 ## Point-to-Point Navigation
-
-### start_navigation
-
-Start point-to-point navigation to a target location.
-
-```json title="Command"
-{
-  "start_navigation": {
-    "latitude": 52.1409,
-    "longitude": 6.2310
-  }
-}
-```
-
-```json title="Response"
-{
-  "type": "start_navigation_respond",
-  "message": { "result": 0, "value": null }
-}
-```
-
----
-
-### stop_navigation
-
-Stop current navigation.
-
-```json title="Command"
-{
-  "stop_navigation": {}
-}
-```
-
----
-
-### pause_navigation
-
-Pause current navigation.
-
-```json title="Command"
-{
-  "pause_navigation": {}
-}
-```
-
----
-
-### resume_navigation
-
-Resume paused navigation.
-
-```json title="Command"
-{
-  "resume_navigation": {}
-}
-```
-
----
 
 ### navigate_to_position
 
@@ -155,22 +100,20 @@ Set the maximum speed during navigation.
 
 ---
 
-## Patrol Mode
+## Patrol Mode (deprecated / no-op stubs)
 
-!!! info "New — discovered in mower firmware"
-    Patrol mode is a separate operational mode from mowing and navigation. The mower follows a predefined patrol route.
+!!! danger "`start_patrol` and `stop_patrol` are no-op stubs"
+    Stock `mqtt_node` JSON-echoes `start_patrol` and `stop_patrol` without making any ROS call (verified, see `research/extended_commands.py:1101`). They will NOT drive the mower along the boundary.
+
+    For boundary/edge cutting use [start_edge_cut](mowing-commands.md#start_edge_cut-custom-firmware-only) on custom firmware. `cov_mode:2` and direct `/boundary_follow` action calls also do NOT work for saved-polygon edge cutting.
 
 ### start_patrol
 
-Start patrol mode.
-
-```json title="Command"
-{
-  "start_patrol": {}
-}
+```json title="Command (no-op)"
+{ "start_patrol": {} }
 ```
 
-```json title="Response"
+```json title="Response (echo only)"
 {
   "type": "start_patrol_respond",
   "message": { "result": 0, "value": null }
@@ -181,15 +124,11 @@ Start patrol mode.
 
 ### stop_patrol
 
-Stop patrol mode.
-
-```json title="Command"
-{
-  "stop_patrol": {}
-}
+```json title="Command (no-op)"
+{ "stop_patrol": {} }
 ```
 
-```json title="Response"
+```json title="Response (echo only)"
 {
   "type": "stop_patrol_respond",
   "message": { "result": 0, "value": null }
@@ -202,15 +141,27 @@ Stop patrol mode.
 
 ### go_to_charge
 
-Navigate back to the charging station.
+Navigate back to the charging station. Sent as the second step of a two-command sequence: app first sends `go_pile` and waits for `go_pile_respond`, then sends `go_to_charge`.
 
 **ROS service**: `/robot_decision/nav_to_recharge`
 
 ```json title="Command"
 {
-  "go_to_charge": {}
+  "go_to_charge": {
+    "cmd_num": 12349,
+    "chargerpile": {
+      "latitude": 200,
+      "longitude": 200
+    }
+  }
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cmd_num` | number | Required, auto-incrementing |
+| `chargerpile.latitude` | number | **Sentinel value `200`** (NOT real GPS) |
+| `chargerpile.longitude` | number | **Sentinel value `200`** (NOT real GPS) |
 
 ```json title="Response"
 {
@@ -218,6 +169,9 @@ Navigate back to the charging station.
   "message": { "result": 0, "value": null }
 }
 ```
+
+!!! warning "Both `cmd_num` and the 200/200 sentinel are mandatory"
+    Omitting either field causes the mower to ignore the command. Always send `go_pile {}` first and wait for `go_pile_respond` before sending `go_to_charge`.
 
 ---
 
@@ -333,20 +287,24 @@ Save the current position as the charging station location.
 
 ## Manual Control (Joystick)
 
-App route: `/manulController` (note: typo in app)
+App route: `/manulController` (note: typo in app).
+
+The joystick protocol is a 3-message sequence: `start_move` to enter manual mode, repeated `mst` velocity updates at 200 ms cadence, and `stop_move` to exit.
 
 ### start_move
 
-Start manual movement. The app sends continuous position updates.
+Enter manual mode and set the initial direction. The value MUST be an **integer**, NOT an object.
 
 ```json title="Command"
-{
-  "start_move": {
-    "direction": 45,
-    "speed": 0.5
-  }
-}
+{ "start_move": 3 }
 ```
+
+| Value | Direction |
+|-------|-----------|
+| `1` | Left |
+| `2` | Right |
+| `3` | Forward |
+| `4` | Backward |
 
 ```json title="Response"
 {
@@ -355,19 +313,39 @@ Start manual movement. The app sends continuous position updates.
 }
 ```
 
-!!! info "Continuous updates"
-    The app's `ManulControllerPageLogic` sends continuous `writeDataForMove` updates with direction/speed calculated from joystick offset.
+!!! danger "Empty object and object forms do NOT work"
+    Sending `{"start_move": {}}` or `{"start_move": {"direction": 3, "speed": 0.5}}` is silently ignored by the firmware. Only the integer form (`{"start_move": 3}`) enters manual mode.
+
+---
+
+### mst (joystick velocity)
+
+Sent repeatedly at 200 ms cadence after `start_move` to drive the wheels. Combined with `start_move`'s direction, `mst` provides the speed magnitude.
+
+```json title="Command"
+{
+  "mst": {
+    "x_w": 0.3,
+    "y_v": 0.0,
+    "z_g": 0
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `x_w` | number | Linear speed magnitude (m/s) |
+| `y_v` | number | Angular velocity (rad/s) |
+| `z_g` | number | Always `0` |
 
 ---
 
 ### stop_move
 
-Stop manual movement.
+Exit manual mode.
 
 ```json title="Command"
-{
-  "stop_move": {}
-}
+{ "stop_move": {} }
 ```
 
 ```json title="Response"
@@ -405,16 +383,12 @@ sequenceDiagram
 
 | Command | Response | Via Charger LoRa? | ROS Service |
 |---------|----------|-------------------|-------------|
-| `start_navigation` | `start_navigation_respond` | No (direct MQTT) | — |
-| `stop_navigation` | `stop_navigation_respond` | No | — |
-| `pause_navigation` | `pause_navigation_respond` | No | — |
-| `resume_navigation` | `resume_navigation_respond` | No | — |
 | `navigate_to_position` | `navigate_to_position_respond` | No | — |
 | `start_time_navigation` | `start_time_navigation_respond` | No | — |
 | `stop_time_navigation` | `stop_time_navigation_respond` | No | — |
 | `set_navigation_max_speed` | `set_navigation_max_speed_respond` | No | — |
-| `start_patrol` | `start_patrol_respond` | No | — |
-| `stop_patrol` | `stop_patrol_respond` | No | — |
+| `start_patrol` | `start_patrol_respond` (no-op) | No | none (stub) |
+| `stop_patrol` | `stop_patrol_respond` (no-op) | No | none (stub) |
 | `go_to_charge` | `go_to_charge_respond` | No | `/robot_decision/nav_to_recharge` |
 | `go_pile` | `go_pile_respond` | **Yes** (LoRa `0x25`) | — |
 | `stop_to_charge` | `stop_to_charge_respond` | No | `/robot_decision/cancel_recharge` |
@@ -423,4 +397,7 @@ sequenceDiagram
 | `get_recharge_pos` | `get_recharge_pos_respond` | No | — |
 | `save_recharge_pos` | `save_recharge_pos_respond` | No | `/robot_decision/save_charging_pose` |
 | `start_move` | `start_move_respond` | No | — |
+| `mst` | (no response) | No | publishes `cmd_vel` |
 | `stop_move` | `stop_move_respond` | No | — |
+
+Mowing-session commands (`start_navigation`, `pause_navigation`, `resume_navigation`, `stop_navigation`) are documented under [Mowing Commands](mowing-commands.md).

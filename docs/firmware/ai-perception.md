@@ -148,7 +148,7 @@ Separate ML module that detects if the camera lens is dirty/fogged:
 | V0.4.7 | Camera dirty detection |
 | V0.5.2b | Z-filter 0.35→0.50m, growth threshold 0.08 (tall grass fix) |
 | V0.5.3 | Growth threshold → 0.05, charging station color distinction |
-| **V0.5.3d** | **Current** (2024/06/12) — input size filter against crashes |
+| **V0.5.3d** | Last observed (2024/06/12), input size filter against crashes |
 
-!!! note "Video streaming NOT implemented"
-    Camera images are used exclusively for autonomous navigation — there is no RTSP, WebRTC, MJPEG, or remote viewing capability. Live camera was marketed but never implemented in software.
+!!! note "Video streaming on stock vs custom firmware"
+    Stock firmware has no video streaming, RTSP, WebRTC, or MJPEG. Camera images are used exclusively for autonomous navigation, and live camera was marketed but never implemented in stock software. OpenNova custom firmware (v6.0.2-custom-NN) adds an MJPEG stream on port 8000 via a Python ROS 2 node.

@@ -5,11 +5,12 @@ Commands are sent as JSON over a GATT characteristic.
 
 ## GATT Service Structure
 
-| Property | Value |
-|----------|-------|
-| Service UUID | `0x1234` |
-| Characteristic `0x2222` | Write Without Response + Notify (commands) |
-| Characteristic `0x3333` | Read + Write Without Response |
+Two distinct GATT layouts exist (see `bootstrap/src/ble.ts`).
+
+| Device | Service UUID | Write Characteristic | Notify Characteristic | Aux Characteristic |
+|--------|--------------|----------------------|-----------------------|--------------------|
+| Charger | `0x1234` | `0x2222` (Write Without Response + Notify) | `0x2222` (same) | `0x3333` (flush) |
+| Mower | `0x0201` | `0x0011` (Write Without Response) | `0x0021` (Notify) | n/a |
 
 ## BLE Device Names
 
@@ -20,7 +21,7 @@ Commands are sent as JSON over a GATT characteristic.
 
 ## Frame Format
 
-Large payloads are split into chunks of ~20-27 bytes, surrounded by ASCII markers:
+Large payloads are split into 20-byte chunks (~100ms between chunks), surrounded by ASCII markers:
 
 ```
 ble_start
@@ -50,6 +51,8 @@ sequenceDiagram
     App->>Charger: Subscribe to 0x2222 Notify
     App->>Charger: Write: set_wifi_info (MUST be first!)
     Charger-->>App: Notify: set_wifi_info_respond
+    App->>Charger: Write: get_signal_info
+    Charger-->>App: Notify: get_signal_info_respond
     App->>Charger: Write: set_rtk_info
     Charger-->>App: Notify: set_rtk_info_respond
     App->>Charger: Write: set_lora_info
@@ -79,10 +82,14 @@ sequenceDiagram
     Mower-->>App: Notify: set_lora_info_respond
     App->>Mower: Write: set_mqtt_info
     Mower-->>App: Notify: set_mqtt_info_respond
-    App->>Mower: Write: set_cfg_info (commit + reboot)
+    App->>Mower: Write: set_cfg_info {cfg_value:1, tz:<host-tz>} (commit + reboot)
     Mower-->>App: Notify: set_cfg_info_respond
     Note over Mower: Reconnects WiFi + MQTT
 ```
+
+!!! note "set_cfg_info payload differs by device"
+    - Charger: plain integer `1`, e.g. `{"set_cfg_info":1}`.
+    - Mower: object `{"set_cfg_info":{"cfg_value":1,"tz":"<host-tz>"}}`. The wizard derives `tz` from the host (it is not hard-coded).
 
 ## BLE Commands Summary
 

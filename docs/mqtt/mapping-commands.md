@@ -2,19 +2,34 @@
 
 Commands for building, editing, and managing mower maps.
 
+!!! important "Mapping commands are sent over BLE, not MQTT"
+    All mapping commands (`start_scan_map`, `add_scan_map`, `stop_scan_map`, `save_map`, etc.) are transmitted via BLE (`BleTools.writeData` with `ble_start` / 20-byte chunks / `ble_end` framing). The mower must be actively advertising over BLE during mapping. The JSON shapes below are the BLE payloads. Only the field structure (not the MQTT transport) applies here.
+
 ## Map Building
 
 ### start_scan_map
 
-Start manual boundary scanning. User walks the mower around the perimeter.
+Start manual boundary scanning for the first work area (map0). All subsequent regions use `add_scan_map`.
 
 **ROS service**: `/robot_decision/start_mapping`
 
 ```json title="Command"
 {
-  "start_scan_map": {}
+  "start_scan_map": {
+    "model": "manual",
+    "mapName": "map0",
+    "type": 0,
+    "cmd_num": 1
+  }
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | string | Always `"manual"` |
+| `mapName` | string | `"map0"` for the first work area |
+| `type` | int | Integer `0` (NOT JSON `null`). Dart serialises an unset Smi as `0` |
+| `cmd_num` | number | Auto-incrementing counter |
 
 ```json title="Response"
 {
@@ -27,27 +42,52 @@ Start manual boundary scanning. User walks the mower around the perimeter.
 
 ### stop_scan_map
 
-Stop boundary scanning.
+Finish boundary scanning for the current region.
 
 **ROS service**: `/robot_decision/map_stop_record`
 
 ```json title="Command"
 {
-  "stop_scan_map": {}
+  "stop_scan_map": {
+    "value": false,
+    "cmd_num": 3
+  }
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `value` | boolean | `false` for work / obstacle / charge-channel. `true` ONLY for unicom-channel finishes |
+| `cmd_num` | number | Auto-incrementing counter |
+
+Timeout: 20 seconds on `stop_scan_map_respond`.
 
 ---
 
 ### add_scan_map
 
-Add a scan data point during mapping.
+Add a subsequent region (map1, map2, obstacle, unicom channel, etc.) to the current mapping session.
 
 ```json title="Command"
 {
-  "add_scan_map": {}
+  "add_scan_map": {
+    "model": "manual",
+    "mapName": "map1",
+    "type": 0,
+    "cmd_num": 2
+  }
 }
 ```
+
+| `type` | Meaning |
+|--------|---------|
+| `0` | Additional work area (map1, map2, ...) |
+| `1` | Obstacle polygon (see obstacle note below) |
+| `4` | Map-to-map unicom channel |
+| `8` | Map-to-charger unicom channel |
+
+!!! warning "Obstacle uses `type:1` and literal `mapName:"map"`"
+    Live BLE capture 2026-04-19 shows the obstacle flow uses `type:1` (NOT `type:2`) and the literal string `mapName:"map"` (NOT the active map name) in both `add_scan_map` AND the `save_map` calls. The mower firmware derives the parent work-map from context and auto-indexes the obstacle files (`map0_0_obstacle.csv`, `map0_1_obstacle.csv`, ...). Stopping the obstacle scan uses `stop_scan_map {"value": false, ...}`.
 
 ---
 
@@ -143,19 +183,28 @@ Stop map erasing.
 
 ### save_map
 
-Finalize and save the currently built map.
+Finalize the mapping session. `save_map` does NOT accept external coordinate data - the mower generates CSV files from its own recorded path.
 
-!!! warning "Does NOT accept coordinates"
-    `save_map` only finalizes the mower's internal mapping session. It does NOT accept external coordinate data. The mower generates CSV files from its own recorded path.
+!!! danger "save_map fires TWICE per session"
+    `save_map` is sent twice per mapping session, with different `type` values that cause different firmware behaviour. Sending only the first call results in **Error 107 "Load map failed"** when `start_navigation` runs later.
+
+    | Call | `type` | When | Firmware label | Files produced |
+    |------|--------|------|----------------|----------------|
+    | 1st (sub map) | `0` | Auto, right after `stop_scan_map_respond` | "Saving sub map!!!" | `csv_file/` + `x3_csv_file/` only |
+    | 2nd (total map) | `1` | 500 ms after `save_recharge_pos_respond` | "Saving total map!!!" | `map.pgm` + `map.png` + `map.yaml` (Nav2) |
+
+    The 2nd call (type:1) is the ONLY call that generates `home0/map.yaml`. Without it, `/map_server/load_map` fails at `start_navigation` time and the mower reports Error 107.
+
+    The 500 ms delay is set in Flutter: `Future.delayed(Duration(microseconds:500000))` (logic.dart addr 0x906744) before `_writeSaveMap()` at 0x9075a8.
 
 **ROS service**: `/robot_decision/save_map` → `SaveMap.srv`
 
-```json title="Command"
-{
-  "save_map": {
-    "mapName": "home"
-  }
-}
+```json title="Command (1st call, sub map)"
+{ "save_map": { "mapName": "map0", "type": 0, "cmd_num": 4 } }
+```
+
+```json title="Command (2nd call, total map)"
+{ "save_map": { "mapName": "map0", "type": 1, "cmd_num": 6 } }
 ```
 
 ```json title="Response"
@@ -165,12 +214,14 @@ Finalize and save the currently built map.
 }
 ```
 
+Timeout per call: 12 seconds on `save_map_respond`.
+
 **SaveMap.srv definition:**
 
 ```
-string mapname       # Map name
+string mapname       # Map name (e.g. "map0", "map1")
 float32 resolution   # Grid resolution (meters, typically 0.02-0.05)
-int64 type           # Map type: 0=work, 1=obstacle, 2=unicom
+int64 type           # 0=sub map, 1=total map
 ---
 string data
 uint8 result
@@ -178,6 +229,8 @@ uint8 error_code     # 1=OVERLAPING_OTHER_MAP
                      # 2=OVERLAPING_OTHER_UNICOM
                      # 3=CROSS_MULTI_MAPS
 ```
+
+**On-disk output:** the firmware writes CSV files to BOTH `csv_file/` AND `x3_csv_file/` in parallel under `/userdata/lfi/maps/home0/`. The firmware ALWAYS uses the `home0/` directory regardless of `mapName`.
 
 ---
 

@@ -16,7 +16,7 @@ sequenceDiagram
         User->>App: Enter mower SN (or scan QR)
         User->>App: Enter home WiFi credentials
 
-        App->>BLE: BLE Scan for "novabot"
+        App->>BLE: BLE Scan for "Novabot"
         App->>BLE: BLE Connect
         App->>BLE: get_signal_info
         BLE-->>App: {wifi: 0, rtk: 17}
@@ -53,7 +53,7 @@ sequenceDiagram
     rect rgb(255, 240, 255)
         Note over User,API: Phase 4: Registration
         App->>API: POST getEquipmentBySN {sn: "LFIN..."}
-        API-->>App: {macAddress: "50:41:1C:39:BD:C1", account: null, password: null}
+        API-->>App: {macAddress: "50:41:1C:39:BD:C1" (example only, real value backfilled from device_factory), account: null, password: null}
 
         App->>API: POST bindingEquipment {mowerSn, chargerSn}
         API-->>App: {value: null}

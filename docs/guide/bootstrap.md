@@ -14,7 +14,7 @@ The Bootstrap Tool is a standalone desktop application that provisions Novabot c
 
 ## Download
 
-Pre-built binaries are available in `bootstrap/dist/binaries/`:
+Pre-built binaries are available in `bootstrap/dist/`:
 
 | Platform | File |
 |----------|------|
@@ -49,6 +49,9 @@ novabot-bootstrap-win-x64.exe
 The tool starts a local web server and opens a wizard in your browser at **http://localhost:7789**.
 
 It also starts its own MQTT broker on port 1883 (for initial device communication) and advertises `opennovabot.local` via mDNS.
+
+!!! warning "Port 1883 conflict"
+    The bootstrap tool and the OpenNova server both bind port 1883. They cannot run on the same host at the same time. Stop the OpenNova container (or run the bootstrap tool from a different machine) before provisioning.
 
 ### 2. Network Configuration
 
@@ -106,22 +109,25 @@ After provisioning, both devices should appear in the dashboard:
 
 ## LoRa Pairing
 
-The charger and mower communicate via LoRa radio for GPS/RTK data. They must share the same **LoRa address** but use different **channels**:
+The charger and mower communicate via LoRa radio for GPS/RTK data. They must share **identical address AND identical channel**:
 
-| Device | Address | Channel | Notes |
-|--------|---------|---------|-------|
-| Charger | 718 | **16** | Default for first set |
-| Mower | 718 | **15** | Always charger channel - 1 |
+| Device | Address | Channel |
+|--------|---------|---------|
+| Charger | 718 | 16 |
+| Mower | 718 | 16 |
 
-For multiple mower+charger sets, each set gets a unique address:
+For multiple mower+charger sets, each set gets a unique address (channel stays the same within the set):
 
-| Set | Address | Charger Ch | Mower Ch |
-|-----|---------|-----------|----------|
-| Set 1 | 718 | 16 | 15 |
-| Set 2 | 719 | 16 | 15 |
-| Set 3 | 720 | 16 | 15 |
+| Set | Address | Channel |
+|-----|---------|---------|
+| Set 1 | 718 | 16 |
+| Set 2 | 719 | 16 |
+| Set 3 | 720 | 16 |
 
 The Bootstrap Tool assigns addresses automatically.
+
+!!! warning "Mismatched pair symptoms"
+    If charger and mower end up on different addresses or different channels, the mower reports **Error 8** (LoRa comm fail) and **Error 132** (data transmission loss). Re-run provisioning so both sides share the same pair.
 
 ## OTA Firmware Update
 

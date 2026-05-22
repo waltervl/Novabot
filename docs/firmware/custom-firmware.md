@@ -48,10 +48,10 @@ The mower firmware is a Debian package. While the compiled ROS 2 nodes cannot be
 
 ## Current Firmware Version
 
-!!! info "v6.0.2-custom-16 (installed 8 March 2026 via SSH)"
-    This is the latest custom firmware running on the mower. It includes all features listed below.
+!!! info "v6.0.2-custom-24 (latest installed)"
+    This is the current custom firmware running on production mowers. It includes all features listed below.
 
-### Custom-16 Feature Summary
+### Custom Firmware Feature Summary
 
 | Feature | Description |
 |---------|-------------|
@@ -65,7 +65,7 @@ The mower firmware is a Debian package. While the compiled ROS 2 nodes cannot be
 | **WiFi AP fallback** | Creates AP `OpenNova` if home WiFi fails after 90s |
 | **daemon_node fix** | Prevents watchdog from killing custom scripts; starts mqtt_node |
 | **Extended commands** | Python ROS 2 node: reboot, camera snapshot, system info, PIN verify |
-| **STM32 MCU v3.6.6** | PIN lock bypass + verify response fix for ROS 2 action compat |
+| **STM32 stock v3.6.0 retained** | pin_unlock patch disabled per `build_custom_firmware.sh:1611-1615` because it broke blade calibration |
 
 ---
 
@@ -181,7 +181,7 @@ A build script (`research/build_custom_firmware.sh`) automates the process of cr
 | 6. WiFi AP fallback | Creates `wifi_ap_fallback.sh` + `wifi_watchdog.sh` |
 | 7. daemon_node fix | Injects `ros2 run daemon_process daemon_node` into run_novabot.sh |
 | 8. Extended commands | Copies `extended_commands.py` + `pin_verify_ros2.py` |
-| 9. STM32 MCU patch | Copies v3.6.6 PIN unlock binary to MCU_BIN directory |
+| 9. STM32 MCU patch | Disabled/legacy in current build (`build_custom_firmware.sh:1611-1615`). Stock v3.6.0 is retained because the v3.6.6 patch broke blade calibration. |
 | 10. Server bundle | _(optional)_ Bundles server + dashboard + Node.js |
 | 11. Version update | Updates `novabot_api.yaml` + `Readme.txt` + `package_verify.json` |
 | 12. Build .deb | Repackages modified firmware into `.deb` + generates metadata JSON |
@@ -190,8 +190,8 @@ A build script (`research/build_custom_firmware.sh`) automates the process of cr
 
 | File | Description |
 |------|-------------|
-| `research/firmware/mower_firmware_v6.0.2-custom-16.deb` | Modified .deb package (~35MB) |
-| `research/firmware/mower_firmware_v6.0.2-custom-16.json` | Metadata (version, md5, filename) |
+| `research/firmware/mower_firmware_v6.0.2-custom-NN.deb` | Modified .deb package (~35MB), currently custom-24 |
+| `research/firmware/mower_firmware_v6.0.2-custom-NN.json` | Metadata (version, md5, filename) |
 | `research/firmware/ota_flash_command.json` | Ready-to-use OTA MQTT command |
 
 !!! note "macOS Compatibility"
@@ -293,8 +293,8 @@ sequenceDiagram
     "cmd": "upgrade",
     "type": "full",
     "content": "app",
-    "url": "http://your-server/api/dashboard/firmware/download/mower_firmware_v6.0.2-custom-16.deb",
-    "version": "v6.0.2-custom-16",
+    "url": "http://your-server/api/dashboard/firmware/mower_firmware_v6.0.2-custom-24.deb",
+    "version": "v6.0.2-custom-24",
     "md5": "abcdef1234567890abcdef1234567890"
   }
 }
@@ -325,7 +325,7 @@ curl -X POST http://your-server/api/dashboard/ota/trigger/LFIN2230700238 \
 
 # Via mosquitto_pub (manual)
 mosquitto_pub -h localhost -t "Dart/Send_mqtt/LFIN2230700238" \
-  -m '{"ota_upgrade_cmd":{"cmd":"upgrade","type":"full","content":"app","url":"http://192.168.0.222/api/dashboard/firmware/download/mower_firmware_v6.0.2-custom-16.deb","version":"v6.0.2-custom-16","md5":"..."}}'
+  -m '{"ota_upgrade_cmd":{"cmd":"upgrade","type":"full","content":"app","url":"http://192.168.0.247/api/dashboard/firmware/mower_firmware_v6.0.2-custom-24.deb","version":"v6.0.2-custom-24","md5":"..."}}'
 ```
 <!-- /PRIVATE -->
 
@@ -438,6 +438,9 @@ The stock `mqtt_node` has a broken C++ action client for `ChassisPinCodeSet` ---
 
 ## STM32 MCU Firmware (v3.6.6)
 
+!!! danger "Historical / disabled in current build"
+    Stock STM32 v3.6.0 is currently deployed on production mowers. The pin_unlock patches described below are archived under `research/firmware/STM32/` but are NOT applied by the current build script (the v3.6.x custom patches broke blade calibration). The section is kept for reference only.
+
 The STM32F407 on the chassis PCB handles the touchscreen display, motor control, sensors, PIN lock, and LoRa communication.
 
 ### Hardware
@@ -535,7 +538,7 @@ For NVS-stored MQTT settings, use BLE:
 
 ```bash
 # Set MQTT host via BLE NVS
-node research/ble_set_mqtt.js --host 192.168.0.177
+node research/ble_set_mqtt.js --host <server-ip>   # e.g. 192.168.0.247 (production server)
 ```
 
 Available patched binaries:
@@ -616,7 +619,7 @@ flowchart LR
     end
 
     subgraph Mower["Mower (custom firmware)"]
-        Firmware["v6.0.2-custom-16<br/>mDNS discovery<br/>set_server_urls.sh"]
+        Firmware["v6.0.2-custom-NN (currently 24)<br/>mDNS discovery<br/>set_server_urls.sh"]
     end
 
     subgraph App["Novabot App"]

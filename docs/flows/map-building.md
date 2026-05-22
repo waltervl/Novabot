@@ -2,17 +2,19 @@
 
 ## Manual Mapping (Walk the Boundary)
 
+!!! info "BLE-direct, not via charger MQTT"
+    Mapping commands flow App <-> Mower over BLE (GATT). The charger is NOT in the loop for mapping. The mower may also report status over MQTT in parallel, but the mapping control plane is BLE.
+
 ```mermaid
 sequenceDiagram
     actor User
     participant App
-    participant Charger
-    participant Mower
+    participant Mower as Mower (BLE)
     participant ROS as Mower ROS 2
 
     User->>App: Select "Build Map"
-    App->>Charger: MQTT: start_scan_map
-    Charger->>Mower: LoRa relay
+    App->>Mower: BLE: start_scan_map {type: 0, mapName: "map0"}
+    Note over App,Mower: First work area uses start_scan_map.<br/>Subsequent areas use add_scan_map (also type: 0, integer not null).
     Mower->>ROS: /robot_decision/start_mapping
 
     rect rgb(240, 255, 240)
@@ -26,29 +28,35 @@ sequenceDiagram
         end
     end
 
-    ROS-->>Mower: Polygon closed detected!
-    App->>Charger: MQTT: stop_scan_map
-    Charger->>Mower: LoRa relay
+    ROS-->>Mower: Polygon closed detected
+    App->>Mower: BLE: stop_scan_map {value: false}
     Mower->>ROS: /robot_decision/map_stop_record
+    Mower-->>App: stop_scan_map_respond
 
     rect rgb(255, 248, 240)
-        Note over App,ROS: Save Map
-        App->>Charger: MQTT: save_map {mapName: "home"}
-        Charger->>Mower: LoRa relay
+        Note over App,ROS: Save Map - fires TWICE per session
+        App->>Mower: BLE: save_map {mapName: "map0", type: 0}
+        Note over App,Mower: type:0 = "sub map", writes csv_file/ + x3_csv_file/
         Mower->>ROS: /robot_decision/save_map
+        Mower-->>App: save_map_respond (sub)
 
-        ROS->>ROS: Write CSV files
-        ROS->>ROS: Generate map_info.json
-        ROS->>ROS: Validate: no overlap
+        App->>Mower: BLE: save_recharge_pos {...}
+        Mower-->>App: save_recharge_pos_respond
+
+        Note over App: Wait 500ms (Future.delayed in Flutter)
+        App->>Mower: BLE: save_map {mapName: "map0", type: 1}
+        Note over App,Mower: type:1 = "total map", generates home0/map.pgm/png/yaml.<br/>Without this, start_navigation returns Error 107.
+        Mower->>ROS: /robot_decision/save_map
+        Mower-->>App: save_map_respond (total)
 
         alt Overlap with other map
-            ROS-->>App: save_map_respond {error_code: 1}
+            Mower-->>App: save_map_respond {error_code: 1}
         else Overlap with unicom
-            ROS-->>App: save_map_respond {error_code: 2}
+            Mower-->>App: save_map_respond {error_code: 2}
         else Crosses multiple maps
-            ROS-->>App: save_map_respond {error_code: 3}
+            Mower-->>App: save_map_respond {error_code: 3}
         else Success
-            ROS-->>App: save_map_respond {result: 0}
+            Mower-->>App: save_map_respond {result: 0}
         end
     end
 
@@ -59,6 +67,16 @@ sequenceDiagram
         Mower->>App: HTTP: uploadEquipmentMap (ZIP with CSV files)
     end
 ```
+
+### Obstacle Flow
+
+Obstacles use a separate BLE flow within the same mapping session:
+
+- `add_scan_map` with `type: 1` (NOT type:2) and `mapName` set to the literal string `"map"` (NOT the active map name).
+- Firmware derives the parent work map from the active context and auto-indexes obstacle CSVs: `map0_0_obstacle.csv`, `map0_1_obstacle.csv`, and so on.
+- Stop with `stop_scan_map {value: false}`.
+- Save sequence mirrors work maps: `save_map type:0` (sub) -> 3s delay -> `save_map type:1` (total).
+- See `CLAUDE.md` "BLE Mapping - OBSTACLE flow" for the full live capture.
 
 ## Automatic Mapping
 
@@ -76,19 +94,24 @@ sequenceDiagram
     end
 
     Mower->>Mower: Boundary complete
-    App->>Mower: MQTT: save_map {mapName}
+    App->>Mower: BLE: save_map {mapName, type: 0}  (sub map)
+    Note over App,Mower: 500ms later, fire save_map again with type: 1 (total map).<br/>Without the type:1 fire, home0/map.yaml is not created and<br/>start_navigation returns Error 107.
+    App->>Mower: BLE: save_map {mapName, type: 1}  (total map)
 ```
 
 ## Map File Structure
 
 ```mermaid
 graph TB
-    subgraph "Mower filesystem: /userdata/lfi/maps/home0/csv_file/"
-        MI[map_info.json]
-        M0W[map0_work.csv]
-        M0O[map0_0_obstacle.csv]
-        M0U[map0tocharge_unicom.csv]
-        M1W[map1_work.csv]
+    subgraph "Mower filesystem: /userdata/lfi/maps/home0/"
+        subgraph "csv_file/  AND  x3_csv_file/  (always loose CSVs in BOTH, never zip)"
+            MI[map_info.json]
+            M0W[map0_work.csv]
+            M0O[map0_0_obstacle.csv]
+            M0U[map0tocharge_unicom.csv]
+            M1W[map1_work.csv]
+        end
+        MY[map.yaml / map.pgm / map.png  (created only by save_map type:1)]
     end
 
     subgraph "map_info.json"
@@ -123,7 +146,7 @@ graph TB
 
     subgraph "Option 2: Direct CSV Upload (requires SSH)"
         B1[Dashboard: Export ZIP via mapConverter.ts]
-        B2[SCP to /userdata/lfi/maps/home0/csv_file/]
+        B2[SCP loose CSVs to BOTH csv_file/ AND x3_csv_file/<br/>under /userdata/lfi/maps/home0/]
         B3[Maps persisted on mower]
         B1 --> B2 --> B3
     end

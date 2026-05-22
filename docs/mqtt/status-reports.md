@@ -183,7 +183,7 @@ Main status report (~750B JSON, 800B encrypted).
 | `cov_work_time` | number | Coverage work time elapsed (minutes) |
 | `cov_direction` | number | Coverage mowing direction (0-180°) |
 | `cov_map_path` | string | Map path being covered |
-| `target_height` | number | Target cutting height (0-7 levels) |
+| `target_height` | number | Target cutting height (0..7 enum). Physical cm = `target_height + 2`, mm = `(target_height + 2) * 10` |
 | `map_num` | number | Total map count in current task |
 | `finished_num` | number | Finished map count |
 

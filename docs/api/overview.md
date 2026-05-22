@@ -13,9 +13,9 @@ Base URL: `https://app.lfibot.com` → local `http://<server-ip>` (port 80)
 | [nova-user validate](cloud-api.md#nova-user-validate) | `/api/nova-user/validate/` | None | 4 |
 | [nova-user equipment](cloud-api.md#nova-user-equipment) | `/api/nova-user/equipment/` | JWT | 6 |
 | [nova-user OTA](cloud-api.md#nova-user-ota-upgrade) | `/api/nova-user/otaUpgrade/` | JWT | 1 |
-| [nova-data plans](cloud-api.md#nova-data-cut-grass-plans) | `/api/nova-data/appManage/` | JWT | 4 |
-| [nova-data plans](cloud-api.md#nova-data-cut-grass-plans) | `/api/nova-data/cutGrassPlan/` | JWT | 1 |
-| [nova-file-server maps](cloud-api.md#nova-file-server-maps) | `/api/nova-file-server/map/` | JWT | 3 |
+| [nova-data plans](cloud-api.md#nova-data-cut-grass-plans) | `/api/nova-data/appManage/` | JWT | 4 (same router as `/cutGrassPlan/` below) |
+| [nova-data plans](cloud-api.md#nova-data-cut-grass-plans) | `/api/nova-data/cutGrassPlan/` | JWT | 4 (same router, all 4 endpoints reachable under both prefixes) |
+| [nova-file-server maps](cloud-api.md#nova-file-server-maps) | `/api/nova-file-server/map/` | JWT | 6 |
 | [nova-file-server logs](cloud-api.md#nova-file-server-logs) | `/api/nova-file-server/log/` | JWT | 1 |
 | [novabot-message](cloud-api.md#novabot-message) | `/api/novabot-message/message/` | JWT | 5 |
 | [nova-network](cloud-api.md#nova-network) | `/api/nova-network/network/` | None | 1 |
@@ -26,8 +26,14 @@ These endpoints serve the **React web dashboard** and are not part of the origin
 
 | Path Prefix | Auth | Endpoints |
 |------------|------|-----------|
-| [`/api/dashboard/`](dashboard-api.md) | None | 24 |
+| [`/api/dashboard/`](dashboard-api.md) | Mixed | ~100+ endpoints |
 | [`/api/admin/`](dashboard-api.md#admin-endpoints) | None | 2 |
+| `/api/admin-status/` | JWT + admin | Admin status, walker firmware management |
+| `/api/setup/` | None (setup wizard) | First-run wizard endpoints |
+| `/api/remote-support/` | JWT + admin | Remote support tunnel (relay + agent) |
+| `/api/events/` | None | Notification event ring (HTTP polling) |
+| `/api/push/` | None | Expo push token registration |
+| `/api/render/` | None | Server-rendered mower map SVG |
 
 ## 3. Mower → Server API
 

@@ -20,7 +20,7 @@ sequenceDiagram
         App->>MQTT: ota_version_info
         MQTT->>Mower: ota_version_info
         Mower-->>MQTT: ota_version_info_respond
-        MQTT-->>App: {mower: "v6.0.2", charger: "v0.4.0", mcu: "v3.6.6"}
+        MQTT-->>App: {mower: "v6.0.2-custom-24", charger: "v0.4.0", mcu: "v3.6.0 stock"}
 
         App->>Server: GET checkOtaNewVersion?version=v6.0.2&equipmentType=LFIN2
         Server-->>App: {upgradeFlag: 1, version, downloadUrl, md5}
@@ -40,12 +40,13 @@ sequenceDiagram
 
         Note over Mower: Wait for CHARGING state
 
-        Mower->>Cloud: HTTPS GET firmware .deb (libcurl, resume-capable)
+        Mower->>Cloud: HTTP GET firmware .deb (libcurl, resume-capable, http:// only)
 
         loop Download progress
             Mower->>MQTT: ota_upgrade_state {progress: 45, state: "downloading"}
             MQTT->>App: ota_upgrade_state
         end
+        Note over Mower,App: Percentage meaning: 0-62% = download,<br/>62-68% = unpack, 68-100% = install.
 
         Note over Mower: MD5 verification
         Note over Mower: dpkg -x → /root/novabot.new/
@@ -80,7 +81,7 @@ sequenceDiagram
         Note over Support,Mower: Method 1: Direct MQTT Push
         Support->>CloudBroker: Publish to Dart/Send_mqtt/<SN>
         CloudBroker->>Mower: ota_upgrade_cmd {type, content}
-        Note over Mower: Same flow as app-initiated
+        Note over Mower: Same flow as app-initiated.<br/>For v6.x mowers (LFI* SN) the local broker auto-encrypts via AES-128-CBC<br/>(publishToDevice() in server/src/mqtt/mapSync.ts).<br/>An unencrypted push to a v6.x SN will be rejected.
     end
 
     rect rgb(240, 240, 255)
@@ -106,8 +107,8 @@ sequenceDiagram
     "cmd": "upgrade",
     "type": "full",
     "content": "app",
-    "url": "http://<server>:<port>/api/dashboard/ota/firmware/<filename>.deb",
-    "version": "v6.0.2-custom-16",
+    "url": "http://<server>:<port>/api/dashboard/firmware/<filename>.deb",
+    "version": "v6.0.2-custom-24",
     "md5": "<md5-checksum>"
   }
 }
@@ -147,6 +148,9 @@ sequenceDiagram
 <!-- /PRIVATE -->
 
 ---
+
+!!! danger "Firmware HTTP server must support Range / 206"
+    The mower OTA client downloads firmware with resume-capable libcurl and depends on HTTP Range / 206 Partial Content responses from the server. Do NOT modify the Range handling in the firmware download route - it is the only working method. See `firmware-http-range` in MEMORY.md.
 
 ## Mower OTA Architecture
 
@@ -202,7 +206,7 @@ upgrade_file_enable: True
 3. Wait for mower to be in CHARGING state
    └─ If not charging: pause download, wait, retry every 60s
 4. Download .deb to /userdata/ota/upgrade_pkg/
-   └─ libcurl with HTTPS, resume-capable, max 24h timeout
+   └─ libcurl with HTTP (NOT https), resume-capable, max 24h timeout
 5. Verify MD5 checksum
    └─ If mismatch: delete package, retry download
 6. Extract: dpkg -x <package.deb> /root/novabot.new/
@@ -306,10 +310,10 @@ graph LR
 | Charger | v0.3.6 | 1.4 MB | ESP32-S3, ESP-IDF v4.4.2, plain JSON MQTT |
 | Charger | v0.4.0 | 1.4 MB | Adds AES-128-CBC MQTT encryption + `cJSON_IsNull` command validation |
 | Mower | v5.7.1 | 35 MB | Debian/ROS 2, Horizon X3 |
-| Mower | v6.0.2 | ~35 MB | Latest known stock firmware |
-| Mower | v6.0.2-custom-16 | ~35 MB | Custom: SSH, mDNS, camera stream, extended commands, PIN fix |
-| MCU | v3.5.8 | 444 KB | STM32F407 motor controller (stock) |
-| MCU | v3.6.6 | 444 KB | STM32F407 custom: PIN lock bypass + verify status=0 (ROS2 compat) |
+| Mower | v6.0.2 | ~35 MB | Stock firmware (baseline for current customs) |
+| Mower | v6.0.2-custom-24 | ~35 MB | Current custom build: SSH, mDNS, camera stream, extended commands |
+| MCU | v3.6.0 stock | 444 KB | STM32F407 motor controller, currently deployed on production mowers |
+| MCU | v3.6.6 (historical) | 444 KB | STM32F407 custom PIN-lock patch, NOT deployed (broke blade calibration) |
 
 ## File System Paths
 

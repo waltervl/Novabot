@@ -108,7 +108,11 @@ All remaining commands go directly to the mower via WiFi MQTT. The charger does 
 | **Diagnostics** | `get_current_pose`, `get_vel_odom`, `get_log_info`, `get_version_info`, `get_dev_info`, `get_wifi_rssi`, `gbf`, `mst` |
 | **Control mode** | `set_control_mode`, `get_control_mode` |
 | **System** | `reset_factory`, `reset_utm_origin_info`, `wifi_ble_active` |
-| **Config (BLE+MQTT)** | `get_cfg_info`, `set_cfg_info`, `set_lora_info`, `set_mqtt_info`, `set_wifi_info` |
+| **Config (BLE only)** | `set_lora_info`, `set_mqtt_info`, `set_wifi_info` (BLE provisioning only; `mqtt_node` does NOT handle these at runtime) |
+| **Config (MQTT)** | `get_cfg_info`, `set_cfg_info` |
+
+!!! note "Stock vs custom firmware"
+    The command list above reflects stock firmware plus the customs in use as of 2026-05 (e.g. custom firmware adds `start_edge_cut`). Vanilla stock builds may expose fewer commands.
 
 ```mermaid
 graph LR

@@ -43,7 +43,7 @@ This compiles and uploads the firmware via USB. The device boots into the setup 
 1. Format the SD card as FAT32
 2. Copy the mower firmware `.deb` file to the SD card root:
    ```
-   /mower_firmware_v6.0.2-custom-21.deb
+   /mower_firmware_v6.0.2-custom-NN.deb
    ```
 3. Optionally add charger firmware:
    ```
@@ -184,7 +184,7 @@ Connect to `OpenNova-Setup` WiFi and open **http://10.0.0.1**:
 | `*.bin` | Charger firmware (ESP32-S3 binary) |
 | `*.json` | Firmware metadata (optional) |
 
-The tool auto-detects firmware files on boot and extracts the version from the filename (e.g., `mower_firmware_v6.0.2-custom-21.deb` → version `v6.0.2-custom-21`).
+The tool auto-detects firmware files on boot and extracts the version from the filename (e.g., `mower_firmware_v6.0.2-custom-24.deb` → version `v6.0.2-custom-24`).
 
 ## AES Encryption
 
@@ -245,8 +245,8 @@ The tool auto-detects whether to use plain or encrypted OTA commands:
 ```
 firmware/esp32-tool/
   src/
-    main.cpp           # Setup + main loop (276 lines)
-    wizard.cpp         # State machine (660 lines)
+    main.cpp           # Setup + main loop
+    wizard.cpp         # State machine
     config.h           # Globals + state enum
     mqtt.cpp           # MQTT broker + AES + OTA
     network.cpp        # WiFi AP + DNS + HTTP server + SD

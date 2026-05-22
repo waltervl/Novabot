@@ -24,6 +24,9 @@ Mower uploads its map ZIP after a mapping session completes.
 | `sn` | string | Mower serial number |
 | `jsonBody` | string | Extra metadata (JSON) |
 
+!!! note "SN resolution"
+    The handler accepts `sn` from the multipart body OR from the `?sn=` query string. If neither is present, it falls back to extracting the SN prefix from the uploaded filename (e.g. `LFIN2230700238_<timestamp>.zip`). See `server/src/cloud-api/routes/map.ts` (`uploadEquipmentMap`).
+
 **Trigger**: After `save_map` MQTT command completes, the mower generates a ZIP from `/userdata/lfi/maps/home0/csv_file/` and uploads it.
 
 ```mermaid
@@ -92,20 +95,25 @@ Mower fetches mowing schedules from the server.
 
 Mower saves mowing session results.
 
-```json title="Request"
-{
-  "sn": "LFIN2230700XXX",
-  "dateTime": "2026-02-26T10:00:00Z",
-  "workTime": 3600,
-  "workArea": 150.5,
-  "cutGrassHeight": 5,
-  "mapNames": ["map0"],
-  "startWay": "app",
-  "workStatus": "completed",
-  "scheduleId": "uuid",
-  "week": 3
-}
-```
+**Content-Type**: `multipart/form-data`
+
+The mower posts the fields as multipart form parts (server uses `multer().none()` to parse them), not as JSON.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sn` | string | Mower serial number |
+| `dateTime` | string | Session start time (ISO 8601; firmware may post `2001-01-01...` when NTP failed) |
+| `workTime` | string/number | Mowing duration in seconds |
+| `workArea` | string/number | Mowed area in m2 |
+| `cutGrassHeight` | string/number | Blade height (cm) |
+| `mapNames` | string | JSON array of map names |
+| `startWay` | string | `app`, `schedule`, or `manual` |
+| `workStatus` | string | `completed`, `interrupted`, etc. |
+| `scheduleId` | string | Optional schedule UUID |
+| `week` | string/number | Weekday number |
+
+!!! note "Empty body is tolerated"
+    The handler returns `ok(null)` if the body is empty or unparseable, because firmware retries this call in a tight loop until it gets a 200. Failing here causes a retry storm.
 
 ---
 

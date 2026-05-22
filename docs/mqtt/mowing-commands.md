@@ -2,9 +2,101 @@
 
 All mowing commands are sent to `Dart/Send_mqtt/<SN>`.
 
+!!! important "v6.x firmware uses `*_navigation` commands"
+    v6.x firmware uses the new protocol: `start_navigation`, `pause_navigation`, `resume_navigation`, `stop_navigation` (see below). The `*_run` commands further down are the legacy charger-relay protocol still used by older firmware.
+
+## start_navigation
+
+Start a mowing session on v6.x firmware. Sent directly to the mower via WiFi MQTT (no charger LoRa relay).
+
+```json title="Command"
+{
+  "start_navigation": {
+    "mapName": "test",
+    "area": 1,
+    "cutterhigh": 2,
+    "cmd_num": 12345
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mapName` | string | Hardcoded literal `"test"`, NOT the real map name |
+| `area` | number | Map-selection bitfield: `1`=map0, `10`=map1, `200`=map2 |
+| `cutterhigh` | number | Blade height enum 0..7 (see [cutterhigh](#cutterhigh-cutting-height)) |
+| `cmd_num` | number | Auto-incrementing command counter |
+
+```json title="Response"
+{
+  "type": "start_navigation_respond",
+  "message": { "result": 0, "value": null }
+}
+```
+
+!!! tip "Set cutting height first"
+    The app sends `{"set_para_info": {"cutGrassHeight": <mm>, ...}}` ~500 ms before `start_navigation`. See [Device Management - set_para_info](device-management.md#set_para_info).
+
+---
+
+## pause_navigation / resume_navigation / stop_navigation
+
+Pause, resume, or stop an active v6.x mowing session. All three require `cmd_num`.
+
+```json title="Pause"
+{ "pause_navigation": { "cmd_num": 12346 } }
+```
+```json title="Resume"
+{ "resume_navigation": { "cmd_num": 12347 } }
+```
+```json title="Stop"
+{ "stop_navigation": { "cmd_num": 12348 } }
+```
+
+!!! note "Stop does not auto-dock"
+    `stop_navigation` does NOT trigger return-to-charger. Send `go_pile` followed by `go_to_charge` separately. See [Navigation - go_to_charge](navigation-commands.md#go_to_charge).
+
+---
+
+## start_edge_cut (custom firmware only)
+
+Custom-firmware-only command that drives the saved boundary as a coverage edge pass. Implemented in `research/extended_commands.py` (`handle_start_edge_cut`) and dispatches the `coverage_planner/NavigateThroughCoveragePaths` action with `only_edge_mode:true`.
+
+```json title="Command"
+{
+  "start_edge_cut": {
+    "mapName": "map0",
+    "bladeHeight": 40
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mapName` | string | Map base name (no extension). Default `"map0"`. Whitelisted to `[A-Za-z0-9_-]+` |
+| `bladeHeight` | number | Blade height in mm (20..90). Default 40 |
+
+```json title="Response"
+{
+  "type": "start_edge_cut_respond",
+  "message": { "result": 0, "map": "map0", "blade_mm": 40 }
+}
+```
+
+!!! danger "Do NOT use these instead"
+    - Stock MQTT `start_patrol` is a JSON-echo stub in `mqtt_node` (no ROS call).
+    - `/robot_decision/start_cov_task cov_mode:2` silently falls through to normal COVERING.
+    - Direct `/boundary_follow` action uses the local costmap, not the saved polygon.
+
+    Only `start_edge_cut` (custom firmware) actually drives the saved boundary.
+
+Stop via existing `stop_boundary_follow` (cancels NTCP the same way).
+
+---
+
 ## start_run
 
-Start a mowing session.
+Start a mowing session (legacy protocol, used by older firmware).
 
 **Direction**: App → Charger (via MQTT) → Mower (via LoRa)
 **LoRa mapping**: Queue `0x20`, payload `[0x35, 0x01, mapName, area, cutterHeight]`
@@ -13,26 +105,20 @@ Start a mowing session.
 ```json title="Command"
 {
   "start_run": {
-    "mapName": "map0",
-    "cutGrassHeight": 5,
-    "workArea": "map0",
-    "startWay": "app",
-    "schedule": false,
-    "scheduleId": "",
-    "mapNames": ["map0"]
+    "mapName": null,
+    "area": 1,
+    "cutterhigh": 2,
+    "targetIsMower": false
   }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `mapName` | string | Map to mow |
-| `cutGrassHeight` | number | Blade height (0-7, height = (level+2)×10 mm) |
-| `workArea` | string | Working area name |
-| `startWay` | string | Trigger source: `"app"` or `"schedule"` |
-| `schedule` | boolean | Is this a scheduled mow? |
-| `scheduleId` | string | Schedule UUID if scheduled |
-| `mapNames` | string[] | List of map names to mow |
+| `mapName` | string \| null | Always `null` in the legacy flow (NOT `"map0"`) |
+| `area` | number | Map-selection bitfield: `1`=map0, `10`=map1, `200`=map2 |
+| `cutterhigh` | number | Blade height enum 0..7 (see [cutterhigh](#cutterhigh-cutting-height)) |
+| `targetIsMower` | boolean | Always `false` |
 
 ```json title="Response"
 {
@@ -158,6 +244,25 @@ Stop a timer/scheduled mowing task.
 ## Timer-Related Mowing Commands
 
 See also [Device Management → Timer/Scheduling](device-management.md#timer_task) for `timer_task`, `timer_task_active`, and `timer_task_stop`.
+
+---
+
+## cutterhigh (cutting height)
+
+The MQTT wire field is `cutterhigh` and its value is the **0..7 enum**, NOT millimeters.
+
+| Formula | Meaning |
+|---------|---------|
+| `cutterhigh = user_cm - 2` | Encode user's desired cm into the wire value |
+| `display_cm = cutterhigh + 2` | Decode `cutterhigh` (or `target_height`) back to cm |
+| `mm = (cutterhigh + 2) * 10` | Physical blade height in mm |
+
+**Example**: user picks 4 cm → send `cutterhigh: 2` → firmware sets blades to 40 mm.
+
+The `target_height` field in `report_state_robot` echoes the accepted `cutterhigh` value (same 0..7 enum). Display as `target_height + 2` cm.
+
+!!! danger "Never send mm values on the wire"
+    Sending `cutterhigh: 40` (mm) or `cutterhigh: 6` (cm+2) results in the firmware silently rejecting the value or setting the blades to the wrong height. The accepted range is `0..7`.
 
 ---
 
