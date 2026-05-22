@@ -2831,7 +2831,10 @@ function syncFirmwareVersions(): void {
     // Read metadata from companion .json if available
     const meta = readFirmwareMeta(filePath);
     const version = meta?.version ?? extractFirmwareVersion(filePath) ?? filename.replace(/\.(bin|deb)$/, '');
-    const deviceType = meta?.device_type ?? (filename.endsWith('.deb') ? 'mower' : 'charger');
+    const deviceType = meta?.device_type
+      ?? (filename.endsWith('.deb') ? 'mower'
+          : filename.startsWith('walker_firmware_') ? 'walker'
+          : 'charger');
 
     const existing = dbByFilename.get(filename);
     if (existing) {

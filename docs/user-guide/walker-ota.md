@@ -24,11 +24,16 @@ firmware updates can be pushed without touching the cable.
    This produces `walker_firmware_YYYY.MMDD.HHMM.bin` in the walker dir
    and prints the MD5 + size + the scp/docker commands.
 
-2. Copy the .bin to the OpenNova server's firmware dir:
+2. Copy BOTH the .bin AND its companion .json to the OpenNova server's
+   firmware dir. The .json tells the server's auto-registration that this
+   is a walker build; without it the file is registered as charger
+   firmware and the walker will never see the update:
    ```bash
-   scp walker_firmware_*.bin rvbcrs@192.168.0.247:/tmp/
-   ssh rvbcrs@192.168.0.247 'sudo docker cp /tmp/walker_firmware_*.bin opennova:/data/firmware/'
+   scp walker_firmware_*.bin walker_firmware_*.json rvbcrs@192.168.0.247:/tmp/
+   ssh rvbcrs@192.168.0.247 'sudo docker cp /tmp/walker_firmware_*.bin opennova:/data/firmware/ && sudo docker cp /tmp/walker_firmware_*.json opennova:/data/firmware/'
    ```
+   The `release.sh` script emits both files and prints the exact scp
+   command tailored to that build's version.
 
 3. In the admin page Firmware Updates card, expand "Walker firmware" and
    click "Refresh from manifest". The new file should appear under
@@ -76,6 +81,21 @@ Auto-check is then off until you set it back to true.
 | Apply shows "HTTP 401" | adminToken invalid/expired | Refresh token in walker config (admin page, grab new JWT, paste into walker settings) |
 | Apply fails with "Update.begin: not enough space" | Partition layout missing dual OTA slots | Walker must be on default_16MB.csv partitions (auto since the partition fix commit). If walker still has huge_app.csv, USB-flash a new build to bootstrap |
 | Walker reboots into the old firmware | Update applied but new firmware crashed on boot | ESP32 OTA automatically rolls back to the previous slot. Check serial logs for crash cause |
+| Walker says "Up to date" even though new firmware exists on server | scp'd .bin but no companion .json, so server auto-registered the build as charger firmware and the walker's `findLatestByDeviceType('walker')` lookup returns nothing | Use `release.sh` which emits both files and prints the exact scp command, or use the admin page "Download to server" button which writes a proper metadata file. As a one-off recovery, edit the row in `ota_versions` to set `device_type='walker'` |
+
+### Boot stalls about 30 seconds when server is unreachable
+
+If the OpenNova server is powered off, on a different VLAN, or otherwise
+unreachable when the walker boots, the boot itself appears to hang for
+roughly 30 seconds before the TFT becomes responsive. This is the
+auto-OTA check waiting for its HTTP connect to time out. The relevant
+code is `walkerOtaAutoTick(false)` running synchronously on the main
+loop's first pass after WiFi connect: the HTTP client uses the default
+connect timeout, and there is no early-exit if the host fails DNS or
+TCP. Once the timeout elapses, the main loop resumes normally and the
+walker is fully usable; nothing is broken. To avoid the stall when you
+know the server is down, set `otaAutoCheck: false` via the web UI
+before powering down the server, then re-enable it later.
 
 ## First-time OTA gate
 

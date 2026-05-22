@@ -27,6 +27,17 @@ fi
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 
+META="${OUT%.bin}.json"
+cat > "$META" <<EOF
+{
+  "version": "$VERSION",
+  "device_type": "walker",
+  "filename": "$OUT",
+  "md5": "$MD5",
+  "description": "Walker firmware $VERSION"
+}
+EOF
+
 echo
 echo "================================================================"
 echo "Built: $OUT"
@@ -34,10 +45,12 @@ echo "Size: $SIZE bytes ($((SIZE/1024)) KB)"
 echo "MD5: $MD5"
 echo "================================================================"
 echo
-echo "To publish to the OpenNova server (.247):"
+echo "Wrote companion metadata: $META"
 echo
-echo "  scp $OUT rvbcrs@192.168.0.247:/tmp/"
-echo "  ssh rvbcrs@192.168.0.247 'echo M@rleen146 | sudo -S docker cp /tmp/$OUT opennova:/data/firmware/'"
+echo "Publish BOTH files to the OpenNova server (.247):"
+echo
+echo "  scp $OUT $META rvbcrs@192.168.0.247:/tmp/"
+echo "  ssh rvbcrs@192.168.0.247 'echo M@rleen146 | sudo -S docker cp /tmp/$OUT opennova:/data/firmware/ && echo M@rleen146 | sudo -S docker cp /tmp/$META opennova:/data/firmware/'"
 echo
 echo "Then in the admin page > Firmware Updates > Walker firmware:"
 echo "  - Click 'Refresh from manifest' to confirm the file is detected"
