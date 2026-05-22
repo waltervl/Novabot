@@ -1324,7 +1324,11 @@ static void handleConfigServerPost() {
 // both walker targets currently have BOARD_HAS_PSRAM set so the fallback
 // is just safety net.
 bool uploadBundleToServer(String& outMsg) {
-  if (cfg.serverUrl.isEmpty() || cfg.mowerSn.isEmpty() || cfg.adminToken.isEmpty()) {
+  // Walker is now SN-agnostic for uploads — the server stores the bundle in
+  // a shared library and the operator assigns it to a specific mower later
+  // via the admin UI. We still keep cfg.mowerSn around (set via the Settings
+  // form) for legacy/diagnostic use, but no longer require it here.
+  if (cfg.serverUrl.isEmpty() || cfg.adminToken.isEmpty()) {
     outMsg = "Server config missing";
     return false;
   }
@@ -1395,9 +1399,7 @@ bool uploadBundleToServer(String& outMsg) {
   String url = cfg.serverUrl;
   // Allow user to enter the host with or without a trailing slash.
   if (url.endsWith("/")) url.remove(url.length() - 1);
-  url += "/api/admin-status/maps/";
-  url += cfg.mowerSn;
-  url += "/import-walker-bundle";
+  url += "/api/admin-status/walker-bundles";
   weblogf("[upload] POST %s (%u B)\n", url.c_str(), (unsigned) totalLen);
 
   HTTPClient http;
@@ -1424,7 +1426,7 @@ bool uploadBundleToServer(String& outMsg) {
     outMsg = "HTTP " + String(code) + ": " + resp.substring(0, 100);
     return false;
   }
-  outMsg = "Upload OK (" + String((unsigned) fileSize) + " B): " + resp.substring(0, 80);
+  outMsg = "Uploaded to library (" + String((unsigned) fileSize) + " B): " + resp.substring(0, 80);
   return true;
 }
 
@@ -1580,7 +1582,7 @@ void setup() {
   server.on("/api/config/server", HTTP_GET,  handleConfigServerGet);
   server.on("/api/config/server", HTTP_POST, handleConfigServerPost);
   // Trigger an upload to the configured server. POSTs the freshly-built
-  // .novabundle to /api/admin-status/maps/:sn/import-walker-bundle.
+  // .novabundle to /api/admin-status/walker-bundles (SN-agnostic library).
   server.on("/api/upload", HTTP_POST, handleUploadPost);
   // OTA: ask the server whether a newer firmware is available, expose the
   // result as JSON so the web UI can show the current/latest versions and
