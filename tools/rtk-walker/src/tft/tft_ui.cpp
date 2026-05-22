@@ -1479,11 +1479,21 @@ static lv_obj_t* s_screenRecord = nullptr;  // T5 fills in
 static lv_obj_t* s_mapList = nullptr;
 static lv_obj_t* s_mainTitle = nullptr;
 
+// Detail-screen widgets we mutate from refreshDetailScreen().
+static lv_obj_t* s_detailTitle = nullptr;
+static lv_obj_t* s_detailBoundary = nullptr;
+static lv_obj_t* s_detailChannelList = nullptr;
+static lv_obj_t* s_detailObstacleList = nullptr;
+
 static void onAddMapClicked(lv_event_t* e);
 static void onMapRowClicked(lv_event_t* e);
 static void onExportClicked(lv_event_t* e);
 static void onBackToGpsClicked(lv_event_t* e);
+static void onAddChannelClicked(lv_event_t* e);
+static void onAddObstacleClicked(lv_event_t* e);
+static void onDetailBackClicked(lv_event_t* e);
 static void refreshMainScreen();
+static void refreshDetailScreen(int slot);
 
 static void buildSessionMainScreen() {
     s_screenMain = lv_obj_create(nullptr);
@@ -1534,14 +1544,175 @@ static void buildSessionMainScreen() {
     lv_obj_add_event_cb(btnExport, onExportClicked, LV_EVENT_CLICKED, nullptr);
 }
 
-static void buildSessionDetailPlaceholder() {
+static void buildDetailScreen() {
     s_screenDetail = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(s_screenDetail, lv_color_hex(0x111111), 0);
     lv_obj_clear_flag(s_screenDetail, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t* lbl = lv_label_create(s_screenDetail);
-    lv_label_set_text(lbl, "MapDetail (built in Task 4)");
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0xeeeeee), 0);
-    lv_obj_center(lbl);
+
+    // Title — populated per-slot by refreshDetailScreen().
+    s_detailTitle = lv_label_create(s_screenDetail);
+    lv_label_set_text(s_detailTitle, "map?");
+    lv_obj_set_style_text_color(s_detailTitle, lv_color_hex(0xeeeeee), 0);
+    lv_obj_set_style_text_font(s_detailTitle, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_detailTitle, LV_ALIGN_TOP_MID, 0, 6);
+
+    // Boundary stats just below the title.
+    s_detailBoundary = lv_label_create(s_screenDetail);
+    lv_label_set_text(s_detailBoundary, "Boundary: 0 pts");
+    lv_obj_set_style_text_color(s_detailBoundary, lv_color_hex(0xbbbbbb), 0);
+    lv_obj_set_style_text_font(s_detailBoundary, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_detailBoundary, LV_ALIGN_TOP_MID, 0, 26);
+
+    // Two list panels side-by-side. Each gets a small header label above
+    // the actual lv_list so the user knows what they're looking at.
+    lv_obj_t* lblChH = lv_label_create(s_screenDetail);
+    lv_label_set_text(lblChH, "Channels");
+    lv_obj_set_style_text_color(lblChH, lv_color_hex(0xeeeeee), 0);
+    lv_obj_set_style_text_font(lblChH, &lv_font_montserrat_14, 0);
+    lv_obj_align(lblChH, LV_ALIGN_TOP_LEFT, 14, 50);
+
+    lv_obj_t* lblObH = lv_label_create(s_screenDetail);
+    lv_label_set_text(lblObH, "Obstacles");
+    lv_obj_set_style_text_color(lblObH, lv_color_hex(0xeeeeee), 0);
+    lv_obj_set_style_text_font(lblObH, &lv_font_montserrat_14, 0);
+    lv_obj_align(lblObH, LV_ALIGN_TOP_RIGHT, -14, 50);
+
+    s_detailChannelList = lv_list_create(s_screenDetail);
+    lv_obj_set_size(s_detailChannelList, LV_PCT(46), 130);
+    lv_obj_align(s_detailChannelList, LV_ALIGN_TOP_LEFT, 6, 70);
+
+    s_detailObstacleList = lv_list_create(s_screenDetail);
+    lv_obj_set_size(s_detailObstacleList, LV_PCT(46), 130);
+    lv_obj_align(s_detailObstacleList, LV_ALIGN_TOP_RIGHT, -6, 70);
+
+    // Bottom action buttons.
+    lv_obj_t* btnAddCh = lv_btn_create(s_screenDetail);
+    lv_obj_set_size(btnAddCh, LV_PCT(34), 38);
+    lv_obj_align(btnAddCh, LV_ALIGN_BOTTOM_LEFT, 6, -50);
+    lv_obj_t* lblAddCh = lv_label_create(btnAddCh);
+    lv_label_set_text(lblAddCh, "+ Channel");
+    lv_obj_set_style_text_color(lblAddCh, lv_color_hex(0xeeeeee), 0);
+    lv_obj_center(lblAddCh);
+    lv_obj_add_event_cb(btnAddCh, onAddChannelClicked, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* btnAddOb = lv_btn_create(s_screenDetail);
+    lv_obj_set_size(btnAddOb, LV_PCT(34), 38);
+    lv_obj_align(btnAddOb, LV_ALIGN_BOTTOM_RIGHT, -6, -50);
+    lv_obj_t* lblAddOb = lv_label_create(btnAddOb);
+    lv_label_set_text(lblAddOb, "+ Obstacle");
+    lv_obj_set_style_text_color(lblAddOb, lv_color_hex(0xeeeeee), 0);
+    lv_obj_center(lblAddOb);
+    lv_obj_add_event_cb(btnAddOb, onAddObstacleClicked, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* btnBack = lv_btn_create(s_screenDetail);
+    lv_obj_set_size(btnBack, LV_PCT(40), 40);
+    lv_obj_align(btnBack, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x374151), 0);
+    lv_obj_t* lblBack = lv_label_create(btnBack);
+    lv_label_set_text(lblBack, LV_SYMBOL_LEFT "  Back");
+    lv_obj_set_style_text_color(lblBack, lv_color_hex(0xeeeeee), 0);
+    lv_obj_center(lblBack);
+    lv_obj_add_event_cb(btnBack, onDetailBackClicked, LV_EVENT_CLICKED, nullptr);
+}
+
+// Count newline-terminated rows in a LittleFS file. Mirrors the helper
+// in session.cpp (not exposed via session.h) so we can show point-counts
+// for channel/obstacle CSVs without piping every file count through the
+// SessionStore API.
+static int detailCountRows(const String& path) {
+    if (!LittleFS.exists(path)) return 0;
+    File f = LittleFS.open(path, FILE_READ);
+    if (!f) return 0;
+    uint8_t buf[128];
+    int rows = 0;
+    while (f.available()) {
+        int n = f.read(buf, sizeof(buf));
+        if (n <= 0) break;
+        for (int i = 0; i < n; i++) {
+            if (buf[i] == '\n') rows++;
+        }
+    }
+    f.close();
+    return rows;
+}
+
+static void refreshDetailScreen(int slot) {
+    if (!s_screenDetail || !s_detailChannelList || !s_detailObstacleList) return;
+
+    // Find the requested slot in the current map list.
+    MapEntry entries[3];
+    size_t count = 0;
+    sessionStore.listMaps(entries, 3, count);
+
+    const MapEntry* found = nullptr;
+    for (size_t i = 0; i < count; i++) {
+        if (entries[i].slot == slot) { found = &entries[i]; break; }
+    }
+    if (!found) {
+        // Map disappeared (deleted/reset) — bounce back to Main.
+        tft_ui_set_screen(UiScreen::Main);
+        return;
+    }
+
+    char title[96];
+    snprintf(title, sizeof(title), "map%d  %s", found->slot, found->alias.c_str());
+    lv_label_set_text(s_detailTitle, title);
+
+    char stats[48];
+    snprintf(stats, sizeof(stats), "Boundary: %d pts", found->boundaryPoints);
+    lv_label_set_text(s_detailBoundary, stats);
+
+    lv_obj_clean(s_detailChannelList);
+    lv_obj_clean(s_detailObstacleList);
+
+    // Scan /session/ once and route each match into the right list.
+    File dir = LittleFS.open("/session");
+    if (dir && dir.isDirectory()) {
+        String slotPrefix = String("map") + slot;     // matches "mapN..."
+        String channelMid = String("map") + slot + "to";  // mapNto<target>_unicom.csv
+        String obstacleMid = String("map") + slot + "_";  // mapN_<i>_obstacle.csv
+
+        File entry = dir.openNextFile();
+        while (entry) {
+            String name = entry.name();
+            int slash = name.lastIndexOf('/');
+            if (slash >= 0) name = name.substring(slash + 1);
+            String full = String("/session/") + name;
+            entry.close();
+
+            if (name.startsWith(channelMid) && name.endsWith("_unicom.csv")) {
+                // Extract <target> between "mapNto" and "_unicom.csv".
+                int start = channelMid.length();
+                int end = name.length() - strlen("_unicom.csv");
+                if (end > start) {
+                    String target = name.substring(start, end);
+                    char row[96];
+                    snprintf(row, sizeof(row), LV_SYMBOL_RIGHT "  %s", target.c_str());
+                    lv_list_add_btn(s_detailChannelList, NULL, row);
+                }
+            } else if (name.startsWith(obstacleMid) && name.endsWith("_obstacle.csv")) {
+                // Extract <i> between "mapN_" and "_obstacle.csv".
+                int start = obstacleMid.length();
+                int end = name.length() - strlen("_obstacle.csv");
+                if (end > start) {
+                    String idxStr = name.substring(start, end);
+                    int pts = detailCountRows(full);
+                    char row[96];
+                    snprintf(row, sizeof(row), "obs %s (%d pts)", idxStr.c_str(), pts);
+                    lv_list_add_btn(s_detailObstacleList, NULL, row);
+                }
+            }
+            entry = dir.openNextFile();
+        }
+        dir.close();
+    }
+
+    if (lv_obj_get_child_cnt(s_detailChannelList) == 0) {
+        lv_list_add_text(s_detailChannelList, "(none)");
+    }
+    if (lv_obj_get_child_cnt(s_detailObstacleList) == 0) {
+        lv_list_add_text(s_detailObstacleList, "(none)");
+    }
 }
 
 static void buildSessionRecordingPlaceholder() {
@@ -1591,13 +1762,15 @@ void tft_ui_set_screen(UiScreen s, int detailSlot) {
     }
     if (target) lv_scr_load(target);
     if (s == UiScreen::Main) refreshMainScreen();
+    else if (s == UiScreen::MapDetail) refreshDetailScreen(s_detailSlot);
 }
 
 UiScreen tft_ui_current_screen() { return s_currentScreen; }
 
 void tft_ui_refresh_current() {
     if (s_currentScreen == UiScreen::Main) refreshMainScreen();
-    // detail + recording refresh hooked up by T4/T5.
+    else if (s_currentScreen == UiScreen::MapDetail) refreshDetailScreen(s_detailSlot);
+    // recording refresh hooked up by T5.
 }
 
 static void onAddMapClicked(lv_event_t* /*e*/) {
@@ -1627,11 +1800,36 @@ static void onBackToGpsClicked(lv_event_t* /*e*/) {
     if (scr_main) lv_scr_load(scr_main);
 }
 
+// Detail-screen button handlers. The detail screen tracks its slot via
+// s_detailSlot (set when tft_ui_set_screen(MapDetail, slot) was called).
+static void onAddChannelClicked(lv_event_t* /*e*/) {
+    // MVP: hardcode the channel target to "charge". A target picker (so
+    // the user can chain channels between work maps) lands in a later
+    // task — for now most users only ever need the charge route.
+    if (!recorder.startChannel(s_detailSlot, String("charge"))) {
+        if (s_detailTitle) lv_label_set_text(s_detailTitle, "Channel start failed");
+        return;
+    }
+    tft_ui_set_screen(UiScreen::Recording);
+}
+
+static void onAddObstacleClicked(lv_event_t* /*e*/) {
+    if (!recorder.startObstacle(s_detailSlot)) {
+        if (s_detailTitle) lv_label_set_text(s_detailTitle, "Obstacle start failed");
+        return;
+    }
+    tft_ui_set_screen(UiScreen::Recording);
+}
+
+static void onDetailBackClicked(lv_event_t* /*e*/) {
+    tft_ui_set_screen(UiScreen::Main);
+}
+
 // Build the new screens once after tftSetup() has finished its LVGL
 // init. Called from tftSetup() at the very end.
 static void buildSessionScreens() {
     buildSessionMainScreen();
-    buildSessionDetailPlaceholder();
+    buildDetailScreen();
     buildSessionRecordingPlaceholder();
     // NOTE: we deliberately do NOT call tft_ui_set_screen(UiScreen::Main)
     // here — the legacy scr_main stays the boot default so the live
