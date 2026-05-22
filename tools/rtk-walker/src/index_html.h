@@ -182,14 +182,14 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   <details class="card config">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">OpenNova server setup</summary>
     <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
-      Required for "Upload to server" + OTA firmware updates. The server URL points to
-      your OpenNova instance (LAN IP + port). The admin token is a JWT bearer issued by
-      the admin user account on that server.
+      Server URL is enough for "Upload to server" (LAN-only public endpoint, no token
+      required). Admin token is only needed for OTA firmware updates (the bearer-
+      protected binary download); leave blank if you don't plan to OTA-upgrade.
     </p>
     <form id="srvForm">
       <label>Server URL<input id="srv_url" type="text" placeholder="http://192.168.0.247:8080"></label>
-      <label>Mower SN <span style="color:var(--text-dim);font-weight:400;font-size:10px">(legacy / OTA target hint, optional)</span><input id="srv_msn" type="text" placeholder="LFIN2230700238"></label>
-      <label>Admin token <span style="color:var(--text-dim);font-weight:400;font-size:10px">(leave blank to keep stored value)</span><input id="srv_token" type="text" placeholder="eyJhbGc... (unchanged if empty)"></label>
+      <label>Mower SN <span style="color:var(--text-dim);font-weight:400;font-size:10px">(legacy hint, optional)</span><input id="srv_msn" type="text" placeholder="LFIN2230700238"></label>
+      <label>Admin token <span style="color:var(--text-dim);font-weight:400;font-size:10px">(only for OTA — leave blank if not using)</span><input id="srv_token" type="text" placeholder="eyJhbGc... (unchanged if empty)"></label>
       <button type="submit" style="margin-top:12px">Save server config</button>
       <div id="srvStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
     </form>

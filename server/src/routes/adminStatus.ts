@@ -4,6 +4,7 @@
  */
 
 import { Router, Response } from 'express';
+import express from 'express';
 import os from 'os';
 import dns from 'dns';
 import crypto from 'crypto';
@@ -71,6 +72,14 @@ const importStaging = new ImportStagingStore(
   path.resolve(process.env.STORAGE_PATH ?? './storage', 'imports'),
 );
 const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+// Multer middleware exposed so index.ts can mount the same handler on a
+// public (no-auth) path for the walker upload. Walker has no good way to
+// hold a Bearer token, and the threat model is LAN-only — anyone on the
+// LAN can already reach the walker's own HTTP server. Assign-to-mower
+// downstream STILL requires admin auth, so a stray upload can't actually
+// reach a mower without operator confirmation.
+export const walkerBundleUploadMulter = bundleUpload.single('bundle');
 
 // Walker bundle library — SN-agnostic store on disk. The walker uploads here
 // once; the operator assigns the bundle to a specific mower later via the
@@ -1725,71 +1734,69 @@ function walkerBundleToDto(row: WalkerBundleRow) {
   };
 }
 
-// POST /api/admin-status/walker-bundles — walker uploads the .novabundle.
-// Multipart, single field `bundle`. Saved to disk; metadata row inserted.
-// Returns the freshly created DTO so the caller can show the new entry.
-adminStatusRouter.post(
-  '/walker-bundles',
-  bundleUpload.single('bundle'),
-  async (req: AuthRequest, res: Response) => {
-    if (!req.file) {
-      res.status(400).json({ ok: false, error: 'bundle file required' });
-      return;
-    }
+// Walker bundle upload handler. Exposed so index.ts can mount this on a
+// public path (no admin auth) for the walker. The previous admin-router
+// mount stays disabled — uploads from the admin UI are not a real flow.
+// Note: walker request hits multer first via walkerBundleUploadMulter.
+export async function handleWalkerBundleUpload(req: express.Request, res: express.Response): Promise<void> {
+  const upload = (req as express.Request & { file?: Express.Multer.File }).file;
+  if (!upload) {
+    res.status(400).json({ ok: false, error: 'bundle file required' });
+    return;
+  }
 
-    let summary: WalkerBundleSummary;
-    try {
-      summary = await inspectWalkerBundle(req.file.buffer);
-    } catch (err) {
-      res.status(400).json({ ok: false, error: (err as Error).message });
-      return;
-    }
+  let summary: WalkerBundleSummary;
+  try {
+    summary = await inspectWalkerBundle(upload.buffer);
+  } catch (err) {
+    res.status(400).json({ ok: false, error: (err as Error).message });
+    return;
+  }
 
-    // Unique filename = timestamp + 4-byte random hex; readable + collision-safe.
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const rnd = crypto.randomBytes(3).toString('hex');
-    const safeWalker = summary.walkerId
-      ? summary.walkerId.replace(/[^A-Za-z0-9_-]/g, '')
-      : 'walker';
-    const filename = `${stamp}_${safeWalker}_${rnd}.novabundle`;
-    const filePath = path.join(walkerBundlesDir, filename);
+  // Unique filename = timestamp + 4-byte random hex; readable + collision-safe.
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const rnd = crypto.randomBytes(3).toString('hex');
+  const safeWalker = summary.walkerId
+    ? summary.walkerId.replace(/[^A-Za-z0-9_-]/g, '')
+    : 'walker';
+  const filename = `${stamp}_${safeWalker}_${rnd}.novabundle`;
+  const filePath = path.join(walkerBundlesDir, filename);
 
-    try {
-      fs.mkdirSync(walkerBundlesDir, { recursive: true });
-      fs.writeFileSync(filePath, req.file.buffer);
-    } catch (err) {
-      res.status(500).json({ ok: false, error: `failed to persist bundle: ${(err as Error).message}` });
-      return;
-    }
+  try {
+    fs.mkdirSync(walkerBundlesDir, { recursive: true });
+    fs.writeFileSync(filePath, upload.buffer);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: `failed to persist bundle: ${(err as Error).message}` });
+    return;
+  }
 
-    const id = walkerBundleRepo.create({
-      filename,
-      uploaded_at: new Date().toISOString(),
-      walker_id: summary.walkerId,
-      size_bytes: req.file.size,
-      polygon_count: summary.polygons,
-      obstacle_count: summary.obstacles,
-      unicom_count: summary.unicom,
-      bounds_min_x: summary.bounds?.minX ?? null,
-      bounds_max_x: summary.bounds?.maxX ?? null,
-      bounds_min_y: summary.bounds?.minY ?? null,
-      bounds_max_y: summary.bounds?.maxY ?? null,
-    });
+  const id = walkerBundleRepo.create({
+    filename,
+    uploaded_at: new Date().toISOString(),
+    walker_id: summary.walkerId,
+    size_bytes: upload.size,
+    polygon_count: summary.polygons,
+    obstacle_count: summary.obstacles,
+    unicom_count: summary.unicom,
+    bounds_min_x: summary.bounds?.minX ?? null,
+    bounds_max_x: summary.bounds?.maxX ?? null,
+    bounds_min_y: summary.bounds?.minY ?? null,
+    bounds_max_y: summary.bounds?.maxY ?? null,
+  });
 
-    const row = walkerBundleRepo.findById(id);
-    res.json({
-      ok: true,
-      id,
-      filename,
-      size: req.file.size,
-      polygons: summary.polygons,
-      obstacles: summary.obstacles,
-      unicom: summary.unicom,
-      walkerId: summary.walkerId,
-      bundle: row ? walkerBundleToDto(row) : null,
-    });
-  },
-);
+  const row = walkerBundleRepo.findById(id);
+  res.json({
+    ok: true,
+    id,
+    filename,
+    size: upload.size,
+    polygons: summary.polygons,
+    obstacles: summary.obstacles,
+    unicom: summary.unicom,
+    walkerId: summary.walkerId,
+    bundle: row ? walkerBundleToDto(row) : null,
+  });
+}
 
 // GET /api/admin-status/walker-bundles — list every uploaded bundle.
 adminStatusRouter.get('/walker-bundles', (_req: AuthRequest, res: Response) => {

@@ -1326,10 +1326,12 @@ static void handleConfigServerPost() {
 bool uploadBundleToServer(String& outMsg) {
   // Walker is now SN-agnostic for uploads — the server stores the bundle in
   // a shared library and the operator assigns it to a specific mower later
-  // via the admin UI. We still keep cfg.mowerSn around (set via the Settings
-  // form) for legacy/diagnostic use, but no longer require it here.
-  if (cfg.serverUrl.isEmpty() || cfg.adminToken.isEmpty()) {
-    outMsg = "Server config missing";
+  // via the admin UI. Upload is mounted publicly on the server (LAN-only
+  // threat model), so the walker no longer needs an admin token at all.
+  // cfg.adminToken is still kept around for the OTA flow which IS bearer-
+  // protected (executable firmware download = higher risk surface).
+  if (cfg.serverUrl.isEmpty()) {
+    outMsg = "Server URL not set";
     return false;
   }
   if (WiFi.status() != WL_CONNECTED) {
@@ -1399,7 +1401,8 @@ bool uploadBundleToServer(String& outMsg) {
   String url = cfg.serverUrl;
   // Allow user to enter the host with or without a trailing slash.
   if (url.endsWith("/")) url.remove(url.length() - 1);
-  url += "/api/admin-status/walker-bundles";
+  // Public LAN-only upload endpoint — no Authorization header required.
+  url += "/api/walker-bundles";
   weblogf("[upload] POST %s (%u B)\n", url.c_str(), (unsigned) totalLen);
 
   HTTPClient http;
@@ -1408,7 +1411,6 @@ bool uploadBundleToServer(String& outMsg) {
     outMsg = "HTTPClient begin failed";
     return false;
   }
-  http.addHeader("Authorization", String("Bearer ") + cfg.adminToken);
   http.addHeader("Content-Type", String("multipart/form-data; boundary=") + boundary);
   http.setTimeout(30000);
 
