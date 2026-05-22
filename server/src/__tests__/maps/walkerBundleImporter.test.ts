@@ -3,6 +3,7 @@ import archiver from 'archiver';
 import unzipper from 'unzipper';
 import { PassThrough } from 'node:stream';
 import { synthesizePortableFromWalker } from '../../maps/walkerBundleImporter.js';
+import { parseBundle } from '../../services/portableMap.js';
 
 // Build a walker bundle (in-memory ZIP) using archiver — same lib the rest of
 // the codebase already uses for portable bundles, so no new dependency.
@@ -77,6 +78,58 @@ describe('synthesizePortableFromWalker', () => {
     const p1 = result.transformedPolygons[0].points[1];
     expect(p1.x).toBeCloseTo(0, 5);
     expect(p1.y).toBeCloseTo(5, 5);
+  });
+
+  it('synth output round-trips through parseBundle without validation errors', async () => {
+    const walkerZip = await buildFixtureWalkerBundle();
+    const synth = await synthesizePortableFromWalker(walkerZip, {
+      currentDockPose: { x: 2, y: 1, orientation: 0.1 },
+      resolution: 0.5,
+      marginM: 0,
+    });
+    // Should NOT throw.
+    const parsed = await parseBundle(synth.portableZip);
+    expect(parsed.polygon).toBeDefined();
+    expect(parsed.polygon.areaM2).toBeGreaterThan(0);
+    expect(parsed.polygons.length).toBeGreaterThan(0);
+    expect(parsed.polygons[0].areaM2).toBeGreaterThan(0);
+  });
+
+  it('derives unicom targetMapName from the name pattern', async () => {
+    const metadata = {
+      schemaVersion: 1, sourceType: 'walker', workMapNames: ['map0'],
+      userAliases: { map0: 'Voortuin' },
+    };
+    const polygons = [{
+      name: 'map0_work',
+      points: [{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }, { x: 0, y: 5 }],
+    }];
+    const unicom = [
+      { name: 'map0tocharge', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }] },
+      { name: 'map0tomap1_0', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }] },
+    ];
+    const walkerZip: Buffer = await new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const sink = new PassThrough();
+      sink.on('data', (c) => chunks.push(c as Buffer));
+      sink.on('end', () => resolve(Buffer.concat(chunks)));
+      sink.on('error', reject);
+      const a = archiver('zip');
+      a.on('error', reject);
+      a.pipe(sink);
+      a.append(JSON.stringify(metadata), { name: 'metadata.json' });
+      a.append(JSON.stringify(polygons), { name: 'polygons.json' });
+      a.append('[]', { name: 'obstacles.json' });
+      a.append(JSON.stringify(unicom), { name: 'unicom.json' });
+      void a.finalize();
+    });
+    const synth = await synthesizePortableFromWalker(walkerZip, {
+      currentDockPose: { x: 0, y: 0, orientation: 0 },
+      resolution: 0.5, marginM: 0,
+    });
+    const parsed = await parseBundle(synth.portableZip);
+    expect(parsed.unicom[0].targetMapName).toBe('charge');
+    expect(parsed.unicom[1].targetMapName).toBe('map1_0');
   });
 
   it('rejects bundles missing polygons.json', async () => {

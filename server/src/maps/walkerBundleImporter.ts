@@ -129,6 +129,30 @@ export async function synthesizePortableFromWalker(
     points: (u.points ?? []).map((pt) => rotateTranslate(pt, opts.currentDockPose)),
   }));
 
+  // parseBundle (services/portableMap.ts) requires every work polygon to
+  // carry `areaM2`, every obstacle `areaM2`, every unicom `targetMapName`,
+  // plus a singular `polygon.json` for the first work polygon. Walker
+  // exports omit all of these — compute / derive them here so the synthetic
+  // .novabotmap round-trips through parseBundle without validation errors.
+  const transformedPolygonsWithArea = transformedPolygons.map((p) => ({
+    ...p,
+    areaM2: shoelaceArea(p.points),
+  }));
+  const transformedObstaclesWithArea = transformedObstacles.map((o) => ({
+    ...o,
+    areaM2: shoelaceArea(o.points),
+  }));
+  const transformedUnicomWithTarget = transformedUnicom.map((u) => {
+    let targetMapName = u.targetMapName;
+    if (!targetMapName && typeof u.name === 'string') {
+      // Walker names unicoms like `mapNto<target>` (e.g. `map0tocharge`,
+      // `map0tomap1_0`). Extract the part after `to` as the target.
+      const m = u.name.match(/^map\d+to(.+)$/);
+      if (m) targetMapName = m[1];
+    }
+    return { ...u, targetMapName: targetMapName ?? 'charge' };
+  });
+
   // Rasterize the transformed work polygons (with obstacles carved out).
   const raster = rasterizePolygon(
     transformedPolygons.map((p) => p.points),
@@ -154,10 +178,34 @@ export async function synthesizePortableFromWalker(
     userAliases,
   };
 
-  const polygonsJson = transformedPolygons.map((p, i) => ({
+  const polygonsJson = transformedPolygonsWithArea.map((p, i) => ({
     name: `map${i}`,
     alias: p.alias ?? `Walker map ${i}`,
     points: p.points,
+    areaM2: p.areaM2,
+  }));
+
+  // Singular polygon.json — first work polygon. parseBundle treats this as
+  // the primary map and validates `areaM2` strictly. Required by REQUIRED_FILES.
+  const firstWithArea = transformedPolygonsWithArea[0];
+  const polygonSingular = {
+    name: 'map0',
+    alias: firstWithArea.alias ?? 'Walker map 0',
+    points: firstWithArea.points,
+    areaM2: firstWithArea.areaM2,
+  };
+
+  const obstaclesJson = transformedObstaclesWithArea.map((o) => ({
+    name: o.name,
+    parentMap: o.parentMap,
+    points: o.points,
+    areaM2: o.areaM2,
+  }));
+  const unicomJson = transformedUnicomWithTarget.map((u) => ({
+    name: u.name,
+    parentMap: u.parentMap,
+    targetMapName: u.targetMapName,
+    points: u.points,
   }));
 
   const csvOf = (pts: Point[]): string =>
@@ -191,9 +239,10 @@ export async function synthesizePortableFromWalker(
     a.pipe(sink);
 
     a.append(JSON.stringify(metadata, null, 2), { name: 'metadata.json' });
+    a.append(JSON.stringify(polygonSingular, null, 2), { name: 'polygon.json' });
     a.append(JSON.stringify(polygonsJson, null, 2), { name: 'polygons.json' });
-    a.append(JSON.stringify(transformedObstacles, null, 2), { name: 'obstacles.json' });
-    a.append(JSON.stringify(transformedUnicom, null, 2), { name: 'unicom.json' });
+    a.append(JSON.stringify(obstaclesJson, null, 2), { name: 'obstacles.json' });
+    a.append(JSON.stringify(unicomJson, null, 2), { name: 'unicom.json' });
 
     // Mower-side files — what apply-verbatim ships back to the mower.
     for (let i = 0; i < transformedPolygons.length; i++) {
