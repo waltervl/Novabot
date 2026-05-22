@@ -183,6 +183,7 @@ static void focus_textarea(lv_obj_t* ta);
 static void buildSessionScreens();
 static void onOtaButtonClicked(lv_event_t* e);
 static void on_save_as_area_clicked(lv_event_t* e);
+static void onSaveResultDismissed(lv_event_t* e);
 static void update_save_area_button(const WalkerSnapshot& snap);
 
 // ── Public entry points ────────────────────────────────────────────────────
@@ -1375,7 +1376,28 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
   int previewSlot = sessionStore.allocWorkSlot();
   String alias = String("Area ") + (previewSlot >= 0 ? (previewSlot + 1) : 1);
 
+  // Show a "Saving..." modal BEFORE the import starts. import_track_as_area
+  // is synchronous and can take several seconds for a long track (each
+  // appendWorkPoint open+writes+closes the CSV). Without an in-progress
+  // banner the screen looks frozen until the final result modal appears.
+  // No buttons so the user can't interact mid-import; we replace it with
+  // the result modal after the work completes.
+  static const char* no_buttons[] = { "" };
+  char inprogress_body[120];
+  snprintf(inprogress_body, sizeof(inprogress_body),
+           "Importing %lu points as %s.\nThis may take a few seconds...",
+           (unsigned long) pts, alias.c_str());
+  lv_obj_t* progress = lv_msgbox_create(NULL, "Saving as area",
+                                        inprogress_body, no_buttons, false);
+  lv_obj_center(progress);
+  // Force LVGL to flush so the user actually sees the box before we
+  // lock the loop with file I/O.
+  lv_refr_now(NULL);
+
   int written = import_track_as_area(path, alias);
+
+  // Dismiss the in-progress modal before the result modal.
+  if (progress) lv_msgbox_close(progress);
 
   // Clear walkerLastTrack so the "Save as area" button guard keeps it
   // hidden on the next refresh tick. Without this clearance the button
@@ -1384,9 +1406,9 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
   walkerSetLastTrack(String(""), 0);
   if (btn_save_area) lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
 
-  // Proper modal confirmation so the user has to actively acknowledge
-  // the result. The previous label-text approach was too easy to miss
-  // and led to duplicate imports when users tapped Save twice quickly.
+  // Result modal with an OK button that actually dismisses itself.
+  // The previous version had no event callback so the OK click did
+  // nothing and the modal stayed up forever.
   static const char* msgbox_buttons[] = { "OK", "" };
   char title[64];
   char body[160];
@@ -1401,11 +1423,17 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
              "No RTK FIX rows in the track.\nWalk again with FIX active.");
   }
   lv_obj_t* mbox = lv_msgbox_create(NULL, title, body, msgbox_buttons, false);
+  lv_obj_add_event_cb(mbox, onSaveResultDismissed, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_center(mbox);
 
   // Best-effort refresh of the Maps screen so the new entry is visible
   // when the user navigates over there.
   tft_ui_refresh_current();
+}
+
+static void onSaveResultDismissed(lv_event_t* e) {
+  lv_obj_t* mbox = lv_event_get_current_target(e);
+  if (mbox) lv_msgbox_close(mbox);
 }
 
 // ── Live map rendering ───────────────────────────────────────────────────
@@ -1973,9 +2001,13 @@ static void buildDetailScreen() {
     lv_obj_center(lblAddOb);
     lv_obj_add_event_cb(btnAddOb, onAddObstacleClicked, LV_EVENT_CLICKED, nullptr);
 
+    // Anchor Back to bottom-left + Delete to bottom-right with explicit
+    // pixel padding so they sit symmetrically. Earlier LV_PCT(22) offsets
+    // from BOTTOM_MID measured against the screen, not the button widths,
+    // and on this panel the delete button ended up visibly shifted right.
     lv_obj_t* btnBack = lv_btn_create(s_screenDetail);
-    lv_obj_set_size(btnBack, LV_PCT(40), 40);
-    lv_obj_align(btnBack, LV_ALIGN_BOTTOM_MID, -LV_PCT(22), -6);
+    lv_obj_set_size(btnBack, LV_PCT(44), 40);
+    lv_obj_align(btnBack, LV_ALIGN_BOTTOM_LEFT, 8, -6);
     lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x374151), 0);
     lv_obj_t* lblBack = lv_label_create(btnBack);
     lv_label_set_text(lblBack, LV_SYMBOL_LEFT "  Back");
@@ -1983,13 +2015,12 @@ static void buildDetailScreen() {
     lv_obj_center(lblBack);
     lv_obj_add_event_cb(btnBack, onDetailBackClicked, LV_EVENT_CLICKED, nullptr);
 
-    // Destructive Delete button — sits next to Back so accidental presses
-    // are less likely than placing it inline with the row list. Red bg +
+    // Destructive Delete button — bottom-right mirror of Back. Red bg +
     // trash icon to telegraph the action. The handler shows a yes/no
     // msgbox so a single tap can't erase a map.
     lv_obj_t* btnDel = lv_btn_create(s_screenDetail);
-    lv_obj_set_size(btnDel, LV_PCT(40), 40);
-    lv_obj_align(btnDel, LV_ALIGN_BOTTOM_MID, LV_PCT(22), -6);
+    lv_obj_set_size(btnDel, LV_PCT(44), 40);
+    lv_obj_align(btnDel, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
     lv_obj_set_style_bg_color(btnDel, lv_color_hex(0x7f1d1d), 0);
     lv_obj_t* lblDel = lv_label_create(btnDel);
     lv_label_set_text(lblDel, LV_SYMBOL_TRASH "  Delete");
