@@ -484,84 +484,6 @@ export function adminPageHtml(): string {
         </div>
       </div>
 
-      <details style="padding:8px 12px;background:rgba(124,58,237,.04);border:1px solid rgba(124,58,237,.15);border-radius:8px;margin-top:16px">
-        <summary style="font-size:12px;font-weight:600;color:#a78bfa;cursor:pointer;list-style:none">Legacy Map Recovery (server-side ZIP backups) <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">LEGACY</span></summary>
-        <div style="font-size:10px;color:#94a3b8;margin:6px 0">DB→sync_map flow with same drift-bug history as legacy import. Use Portable Map Bundle above instead. Kept for cross-device debug + emergency restore.</div>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-          <select id="mapBackupSelect" onchange="loadBackupContents();previewBackupGhost()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
-            <option value="">Select a backup snapshot...</option>
-          </select>
-          <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
-        </div>
-        <div id="mapBackupTree" style="margin-bottom:8px"></div>
-        <div id="conflictHelpers" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px">
-          <span style="font-size:11px;color:#fca5a5;font-weight:600">Conflicts found — choose default action:</span>
-          <button onclick="setAllConflicts(true)" style="padding:5px 12px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all</button>
-          <button onclick="setAllConflicts(false)" style="padding:5px 12px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all</button>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button onclick="restoreBackup()" style="padding:7px 18px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore Backup</button>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer" title="Push restored maps to mower (sync_map MQTT + reload nav stack). Uncheck to update DB only.">
-            <input type="checkbox" id="restoreRealignChk" checked style="cursor:pointer">
-            Also push to mower (realign)
-          </label>
-          <a href="javascript:void(0)" onclick="document.getElementById('infoRestore').style.display=document.getElementById('infoRestore').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
-        </div>
-        <div id="infoRestore" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
-          <div><b style="color:#86efac">Without "push to mower" — DB-only restore:</b><br>
-            Replaces the selected polygon rows in the server DB. Mower keeps whatever it already has on disk until something else triggers a sync.</div>
-          <div style="margin-top:8px"><b style="color:#fca5a5">With "push to mower" — full realign:</b><br>
-            1) DB restore (overwrites all polygon rows from this backup ZIP)<br>
-            2) <code>map_calibration.charger_lat/lng</code> updated from mower's live RTK GPS<br>
-            3) <code>_latest.zip</code> regenerated with embedded charger pose<br>
-            4) Mower wipes <code>csv_file/</code> + <code>x3_csv_file/</code>, downloads fresh ZIP, rewrites <code>charging_station.yaml</code> and 4 mirror copies of <code>map_info.json</code> (5 files total)<br>
-            5) Mower restarts <code>novabot_mapping</code>, <code>coverage_planner_server</code>, and <code>auto_recharge_server</code></div>
-          <div style="margin-top:8px"><b style="color:#93c5fd">Use when:</b> polygon corruption, post-mapping rollback, or after admin map edits that need to land on the mower.</div>
-          <div style="margin-top:8px"><b style="color:#fbbf24">Required for realign:</b> mower online + RTK FIX + on dock (for the GPS update step).</div>
-        </div>
-      </details>
-
-      <details style="padding:8px 12px;background:rgba(239,68,68,.04);border:1px solid rgba(239,68,68,.15);border-radius:8px;margin-top:12px">
-        <summary style="font-size:12px;font-weight:600;color:#fca5a5;cursor:pointer;list-style:none">Debug — manual recalibrate charging pose <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">DEBUG</span></summary>
-        <div style="font-size:10px;color:#94a3b8;margin:6px 0">Use only when polygon shape is correct but dock pose drifted. Portable Map Bundle handles this automatically — only fall back here if exact-restore is unavailable.</div>
-        <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-top:8px">
-          <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
-            <b style="color:#fca5a5">Recovery — wrong charger pose causes mower to drive off target.</b><br>
-            Stock firmware needs a drive-back cycle to initialize localization
-            before the reported pose is trustworthy. While docked at boot,
-            <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
-            <b>Workflow:</b>
-            <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
-              <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1–2 m)</li>
-              <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
-              <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
-              <li>Then press <b>Recalibrate Charging Pose</b></li>
-            </ol>
-          </div>
-          <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
-            <span style="color:#888">Loading localization status...</span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
-            <a href="javascript:void(0)" onclick="document.getElementById('infoRecal').style.display=document.getElementById('infoRecal').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
-          </div>
-          <div id="infoRecal" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
-            <div><b>Snaps the dock pose to where the mower currently sits.</b></div>
-            <div style="margin-top:6px"><b style="color:#86efac">Updates:</b> <code>charging_station.yaml</code> + <code>map_info.json</code> in <code>csv_file/</code> and <code>x3_csv_file/</code> on the mower (3 files). Saves the new theta in DB so subsequent <code>sync_map</code> calls reuse it.</div>
-            <div style="margin-top:6px"><b style="color:#fca5a5">Does NOT touch:</b> polygon CSVs, the <code>_latest.zip</code>, charger GPS, or the mower's coverage planner state.</div>
-            <div style="margin-top:6px"><b style="color:#93c5fd">Use when:</b> mower drifted after heading discovery or theta is wrong but the polygon shape itself is fine.</div>
-            <div style="margin-top:6px"><b style="color:#fbbf24">Required:</b> mower on dock + <code>battery_state == CHARGING</code> + RTK FIX + non-zero <code>map_position</code>.</div>
-          </div>
-          <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
-        </div>
-        <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
-          <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
-          <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">Live dual-trail diagnose during mow: cyan = firmware <code>map_position</code>, lime = RTK GPS via charger anchor. Δ between them flags drift or frame-rotation issues. Read-only — no apply button (use Portable Map Bundle exact-restore instead).</div>
-          <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
-            <span style="color:#888">Select a mower to start validation polling.</span>
-          </div>
-        </div>
-      </details>
     </div>
 
     <div class="card">
@@ -868,6 +790,50 @@ export function adminPageHtml(): string {
           </div>
         </a>
       </div>
+    </div>
+
+    <div class="card">
+      <details style="padding:8px 12px;background:rgba(239,68,68,.04);border:1px solid rgba(239,68,68,.15);border-radius:8px">
+        <summary style="font-size:12px;font-weight:600;color:#fca5a5;cursor:pointer;list-style:none">Debug &mdash; manual recalibrate charging pose <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">DEBUG</span></summary>
+        <div style="font-size:10px;color:#94a3b8;margin:6px 0">Use only when polygon shape is correct but dock pose drifted. Portable Map Bundle handles this automatically. Only fall back here if exact-restore is unavailable.</div>
+        <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-top:8px">
+          <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
+            <b style="color:#fca5a5">Recovery: wrong charger pose causes mower to drive off target.</b><br>
+            Stock firmware needs a drive-back cycle to initialize localization
+            before the reported pose is trustworthy. While docked at boot,
+            <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
+            <b>Workflow:</b>
+            <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
+              <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1-2 m)</li>
+              <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
+              <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
+              <li>Then press <b>Recalibrate Charging Pose</b></li>
+            </ol>
+          </div>
+          <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+            <span style="color:#888">Loading localization status...</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+            <a href="javascript:void(0)" onclick="document.getElementById('infoRecal').style.display=document.getElementById('infoRecal').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
+          </div>
+          <div id="infoRecal" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
+            <div><b>Snaps the dock pose to where the mower currently sits.</b></div>
+            <div style="margin-top:6px"><b style="color:#86efac">Updates:</b> <code>charging_station.yaml</code> + <code>map_info.json</code> in <code>csv_file/</code> and <code>x3_csv_file/</code> on the mower (3 files). Saves the new theta in DB so subsequent <code>sync_map</code> calls reuse it.</div>
+            <div style="margin-top:6px"><b style="color:#fca5a5">Does NOT touch:</b> polygon CSVs, the <code>_latest.zip</code>, charger GPS, or the mower's coverage planner state.</div>
+            <div style="margin-top:6px"><b style="color:#93c5fd">Use when:</b> mower drifted after heading discovery or theta is wrong but the polygon shape itself is fine.</div>
+            <div style="margin-top:6px"><b style="color:#fbbf24">Required:</b> mower on dock + <code>battery_state == CHARGING</code> + RTK FIX + non-zero <code>map_position</code>.</div>
+          </div>
+          <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
+        </div>
+        <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
+          <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">Live dual-trail diagnose during mow: cyan = firmware <code>map_position</code>, lime = RTK GPS via charger anchor. Delta between them flags drift or frame-rotation issues. Read-only (use Portable Map Bundle exact-restore instead).</div>
+          <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+            <span style="color:#888">Select a mower to start validation polling.</span>
+          </div>
+        </div>
+      </details>
     </div>
 
     <div class="card" style="border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.04)">
