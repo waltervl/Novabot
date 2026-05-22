@@ -5,10 +5,17 @@
  *   ┌─ fix pill │ sats │ HDOP │ ntrip │ wifi/ip ─────────┐  top status bar
  *   │                                                   │
  *   │   live map polyline (auto-zoomed to walked area)  │  main canvas
+ *   │   + Save-as-area / +Chan / +Obs floating buttons  │
  *   │                                                   │
  *   ├───────────────────────────────────────────────────┤
- *   │   [REC]   [Status]  [Tracks]  [Settings]          │  bottom tab bar
+ *   │   [REC]              [Maps]          [Settings]   │  bottom tab bar
  *   └───────────────────────────────────────────────────┘
+ *
+ * The Maps tab opens a separate screen that lists every SessionStore
+ * work map. Tapping a row loads the polygon onto the home screen for
+ * viewing; tap-and-hold offers a delete confirm. The +Chan and +Obs
+ * floating buttons on home only show while a map is loaded — they
+ * push the user into the Recording screen targeting that parent map.
  *
  * Settings is a tabview with WiFi + NTRIP sub-tabs and a soft keyboard
  * that pops up when any text field is focused. Save & Reboot writes
@@ -27,7 +34,6 @@
 #include "tft_ui.h"
 #include "../session.h"
 #include "../recording.h"
-#include "../bundle.h"
 
 // Multi-file session globals — owned by main.cpp.
 extern SessionStore sessionStore;
@@ -55,7 +61,7 @@ extern Recorder recorder;
 // ── State ──────────────────────────────────────────────────────────────────
 static lv_obj_t* scr_main = nullptr;
 static lv_obj_t* scr_settings = nullptr;
-static lv_obj_t* scr_tracks = nullptr;
+static lv_obj_t* scr_maps = nullptr;
 
 // Status bar widgets we mutate on every refresh.
 static lv_obj_t* lbl_fix_pill = nullptr;
@@ -83,6 +89,16 @@ static lv_obj_t* map_north_label = nullptr;
 // track has been completed yet this boot.
 static lv_obj_t* btn_save_area = nullptr;
 static lv_obj_t* lbl_save_area = nullptr;
+
+// +Channel / +Obstacle floating buttons — overlay the map panel only when
+// the user has loaded a saved map (viewing_map_slot >= 0). Tap pushes the
+// recorder into the matching mode + jumps to the Recording screen. Hidden
+// during live recording so the user can't accidentally start a child
+// recording mid-walk on the parent boundary.
+static lv_obj_t* btn_add_channel = nullptr;
+static lv_obj_t* lbl_add_channel = nullptr;
+static lv_obj_t* btn_add_obstacle = nullptr;
+static lv_obj_t* lbl_add_obstacle = nullptr;
 // "No RTK FIX" warning banner — visible inside the map panel whenever
 // the user could record but the fix is < 4. We deliberately do NOT
 // disable the record button in that state (the user might be testing
@@ -137,9 +153,9 @@ static lv_obj_t* s_otaVersionLabel = nullptr;
 static lv_obj_t* s_otaStatusLabel = nullptr;
 static lv_obj_t* s_otaCheckBtn = nullptr;
 
-// Track list widgets.
-static lv_obj_t* tracks_list = nullptr;
-static lv_obj_t* tracks_status = nullptr;
+// Maps list widgets.
+static lv_obj_t* maps_list = nullptr;
+static lv_obj_t* maps_status = nullptr;
 
 // Tabview shrinks when the soft keyboard slides up so the active field
 // is never hidden behind it. These constants compute the two heights
@@ -162,11 +178,10 @@ static WalkerConfigView cfg_baseline;
 // Forward declarations.
 static void build_main_screen();
 static void build_settings_screen();
-static void build_tracks_screen();
+static void build_maps_screen();
 static void refresh_status_cb(lv_timer_t* t);
 static void open_settings(lv_event_t* e);
-static void open_tracks(lv_event_t* e);
-static void open_maps(lv_event_t* e);
+static void open_maps_screen(lv_event_t* e);
 static void back_to_main(lv_event_t* e);
 static void toggle_recording(lv_event_t* e);
 static void dismiss_no_gnss(lv_event_t* e);
@@ -176,15 +191,20 @@ static void on_textarea_focus(lv_event_t* e);
 static void on_save_settings(lv_event_t* e);
 static void redraw_map(const WalkerSnapshot& snap);
 static void load_settings_values();
-static void reload_tracks_list();
+static void reload_maps_list();
 static void apply_record_btn_state(RecordBtnState state);
 static void on_keyboard_event(lv_event_t* e);
 static void focus_textarea(lv_obj_t* ta);
-static void buildSessionScreens();
+static void buildRecordingScreen();
 static void onOtaButtonClicked(lv_event_t* e);
 static void on_save_as_area_clicked(lv_event_t* e);
 static void onSaveResultDismissed(lv_event_t* e);
 static void update_save_area_button(const WalkerSnapshot& snap);
+static void update_map_action_buttons(const WalkerSnapshot& snap);
+static void on_add_channel_clicked(lv_event_t* e);
+static void on_add_obstacle_clicked(lv_event_t* e);
+static bool load_saved_map_polygon(int slot);
+static void exit_viewing_mode();
 
 // ── Public entry points ────────────────────────────────────────────────────
 void tftSetup() {
@@ -214,8 +234,8 @@ void tftSetup() {
 
   build_main_screen();
   build_settings_screen();
-  build_tracks_screen();
-  buildSessionScreens();
+  build_maps_screen();
+  buildRecordingScreen();
 
   lv_scr_load(scr_main);
 
@@ -399,6 +419,41 @@ static void build_main_screen() {
   // recording completed and produced at least 5 captured points.
   lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
 
+  // +Channel / +Obstacle floating buttons. Anchored above the save-as-area
+  // button so the three never overlap when all are visible (which never
+  // happens in practice — Save-as-area only appears right after a stop,
+  // the others only appear when a saved map is currently being viewed).
+  // Both are hidden until update_map_action_buttons() un-hides them.
+  btn_add_channel = lv_btn_create(map_panel);
+  lv_obj_set_size(btn_add_channel, 110, 36);
+  lv_obj_align(btn_add_channel, LV_ALIGN_BOTTOM_MID, -60, -44);
+  lv_obj_set_style_bg_color(btn_add_channel, lv_color_hex(0x6366f1), 0);
+  lv_obj_set_style_radius(btn_add_channel, 8, 0);
+  lv_obj_set_style_border_width(btn_add_channel, 0, 0);
+  lv_obj_set_style_shadow_width(btn_add_channel, 0, 0);
+  lv_obj_add_event_cb(btn_add_channel, on_add_channel_clicked, LV_EVENT_CLICKED, NULL);
+  lbl_add_channel = lv_label_create(btn_add_channel);
+  lv_label_set_text(lbl_add_channel, LV_SYMBOL_REFRESH "  +Chan");
+  lv_obj_set_style_text_color(lbl_add_channel, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lbl_add_channel, &lv_font_montserrat_14, 0);
+  lv_obj_center(lbl_add_channel);
+  lv_obj_add_flag(btn_add_channel, LV_OBJ_FLAG_HIDDEN);
+
+  btn_add_obstacle = lv_btn_create(map_panel);
+  lv_obj_set_size(btn_add_obstacle, 110, 36);
+  lv_obj_align(btn_add_obstacle, LV_ALIGN_BOTTOM_MID, 60, -44);
+  lv_obj_set_style_bg_color(btn_add_obstacle, lv_color_hex(0xb91c1c), 0);
+  lv_obj_set_style_radius(btn_add_obstacle, 8, 0);
+  lv_obj_set_style_border_width(btn_add_obstacle, 0, 0);
+  lv_obj_set_style_shadow_width(btn_add_obstacle, 0, 0);
+  lv_obj_add_event_cb(btn_add_obstacle, on_add_obstacle_clicked, LV_EVENT_CLICKED, NULL);
+  lbl_add_obstacle = lv_label_create(btn_add_obstacle);
+  lv_label_set_text(lbl_add_obstacle, LV_SYMBOL_CLOSE "  +Obs");
+  lv_obj_set_style_text_color(lbl_add_obstacle, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lbl_add_obstacle, &lv_font_montserrat_14, 0);
+  lv_obj_center(lbl_add_obstacle);
+  lv_obj_add_flag(btn_add_obstacle, LV_OBJ_FLAG_HIDDEN);
+
   // ── Bottom bar ─────────────────────────────────────────────────────────
   lv_obj_t* bot = lv_obj_create(scr_main);
   lv_obj_set_size(bot, SCREEN_W, BOTTOMBAR_H);
@@ -425,12 +480,11 @@ static void build_main_screen() {
   lv_obj_set_style_text_font(lbl_record, &lv_font_montserrat_14, 0);
   lv_obj_center(lbl_record);
 
-  make_tab_btn(bot, LV_SYMBOL_LIST     "  Tracks",   open_tracks,   lv_color_hex(0x374151))->user_data = NULL;
-  // Maps button — entry point into the new multi-file session UI
-  // (s_screenMain). Without this the new screens are unreachable from
-  // the boot screen, so it must stay wired even after Tasks 4 + 5 land.
-  make_tab_btn(bot, LV_SYMBOL_DIRECTORY "  Maps",    open_maps,     lv_color_hex(0x374151))->user_data = NULL;
-  make_tab_btn(bot, LV_SYMBOL_SETTINGS "  Settings", open_settings, lv_color_hex(0x374151))->user_data = NULL;
+  // Single Maps button — replaces the old Tracks + duplicate Maps entries.
+  // Opens the saved-maps list screen; tapping a row loads its polygon
+  // back into the GPS tab for viewing and arms the +Chan / +Obs buttons.
+  make_tab_btn(bot, LV_SYMBOL_DIRECTORY "  Maps",     open_maps_screen, lv_color_hex(0x374151))->user_data = NULL;
+  make_tab_btn(bot, LV_SYMBOL_SETTINGS  "  Settings", open_settings,    lv_color_hex(0x374151))->user_data = NULL;
 
   // "No GNSS module" overlay (hidden by default — refresh_status_cb
   // un-hides when no NMEA bytes have been seen for >3 s after boot).
@@ -820,14 +874,18 @@ static void set_keyboard_visible(bool visible) {
   }
 }
 
-// ── Tracks screen ────────────────────────────────────────────────────────
-static void build_tracks_screen() {
-  scr_tracks = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr_tracks, COL_BG, 0);
-  lv_obj_clear_flag(scr_tracks, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_pad_all(scr_tracks, 0, 0);
+// ── Maps screen ──────────────────────────────────────────────────────────
+// Lists every SessionStore work map. Replaces both the old read-only
+// Tracks list (/tracks/*.csv) and the separate Maps detail screen that
+// used to live on s_screenMain. Tap a row to load its polygon onto the
+// GPS tab; long-press to confirm-delete.
+static void build_maps_screen() {
+  scr_maps = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr_maps, COL_BG, 0);
+  lv_obj_clear_flag(scr_maps, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_pad_all(scr_maps, 0, 0);
 
-  lv_obj_t* hdr = lv_obj_create(scr_tracks);
+  lv_obj_t* hdr = lv_obj_create(scr_maps);
   lv_obj_set_size(hdr, SCREEN_W, TOPBAR_H);
   lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_style_bg_color(hdr, COL_CARD_DIM, 0);
@@ -851,26 +909,26 @@ static void build_tracks_screen() {
   lv_obj_center(bl);
 
   lv_obj_t* title = lv_label_create(hdr);
-  lv_label_set_text(title, "Saved tracks");
+  lv_label_set_text(title, "Saved maps");
   lv_obj_set_style_text_color(title, COL_TEXT, 0);
   lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
   lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
-  tracks_list = lv_obj_create(scr_tracks);
-  lv_obj_set_size(tracks_list, SCREEN_W, SCREEN_H - TOPBAR_H - 28);
-  lv_obj_align(tracks_list, LV_ALIGN_TOP_MID, 0, TOPBAR_H);
-  lv_obj_set_style_bg_color(tracks_list, COL_BG, 0);
-  lv_obj_set_style_border_width(tracks_list, 0, 0);
-  lv_obj_set_style_radius(tracks_list, 0, 0);
-  lv_obj_set_style_pad_all(tracks_list, 8, 0);
-  lv_obj_set_flex_flow(tracks_list, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(tracks_list, 6, 0);
+  maps_list = lv_obj_create(scr_maps);
+  lv_obj_set_size(maps_list, SCREEN_W, SCREEN_H - TOPBAR_H - 28);
+  lv_obj_align(maps_list, LV_ALIGN_TOP_MID, 0, TOPBAR_H);
+  lv_obj_set_style_bg_color(maps_list, COL_BG, 0);
+  lv_obj_set_style_border_width(maps_list, 0, 0);
+  lv_obj_set_style_radius(maps_list, 0, 0);
+  lv_obj_set_style_pad_all(maps_list, 8, 0);
+  lv_obj_set_flex_flow(maps_list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(maps_list, 6, 0);
 
-  tracks_status = lv_label_create(scr_tracks);
-  lv_label_set_text(tracks_status, "");
-  lv_obj_set_style_text_color(tracks_status, COL_DIM, 0);
-  lv_obj_set_style_text_font(tracks_status, &lv_font_montserrat_12, 0);
-  lv_obj_align(tracks_status, LV_ALIGN_BOTTOM_MID, 0, -6);
+  maps_status = lv_label_create(scr_maps);
+  lv_label_set_text(maps_status, "");
+  lv_obj_set_style_text_color(maps_status, COL_DIM, 0);
+  lv_obj_set_style_text_font(maps_status, &lv_font_montserrat_12, 0);
+  lv_obj_align(maps_status, LV_ALIGN_BOTTOM_MID, 0, -6);
 }
 
 // ── Navigation callbacks ──────────────────────────────────────────────────
@@ -879,16 +937,9 @@ static void open_settings(lv_event_t* e) {
   lv_scr_load(scr_settings);
 }
 
-static void open_tracks(lv_event_t* e) {
-  reload_tracks_list();
-  lv_scr_load(scr_tracks);
-}
-
-static void open_maps(lv_event_t* /*e*/) {
-  // Drop the keyboard if it's somehow still up so the screen swap is
-  // clean (mirrors back_to_main's defensive behaviour).
-  if (keyboard) set_keyboard_visible(false);
-  tft_ui_set_screen(UiScreen::Main);
+static void open_maps_screen(lv_event_t* /*e*/) {
+  reload_maps_list();
+  lv_scr_load(scr_maps);
 }
 
 static void back_to_main(lv_event_t* e) {
@@ -1095,163 +1146,220 @@ static void onOtaButtonClicked(lv_event_t* /*e*/) {
   // walkerOtaApply reboots on success and never returns.
 }
 
-// ── Track list ────────────────────────────────────────────────────────────
+// ── Maps list ─────────────────────────────────────────────────────────────
 #include <LittleFS.h>
 
-// Saved-track viewing mode. When non-empty `viewing_track_name` flags
-// the map to render `viewing_buffer` (loaded from LittleFS) instead
-// of the live recording buffer. Reset by Start Recording or the user
-// hitting Back-to-live on the main screen.
+// Saved-map viewing mode. When viewing_map_slot >= 0 the GPS tab renders
+// `viewing_buffer` (the polygon points loaded from a /session/mapN_work.csv)
+// instead of the live recording buffer. Cleared by Start Recording or the
+// Cancel/back paths so the live polyline takes over again.
 #define VIEWING_MAX MAP_POINT_MAX
 static WalkerLivePoint viewing_buffer[VIEWING_MAX];
 static size_t          viewing_count = 0;
-static String          viewing_track_name;
+static int             viewing_map_slot = -1;
+static String          viewing_map_alias;
 
-// Load a saved CSV into viewing_buffer. Skips the header row and any
-// rows that fail the basic 7-column parse so a half-written or stale
-// file at boot can't blow up the buffer. Stops at VIEWING_MAX points;
-// long walks above that cap just truncate the tail (the map is too
-// small to show that much detail anyway).
-static bool load_saved_track(const String& name) {
-  String path = String("/tracks/") + name;
+// Load /session/map<slot>_work.csv (x,y in local meters) into viewing_buffer
+// converted back to lat/lng via the SessionStore origin. Returns false when
+// the origin hasn't been set (cannot project) or the file is missing/empty.
+// VIEWING_MAX is a hard cap — long walks above that cap just truncate the
+// tail; the on-device map is too small to show that much detail anyway.
+static bool load_saved_map_polygon(int slot) {
+  if (slot < 0) return false;
+  double oLat = 0, oLng = 0;
+  if (!sessionStore.getOrigin(oLat, oLng)) {
+    // No origin yet — the polygon CSV is in local meters, with no anchor
+    // we can't render it on a lat/lng map. The caller surfaces this as a
+    // status message.
+    return false;
+  }
+
+  String path = String("/session/map") + slot + "_work.csv";
   if (!LittleFS.exists(path)) return false;
   File f = LittleFS.open(path, FILE_READ);
   if (!f) return false;
 
   viewing_count = 0;
-  bool firstLine = true;
   while (f.available() && viewing_count < VIEWING_MAX) {
     String line = f.readStringUntil('\n');
     if (line.endsWith("\r")) line.remove(line.length() - 1);
     if (line.length() == 0) continue;
-    if (firstLine) { firstLine = false; continue; }
 
     int c1 = line.indexOf(',');
     if (c1 < 0) continue;
-    int c2 = line.indexOf(',', c1 + 1);
-    if (c2 < 0) continue;
-    int c3 = line.indexOf(',', c2 + 1);
-    int c4 = (c3 > 0) ? line.indexOf(',', c3 + 1) : -1;
-    int c5 = (c4 > 0) ? line.indexOf(',', c4 + 1) : -1;
-    String lat = line.substring(c1 + 1, c2);
-    String lng = (c3 > 0) ? line.substring(c2 + 1, c3) : line.substring(c2 + 1);
-    String fixs = (c4 > 0 && c5 > 0) ? line.substring(c4 + 1, c5) : String("0");
-    viewing_buffer[viewing_count].lat = lat.toDouble();
-    viewing_buffer[viewing_count].lng = lng.toDouble();
-    viewing_buffer[viewing_count].fix = (uint8_t) fixs.toInt();
+    String xStr = line.substring(0, c1);
+    String yStr = line.substring(c1 + 1);
+    double x = xStr.toDouble();
+    double y = yStr.toDouble();
+    double lat = 0, lng = 0;
+    if (!sessionStore.localToGps(x, y, lat, lng)) continue;
+
+    viewing_buffer[viewing_count].lat = lat;
+    viewing_buffer[viewing_count].lng = lng;
+    // Polygon points captured via the recorder are FIX-quality by
+    // construction (the recorder drops sub-fix samples). Marking them
+    // as fix=4 keeps the render cursor green for the loaded view.
+    viewing_buffer[viewing_count].fix = 4;
     viewing_count++;
   }
   f.close();
   return viewing_count > 0;
 }
 
-// Track row tap handler - row's user_data holds the strdup'd filename
-// so the LVGL event has a stable string regardless of when the list
-// gets rebuilt.
-static void on_track_row_clicked(lv_event_t* e) {
-  const char* name = (const char*) lv_event_get_user_data(e);
-  if (!name) return;
-  if (!load_saved_track(String(name))) return;
-  viewing_track_name = name;
-  // Adopt this CSV as the "last track" so the legacy screen's
-  // "Save as area" button treats it the same as a track we just
-  // stopped recording. Without this the button stays hidden when
-  // viewing a saved track and the user can't convert it.
-  walkerSetLastTrack(String("/tracks/") + name, (uint32_t) viewing_count);
-  lv_scr_load(scr_main);
+// Called by toggle_recording / on_add_*_clicked to drop out of viewing
+// mode so the live polyline (or fresh sub-recording) doesn't draw on
+// top of a stale polygon.
+static void exit_viewing_mode() {
+  viewing_map_slot = -1;
+  viewing_map_alias = "";
+  viewing_count = 0;
 }
 
-// LV_EVENT_DELETE fires when lv_obj_clean tears the tracks list down.
-// Frees the strdup'd filename so re-opening Tracks doesn't leak.
-static void on_track_row_deleted(lv_event_t* e) {
+// LV_EVENT_DELETE fires when lv_obj_clean tears the maps list down.
+// Frees the row's slot wrapper allocation so reopening Maps doesn't leak.
+static void on_map_row_deleted(lv_event_t* e) {
   void* data = lv_event_get_user_data(e);
   if (data) free(data);
 }
 
-// Called by toggle_recording to drop out of viewing mode the moment a
-// new recording starts (the live polyline takes over).
-static void exit_viewing_mode() {
-  viewing_track_name = "";
-  viewing_count = 0;
+// Single tap on a map row — load the polygon, jump to home, switch
+// the GPS tab into viewing mode for the chosen slot.
+static void on_map_row_clicked(lv_event_t* e) {
+  int* slotPtr = (int*) lv_event_get_user_data(e);
+  if (!slotPtr) return;
+  int slot = *slotPtr;
+  if (!load_saved_map_polygon(slot)) {
+    // Couldn't load — leave viewing mode off and tell the user. We
+    // can't easily show a toast here so we re-use the status label.
+    if (maps_status) {
+      lv_label_set_text(maps_status,
+                        LV_SYMBOL_WARNING "  Map has no origin yet - record on GPS tab first");
+      lv_obj_set_style_text_color(maps_status, COL_AMBER, 0);
+    }
+    return;
+  }
+  viewing_map_slot = slot;
+  // Pull the alias for the home-screen status text.
+  MapEntry entries[3];
+  size_t cnt = 0;
+  sessionStore.listMaps(entries, 3, cnt);
+  viewing_map_alias = String("map") + slot;
+  for (size_t i = 0; i < cnt; i++) {
+    if (entries[i].slot == slot) { viewing_map_alias = entries[i].alias; break; }
+  }
+  lv_scr_load(scr_main);
 }
 
-static void reload_tracks_list() {
+// Long-press confirm-delete msgbox. Stores the slot in the dialog's
+// user data so the confirmation handler knows which map to wipe.
+static void on_map_row_delete_confirmed(lv_event_t* e);
+static void on_map_row_long_pressed(lv_event_t* e) {
+  int* slotPtr = (int*) lv_event_get_user_data(e);
+  if (!slotPtr) return;
+  // Heap-allocate the slot for the msgbox so the row's user_data can
+  // remain stable across rebuilds (the row may get deleted while the
+  // confirm box is open).
+  int* dlgSlot = (int*) malloc(sizeof(int));
+  if (!dlgSlot) return;
+  *dlgSlot = *slotPtr;
+
+  static const char* btns[] = { "Cancel", "Delete", "" };
+  char body[140];
+  snprintf(body, sizeof(body),
+           "Delete map%d and all of its obstacles + channels?\nThis cannot be undone.",
+           *dlgSlot);
+  lv_obj_t* mbox = lv_msgbox_create(NULL, "Confirm delete", body, btns, false);
+  lv_obj_set_user_data(mbox, dlgSlot);
+  lv_obj_add_event_cb(mbox, on_map_row_delete_confirmed, LV_EVENT_VALUE_CHANGED, dlgSlot);
+  lv_obj_center(mbox);
+}
+
+static void on_map_row_delete_confirmed(lv_event_t* e) {
+  lv_obj_t* mbox = lv_event_get_current_target(e);
+  int* dlgSlot = (int*) lv_event_get_user_data(e);
+  uint16_t idx = lv_msgbox_get_active_btn(mbox);
+  lv_msgbox_close(mbox);
+  if (idx != 1) {
+    // Cancel — just free the heap copy and bail.
+    if (dlgSlot) free(dlgSlot);
+    return;
+  }
+  if (!dlgSlot) return;
+  int slot = *dlgSlot;
+  free(dlgSlot);
+  if (slot < 0) return;
+  sessionStore.deleteMap(slot);
+  // If the user was viewing the just-deleted slot, drop them out so the
+  // stale polygon doesn't keep rendering.
+  if (viewing_map_slot == slot) exit_viewing_mode();
+  reload_maps_list();
+}
+
+static void reload_maps_list() {
+  if (!maps_list) return;
   // Wipe previous rows.
-  lv_obj_clean(tracks_list);
+  lv_obj_clean(maps_list);
 
-  WalkerSnapshot snap;
-  walkerGetSnapshot(snap);
+  MapEntry entries[3];
+  size_t count = 0;
+  sessionStore.listMaps(entries, 3, count);
 
-  String ipNote;
-  if (snap.wifiIp.length() > 0) {
-    ipNote = String(LV_SYMBOL_DOWNLOAD "  http://") + snap.wifiIp + "/track/<name>";
-  } else {
-    ipNote = LV_SYMBOL_WIFI "  Connect to WiFi to download tracks";
-  }
-  if (tracks_status) {
-    lv_label_set_text(tracks_status, ipNote.c_str());
-    lv_obj_set_style_text_color(tracks_status, COL_DIM, 0);
+  if (maps_status) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%u saved maps  -  long press a row to delete",
+             (unsigned) count);
+    lv_label_set_text(maps_status, buf);
+    lv_obj_set_style_text_color(maps_status, COL_DIM, 0);
   }
 
-  if (!LittleFS.exists("/tracks")) {
-    lv_obj_t* row = lv_label_create(tracks_list);
-    lv_label_set_text(row, LV_SYMBOL_DIRECTORY "  No tracks yet - go record one");
+  if (count == 0) {
+    lv_obj_t* row = lv_label_create(maps_list);
+    lv_label_set_text(row,
+        LV_SYMBOL_DIRECTORY "  No maps yet - record a track on GPS, then Save as area");
     lv_obj_set_style_text_color(row, COL_DIM, 0);
     lv_obj_set_style_text_font(row, &lv_font_montserrat_14, 0);
     return;
   }
 
-  File dir = LittleFS.open("/tracks");
-  File f;
-  int count = 0;
-  while ((f = dir.openNextFile())) {
-    String fname = String(f.name());
-    int slash = fname.lastIndexOf('/');
-    if (slash >= 0) fname = fname.substring(slash + 1);
-    uint32_t sz = (uint32_t) f.size();
-    // Cheap point count — the actual web endpoint does the same trick.
-    uint32_t pts = sz / 56;
-    f.close();
-
-    lv_obj_t* row = lv_obj_create(tracks_list);
-    lv_obj_set_size(row, lv_pct(100), 50);
+  for (size_t i = 0; i < count; i++) {
+    lv_obj_t* row = lv_obj_create(maps_list);
+    lv_obj_set_size(row, lv_pct(100), 56);
     lv_obj_set_style_bg_color(row, COL_CARD, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_radius(row, 8, 0);
     lv_obj_set_style_pad_all(row, 6, 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    // strdup so the filename outlives this loop iteration; LVGL events
-    // carry the pointer verbatim and we want it valid until the next
-    // reload_tracks_list rebuilds the screen.
-    char* nameCopy = strdup(fname.c_str());
-    lv_obj_add_event_cb(row, on_track_row_clicked, LV_EVENT_CLICKED, nameCopy);
-    lv_obj_add_event_cb(row, on_track_row_deleted, LV_EVENT_DELETE,  nameCopy);
 
-    lv_obj_t* lname = lv_label_create(row);
-    lv_label_set_text(lname, fname.c_str());
-    lv_obj_set_style_text_color(lname, COL_TEXT, 0);
-    lv_obj_set_style_text_font(lname, &lv_font_montserrat_14, 0);
-    lv_obj_align(lname, LV_ALIGN_TOP_LEFT, 0, 0);
+    // Heap-allocate the slot so each row carries an independent stable
+    // pointer through LVGL events — the entries[] vector dies after the
+    // loop returns.
+    int* slotPtr = (int*) malloc(sizeof(int));
+    if (!slotPtr) continue;
+    *slotPtr = entries[i].slot;
+    lv_obj_add_event_cb(row, on_map_row_clicked,       LV_EVENT_CLICKED,      slotPtr);
+    lv_obj_add_event_cb(row, on_map_row_long_pressed,  LV_EVENT_LONG_PRESSED, slotPtr);
+    lv_obj_add_event_cb(row, on_map_row_deleted,       LV_EVENT_DELETE,       slotPtr);
 
-    char meta[64];
-    snprintf(meta, sizeof(meta), "%u pts, %u bytes", (unsigned) pts, (unsigned) sz);
+    char title[64];
+    snprintf(title, sizeof(title), "map%d  %s",
+             entries[i].slot, entries[i].alias.c_str());
+    lv_obj_t* ltitle = lv_label_create(row);
+    lv_label_set_text(ltitle, title);
+    lv_obj_set_style_text_color(ltitle, COL_TEXT, 0);
+    lv_obj_set_style_text_font(ltitle, &lv_font_montserrat_14, 0);
+    lv_obj_align(ltitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    char meta[96];
+    snprintf(meta, sizeof(meta), "%d pts boundary  -  obs %d  -  ch %d",
+             entries[i].boundaryPoints,
+             entries[i].obstacleCount,
+             entries[i].channelCount);
     lv_obj_t* lmeta = lv_label_create(row);
     lv_label_set_text(lmeta, meta);
     lv_obj_set_style_text_color(lmeta, COL_DIM, 0);
     lv_obj_set_style_text_font(lmeta, &lv_font_montserrat_12, 0);
     lv_obj_align(lmeta, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-    count++;
-    if (count >= 20) break;  // Don't try to render hundreds of rows.
-  }
-  dir.close();
-
-  if (count == 0) {
-    lv_obj_t* row = lv_label_create(tracks_list);
-    lv_label_set_text(row, LV_SYMBOL_DIRECTORY "  No tracks yet - go record one");
-    lv_obj_set_style_text_color(row, COL_DIM, 0);
-    lv_obj_set_style_text_font(row, &lv_font_montserrat_14, 0);
   }
 }
 
@@ -1294,6 +1402,45 @@ static void update_save_area_button(const WalkerSnapshot& snap) {
               walkerLastTrackPoints() >= SAVE_AREA_MIN_POINTS;
   if (show) lv_obj_clear_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
   else      lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Reveal/hide the +Chan / +Obs floating buttons. Visible only when a saved
+// map is being viewed AND no live recording is in flight — otherwise the
+// buttons would either have nothing to attach a child to, or would compete
+// with the live REC button for the user's attention.
+static void update_map_action_buttons(const WalkerSnapshot& snap) {
+  bool show = (viewing_map_slot >= 0) && !snap.recording;
+  if (btn_add_channel) {
+    if (show) lv_obj_clear_flag(btn_add_channel, LV_OBJ_FLAG_HIDDEN);
+    else      lv_obj_add_flag(btn_add_channel, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (btn_add_obstacle) {
+    if (show) lv_obj_clear_flag(btn_add_obstacle, LV_OBJ_FLAG_HIDDEN);
+    else      lv_obj_add_flag(btn_add_obstacle, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+// +Channel — push the recorder into Channel mode targeting the special
+// "charge" pseudo-target (same shortcut the old MapDetail screen used).
+// Channels FROM a map TO another map can be added later via the web UI
+// if needed; for the MVP "to charger" covers the common case.
+static void on_add_channel_clicked(lv_event_t* /*e*/) {
+  if (viewing_map_slot < 0) return;
+  if (!recorder.startChannel(viewing_map_slot, "charge")) return;
+  // Stop the live recording polyline rendering: the user is now in a
+  // dedicated sub-recording, the saved-polygon view stays in place
+  // mentally but the Recording screen takes over the foreground.
+  tft_ui_set_screen(UiScreen::Recording);
+}
+
+// +Obstacle — allocate the next free obstacle index for the current
+// viewed map and start an Obstacle recording. Fails silently if all
+// 32 obstacle slots are full (the user should delete some via the
+// Maps list long-press).
+static void on_add_obstacle_clicked(lv_event_t* /*e*/) {
+  if (viewing_map_slot < 0) return;
+  if (!recorder.startObstacle(viewing_map_slot)) return;
+  tft_ui_set_screen(UiScreen::Recording);
 }
 
 // Read /tracks/<...>.csv row by row, convert each fix>=4 lat/lng into
@@ -1448,10 +1595,10 @@ static WalkerLivePoint redraw_scratch[MAP_POINT_MAX];
 static void redraw_map(const WalkerSnapshot& snap) {
   size_t n;
   WalkerLivePoint* pts;
-  if (viewing_track_name.length() > 0) {
-    // Viewing a previously-recorded track loaded from LittleFS. The
-    // buffer is already populated by load_saved_track(); just point
-    // the renderer at it.
+  if (viewing_map_slot >= 0) {
+    // Viewing a previously-saved work map loaded from /session/. The
+    // buffer is already populated by load_saved_map_polygon(); just
+    // point the renderer at it.
     pts = viewing_buffer;
     n = viewing_count;
   } else {
@@ -1561,13 +1708,14 @@ static void redraw_map(const WalkerSnapshot& snap) {
 
   if (lbl_pts) {
     char buf[160];
-    if (viewing_track_name.length() > 0) {
-      // Saved track on screen - identify it so the user knows what
-      // they're looking at. Tap Tracks again or hit Start Recording
-      // to drop back to live.
+    if (viewing_map_slot >= 0) {
+      // Saved map on screen - identify it so the user knows what
+      // they're looking at. Tap +Chan / +Obs to record children of
+      // this map, or hit Start Recording to drop back to live.
+      const char* alias = viewing_map_alias.length() ? viewing_map_alias.c_str() : "map";
       snprintf(buf, sizeof(buf),
                LV_SYMBOL_DIRECTORY " %u pts\nViewing:\n%s",
-               (unsigned) n, viewing_track_name.c_str());
+               (unsigned) n, alias);
     } else if (snap.recording) {
       // Live: how far have we walked, how much further to the start.
       snprintf(buf, sizeof(buf),
@@ -1777,7 +1925,7 @@ static void refresh_status_cb(lv_timer_t* t) {
   // banner shares state with the amber "Start (no RTK)" button so the
   // user gets the same warning from two places.
   if (rtk_warning_banner) {
-    bool wantBanner = (viewing_track_name.length() == 0) &&
+    bool wantBanner = (viewing_map_slot < 0) &&
                       snap.fix != 4 && !missing;
     if (wantBanner) lv_obj_clear_flag(rtk_warning_banner, LV_OBJ_FLAG_HIDDEN);
     else            lv_obj_add_flag(rtk_warning_banner, LV_OBJ_FLAG_HIDDEN);
@@ -1785,8 +1933,9 @@ static void refresh_status_cb(lv_timer_t* t) {
 
   // Save-as-area button: visible only after a stop produced enough
   // captured points. Hidden during recording and across viewing a saved
-  // track (the saved-track viewer has its own "delete" flow).
+  // map (the saved-map list screen has its own delete flow).
   update_save_area_button(snap);
+  update_map_action_buttons(snap);
 
   g_lvgl_checkpoint = 6;
   // WiFi-fail banner: same re-arm trick as the GNSS overlay — clear
@@ -1820,29 +1969,16 @@ static void refresh_status_cb(lv_timer_t* t) {
   g_lvgl_checkpoint = 9;
 }
 
-// ── Multi-file session screens (Tasks 3/4/5) ──────────────────────────
+// ── Recording screen (focused +Chan / +Obs capture) ──────────────────────
 //
-// These three screens coexist with the legacy live-GPS scr_main built
-// in tftSetup(). For now the legacy screen stays the boot default so we
-// don't regress the working GPS/RTK display while Tasks 4 + 5 finish
-// wiring navigation. The new API (tft_ui_set_screen / refresh) is fully
-// callable so a future entry point (or a CLI command) can switch over.
+// The home GPS tab (scr_main) handles all map listing and viewing now.
+// This screen is dedicated to the focused capture flow that fires when
+// the user hits +Chan or +Obs from a loaded map: big banner, point
+// counters, RTK quality dot, Save + Cancel. The legacy MapDetail screen
+// has been merged into the Maps list on scr_main.
 
 static UiScreen s_currentScreen = UiScreen::Main;
-static int      s_detailSlot    = -1;
-static lv_obj_t* s_screenMain   = nullptr;
-static lv_obj_t* s_screenDetail = nullptr;  // T4 fills in
-static lv_obj_t* s_screenRecord = nullptr;  // T5 fills in
-
-// Main-screen widgets we mutate from refresh.
-static lv_obj_t* s_mapList = nullptr;
-static lv_obj_t* s_mainTitle = nullptr;
-
-// Detail-screen widgets we mutate from refreshDetailScreen().
-static lv_obj_t* s_detailTitle = nullptr;
-static lv_obj_t* s_detailBoundary = nullptr;
-static lv_obj_t* s_detailChannelList = nullptr;
-static lv_obj_t* s_detailObstacleList = nullptr;
+static lv_obj_t* s_screenRecord = nullptr;
 
 // Recording-screen widgets — mutated by refreshRecordingScreen() at 4 Hz
 // via s_recTimer. All allocated once in buildRecordingScreen().
@@ -1854,280 +1990,9 @@ static lv_obj_t* s_recRtkLabel   = nullptr;
 static lv_obj_t* s_recBadOverlay = nullptr;
 static lv_timer_t* s_recTimer    = nullptr;
 
-static void onAddMapClicked(lv_event_t* e);
-static void onMapRowClicked(lv_event_t* e);
-static void onExportClicked(lv_event_t* e);
-static void onUploadClicked(lv_event_t* e);
-static void onBackToGpsClicked(lv_event_t* e);
-static void onAddChannelClicked(lv_event_t* e);
-static void onAddObstacleClicked(lv_event_t* e);
-static void onDetailBackClicked(lv_event_t* e);
-static void onDetailDeleteClicked(lv_event_t* e);
-static void onDetailDeleteConfirmed(lv_event_t* e);
 static void onSaveClicked(lv_event_t* e);
 static void onCancelClicked(lv_event_t* e);
-static void refreshMainScreen();
-static void refreshDetailScreen(int slot);
 static void refreshRecordingScreen();
-
-static void buildSessionMainScreen() {
-    s_screenMain = lv_obj_create(nullptr);
-    lv_obj_set_style_bg_color(s_screenMain, lv_color_hex(0x111111), 0);
-    lv_obj_clear_flag(s_screenMain, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Back-to-GPS button — small, top-left corner so it doesn't overlap
-    // the centered title or the map list below. Returns the user to the
-    // legacy live GPS/RTK screen (scr_main) so the new UI stays a
-    // reachable side-trip rather than a one-way trap.
-    lv_obj_t* btnBack = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnBack, 90, 32);
-    lv_obj_align(btnBack, LV_ALIGN_TOP_LEFT, 6, 6);
-    lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x374151), 0);
-    lv_obj_set_style_radius(btnBack, 6, 0);
-    lv_obj_set_style_border_width(btnBack, 0, 0);
-    lv_obj_set_style_shadow_width(btnBack, 0, 0);
-    lv_obj_add_event_cb(btnBack, onBackToGpsClicked, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t* lblBack = lv_label_create(btnBack);
-    lv_label_set_text(lblBack, LV_SYMBOL_LEFT "  GPS");
-    lv_obj_set_style_text_color(lblBack, lv_color_hex(0xeeeeee), 0);
-    lv_obj_set_style_text_font(lblBack, &lv_font_montserrat_14, 0);
-    lv_obj_center(lblBack);
-
-    s_mainTitle = lv_label_create(s_screenMain);
-    lv_label_set_text(s_mainTitle, "RTK Walker");
-    lv_obj_set_style_text_color(s_mainTitle, lv_color_hex(0xeeeeee), 0);
-    lv_obj_align(s_mainTitle, LV_ALIGN_TOP_MID, 0, 8);
-
-    s_mapList = lv_list_create(s_screenMain);
-    lv_obj_set_size(s_mapList, LV_PCT(94), LV_PCT(50));
-    lv_obj_align(s_mapList, LV_ALIGN_TOP_MID, 0, 40);
-
-    // Recording lives on the legacy GPS screen now. This panel just lists
-    // the work areas already imported via Save-as-area on that screen; the
-    // hint label here explains the flow so users don't go looking for a
-    // record button on this tab.
-    lv_obj_t* lblHint = lv_label_create(s_screenMain);
-    lv_label_set_long_mode(lblHint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(lblHint,
-        "Walk a track on the GPS tab. Stop the recording, then tap\n"
-        "'Save as area' there to add it to this list.");
-    lv_obj_set_style_text_color(lblHint, lv_color_hex(0x9ca3af), 0);
-    lv_obj_set_style_text_font(lblHint, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_align(lblHint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(lblHint, LV_PCT(90));
-    lv_obj_align(lblHint, LV_ALIGN_BOTTOM_MID, 0, -78);
-
-    // Export + Upload remain available so the user can ship a built
-    // bundle off the device. The old "+ Add area" entry point lived
-    // here too; that's been removed in favour of the legacy-screen flow.
-    lv_obj_t* btnExport = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnExport, LV_PCT(44), 50);
-    lv_obj_align(btnExport, LV_ALIGN_BOTTOM_LEFT, 6, -10);
-    lv_obj_t* lblExp = lv_label_create(btnExport);
-    lv_label_set_text(lblExp, "Export");
-    lv_obj_center(lblExp);
-    lv_obj_add_event_cb(btnExport, onExportClicked, LV_EVENT_CLICKED, nullptr);
-
-    // Upload to server — POSTs the freshly-built bundle to the configured
-    // Novabot server. Synchronous; the title flips to "Uploading..." while
-    // the call is in flight, then to a result banner.
-    lv_obj_t* btnUpload = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnUpload, LV_PCT(44), 50);
-    lv_obj_align(btnUpload, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
-    lv_obj_set_style_bg_color(btnUpload, lv_color_hex(0x2563eb), 0);
-    lv_obj_t* lblUp = lv_label_create(btnUpload);
-    lv_label_set_text(lblUp, "Upload");
-    lv_obj_center(lblUp);
-    lv_obj_add_event_cb(btnUpload, onUploadClicked, LV_EVENT_CLICKED, nullptr);
-}
-
-static void buildDetailScreen() {
-    s_screenDetail = lv_obj_create(nullptr);
-    lv_obj_set_style_bg_color(s_screenDetail, lv_color_hex(0x111111), 0);
-    lv_obj_clear_flag(s_screenDetail, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Title — populated per-slot by refreshDetailScreen().
-    s_detailTitle = lv_label_create(s_screenDetail);
-    lv_label_set_text(s_detailTitle, "map?");
-    lv_obj_set_style_text_color(s_detailTitle, lv_color_hex(0xeeeeee), 0);
-    lv_obj_set_style_text_font(s_detailTitle, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_detailTitle, LV_ALIGN_TOP_MID, 0, 6);
-
-    // Boundary stats just below the title.
-    s_detailBoundary = lv_label_create(s_screenDetail);
-    lv_label_set_text(s_detailBoundary, "Boundary: 0 pts");
-    lv_obj_set_style_text_color(s_detailBoundary, lv_color_hex(0xbbbbbb), 0);
-    lv_obj_set_style_text_font(s_detailBoundary, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_detailBoundary, LV_ALIGN_TOP_MID, 0, 26);
-
-    // Two list panels side-by-side. Each gets a small header label above
-    // the actual lv_list so the user knows what they're looking at.
-    lv_obj_t* lblChH = lv_label_create(s_screenDetail);
-    lv_label_set_text(lblChH, "Channels");
-    lv_obj_set_style_text_color(lblChH, lv_color_hex(0xeeeeee), 0);
-    lv_obj_set_style_text_font(lblChH, &lv_font_montserrat_14, 0);
-    lv_obj_align(lblChH, LV_ALIGN_TOP_LEFT, 14, 50);
-
-    lv_obj_t* lblObH = lv_label_create(s_screenDetail);
-    lv_label_set_text(lblObH, "Obstacles");
-    lv_obj_set_style_text_color(lblObH, lv_color_hex(0xeeeeee), 0);
-    lv_obj_set_style_text_font(lblObH, &lv_font_montserrat_14, 0);
-    lv_obj_align(lblObH, LV_ALIGN_TOP_RIGHT, -14, 50);
-
-    s_detailChannelList = lv_list_create(s_screenDetail);
-    lv_obj_set_size(s_detailChannelList, LV_PCT(46), 130);
-    lv_obj_align(s_detailChannelList, LV_ALIGN_TOP_LEFT, 6, 70);
-
-    s_detailObstacleList = lv_list_create(s_screenDetail);
-    lv_obj_set_size(s_detailObstacleList, LV_PCT(46), 130);
-    lv_obj_align(s_detailObstacleList, LV_ALIGN_TOP_RIGHT, -6, 70);
-
-    // Bottom action buttons.
-    lv_obj_t* btnAddCh = lv_btn_create(s_screenDetail);
-    lv_obj_set_size(btnAddCh, LV_PCT(34), 38);
-    lv_obj_align(btnAddCh, LV_ALIGN_BOTTOM_LEFT, 6, -50);
-    lv_obj_t* lblAddCh = lv_label_create(btnAddCh);
-    lv_label_set_text(lblAddCh, "+ Channel");
-    lv_obj_set_style_text_color(lblAddCh, lv_color_hex(0xeeeeee), 0);
-    lv_obj_center(lblAddCh);
-    lv_obj_add_event_cb(btnAddCh, onAddChannelClicked, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t* btnAddOb = lv_btn_create(s_screenDetail);
-    lv_obj_set_size(btnAddOb, LV_PCT(34), 38);
-    lv_obj_align(btnAddOb, LV_ALIGN_BOTTOM_RIGHT, -6, -50);
-    lv_obj_t* lblAddOb = lv_label_create(btnAddOb);
-    lv_label_set_text(lblAddOb, "+ Obstacle");
-    lv_obj_set_style_text_color(lblAddOb, lv_color_hex(0xeeeeee), 0);
-    lv_obj_center(lblAddOb);
-    lv_obj_add_event_cb(btnAddOb, onAddObstacleClicked, LV_EVENT_CLICKED, nullptr);
-
-    // Anchor Back to bottom-left + Delete to bottom-right with explicit
-    // pixel padding so they sit symmetrically. Earlier LV_PCT(22) offsets
-    // from BOTTOM_MID measured against the screen, not the button widths,
-    // and on this panel the delete button ended up visibly shifted right.
-    lv_obj_t* btnBack = lv_btn_create(s_screenDetail);
-    lv_obj_set_size(btnBack, LV_PCT(44), 40);
-    lv_obj_align(btnBack, LV_ALIGN_BOTTOM_LEFT, 8, -6);
-    lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x374151), 0);
-    lv_obj_t* lblBack = lv_label_create(btnBack);
-    lv_label_set_text(lblBack, LV_SYMBOL_LEFT "  Back");
-    lv_obj_set_style_text_color(lblBack, lv_color_hex(0xeeeeee), 0);
-    lv_obj_center(lblBack);
-    lv_obj_add_event_cb(btnBack, onDetailBackClicked, LV_EVENT_CLICKED, nullptr);
-
-    // Destructive Delete button — bottom-right mirror of Back. Red bg +
-    // trash icon to telegraph the action. The handler shows a yes/no
-    // msgbox so a single tap can't erase a map.
-    lv_obj_t* btnDel = lv_btn_create(s_screenDetail);
-    lv_obj_set_size(btnDel, LV_PCT(44), 40);
-    lv_obj_align(btnDel, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
-    lv_obj_set_style_bg_color(btnDel, lv_color_hex(0x7f1d1d), 0);
-    lv_obj_t* lblDel = lv_label_create(btnDel);
-    lv_label_set_text(lblDel, LV_SYMBOL_TRASH "  Delete");
-    lv_obj_set_style_text_color(lblDel, lv_color_hex(0xfecaca), 0);
-    lv_obj_center(lblDel);
-    lv_obj_add_event_cb(btnDel, onDetailDeleteClicked, LV_EVENT_CLICKED, nullptr);
-}
-
-// Count newline-terminated rows in a LittleFS file. Mirrors the helper
-// in session.cpp (not exposed via session.h) so we can show point-counts
-// for channel/obstacle CSVs without piping every file count through the
-// SessionStore API.
-static int detailCountRows(const String& path) {
-    if (!LittleFS.exists(path)) return 0;
-    File f = LittleFS.open(path, FILE_READ);
-    if (!f) return 0;
-    uint8_t buf[128];
-    int rows = 0;
-    while (f.available()) {
-        int n = f.read(buf, sizeof(buf));
-        if (n <= 0) break;
-        for (int i = 0; i < n; i++) {
-            if (buf[i] == '\n') rows++;
-        }
-    }
-    f.close();
-    return rows;
-}
-
-static void refreshDetailScreen(int slot) {
-    if (!s_screenDetail || !s_detailChannelList || !s_detailObstacleList) return;
-
-    // Find the requested slot in the current map list.
-    MapEntry entries[3];
-    size_t count = 0;
-    sessionStore.listMaps(entries, 3, count);
-
-    const MapEntry* found = nullptr;
-    for (size_t i = 0; i < count; i++) {
-        if (entries[i].slot == slot) { found = &entries[i]; break; }
-    }
-    if (!found) {
-        // Map disappeared (deleted/reset) — bounce back to Main.
-        tft_ui_set_screen(UiScreen::Main);
-        return;
-    }
-
-    char title[96];
-    snprintf(title, sizeof(title), "map%d  %s", found->slot, found->alias.c_str());
-    lv_label_set_text(s_detailTitle, title);
-
-    char stats[48];
-    snprintf(stats, sizeof(stats), "Boundary: %d pts", found->boundaryPoints);
-    lv_label_set_text(s_detailBoundary, stats);
-
-    lv_obj_clean(s_detailChannelList);
-    lv_obj_clean(s_detailObstacleList);
-
-    // Scan /session/ once and route each match into the right list.
-    File dir = LittleFS.open("/session");
-    if (dir && dir.isDirectory()) {
-        String slotPrefix = String("map") + slot;     // matches "mapN..."
-        String channelMid = String("map") + slot + "to";  // mapNto<target>_unicom.csv
-        String obstacleMid = String("map") + slot + "_";  // mapN_<i>_obstacle.csv
-
-        File entry = dir.openNextFile();
-        while (entry) {
-            String name = entry.name();
-            int slash = name.lastIndexOf('/');
-            if (slash >= 0) name = name.substring(slash + 1);
-            String full = String("/session/") + name;
-            entry.close();
-
-            if (name.startsWith(channelMid) && name.endsWith("_unicom.csv")) {
-                // Extract <target> between "mapNto" and "_unicom.csv".
-                int start = channelMid.length();
-                int end = name.length() - strlen("_unicom.csv");
-                if (end > start) {
-                    String target = name.substring(start, end);
-                    char row[96];
-                    snprintf(row, sizeof(row), LV_SYMBOL_RIGHT "  %s", target.c_str());
-                    lv_list_add_btn(s_detailChannelList, NULL, row);
-                }
-            } else if (name.startsWith(obstacleMid) && name.endsWith("_obstacle.csv")) {
-                // Extract <i> between "mapN_" and "_obstacle.csv".
-                int start = obstacleMid.length();
-                int end = name.length() - strlen("_obstacle.csv");
-                if (end > start) {
-                    String idxStr = name.substring(start, end);
-                    int pts = detailCountRows(full);
-                    char row[96];
-                    snprintf(row, sizeof(row), "obs %s (%d pts)", idxStr.c_str(), pts);
-                    lv_list_add_btn(s_detailObstacleList, NULL, row);
-                }
-            }
-            entry = dir.openNextFile();
-        }
-        dir.close();
-    }
-
-    if (lv_obj_get_child_cnt(s_detailChannelList) == 0) {
-        lv_list_add_text(s_detailChannelList, "(none)");
-    }
-    if (lv_obj_get_child_cnt(s_detailObstacleList) == 0) {
-        lv_list_add_text(s_detailObstacleList, "(none)");
-    }
-}
 
 static void buildRecordingScreen() {
     s_screenRecord = lv_obj_create(nullptr);
@@ -2265,182 +2130,52 @@ static void refreshRecordingScreen() {
 
 static void onSaveClicked(lv_event_t* /*e*/) {
     recorder.stop(false);  // discard=false -> keeps the file
-    if (s_detailSlot >= 0) tft_ui_set_screen(UiScreen::MapDetail, s_detailSlot);
-    else                   tft_ui_set_screen(UiScreen::Main);
+    tft_ui_set_screen(UiScreen::Main);
+    // Refresh the maps list so the new obstacle/channel count shows up
+    // the next time the user opens the Maps tab. Done here rather than
+    // on Maps-screen open so the count reflects the just-saved capture
+    // even if the user navigates straight back to Maps via the bottom
+    // bar (which calls open_maps_screen → reload_maps_list anyway, but
+    // belt + suspenders is cheap).
+    reload_maps_list();
 }
 
 static void onCancelClicked(lv_event_t* /*e*/) {
     recorder.stop(true);   // discard=true -> removes the file
-    if (s_detailSlot >= 0) tft_ui_set_screen(UiScreen::MapDetail, s_detailSlot);
-    else                   tft_ui_set_screen(UiScreen::Main);
+    tft_ui_set_screen(UiScreen::Main);
+    reload_maps_list();
 }
 
-static void refreshMainScreen() {
-    if (!s_mapList) return;
-    // Reset the title every refresh so prior error/info hijacks from
-    // onAddMapClicked / onExportClicked don't stick when the user comes
-    // back to the screen.
-    if (s_mainTitle) lv_label_set_text(s_mainTitle, "RTK Walker");
-    lv_obj_clean(s_mapList);
-    MapEntry entries[3];
-    size_t count = 0;
-    sessionStore.listMaps(entries, 3, count);
-    if (count == 0) {
-        lv_list_add_text(s_mapList, "No areas yet - walk a track on the GPS tab");
-        return;
-    }
-    for (size_t i = 0; i < count; i++) {
-        char text[96];
-        snprintf(text, sizeof(text), "map%d  %s  %d pts  obs:%d  ch:%d",
-                 entries[i].slot, entries[i].alias.c_str(),
-                 entries[i].boundaryPoints, entries[i].obstacleCount,
-                 entries[i].channelCount);
-        lv_obj_t* btn = lv_list_add_btn(s_mapList, LV_SYMBOL_FILE, text);
-        lv_obj_set_user_data(btn, (void*)(intptr_t)entries[i].slot);
-        lv_obj_add_event_cb(btn, onMapRowClicked, LV_EVENT_CLICKED, nullptr);
-    }
-}
-
-void tft_ui_set_screen(UiScreen s, int detailSlot) {
+void tft_ui_set_screen(UiScreen s, int /*detailSlot*/) {
+    // The detailSlot parameter is a binary-compat leftover from the
+    // old MapDetail screen; it's ignored now. Keeping the signature
+    // means non-TFT callers in main.cpp don't have to change.
     s_currentScreen = s;
-    s_detailSlot = detailSlot;
-    lv_obj_t* target = nullptr;
     switch (s) {
-        case UiScreen::Main:      target = s_screenMain;   break;
-        case UiScreen::MapDetail: target = s_screenDetail; break;
-        case UiScreen::Recording: target = s_screenRecord; break;
+        case UiScreen::Main:
+            // Main is the home GPS scr_main, not a separately-built
+            // screen — load it directly and trust the periodic refresh
+            // timer to keep its widgets current.
+            if (scr_main) lv_scr_load(scr_main);
+            break;
+        case UiScreen::Recording:
+            if (s_screenRecord) lv_scr_load(s_screenRecord);
+            refreshRecordingScreen();
+            break;
     }
-    if (target) lv_scr_load(target);
-    if (s == UiScreen::Main) refreshMainScreen();
-    else if (s == UiScreen::MapDetail) refreshDetailScreen(s_detailSlot);
-    else if (s == UiScreen::Recording) refreshRecordingScreen();
 }
 
 UiScreen tft_ui_current_screen() { return s_currentScreen; }
 
 void tft_ui_refresh_current() {
-    if (s_currentScreen == UiScreen::Main) refreshMainScreen();
-    else if (s_currentScreen == UiScreen::MapDetail) refreshDetailScreen(s_detailSlot);
-    else if (s_currentScreen == UiScreen::Recording) refreshRecordingScreen();
-}
-
-static void onAddMapClicked(lv_event_t* /*e*/) {
-    // Legacy entry point kept for binary-compat with any code that still
-    // references it; the button that fired this was removed in favour of
-    // the legacy-screen Save-as-area flow. Surface a hint in case the
-    // path is somehow still reachable (CLI, test harness).
-    if (s_mainTitle) {
-        lv_label_set_text(s_mainTitle,
-                          "Record on GPS tab - use Save as area");
+    // Main has its own 5 Hz refresh timer; only the Recording screen
+    // needs an on-demand refresh hook.
+    if (s_currentScreen == UiScreen::Recording) refreshRecordingScreen();
+    else if (s_currentScreen == UiScreen::Main) {
+        // If the maps list is built and we're back on Main, reload it
+        // so any side-effects (e.g. on_save_as_area_clicked) surface.
+        if (maps_list) reload_maps_list();
     }
-}
-
-static void onMapRowClicked(lv_event_t* e) {
-    int slot = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
-    tft_ui_set_screen(UiScreen::MapDetail, slot);
-}
-
-static void onExportClicked(lv_event_t* /*e*/) {
-    // Build a .novabundle zip from the current /session/ state. The build
-    // is synchronous on the LVGL task — typical sessions are tiny so the
-    // few-hundred-ms blip is acceptable. If it grows we'll move the call
-    // off-task and stash the result for the next refresh tick.
-    BundleBuilder bb(sessionStore);
-    String path = bb.build();
-    if (path.isEmpty()) {
-        if (s_mainTitle) lv_label_set_text(s_mainTitle, "Export failed");
-        return;
-    }
-    char msg[128];
-    snprintf(msg, sizeof(msg), "Bundle ready: %s", path.c_str());
-    if (s_mainTitle) lv_label_set_text(s_mainTitle, msg);
-}
-
-static void onUploadClicked(lv_event_t* /*e*/) {
-    // Direct POST to the configured server. Synchronous on the LVGL task;
-    // typical bundles upload in a few seconds over WiFi. The title flip
-    // lets the user know something is happening — without lv_refr_now()
-    // the screen wouldn't repaint until after the blocking POST returned.
-    if (s_mainTitle) {
-        lv_label_set_text(s_mainTitle, "Uploading...");
-        lv_refr_now(nullptr);
-    }
-    String msg;
-    bool ok = uploadBundleToServer(msg);
-    char banner[160];
-    snprintf(banner, sizeof(banner), "%s%s",
-             ok ? "" : "ERR: ", msg.c_str());
-    if (s_mainTitle) lv_label_set_text(s_mainTitle, banner);
-}
-
-static void onBackToGpsClicked(lv_event_t* /*e*/) {
-    // Hop back to the legacy live-GPS screen. We intentionally don't
-    // update s_currentScreen here — the new-screen state machine still
-    // logically points at Main; we just temporarily swap LVGL's active
-    // screen to scr_main. Re-entry via the bottom-bar Maps button calls
-    // tft_ui_set_screen(UiScreen::Main) which restores the new screen.
-    if (scr_main) lv_scr_load(scr_main);
-}
-
-// Detail-screen button handlers. The detail screen tracks its slot via
-// s_detailSlot (set when tft_ui_set_screen(MapDetail, slot) was called).
-// Channel + obstacle capture isn't wired into the legacy-screen flow yet;
-// for now both buttons just flash a "coming soon" hint via the title so
-// the user knows where to go (recording lives on the GPS tab).
-static void onAddChannelClicked(lv_event_t* /*e*/) {
-    if (s_detailTitle) {
-        lv_label_set_text(s_detailTitle,
-                          "Channels coming soon - use GPS tab");
-    }
-}
-
-static void onAddObstacleClicked(lv_event_t* /*e*/) {
-    if (s_detailTitle) {
-        lv_label_set_text(s_detailTitle,
-                          "Obstacles coming soon - use GPS tab");
-    }
-}
-
-static void onDetailBackClicked(lv_event_t* /*e*/) {
-    tft_ui_set_screen(UiScreen::Main);
-}
-
-// Tap on Delete shows a yes/no msgbox. The confirm callback walks
-// every msgbox button event and only fires the destructive action
-// when button index == 1 (Yes).
-static void onDetailDeleteClicked(lv_event_t* /*e*/) {
-    static const char* btns[] = { "Cancel", "Delete", "" };
-    char body[160];
-    snprintf(body, sizeof(body),
-             "Delete map%d and all of its obstacles + channels?\nThis cannot be undone.",
-             s_detailSlot);
-    lv_obj_t* mbox = lv_msgbox_create(NULL, "Confirm delete", body, btns, false);
-    lv_obj_add_event_cb(mbox, onDetailDeleteConfirmed, LV_EVENT_VALUE_CHANGED, nullptr);
-    lv_obj_center(mbox);
-}
-
-static void onDetailDeleteConfirmed(lv_event_t* e) {
-    lv_obj_t* mbox = lv_event_get_current_target(e);
-    uint16_t idx = lv_msgbox_get_active_btn(mbox);
-    lv_msgbox_close(mbox);
-    if (idx != 1) return;  // Cancel
-    int slot = s_detailSlot;
-    if (slot < 0) return;
-    sessionStore.deleteMap(slot);
-    // Back to the Maps overview — the just-deleted slot's detail screen
-    // would otherwise show stale data until the next refresh tick.
-    tft_ui_set_screen(UiScreen::Main);
-}
-
-// Build the new screens once after tftSetup() has finished its LVGL
-// init. Called from tftSetup() at the very end.
-static void buildSessionScreens() {
-    buildSessionMainScreen();
-    buildDetailScreen();
-    buildRecordingScreen();
-    // NOTE: we deliberately do NOT call tft_ui_set_screen(UiScreen::Main)
-    // here — the legacy scr_main stays the boot default so the live
-    // GPS/RTK display keeps working until Tasks 4 + 5 wire transitions.
 }
 
 #endif  // HAS_TFT_DISPLAY

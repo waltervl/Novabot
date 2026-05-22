@@ -45,6 +45,12 @@ public:
     bool setOrigin(double lat, double lng);
     bool getOrigin(double& lat, double& lng);
     bool gpsToLocal(double lat, double lng, double& outX, double& outY);
+    // Inverse of gpsToLocal: convert stored x,y in local meters back to a
+    // lat/lng pair using the saved origin. Returns false when the origin
+    // has not been set yet (no recording has ever fired onFix). Use this
+    // on the playback side so the map list can render saved polygons
+    // through the same lat/lng-based renderer the live track uses.
+    bool localToGps(double x, double y, double& outLat, double& outLng);
 
 private:
     static constexpr const char* kSessionDir = "/session";

@@ -17,10 +17,13 @@
 // ── Multi-file map session screens (Tasks 3/4/5) ──────────────────────
 // Defined outside the HAS_TFT_DISPLAY guard so the TFT and headless
 // builds share a single canonical enum and can never drift.
+// UI screen identities. Main = legacy live GPS screen (now also hosts the
+// Maps list inside its bottom tab bar). Recording = the focused +Channel /
+// +Obstacle capture screen. The previous MapDetail screen has been folded
+// into the Main GPS tab so there's only one place that lists maps.
 enum class UiScreen : uint8_t {
     Main = 0,
-    MapDetail = 1,
-    Recording = 2,
+    Recording = 1,
 };
 
 #ifdef HAS_TFT_DISPLAY

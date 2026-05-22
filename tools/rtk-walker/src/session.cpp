@@ -336,6 +336,20 @@ bool SessionStore::gpsToLocal(double lat, double lng, double& outX, double& outY
     return true;
 }
 
+bool SessionStore::localToGps(double x, double y, double& outLat, double& outLng) {
+    // No origin yet -> cannot invert. Caller falls back to "not viewable".
+    double oLat = 0, oLng = 0;
+    if (!getOrigin(oLat, oLng)) return false;
+    constexpr double kMetersPerDeg = 111320.0;
+    constexpr double kDegToRad = M_PI / 180.0;
+    outLat = oLat + (y / kMetersPerDeg);
+    double cosLat = cos(oLat * kDegToRad);
+    // Guard against the pole edge-case so a bogus origin can't divide by ~0.
+    if (cosLat < 1e-6) cosLat = 1e-6;
+    outLng = oLng + (x / (cosLat * kMetersPerDeg));
+    return true;
+}
+
 bool SessionStore::ensureMetadata() {
     if (LittleFS.exists(kMetaFile)) {
         return true;
