@@ -1611,7 +1611,7 @@ function showServerUpdateHint() {
   appModal({
     title: 'How to update',
     bodyHtml: 'Pull + restart the OpenNova container on your host:'
-      + '<pre style="margin:10px 0;padding:10px 12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#86efac;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;overflow-x:auto">docker compose pull\\ndocker compose up -d</pre>'
+      + '<pre style="margin:10px 0;padding:10px 12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#86efac;font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;overflow-x:auto">docker compose pull\\ndocker compose up -d</pre>'
       + '<div style="font-size:12px;color:#cbd5e1;margin-top:8px">Or if running on a NAS Portainer / Synology setup, trigger an image refresh from the UI.</div>',
     accent: 'info',
     buttons: [{ text: 'OK', primary: true }],
@@ -2890,7 +2890,7 @@ async function loadPortableBackups() {
       var b = backups[i];
       var dt = new Date(b.createdAt).toLocaleString('nl-NL');
       var kb = (b.bytes / 1024).toFixed(1);
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:4px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">';
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:4px;font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">';
       html += '<span><span style="color:#cbd5e1">' + dt + '</span> · <span style="color:#67e8f9">' + b.reason + '</span> · <span style="color:#888">' + kb + ' KB</span></span>';
       html += '<span style="display:flex;gap:4px">';
       html += '<button onclick="restorePortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(16,185,129,.15);color:#86efac;border:1px solid rgba(16,185,129,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">Restore</button>';
@@ -3496,7 +3496,7 @@ async function portableShowSelective() {
           opts += '<option value="' + mowerWorkSlots[k] + '">' + mowerWorkSlots[k] + '</option>';
         }
       }
-      remapHtml += '<span style="font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
+      remapHtml += '<span style="font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
       remapHtml += '<select data-remap-source="' + o.filename + '" style="background:#161628;color:#fff;border:1px solid #333;border-radius:4px;padding:3px 6px;font-size:10px">' + opts + '</select>';
     }
     remapHtml += '</div></details>';
@@ -4724,7 +4724,7 @@ async function loadFirmwareVersions() {
       html += '<tr>' +
         '<td style="color:#fff;font-weight:600;white-space:nowrap">' + (v.version || '?') + '</td>' +
         '<td><span style="color:' + (devType === 'charger' ? '#f59e0b' : '#00d4aa') + '">' + devType + '</span></td>' +
-        '<td style="color:#888;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">' + md5 + (v.md5 && v.md5.length > 10 ? '...' : '') + '</td>' +
+        '<td style="color:#888;font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">' + md5 + (v.md5 && v.md5.length > 10 ? '...' : '') + '</td>' +
         '<td style="color:#aaa;font-size:11px;line-height:1.6">' + notesHtml + '</td>' +
         '<td><button class="btn btn-sm btn-red" onclick="deleteFirmwareVersion(' + (v.id || v.ID) + ')">Delete</button></td>' +
         '</tr>';
