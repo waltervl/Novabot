@@ -642,9 +642,13 @@ static void gnssPump() {
     pair021Sent = true;
   }
   if (!pair050_1HzSent && sinceDetect >= 700) {
-    // 1000 ms = 1 Hz. Explicit re-assert each boot so the module doesn't
-    // keep an older 200 ms (5 Hz) NV setting that ruins RTK FIX lock.
-    sendGnssCommand("PAIR050,1000");
+    // 500 ms = 2 Hz. Compromise: 1 Hz gave the user only 104 points on a
+    // 204 m^2 polygon (140 m^2 captured, 30% area lost to corner-cutting
+    // between samples). 5 Hz broke RTK FIX entirely (only FLOAT). 2 Hz
+    // doubles sample density while keeping the RTCM-to-position cycle
+    // ratio within what the LC29HDA's RTK engine handles. Explicit
+    // re-assert each boot in case NV memory holds an older 5 Hz setting.
+    sendGnssCommand("PAIR050,500");
     pair050_1HzSent = true;
   }
 #if NMEA_HEARTBEAT
