@@ -63,6 +63,14 @@
 #define BUTTON_DEBOUNCE_MS 60
 #define NTRIP_RECONNECT_MS 5000
 
+// How often to push the latest GGA back to the NTRIP caster. VRS / NEAREST
+// mountpoints (Centipede NLDB, RTK2go VRS, NetR9, etc.) need a periodic
+// GGA from the rover so they can generate a virtual base or pick the
+// closest physical station. RTCM3 spec recommends every 5–30 s; 10 s is
+// a safe middle ground that keeps us responsive when walking but doesn't
+// flood the caster.
+#define NTRIP_GGA_INTERVAL_MS 10000
+
 // When DEBUG_NMEA_ECHO is set, every byte coming back from the LC29HDA
 // gets mirrored to the USB serial console. Handy once for verifying
 // the wiring; after that it's noisy (~550 B/s at 1 Hz). The structured
@@ -135,6 +143,7 @@ static double        prevLat  = 0, prevLng  = 0;  // last point appended (for in
 static double        walkedM  = 0;                // running path length while recording
 static double        lastAreaM2 = 0;              // Shoelace area, computed at stopRecording()
 static unsigned long ntripLastConnectAttemptMs = 0;
+static uint32_t      ntripGgaLastSentMs        = 0;
 static bool          ntripConnecting = false;
 static String        ntripRecvBuf;
 static int           lastButtonRead = HIGH;
@@ -200,6 +209,18 @@ static void weblogf(const char* fmt, ...) {
 static char nmeaLineBuf[180];
 static size_t nmeaLineLen = 0;
 
+// Last full $GxGGA sentence seen from the LC29HDA, including the leading
+// `$` and trailing `*HH` checksum but NOT the CRLF. Updated in
+// gnssLineFeed() every time a GGA line completes. ntripPump() reads it
+// out and forwards it to the caster every NTRIP_GGA_INTERVAL_MS — VRS /
+// NEAREST mountpoints (Centipede NLDB, etc.) require this to generate
+// the virtual base for the rover's position. Without it the caster
+// streams corrections from some fixed default location and the rover
+// gets RTK FLOAT but never resolves to FIX.
+static char     lastGgaLine[180] = {0};
+static size_t   lastGgaLen      = 0;
+static uint32_t lastGgaAtMs     = 0;
+
 // Tracks the most recent PAIR001 ACK so the post-detect command flow
 // can verify that PAIR050 (5 Hz) was actually accepted. The LC29HDA
 // silently drops PAIR commands if its parser is busy, so we have to
@@ -227,6 +248,21 @@ static void gnssLineFeed(char c) {
       // Surface any proprietary response (firmware version, ack, error)
       // so the diagnostic flow shows the module's reply alongside our
       // request in the same web console.
+      // Snapshot the latest GGA line so ntripPump() can forward it back
+      // to the caster. Accept both GNGGA (combined) and GPGGA (GPS-only)
+      // talker IDs — Quectel emits GNGGA in multi-constellation mode but
+      // older receivers fall back to GPGGA. Skip while no fix is parsed
+      // (field 6 = '0') because casters reject zero-fix GGAs.
+      if (nmeaLineLen >= 6 && nmeaLineBuf[0] == '$' &&
+          (strncmp(nmeaLineBuf, "$GNGGA,", 7) == 0 ||
+           strncmp(nmeaLineBuf, "$GPGGA,", 7) == 0)) {
+        if (nmeaLineLen < sizeof(lastGgaLine) - 1) {
+          memcpy(lastGgaLine, nmeaLineBuf, nmeaLineLen);
+          lastGgaLine[nmeaLineLen] = '\0';
+          lastGgaLen = nmeaLineLen;
+          lastGgaAtMs = millis();
+        }
+      }
       if (nmeaLineLen >= 3 && nmeaLineBuf[0] == '$' && nmeaLineBuf[1] == 'P') {
         weblogf("[gnss-rx] %s\n", nmeaLineBuf);
         // PAIR001 ACK: "$PAIR001,<cmd>,<result>*HH" — cmd matches the
@@ -527,6 +563,10 @@ static void ntripConnect() {
           ntrip.stop();
         } else {
           weblogf("[ntrip] handshake OK\n");
+          // Force the first GGA push to land immediately rather than
+          // waiting a full NTRIP_GGA_INTERVAL_MS. VRS mountpoints stay
+          // in "no virtual base" mode until they see at least one GGA.
+          ntripGgaLastSentMs = millis() - NTRIP_GGA_INTERVAL_MS;
         }
         ntripConnecting = false;
         return;
@@ -539,26 +579,56 @@ static void ntripConnect() {
   ntripConnecting = false;
 }
 
+// Push the most recent GGA back up the NTRIP socket. Required by VRS and
+// NEAREST mountpoints so the caster knows where the rover is. Skipped
+// while we have no GGA yet (cold start) and rate-limited to one upload
+// per NTRIP_GGA_INTERVAL_MS regardless of how fast the LC29HDA emits.
+static void ntripPushGga() {
+  if (!ntrip.connected()) return;
+  if (lastGgaLen == 0) return;
+  uint32_t now = millis();
+  if (now - ntripGgaLastSentMs < NTRIP_GGA_INTERVAL_MS) return;
+  // First upload after handshake gets a single log line so a stuck-FLOAT
+  // user can confirm "yes, we are talking to the VRS". Subsequent pushes
+  // are silent.
+  static bool ggaUploadLogged = false;
+  if (!ggaUploadLogged) {
+    weblogf("[ntrip] uploading GGA → caster (VRS / NEAREST support)\n");
+    ggaUploadLogged = true;
+  }
+  ntripGgaLastSentMs = now;
+  // The buffered line has no trailing CRLF — NTRIP rev2 spec wants one,
+  // and most casters refuse the upload otherwise. Send as a single write
+  // to keep TCP segmentation tidy.
+  ntrip.write((const uint8_t*) lastGgaLine, lastGgaLen);
+  ntrip.write((const uint8_t*) "\r\n", 2);
+}
+
 static void ntripPump() {
   if (!ntrip.connected()) {
     if (cfg.ntripMount.length() > 0 && WiFi.status() == WL_CONNECTED) ntripConnect();
     return;
   }
-  // Hard ceiling per loop iter: at most 1 KB of RTCM goes from TCP to
-  // the LC29HDA UART before we yield back to the main loop. Real RTCM
-  // streams are ~1-2 KB/s so this still keeps up, but it prevents any
-  // single burst (e.g. a misrouted 250 KB sourcetable) from starving
-  // the WebServer for tens of seconds — the symptom we saw with the
-  // wrong mountpoint, where the UI took >60 s to respond.
-  uint16_t budget = 1024;
-  while (ntrip.available() && budget > 0) {
-    uint8_t chunk[256];
-    int want = budget < sizeof(chunk) ? budget : (int) sizeof(chunk);
-    int n = ntrip.read(chunk, want);
+  ntripPushGga();
+  // Drain everything the TCP socket has pending each loop iter. The old
+  // 1 KB-per-iter budget was added to defend against a 250 KB sourcetable
+  // response flooding the UART, but that's now caught one layer up in
+  // ntripConnect() (the handshake aborts when it sees `SOURCETABLE`), so
+  // by the time we're here we know it's RTCM. Throttling becomes harmful:
+  // NL multi-constellation VRS streams (Centipede NLDB, MSM4/5 + 1019
+  // + 1005/1006 + 1230) burst at 2-3 KB/s. With tftTick + LVGL pushing
+  // each loop iter into the tens-of-ms range, 1 KB/iter falls behind and
+  // RTCM accumulates in the TCP buffer — corrections then arrive at the
+  // LC29HDA seconds late, which kills the carrier-phase ambiguity
+  // resolution. Field-observed regression: RTK FLOAT never resolves to
+  // FIX even with 30 sats / good HDOP, exactly the symptom the original
+  // (un-budgeted) loop did not have.
+  while (ntrip.available()) {
+    uint8_t chunk[512];
+    int n = ntrip.read(chunk, sizeof(chunk));
     if (n <= 0) break;
     gnssSerial.write(chunk, n);
     st.ntripBytes += n;
-    budget -= n;
   }
 }
 
