@@ -1487,6 +1487,25 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
   res.send(zip);
 });
 
+// Peek at metadata.json in a buffered ZIP to detect a walker-exported
+// .novabundle. Walker bundles need a server-side Δ-rotate + rasterize
+// pass before parseBundle accepts them, while regular mower exports
+// (.novabotmap) flow straight through. We do this so the admin page
+// can have ONE "Import bundle..." button instead of forcing operators
+// to remember which device a file came from.
+async function isWalkerBundleBuffer(buf: Buffer): Promise<boolean> {
+  try {
+    const dir = await unzipper.Open.buffer(buf);
+    const meta = dir.files.find((f) => f.type === 'File' && f.path === 'metadata.json');
+    if (!meta) return false;
+    const raw = (await meta.buffer()).toString('utf8');
+    const j = JSON.parse(raw) as Record<string, unknown>;
+    return j.sourceType === 'walker';
+  } catch {
+    return false;
+  }
+}
+
 // POST /api/admin-status/maps/:sn/import-portable
 adminStatusRouter.post(
   '/maps/:sn/import-portable',
@@ -1499,8 +1518,41 @@ adminStatusRouter.post(
       res.status(409).json({ ok: false, error: 'active import already in progress', stagingId: active.stagingId });
       return;
     }
+
+    // Auto-detect walker bundles + transform them to a parseBundle-shaped
+    // portable bundle on the fly. From here on the rest of the pipeline
+    // (importStaging.create, apply-verbatim, dock-anchor refresh) treats
+    // both bundle types identically.
+    let bufferToParse: Buffer = req.file.buffer;
+    let walkerSynth = false;
+    if (await isWalkerBundleBuffer(req.file.buffer)) {
+      const sensors = deviceCache.get(sn);
+      const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+      const my = parseFloat(sensors?.get('map_position_y') ?? '');
+      const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+      if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
+        res.status(409).json({
+          ok: false,
+          error: 'walker bundle requires a live map_position from the mower (online + docked)',
+        });
+        return;
+      }
+      try {
+        const synth = await synthesizePortableFromWalker(req.file.buffer, {
+          currentDockPose: { x: mx, y: my, orientation: mo },
+          resolution: 0.05,
+          marginM: 1.0,
+        });
+        bufferToParse = synth.portableZip;
+        walkerSynth = true;
+      } catch (err) {
+        res.status(400).json({ ok: false, error: `walker bundle synth failed: ${(err as Error).message}` });
+        return;
+      }
+    }
+
     let parsed;
-    try { parsed = await parseBundle(req.file.buffer); }
+    try { parsed = await parseBundle(bufferToParse); }
     catch (e) {
       if (e instanceof BundleValidationError) { res.status(400).json({ ok: false, error: e.message }); return; }
       throw e;
@@ -1512,7 +1564,13 @@ adminStatusRouter.post(
     // Persist the parsed bundle alongside state.json for later steps
     const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, session.stagingId);
     fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
-    importAuditRepo.append({ sn, staging_id: session.stagingId, from_state: '_NONE_', to_state: 'UPLOADED', reason: null });
+    importAuditRepo.append({
+      sn,
+      staging_id: session.stagingId,
+      from_state: '_NONE_',
+      to_state: 'UPLOADED',
+      reason: walkerSynth ? 'walker bundle synthesized' : null,
+    });
     // Exact-restore = bundle ships verbatim mower files + valid charging_pose.
     // Verbatim-restore = full mower state ALSO ships (pos.json + map.yaml/pgm).
     const exactRestore = !!(parsed.mowerFiles && parsed.metadata?.originalChargingPose
@@ -1531,6 +1589,7 @@ adminStatusRouter.post(
       verbatimRestore,
       sourceSn: parsed.metadata?.sourceSn ?? null,
       sourceSnMatches,
+      walkerSynth,
     });
   },
 );
