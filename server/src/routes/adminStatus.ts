@@ -742,6 +742,27 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
   }
 });
 
+// GET /api/admin-status/walker-firmware/binary/:filename — stream the walker
+// .bin to the device. Bearer auth (admin token) — the walker stores the token
+// in NVS (T10 of the previous plan). Filename is sanitized via path.basename
+// and rejected if it contains traversal sequences or starts with a dot.
+adminStatusRouter.get('/walker-firmware/binary/:filename', (req: AuthRequest, res: Response) => {
+  const safe = path.basename(req.params.filename);
+  if (!safe || safe.includes('..') || safe.startsWith('.') || safe.includes('/') || safe.includes('\\')) {
+    res.status(400).json({ ok: false, error: 'invalid filename' });
+    return;
+  }
+  const firmwareDir = process.env.FIRMWARE_PATH ?? path.resolve(process.cwd(), 'firmware');
+  const filePath = path.join(firmwareDir, safe);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ ok: false, error: 'not found' });
+    return;
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
 // ── Server self-update check ─────────────────────────────────────────────────
 
 const HUB_TAGS_URL = 'https://hub.docker.com/v2/repositories/rvbcrs/opennova/tags?page_size=25&ordering=last_updated';

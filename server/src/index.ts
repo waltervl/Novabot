@@ -46,7 +46,8 @@ import { adminStatusRouter } from './routes/adminStatus.js';
 import { adminPageHtml } from './routes/adminPage.js';
 import { authMiddleware, adminMiddleware, dashboardMiddleware, verifyAuthToken } from './middleware/auth.js';
 import { userRepo } from './db/repositories/users.js';
-import { dashboardRouter, initFirmwareSync } from './routes/dashboard.js';
+import { dashboardRouter, initFirmwareSync, getOtaBaseUrl } from './routes/dashboard.js';
+import { otaVersionRepo } from './db/repositories/otaVersions.js';
 import { eventsRouter } from './notifications/route.js';
 import { pushRegisterRouter } from './notifications/registerRoute.js';
 import { renderRouter } from './render/route.js';
@@ -302,6 +303,33 @@ if (PROXY_MODE === 'cloud') {
 
   // Rendered mower map SVG (used by HA's MQTT image entity + manual viewers)
   app.use('/api/render', renderRouter);
+
+  // ── Walker firmware OTA check (public, LAN-only) ────────────────────────────
+  // The RTK walker polls this endpoint to discover newer firmware. It has no
+  // admin credentials at check-time; the binary endpoint below
+  // (/api/admin-status/walker-firmware/binary/:filename) is bearer-protected
+  // and the walker stores the admin token in NVS.
+  // Version strings use the `YYYY.MMDD.HHMM` date format — lexicographic
+  // comparison is correct.
+  app.get('/api/walker-firmware/latest', (req: express.Request, res: express.Response) => {
+    const currentVersion = String(req.query.currentVersion ?? '');
+    const latest = otaVersionRepo.findLatestByDeviceType('walker');
+    if (!latest) {
+      res.json({ ok: true, updateAvailable: false, version: '', url: '', md5: '' });
+      return;
+    }
+    const updateAvailable = latest.version > currentVersion;
+    const filename = (latest.download_url ?? '').split('/').pop() ?? '';
+    const baseUrl = getOtaBaseUrl();
+    res.json({
+      ok: true,
+      updateAvailable,
+      version: latest.version,
+      url: `${baseUrl}/api/admin-status/walker-firmware/binary/${encodeURIComponent(filename)}`,
+      md5: latest.md5 ?? '',
+      releaseNotes: latest.release_notes ?? '',
+    });
+  });
 
   // App self-update flow lives entirely client-side now: the app polls the
   // central NAS host (downloads.ramonvanbruggen.nl) directly. No server

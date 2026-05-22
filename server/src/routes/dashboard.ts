@@ -2791,7 +2791,7 @@ function getLocalIp(): string {
   return '127.0.0.1';
 }
 
-function getOtaBaseUrl(): string {
+export function getOtaBaseUrl(): string {
   if (process.env.OTA_BASE_URL) return process.env.OTA_BASE_URL.replace(/\/$/, '');
   if (process.env.TARGET_IP) {
     const port = parseInt(process.env.PORT ?? '80', 10);

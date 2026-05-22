@@ -33,6 +33,9 @@ export class OtaVersionRepository {
   private _listAll = db.prepare('SELECT * FROM ota_versions ORDER BY id DESC');
   private _findById = db.prepare('SELECT * FROM ota_versions WHERE id = ?');
   private _findByDownloadUrlLike = db.prepare('SELECT * FROM ota_versions WHERE download_url LIKE ?');
+  private _findLatestByDeviceType = db.prepare(
+    `SELECT * FROM ota_versions WHERE device_type = ? ORDER BY version DESC LIMIT 1`,
+  );
   private _create = db.prepare(`
     INSERT INTO ota_versions (version, device_type, download_url, release_notes, md5)
     VALUES (?, ?, ?, ?, ?)
@@ -49,6 +52,15 @@ export class OtaVersionRepository {
 
   findByDownloadUrlLike(pattern: string): OtaVersionRow[] {
     return this._findByDownloadUrlLike.all(pattern) as OtaVersionRow[];
+  }
+
+  /**
+   * Returns the row with the highest `version` for a given `device_type`, or
+   * undefined if none exist. Uses lexicographic ordering — correct for the
+   * walker's `YYYY.MMDD.HHMM` date-based version strings.
+   */
+  findLatestByDeviceType(deviceType: string): OtaVersionRow | undefined {
+    return this._findLatestByDeviceType.get(deviceType) as OtaVersionRow | undefined;
   }
 
   create(data: CreateOtaVersionData): number {
