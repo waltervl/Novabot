@@ -48,6 +48,7 @@
 #include "index_html.h"
 #include "walker_api.h"
 #include "session.h"
+#include "recording.h"
 #include "tft/tft_ui.h"
 
 // ── Pins / hardware ─────────────────────────────────────────────────
@@ -74,6 +75,7 @@ WebServer      server(80);
 WiFiClient     ntrip;
 Preferences    prefs;
 SessionStore   sessionStore;
+Recorder       recorder(sessionStore);
 
 struct Config {
   String ssid;
@@ -649,6 +651,17 @@ static void gnssPump() {
       gnssRateWinStartMs = nowRate;
     }
     appendPoint();
+    // Feed the new session recorder. No-op when recorder is idle, so
+    // this costs essentially nothing when we're not actively capturing
+    // a work/obstacle/channel session. Uses the same NMEA-decoded fix
+    // quality the legacy track-* logger already filters on (st.fix
+    // from $GxGGA field 6) so quality gating stays consistent across
+    // the two pipelines until Task 11 retires the legacy logger.
+    recorder.onFix(
+        (unsigned long)(st.lastFixMs / 1000UL),
+        st.lat, st.lng, st.alt,
+        st.fix, st.sats, st.hdop
+    );
   }
 }
 
@@ -1409,6 +1422,38 @@ void loop() {
     } else if (cmd == "session-reset") {
       sessionStore.reset();
       Serial.println("session reset");
+    }
+    else if (cmd == "rec-work") {
+      int s = -1;
+      if (recorder.startWork(s)) Serial.printf("started work slot=%d\n", s);
+      else Serial.println("startWork failed (max slots reached?)");
+    }
+    else if (cmd.startsWith("rec-obs")) {
+      String rest = cmd.substring(7); rest.trim();
+      int slot = rest.toInt();
+      if (recorder.startObstacle(slot)) Serial.printf("started obstacle for parent=%d\n", slot);
+      else Serial.println("startObstacle failed");
+    }
+    else if (cmd.startsWith("rec-ch ")) {
+      int sp = cmd.indexOf(' ', 7);
+      int slot = cmd.substring(7, sp).toInt();
+      String target = cmd.substring(sp + 1); target.trim();
+      if (recorder.startChannel(slot, target)) Serial.printf("started channel %d->%s\n", slot, target.c_str());
+      else Serial.println("startChannel failed");
+    }
+    else if (cmd == "rec-stop") {
+      recorder.stop(false);
+      Serial.println("stopped (saved)");
+    }
+    else if (cmd == "rec-cancel") {
+      recorder.stop(true);
+      Serial.println("stopped (discarded)");
+    }
+    else if (cmd == "rec-status") {
+      const auto& s = recorder.state();
+      Serial.printf("mode=%d parent=%d obsIdx=%d target=%s captured=%lu dropped=%lu fixQ=%d\n",
+          (int)s.mode, s.parentSlot, s.obstacleIdx, s.channelTarget.c_str(),
+          s.pointsCaptured, s.pointsDropped, (int)s.lastFixQuality);
     }
   }
 
