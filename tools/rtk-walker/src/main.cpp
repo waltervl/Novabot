@@ -49,6 +49,7 @@
 
 #include "index_html.h"
 #include "walker_api.h"
+#include "walker_ota.h"
 #include "session.h"
 #include "recording.h"
 #include "bundle.h"
@@ -95,6 +96,13 @@ struct Config {
   String serverUrl;           // e.g. "http://192.168.0.247:8080"
   String mowerSn;             // e.g. "LFIN2230700238"
   String adminToken;          // raw bearer, NEVER printed/logged
+
+  // OTA auto-check on boot. Default true — walker pulls the manifest from
+  // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
+  // applies + reboots if newer. Settable from the TFT Settings tab so a
+  // bricked-firmware scenario can be recovered by toggling this off and
+  // flashing manually over USB.
+  bool   otaAutoCheck = true;
 } cfg;
 
 struct Status {
@@ -264,6 +272,7 @@ static void loadConfig() {
   cfg.serverUrl   = prefs.getString("surl", "");
   cfg.mowerSn     = prefs.getString("msn", "");
   cfg.adminToken  = prefs.getString("atok", "");
+  cfg.otaAutoCheck = prefs.getBool("otaauto", true);
 }
 
 static void saveConfig() {
@@ -277,6 +286,7 @@ static void saveConfig() {
   prefs.putString("surl", cfg.serverUrl);
   prefs.putString("msn", cfg.mowerSn);
   prefs.putString("atok", cfg.adminToken);
+  prefs.putBool("otaauto", cfg.otaAutoCheck);
 }
 
 // Haversine distance between two lat/lng points in metres. Accurate to
@@ -1490,6 +1500,10 @@ void setup() {
       weblogf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
       // Sync time so CSV timestamps are real wall-clock seconds.
       configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
+      // OTA auto-check (respects cfg.otaAutoCheck). Applies + reboots on
+      // success, returns silently on no-update or any failure mode so the
+      // boot flow continues into the normal app loop.
+      walkerOtaAutoTick(false);
     } else {
       // status() : WL_NO_SSID_AVAIL (1) AP not seen, WL_CONNECT_FAILED (4)
       //            wrong password / auth reject, WL_DISCONNECTED (6) timeout.
@@ -1731,6 +1745,10 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.ntripMount      = cfg.ntripMount;
   out.ntripUser       = cfg.ntripUser;
   out.ntripPassMasked = cfg.ntripPass.length() ? "********" : "";
+  out.serverUrl       = cfg.serverUrl;
+  out.mowerSn         = cfg.mowerSn;
+  out.adminToken      = cfg.adminToken;
+  out.otaAutoCheck    = cfg.otaAutoCheck;
 }
 
 void walkerApplyConfig(const WalkerConfigUpdate& upd) {
@@ -1760,6 +1778,7 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   if (upd.ntripMountSet){ cfg.ntripMount = upd.ntripMount;}
   if (upd.ntripUserSet) { cfg.ntripUser  = upd.ntripUser; }
   if (upd.ntripPassSet) { cfg.ntripPass  = upd.ntripPass; }
+  if (upd.otaAutoCheckSet) { cfg.otaAutoCheck = upd.otaAutoCheck; }
   saveConfig();
   weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
           (unsigned) cfg.pass.length());

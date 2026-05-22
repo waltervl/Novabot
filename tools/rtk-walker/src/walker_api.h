@@ -46,6 +46,13 @@ struct WalkerConfigView {
   String   ntripMount;
   String   ntripUser;
   String   ntripPassMasked;
+  // Server upload + OTA fields (NOT masked — server URL is plain config,
+  // the admin token is needed by walker_ota.cpp). The token is only ever
+  // sent via Authorization headers, never logged.
+  String   serverUrl;
+  String   mowerSn;
+  String   adminToken;
+  bool     otaAutoCheck = true;
 };
 
 struct WalkerConfigUpdate {
@@ -58,6 +65,7 @@ struct WalkerConfigUpdate {
   bool ntripMountSet = false; String ntripMount;
   bool ntripUserSet = false; String ntripUser;
   bool ntripPassSet = false; String ntripPass;
+  bool otaAutoCheckSet = false; bool otaAutoCheck = true;
 };
 
 void walkerGetSnapshot(WalkerSnapshot& out);
