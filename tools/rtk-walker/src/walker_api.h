@@ -73,6 +73,13 @@ void walkerGetConfig(WalkerConfigView& out);
 void walkerApplyConfig(const WalkerConfigUpdate& upd);  // writes to NVS + reboots
 bool walkerToggleRecording();                            // returns new state
 
+// Path of the most recently completed (stopped) track CSV — used by the
+// TFT UI's "Save as area" flow so it can re-read the CSV after the user
+// stopped recording and convert each row into a SessionStore work map.
+// Empty string until at least one recording has been stopped this boot.
+String walkerLastTrackPath();
+uint32_t walkerLastTrackPoints();
+
 // Number of live points kept in RAM, and a copy of them. The TFT map
 // reads this each frame to redraw the polyline. Copy semantics keep
 // the LVGL thread away from the std::vector backing store in main.cpp.

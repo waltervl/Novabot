@@ -119,6 +119,13 @@ struct Status {
 static File          trackFile;
 static String        currentTrackName;
 
+// Snapshot of the most recently completed track. Captured at the end of
+// stopRecording() so the TFT "Save as area" flow can find the CSV after
+// the live state has cleared. Stays valid across screen refreshes until
+// the next startRecording().
+static String        lastTrackPath;
+static uint32_t      lastTrackPoints = 0;
+
 // Survey metrics - computed in appendPoint() and stopRecording() so
 // they always reflect what's actually in the track buffer rather than
 // being recomputed from scratch on each snapshot call.
@@ -338,6 +345,10 @@ static void startRecording() {
   }
   trackFile.println("timestamp_unix,lat,lng,alt_m,fix,sats,hdop");
   trackFile.flush();
+  // A fresh recording invalidates the "last completed track" snapshot —
+  // the TFT Save-as-area button must require a NEW stop before re-firing.
+  lastTrackPath = "";
+  lastTrackPoints = 0;
   st.recording = true;
   st.recPoints = 0;
   livePointsLock();
@@ -366,6 +377,11 @@ static void stopRecording() {
   livePointsLock();
   lastAreaM2 = polygonAreaM2();
   livePointsUnlock();
+  // Publish the just-closed track to the "last completed" snapshot so the
+  // TFT Save-as-area flow can re-read its CSV without racing the live
+  // recording state. Cleared on startRecording() above.
+  lastTrackPath = currentTrackName;
+  lastTrackPoints = st.recPoints;
   weblogf("[rec] stopped (%u points, %.1f m walked, area %.1f m2)\n",
           st.recPoints, walkedM, lastAreaM2);
 }
@@ -1851,6 +1867,9 @@ bool walkerToggleRecording() {
   else              startRecording();
   return st.recording;
 }
+
+String walkerLastTrackPath() { return lastTrackPath; }
+uint32_t walkerLastTrackPoints() { return lastTrackPoints; }
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
   livePointsLock();

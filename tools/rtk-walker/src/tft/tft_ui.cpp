@@ -76,6 +76,20 @@ static lv_obj_t* map_line = nullptr;
 static lv_obj_t* map_cursor = nullptr;
 static lv_obj_t* map_empty_label = nullptr;
 static lv_obj_t* map_north_label = nullptr;
+// Floating action: "Save as area" — overlays the map panel only when a
+// just-stopped track has enough points to become a work map. Tap shows
+// a confirm screen, then imports the CSV rows into the next free
+// SessionStore work slot. Hidden during live recording, hidden when no
+// track has been completed yet this boot.
+static lv_obj_t* btn_save_area = nullptr;
+static lv_obj_t* lbl_save_area = nullptr;
+// "No RTK FIX" warning banner — visible inside the map panel whenever
+// the user could record but the fix is < 4. We deliberately do NOT
+// disable the record button in that state (the user might be testing
+// indoors and want to walk anyway); we just make the consequence
+// visible so they aren't surprised when Save-as-area later silently
+// drops every non-FIX row.
+static lv_obj_t* rtk_warning_banner = nullptr;
 
 // "RTK module not detected" overlay — shown when the LC29HDA hasn't
 // emitted a single byte in the last few seconds. Lives on the main
@@ -168,6 +182,8 @@ static void on_keyboard_event(lv_event_t* e);
 static void focus_textarea(lv_obj_t* ta);
 static void buildSessionScreens();
 static void onOtaButtonClicked(lv_event_t* e);
+static void on_save_as_area_clicked(lv_event_t* e);
+static void update_save_area_button(const WalkerSnapshot& snap);
 
 // ── Public entry points ────────────────────────────────────────────────────
 void tftSetup() {
@@ -344,6 +360,43 @@ static void build_main_screen() {
   // Multi-line, right-aligned so "75 pts / 12.3 m / 5 m to close" stays
   // tight to the right edge instead of left-flushing each line.
   lv_obj_set_style_text_align(lbl_pts, LV_TEXT_ALIGN_RIGHT, 0);
+
+  // RTK warning banner — small amber strip near the top of the map. The
+  // refresh tick toggles its visibility based on snap.fix; once visible
+  // it stays put across redraws (no fade) so the user can't miss it.
+  rtk_warning_banner = lv_label_create(map_panel);
+  lv_label_set_text(rtk_warning_banner,
+                    LV_SYMBOL_WARNING "  No RTK FIX  -  track will not save as area");
+  lv_obj_set_style_text_color(rtk_warning_banner, lv_color_hex(0x1f1300), 0);
+  lv_obj_set_style_text_font(rtk_warning_banner, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_bg_color(rtk_warning_banner, COL_AMBER, 0);
+  lv_obj_set_style_bg_opa(rtk_warning_banner, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(rtk_warning_banner, 6, 0);
+  lv_obj_set_style_pad_hor(rtk_warning_banner, 8, 0);
+  lv_obj_set_style_pad_ver(rtk_warning_banner, 3, 0);
+  lv_obj_align(rtk_warning_banner, LV_ALIGN_TOP_MID, 0, 4);
+  lv_obj_add_flag(rtk_warning_banner, LV_OBJ_FLAG_HIDDEN);
+
+  // Save-as-area floating button — overlays the map panel between the
+  // lat/lng labels (bottom-left) and the points/area label (bottom-right).
+  // Centered horizontally so it's the obvious next step once the user
+  // sees the closed polygon on screen.
+  btn_save_area = lv_btn_create(map_panel);
+  lv_obj_set_size(btn_save_area, 170, 36);
+  lv_obj_align(btn_save_area, LV_ALIGN_BOTTOM_MID, 0, -4);
+  lv_obj_set_style_bg_color(btn_save_area, COL_BLUE, 0);
+  lv_obj_set_style_radius(btn_save_area, 8, 0);
+  lv_obj_set_style_border_width(btn_save_area, 0, 0);
+  lv_obj_set_style_shadow_width(btn_save_area, 0, 0);
+  lv_obj_add_event_cb(btn_save_area, on_save_as_area_clicked, LV_EVENT_CLICKED, NULL);
+  lbl_save_area = lv_label_create(btn_save_area);
+  lv_label_set_text(lbl_save_area, LV_SYMBOL_SAVE "  Save as area");
+  lv_obj_set_style_text_color(lbl_save_area, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lbl_save_area, &lv_font_montserrat_14, 0);
+  lv_obj_center(lbl_save_area);
+  // Hidden by default; refresh tick reveals it once the previous
+  // recording completed and produced at least 5 captured points.
+  lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
 
   // ── Bottom bar ─────────────────────────────────────────────────────────
   lv_obj_t* bot = lv_obj_create(scr_main);
@@ -534,10 +587,14 @@ static void apply_record_btn_state(RecordBtnState state) {
       lv_label_set_text(lbl_record, LV_SYMBOL_GPS "  Waiting for GNSS");
       break;
     case RBS_WAITING_RTK:
-      lv_obj_add_state(btn_record, LV_STATE_DISABLED);
-      lv_obj_set_style_bg_color(btn_record, lv_color_hex(0x374151), 0);
-      lv_obj_set_style_text_color(lbl_record, lv_color_hex(0x9ca3af), 0);
-      lv_label_set_text(lbl_record, LV_SYMBOL_GPS "  Waiting for RTK fix");
+      // Button stays CLICKABLE here on purpose: indoor smoke-tests need to
+      // be able to start a recording without a sky view. The amber colour
+      // plus the rtk_warning_banner above the map make the "this won't
+      // import as an area" consequence visible without blocking the user.
+      lv_obj_clear_state(btn_record, LV_STATE_DISABLED);
+      lv_obj_set_style_bg_color(btn_record, COL_AMBER, 0);
+      lv_obj_set_style_text_color(lbl_record, lv_color_hex(0x1f1300), 0);
+      lv_label_set_text(lbl_record, LV_SYMBOL_PLAY "  Start (no RTK)");
       break;
   }
 }
@@ -1194,19 +1251,143 @@ static void reload_tracks_list() {
 
 // ── Recording toggle ──────────────────────────────────────────────────────
 static void toggle_recording(lv_event_t* e) {
-  // Only START and STOP states accept presses. WAITING_* states are
-  // visually disabled but touch events still fire — the gate keeps a
-  // stray press from starting a recording with cm precision when only
-  // metre-level autonomous GPS is available.
-  if (current_record_state != RBS_START && current_record_state != RBS_STOP) return;
+  // RBS_WAITING_GNSS still bails — there is literally nothing to record
+  // when the receiver hasn't emitted a single byte. RBS_WAITING_RTK is
+  // accepted so indoor smoke-tests work; the user already sees the
+  // amber banner explaining the consequence.
+  if (current_record_state != RBS_START &&
+      current_record_state != RBS_STOP  &&
+      current_record_state != RBS_WAITING_RTK) {
+    return;
+  }
   // Starting a fresh recording always drops the user out of saved-
   // track viewing mode; otherwise the new live polyline would draw
   // underneath the saved one and confuse the eye.
-  if (current_record_state == RBS_START) exit_viewing_mode();
+  if (current_record_state == RBS_START || current_record_state == RBS_WAITING_RTK) {
+    exit_viewing_mode();
+  }
   // Visual flip is done by refresh_status_cb's next tick (it'll see the
   // new snap.recording and call apply_record_btn_state(RBS_STOP/START)
   // accordingly). Just kick the backend here.
   walkerToggleRecording();
+}
+
+// ── Save-as-area flow ─────────────────────────────────────────────────────
+// Minimum boundary points before we'll let the user promote a stopped
+// track into a SessionStore work map. Five is the smallest pentagon-like
+// polygon shape; below that the area is meaningless.
+#define SAVE_AREA_MIN_POINTS 5
+
+// Reveal/hide the Save-as-area button. Called from refresh_status_cb so
+// the visibility tracks live recording state and the most recent stop.
+// Centralised so the toggle logic is in exactly one place.
+static void update_save_area_button(const WalkerSnapshot& snap) {
+  if (!btn_save_area) return;
+  bool show = !snap.recording &&
+              walkerLastTrackPath().length() > 0 &&
+              walkerLastTrackPoints() >= SAVE_AREA_MIN_POINTS;
+  if (show) lv_obj_clear_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+  else      lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Read /tracks/<...>.csv row by row, convert each fix>=4 lat/lng into
+// SessionStore local meters, and append to the freshly allocated slot.
+// Returns the number of points written, or -1 on hard failure (file
+// missing, slot allocation failed, no fixed rows). The first useable
+// fix row also seeds SessionStore.setOrigin() so all subsequent
+// conversions share the same anchor.
+static int import_track_as_area(const String& trackPath, const String& alias) {
+  int slot = sessionStore.allocWorkSlot();
+  if (slot < 0) return -1;
+
+  File f = LittleFS.open(trackPath, FILE_READ);
+  if (!f) return -1;
+
+  String line;
+  bool headerSkipped = false;
+  bool originSet = false;
+  int written = 0;
+  while (f.available()) {
+    line = f.readStringUntil('\n');
+    if (line.length() == 0) continue;
+    // Skip the CSV header row written by startRecording().
+    if (!headerSkipped) {
+      headerSkipped = true;
+      if (line.startsWith("timestamp_unix")) continue;
+    }
+
+    // Format: timestamp_unix,lat,lng,alt_m,fix,sats,hdop
+    int c1 = line.indexOf(',');
+    if (c1 < 0) continue;
+    int c2 = line.indexOf(',', c1 + 1);
+    if (c2 < 0) continue;
+    int c3 = line.indexOf(',', c2 + 1);
+    if (c3 < 0) continue;
+    int c4 = line.indexOf(',', c3 + 1);
+    if (c4 < 0) continue;
+    int c5 = line.indexOf(',', c4 + 1);
+    if (c5 < 0) continue;
+
+    String latStr = line.substring(c1 + 1, c2);
+    String lngStr = line.substring(c2 + 1, c3);
+    String fixStr = line.substring(c4 + 1, c5);
+
+    double lat = latStr.toDouble();
+    double lng = lngStr.toDouble();
+    int fix = fixStr.toInt();
+    if (fix < 4) continue;   // only cm-grade rows make it into the polygon
+    if (lat == 0 || lng == 0) continue;
+
+    if (!originSet) {
+      // First good row anchors the SessionStore coordinate system.
+      sessionStore.setOrigin(lat, lng);
+      originSet = true;
+    }
+    double x = 0, y = 0;
+    if (!sessionStore.gpsToLocal(lat, lng, x, y)) continue;
+    if (sessionStore.appendWorkPoint(slot, x, y)) written++;
+  }
+  f.close();
+
+  if (written == 0) {
+    // Roll back the empty slot so the alias slot stays free for retry.
+    sessionStore.deleteMap(slot);
+    return -1;
+  }
+
+  sessionStore.setAlias(slot, alias);
+  return written;
+}
+
+static void on_save_as_area_clicked(lv_event_t* /*e*/) {
+  String path = walkerLastTrackPath();
+  uint32_t pts = walkerLastTrackPoints();
+  if (path.length() == 0 || pts < SAVE_AREA_MIN_POINTS) return;
+
+  // Auto-name: "Area N" where N is the next free work slot + 1. Avoids
+  // dragging in the LVGL soft keyboard for the MVP; users can rename
+  // through the Maps detail screen once that gains a rename flow.
+  int previewSlot = sessionStore.allocWorkSlot();
+  String alias = String("Area ") + (previewSlot >= 0 ? (previewSlot + 1) : 1);
+
+  int written = import_track_as_area(path, alias);
+  if (lbl_pts) {
+    char msg[96];
+    if (written > 0) {
+      snprintf(msg, sizeof(msg),
+               LV_SYMBOL_OK "  Saved as %s\n(%d points)",
+               alias.c_str(), written);
+    } else {
+      snprintf(msg, sizeof(msg),
+               LV_SYMBOL_WARNING "  Save failed - no\nRTK FIX rows in track");
+    }
+    lv_label_set_text(lbl_pts, msg);
+  }
+  // Hide the button so a double-tap can't double-import the same track.
+  if (btn_save_area) lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+  // Best-effort refresh of the Maps screen so the new entry is visible
+  // when the user navigates over there.
+  tft_ui_refresh_current();
 }
 
 // ── Live map rendering ───────────────────────────────────────────────────
@@ -1544,6 +1725,23 @@ static void refresh_status_cb(lv_timer_t* t) {
   else                        wanted = RBS_START;
   apply_record_btn_state(wanted);
 
+  // RTK warning banner: visible whenever the live receiver isn't in
+  // RTK FIX (and a recording is starting/active). Hidden once fix == 4
+  // or while showing a saved track (no live capture happening). The
+  // banner shares state with the amber "Start (no RTK)" button so the
+  // user gets the same warning from two places.
+  if (rtk_warning_banner) {
+    bool wantBanner = (viewing_track_name.length() == 0) &&
+                      snap.fix != 4 && !missing;
+    if (wantBanner) lv_obj_clear_flag(rtk_warning_banner, LV_OBJ_FLAG_HIDDEN);
+    else            lv_obj_add_flag(rtk_warning_banner, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // Save-as-area button: visible only after a stop produced enough
+  // captured points. Hidden during recording and across viewing a saved
+  // track (the saved-track viewer has its own "delete" flow).
+  update_save_area_button(snap);
+
   g_lvgl_checkpoint = 6;
   // WiFi-fail banner: same re-arm trick as the GNSS overlay — clear
   // the dismiss flag when the failure state goes away so the next time
@@ -1653,24 +1851,30 @@ static void buildSessionMainScreen() {
     lv_obj_align(s_mainTitle, LV_ALIGN_TOP_MID, 0, 8);
 
     s_mapList = lv_list_create(s_screenMain);
-    lv_obj_set_size(s_mapList, LV_PCT(94), LV_PCT(60));
+    lv_obj_set_size(s_mapList, LV_PCT(94), LV_PCT(50));
     lv_obj_align(s_mapList, LV_ALIGN_TOP_MID, 0, 40);
 
-    // Three bottom buttons in a single row: Add work area / Export bundle /
-    // Upload to server. We shrink the work-area button to ~38% so the
-    // smaller export + upload pair fit on the right; the text fonts stay
-    // readable at the smaller widths.
-    lv_obj_t* btnAdd = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnAdd, LV_PCT(38), 50);
-    lv_obj_align(btnAdd, LV_ALIGN_BOTTOM_LEFT, 6, -10);
-    lv_obj_t* lblAdd = lv_label_create(btnAdd);
-    lv_label_set_text(lblAdd, "+ Add area");
-    lv_obj_center(lblAdd);
-    lv_obj_add_event_cb(btnAdd, onAddMapClicked, LV_EVENT_CLICKED, nullptr);
+    // Recording lives on the legacy GPS screen now. This panel just lists
+    // the work areas already imported via Save-as-area on that screen; the
+    // hint label here explains the flow so users don't go looking for a
+    // record button on this tab.
+    lv_obj_t* lblHint = lv_label_create(s_screenMain);
+    lv_label_set_long_mode(lblHint, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lblHint,
+        "Walk a track on the GPS tab. Stop the recording, then tap\n"
+        "'Save as area' there to add it to this list.");
+    lv_obj_set_style_text_color(lblHint, lv_color_hex(0x9ca3af), 0);
+    lv_obj_set_style_text_font(lblHint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(lblHint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(lblHint, LV_PCT(90));
+    lv_obj_align(lblHint, LV_ALIGN_BOTTOM_MID, 0, -78);
 
+    // Export + Upload remain available so the user can ship a built
+    // bundle off the device. The old "+ Add area" entry point lived
+    // here too; that's been removed in favour of the legacy-screen flow.
     lv_obj_t* btnExport = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnExport, LV_PCT(28), 50);
-    lv_obj_align(btnExport, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_size(btnExport, LV_PCT(44), 50);
+    lv_obj_align(btnExport, LV_ALIGN_BOTTOM_LEFT, 6, -10);
     lv_obj_t* lblExp = lv_label_create(btnExport);
     lv_label_set_text(lblExp, "Export");
     lv_obj_center(lblExp);
@@ -1680,7 +1884,7 @@ static void buildSessionMainScreen() {
     // Novabot server. Synchronous; the title flips to "Uploading..." while
     // the call is in flight, then to a result banner.
     lv_obj_t* btnUpload = lv_btn_create(s_screenMain);
-    lv_obj_set_size(btnUpload, LV_PCT(28), 50);
+    lv_obj_set_size(btnUpload, LV_PCT(44), 50);
     lv_obj_align(btnUpload, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
     lv_obj_set_style_bg_color(btnUpload, lv_color_hex(0x2563eb), 0);
     lv_obj_t* lblUp = lv_label_create(btnUpload);
@@ -2017,7 +2221,7 @@ static void refreshMainScreen() {
     size_t count = 0;
     sessionStore.listMaps(entries, 3, count);
     if (count == 0) {
-        lv_list_add_text(s_mapList, "No maps yet - tap + Add work area");
+        lv_list_add_text(s_mapList, "No areas yet - walk a track on the GPS tab");
         return;
     }
     for (size_t i = 0; i < count; i++) {
@@ -2056,12 +2260,14 @@ void tft_ui_refresh_current() {
 }
 
 static void onAddMapClicked(lv_event_t* /*e*/) {
-    int slot;
-    if (!recorder.startWork(slot)) {
-        if (s_mainTitle) lv_label_set_text(s_mainTitle, "Max 3 maps reached");
-        return;
+    // Legacy entry point kept for binary-compat with any code that still
+    // references it; the button that fired this was removed in favour of
+    // the legacy-screen Save-as-area flow. Surface a hint in case the
+    // path is somehow still reachable (CLI, test harness).
+    if (s_mainTitle) {
+        lv_label_set_text(s_mainTitle,
+                          "Record on GPS tab - use Save as area");
     }
-    tft_ui_set_screen(UiScreen::Recording);
 }
 
 static void onMapRowClicked(lv_event_t* e) {
@@ -2113,23 +2319,21 @@ static void onBackToGpsClicked(lv_event_t* /*e*/) {
 
 // Detail-screen button handlers. The detail screen tracks its slot via
 // s_detailSlot (set when tft_ui_set_screen(MapDetail, slot) was called).
+// Channel + obstacle capture isn't wired into the legacy-screen flow yet;
+// for now both buttons just flash a "coming soon" hint via the title so
+// the user knows where to go (recording lives on the GPS tab).
 static void onAddChannelClicked(lv_event_t* /*e*/) {
-    // MVP: hardcode the channel target to "charge". A target picker (so
-    // the user can chain channels between work maps) lands in a later
-    // task — for now most users only ever need the charge route.
-    if (!recorder.startChannel(s_detailSlot, String("charge"))) {
-        if (s_detailTitle) lv_label_set_text(s_detailTitle, "Channel start failed");
-        return;
+    if (s_detailTitle) {
+        lv_label_set_text(s_detailTitle,
+                          "Channels coming soon - use GPS tab");
     }
-    tft_ui_set_screen(UiScreen::Recording);
 }
 
 static void onAddObstacleClicked(lv_event_t* /*e*/) {
-    if (!recorder.startObstacle(s_detailSlot)) {
-        if (s_detailTitle) lv_label_set_text(s_detailTitle, "Obstacle start failed");
-        return;
+    if (s_detailTitle) {
+        lv_label_set_text(s_detailTitle,
+                          "Obstacles coming soon - use GPS tab");
     }
-    tft_ui_set_screen(UiScreen::Recording);
 }
 
 static void onDetailBackClicked(lv_event_t* /*e*/) {
