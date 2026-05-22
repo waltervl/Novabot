@@ -179,6 +179,15 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     </form>
   </details>
 
+  <div class="card">
+    <h3 style="margin:0 0 10px;font-size:14px;letter-spacing:-0.01em">Firmware</h3>
+    <div class="row"><span class="label">Current</span><span class="value" id="ota-current">loading...</span></div>
+    <div class="row"><span class="label">Latest</span><span class="value" id="ota-latest">-</span></div>
+    <button type="button" id="ota-check" style="margin-top:8px">Check for update</button>
+    <button type="button" id="ota-apply" disabled style="margin-top:6px">Update now</button>
+    <div id="ota-status" style="margin-top:8px;font-size:12px;color:var(--text-dim);min-height:16px"></div>
+  </div>
+
 <script>
 let recording = false;
 const FIX_LABELS = { 0: 'NO FIX', 1: 'GPS', 2: 'DGPS', 4: 'RTK FIX', 5: 'RTK FLOAT' };
@@ -570,6 +579,68 @@ for (let i = 0; i < quickButtons.length; i++) {
   });
 }
 
+async function otaLoadCurrent() {
+  try {
+    const r = await (await fetch('/api/ota/check')).json();
+    setText('ota-current', r.currentVersion || 'unknown');
+    if (r.ok && r.latestVersion) setText('ota-latest', r.latestVersion);
+    if (r.ok && r.updateAvailable) {
+      const btn = document.getElementById('ota-apply');
+      if (btn) btn.disabled = false;
+    }
+  } catch (e) {
+    setText('ota-current', 'error');
+  }
+}
+
+async function otaCheck() {
+  setText('ota-status', 'Checking...');
+  const applyBtn = document.getElementById('ota-apply');
+  if (applyBtn) applyBtn.disabled = true;
+  try {
+    const r = await (await fetch('/api/ota/check')).json();
+    setText('ota-current', r.currentVersion || 'unknown');
+    setText('ota-latest', r.latestVersion || '-');
+    if (!r.ok) {
+      setText('ota-status', 'Error: ' + (r.error || 'check failed'));
+      return;
+    }
+    if (!r.updateAvailable) {
+      setText('ota-status', 'Up to date');
+      return;
+    }
+    setText('ota-status', 'New version available: ' + (r.latestVersion || '?'));
+    if (applyBtn) applyBtn.disabled = false;
+  } catch (e) {
+    setText('ota-status', 'Network error');
+  }
+}
+
+async function otaApply() {
+  setText('ota-status', 'Updating, walker will reboot...');
+  const applyBtn = document.getElementById('ota-apply');
+  if (applyBtn) applyBtn.disabled = true;
+  try {
+    const res = await fetch('/api/ota/apply', { method: 'POST' });
+    // If the request returned, the apply failed before reboot.
+    try {
+      const r = await res.json();
+      if (r && r.ok === false) {
+        setText('ota-status', 'Update failed: ' + (r.error || 'unknown'));
+      }
+    } catch (parseErr) {
+      setText('ota-status', 'Update failed (no response)');
+    }
+  } catch (e) {
+    // Connection drop is expected on a successful reboot.
+  }
+}
+
+const otaCheckBtn = document.getElementById('ota-check');
+if (otaCheckBtn) otaCheckBtn.addEventListener('click', otaCheck);
+const otaApplyBtn = document.getElementById('ota-apply');
+if (otaApplyBtn) otaApplyBtn.addEventListener('click', otaApply);
+
 initMap();
 setInterval(refresh, 500);
 setInterval(refreshMap, 1000);
@@ -579,6 +650,7 @@ refreshMap();
 refreshLog();
 loadTracks();
 loadConfig();
+otaLoadCurrent();
 </script>
 </body>
 </html>

@@ -1541,6 +1541,41 @@ void setup() {
   // Trigger an upload to the configured server. POSTs the freshly-built
   // .novabundle to /api/admin-status/maps/:sn/import-walker-bundle.
   server.on("/api/upload", HTTP_POST, handleUploadPost);
+  // OTA: ask the server whether a newer firmware is available, expose the
+  // result as JSON so the web UI can show the current/latest versions and
+  // an enable/disable state for the "Update now" button.
+  server.on("/api/ota/check", HTTP_GET, []() {
+    OtaCheckResult r = walkerOtaCheck();
+    StaticJsonDocument<512> doc;
+    doc["ok"] = r.ok;
+    doc["updateAvailable"] = r.updateAvailable;
+    doc["currentVersion"] = r.currentVersion;
+    doc["latestVersion"] = r.latestVersion;
+    doc["error"] = r.error;
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+  });
+
+  // OTA: trigger the actual update. Re-checks first so a stale browser tab
+  // can't apply a payload that has since been superseded. walkerOtaApply
+  // reboots on success and never returns; if we get here, it failed.
+  server.on("/api/ota/apply", HTTP_POST, []() {
+    OtaCheckResult r = walkerOtaCheck();
+    if (!r.ok || !r.updateAvailable) {
+      server.send(200, "application/json", "{\"ok\":false,\"error\":\"no update\"}");
+      return;
+    }
+    String err;
+    bool ok = walkerOtaApply(r.url, r.md5, nullptr, err);
+    StaticJsonDocument<256> doc;
+    doc["ok"] = ok;
+    doc["error"] = err;
+    String out;
+    serializeJson(doc, out);
+    server.send(ok ? 200 : 500, "application/json", out);
+  });
+
   // Walker bundle export — produces a .novabundle zip and streams it back.
   // Server-side (Task 8) consumes the same file to materialise a portable
   // mower bundle. Always rebuilds on request so the latest /session/ state
