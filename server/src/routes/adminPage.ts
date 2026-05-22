@@ -23,6 +23,15 @@ export function adminPageHtml(): string {
         url('/fonts/DepartureMono-Regular.woff') format('woff');
     font-weight:normal;font-style:normal;font-display:swap;
   }
+  /* Roboto Mono for console/log areas. Same font honcho.dev uses on
+     their dashboard. Variable weight 100-700; the .woff2 is the Latin
+     subset shipped via Next.js Font Optimization on app.honcho.dev. */
+  @font-face {
+    font-family:'Roboto Mono';
+    src:url('/fonts/RobotoMono-Variable.woff2') format('woff2');
+    font-weight:100 700;font-style:normal;font-display:swap;
+    unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+  }
   /* Legacy Posterama kept for any inline overrides that still reference
      it. New work should use Departure Mono. */
   @font-face {
@@ -67,7 +76,7 @@ export function adminPageHtml(): string {
   .on{color:#00d4aa}
   .off{color:#ef4444}
   .warn{color:#f59e0b}
-  .sn{color:#a78bfa;font-family:monospace;font-size:12px;word-break:break-all}
+  .sn{color:#a78bfa;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;word-break:break-all}
   .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
   table{width:100%;border-collapse:collapse;font-size:13px;min-width:400px}
   th{text-align:left;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.1);white-space:nowrap}
@@ -295,7 +304,7 @@ export function adminPageHtml(): string {
       <div style="padding:6px 12px;border-bottom:1px solid rgba(255,255,255,.06)">
         <input id="f_search" type="text" placeholder="Search (e.g. start_run, error, LFIN...)" oninput="renderLogs()" style="width:100%;padding:6px 10px;font-size:12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff">
       </div>
-      <div id="mqttConsole" style="height:calc(100vh - 320px);min-height:300px;overflow-y:auto;font-family:monospace;font-size:11px;padding:8px;background:#0a0a1a;line-height:1.6;word-break:break-all"></div>
+      <div id="mqttConsole" style="height:calc(100vh - 320px);min-height:300px;overflow-y:auto;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;padding:8px;background:#0a0a1a;line-height:1.6;word-break:break-all"></div>
     </div>
   </div>
 
@@ -366,7 +375,7 @@ export function adminPageHtml(): string {
         <button onclick="mdCopyOutput()" style="padding:6px 12px;background:rgba(59,130,246,.15);color:#60a5fa;border:1px solid rgba(59,130,246,.2);border-radius:6px;font-size:11px;cursor:pointer">Copy visible</button>
         <button onclick="mdOutputLines=[];mdRenderOutput()" style="padding:6px 12px;background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.2);border-radius:6px;font-size:11px;cursor:pointer">Clear</button>
       </div>
-      <div id="mdOutput" style="height:calc(100vh - 460px);min-height:260px;overflow-y:auto;font-family:monospace;font-size:11px;padding:10px;background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;line-height:1.55;word-break:break-all;color:#ccc"></div>
+      <div id="mdOutput" style="height:calc(100vh - 460px);min-height:260px;overflow-y:auto;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;padding:10px;background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;line-height:1.55;word-break:break-all;color:#ccc"></div>
     </div>
   </div>
 
@@ -408,7 +417,7 @@ export function adminPageHtml(): string {
             <button class="cal-arrow" onclick="nudgePolygonOffset(0, 0.01, event)" title="North (Shift = 10 cm)">&uarr;</button>
             <span></span>
             <button class="cal-arrow" onclick="nudgePolygonOffset(-0.01, 0, event)" title="West (Shift = 10 cm)">&larr;</button>
-            <div id="polygonCalDisplay" style="background:#0d0d20;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:monospace;color:#9ca3af;padding:2px">+0.00, +0.00 m</div>
+            <div id="polygonCalDisplay" style="background:#0d0d20;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#9ca3af;padding:2px">+0.00, +0.00 m</div>
             <button class="cal-arrow" onclick="nudgePolygonOffset(0.01, 0, event)" title="East (Shift = 10 cm)">&rarr;</button>
             <span></span>
             <button class="cal-arrow" onclick="nudgePolygonOffset(0, -0.01, event)" title="South (Shift = 10 cm)">&darr;</button>
@@ -529,7 +538,7 @@ export function adminPageHtml(): string {
               <li>Then press <b>Recalibrate Charging Pose</b></li>
             </ol>
           </div>
-          <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:monospace">
+          <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
             <span style="color:#888">Loading localization status...</span>
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -548,7 +557,7 @@ export function adminPageHtml(): string {
         <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
           <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
           <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">Live dual-trail diagnose during mow: cyan = firmware <code>map_position</code>, lime = RTK GPS via charger anchor. Δ between them flags drift or frame-rotation issues. Read-only — no apply button (use Portable Map Bundle exact-restore instead).</div>
-          <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:monospace">
+          <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
             <span style="color:#888">Select a mower to start validation polling.</span>
           </div>
         </div>
@@ -1602,7 +1611,7 @@ function showServerUpdateHint() {
   appModal({
     title: 'How to update',
     bodyHtml: 'Pull + restart the OpenNova container on your host:'
-      + '<pre style="margin:10px 0;padding:10px 12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#86efac;font-family:monospace;font-size:12px;overflow-x:auto">docker compose pull\\ndocker compose up -d</pre>'
+      + '<pre style="margin:10px 0;padding:10px 12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#86efac;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;overflow-x:auto">docker compose pull\\ndocker compose up -d</pre>'
       + '<div style="font-size:12px;color:#cbd5e1;margin-top:8px">Or if running on a NAS Portainer / Synology setup, trigger an image refresh from the UI.</div>',
     accent: 'info',
     buttons: [{ text: 'OK', primary: true }],
@@ -2881,7 +2890,7 @@ async function loadPortableBackups() {
       var b = backups[i];
       var dt = new Date(b.createdAt).toLocaleString('nl-NL');
       var kb = (b.bytes / 1024).toFixed(1);
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:4px;font-family:monospace;font-size:11px">';
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:4px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">';
       html += '<span><span style="color:#cbd5e1">' + dt + '</span> · <span style="color:#67e8f9">' + b.reason + '</span> · <span style="color:#888">' + kb + ' KB</span></span>';
       html += '<span style="display:flex;gap:4px">';
       html += '<button onclick="restorePortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(16,185,129,.15);color:#86efac;border:1px solid rgba(16,185,129,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">Restore</button>';
@@ -3487,7 +3496,7 @@ async function portableShowSelective() {
           opts += '<option value="' + mowerWorkSlots[k] + '">' + mowerWorkSlots[k] + '</option>';
         }
       }
-      remapHtml += '<span style="font-family:monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
+      remapHtml += '<span style="font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
       remapHtml += '<select data-remap-source="' + o.filename + '" style="background:#161628;color:#fff;border:1px solid #333;border-radius:4px;padding:3px 6px;font-size:10px">' + opts + '</select>';
     }
     remapHtml += '</div></details>';
@@ -4715,7 +4724,7 @@ async function loadFirmwareVersions() {
       html += '<tr>' +
         '<td style="color:#fff;font-weight:600;white-space:nowrap">' + (v.version || '?') + '</td>' +
         '<td><span style="color:' + (devType === 'charger' ? '#f59e0b' : '#00d4aa') + '">' + devType + '</span></td>' +
-        '<td style="color:#888;font-family:monospace;font-size:11px">' + md5 + (v.md5 && v.md5.length > 10 ? '...' : '') + '</td>' +
+        '<td style="color:#888;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">' + md5 + (v.md5 && v.md5.length > 10 ? '...' : '') + '</td>' +
         '<td style="color:#aaa;font-size:11px;line-height:1.6">' + notesHtml + '</td>' +
         '<td><button class="btn btn-sm btn-red" onclick="deleteFirmwareVersion(' + (v.id || v.ID) + ')">Delete</button></td>' +
         '</tr>';
