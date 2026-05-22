@@ -23,6 +23,7 @@
 #include "lvgl.h"
 #include "jc3248w535.h"
 #include "../walker_api.h"
+#include "../walker_ota.h"
 #include "tft_ui.h"
 #include "../session.h"
 #include "../recording.h"
@@ -117,6 +118,11 @@ static lv_obj_t* ta_ntrip_pass = nullptr;
 static lv_obj_t* keyboard = nullptr;
 static lv_obj_t* lbl_save_status = nullptr;
 
+// Firmware/OTA widgets — Settings → Firmware tab.
+static lv_obj_t* s_otaVersionLabel = nullptr;
+static lv_obj_t* s_otaStatusLabel = nullptr;
+static lv_obj_t* s_otaCheckBtn = nullptr;
+
 // Track list widgets.
 static lv_obj_t* tracks_list = nullptr;
 static lv_obj_t* tracks_status = nullptr;
@@ -161,6 +167,7 @@ static void apply_record_btn_state(RecordBtnState state);
 static void on_keyboard_event(lv_event_t* e);
 static void focus_textarea(lv_obj_t* ta);
 static void buildSessionScreens();
+static void onOtaButtonClicked(lv_event_t* e);
 
 // ── Public entry points ────────────────────────────────────────────────────
 void tftSetup() {
@@ -637,10 +644,12 @@ static void build_settings_screen() {
   lv_obj_set_style_text_color(lv_tabview_get_tab_btns(tv), COL_TEXT, 0);
   lv_obj_set_style_text_font(lv_tabview_get_tab_btns(tv), &lv_font_montserrat_14, 0);
 
-  lv_obj_t* tab_wifi  = lv_tabview_add_tab(tv, LV_SYMBOL_WIFI   "  WiFi");
-  lv_obj_t* tab_ntrip = lv_tabview_add_tab(tv, LV_SYMBOL_UPLOAD "  NTRIP");
+  lv_obj_t* tab_wifi  = lv_tabview_add_tab(tv, LV_SYMBOL_WIFI     "  WiFi");
+  lv_obj_t* tab_ntrip = lv_tabview_add_tab(tv, LV_SYMBOL_UPLOAD   "  NTRIP");
+  lv_obj_t* tab_fw    = lv_tabview_add_tab(tv, LV_SYMBOL_DOWNLOAD "  Firmware");
   lv_obj_set_style_pad_all(tab_wifi, 12, 0);
   lv_obj_set_style_pad_all(tab_ntrip, 12, 0);
+  lv_obj_set_style_pad_all(tab_fw, 12, 0);
 
   lv_obj_set_flex_flow(tab_wifi, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(tab_wifi, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -654,6 +663,47 @@ static void build_settings_screen() {
   make_field(tab_ntrip, "Mountpoint", &ta_ntrip_mount, false, "NLDB / NLAMS00FRA0");
   make_field(tab_ntrip, "User",       &ta_ntrip_user,  false, "centipede");
   make_field(tab_ntrip, "Password",   &ta_ntrip_pass,  true,  "(blank = keep stored)");
+
+  // ── Firmware tab ────────────────────────────────────────────────────
+  // Flex column with: section header, current-version label, Check +
+  // Update button, status label for results. Mirrors the spacing the
+  // WiFi/NTRIP tabs get from the field rows so the layout reads as a
+  // peer of those tabs instead of an awkward popup.
+  lv_obj_set_flex_flow(tab_fw, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(tab_fw, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_style_pad_row(tab_fw, 10, 0);
+
+  lv_obj_t* fwHeader = lv_label_create(tab_fw);
+  lv_label_set_text(fwHeader, "Firmware");
+  lv_obj_set_style_text_color(fwHeader, COL_TEXT, 0);
+  lv_obj_set_style_text_font(fwHeader, &lv_font_montserrat_14, 0);
+
+  s_otaVersionLabel = lv_label_create(tab_fw);
+  char verBuf[96];
+  snprintf(verBuf, sizeof(verBuf), "Current: %s", walkerFirmwareVersion());
+  lv_label_set_text(s_otaVersionLabel, verBuf);
+  lv_obj_set_style_text_color(s_otaVersionLabel, COL_DIM, 0);
+  lv_obj_set_style_text_font(s_otaVersionLabel, &lv_font_montserrat_14, 0);
+
+  s_otaCheckBtn = lv_btn_create(tab_fw);
+  lv_obj_set_size(s_otaCheckBtn, lv_pct(60), 40);
+  lv_obj_set_style_bg_color(s_otaCheckBtn, COL_EMERALD, 0);
+  lv_obj_set_style_radius(s_otaCheckBtn, 8, 0);
+  lv_obj_set_style_border_width(s_otaCheckBtn, 0, 0);
+  lv_obj_set_style_shadow_width(s_otaCheckBtn, 0, 0);
+  lv_obj_add_event_cb(s_otaCheckBtn, onOtaButtonClicked, LV_EVENT_CLICKED, NULL);
+  lv_obj_t* fwBtnLbl = lv_label_create(s_otaCheckBtn);
+  lv_label_set_text(fwBtnLbl, LV_SYMBOL_DOWNLOAD "  Check + Update");
+  lv_obj_set_style_text_color(fwBtnLbl, lv_color_hex(0x00211a), 0);
+  lv_obj_set_style_text_font(fwBtnLbl, &lv_font_montserrat_14, 0);
+  lv_obj_center(fwBtnLbl);
+
+  s_otaStatusLabel = lv_label_create(tab_fw);
+  lv_label_set_text(s_otaStatusLabel, "");
+  lv_obj_set_style_text_color(s_otaStatusLabel, COL_TEXT, 0);
+  lv_obj_set_style_text_font(s_otaStatusLabel, &lv_font_montserrat_12, 0);
+  lv_label_set_long_mode(s_otaStatusLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_otaStatusLabel, lv_pct(100));
 
   // Save bar at the bottom of the tabview.
   lv_obj_t* save_bar = lv_obj_create(scr_settings);
@@ -889,6 +939,19 @@ static void load_settings_values() {
     lv_textarea_set_placeholder_text(ta_ntrip_pass, "(blank = unchanged)");
   }
   if (lbl_save_status) lv_label_set_text(lbl_save_status, "");
+
+  // Refresh the firmware version label on every Settings open — cheap
+  // and keeps the label honest if the running build ever rolls forward
+  // without rebuilding the UI (it doesn't today, but future-proofs).
+  if (s_otaVersionLabel) {
+    char verBuf[96];
+    snprintf(verBuf, sizeof(verBuf), "Current: %s", walkerFirmwareVersion());
+    lv_label_set_text(s_otaVersionLabel, verBuf);
+  }
+  if (s_otaStatusLabel) {
+    lv_label_set_text(s_otaStatusLabel, "");
+    lv_obj_set_style_text_color(s_otaStatusLabel, COL_TEXT, 0);
+  }
 }
 
 static void on_save_settings(lv_event_t* e) {
@@ -921,6 +984,57 @@ static void on_save_settings(lv_event_t* e) {
 
   // walkerApplyConfig reboots — so we hand off and stop the timer.
   walkerApplyConfig(upd);
+}
+
+// ── Settings: OTA check + update ─────────────────────────────────────────
+// Synchronous handler: walkerOtaCheck() and walkerOtaApply() both block
+// the LVGL task while running. That's acceptable here because the user
+// expects "Checking..."/"Updating..." feedback and the device is otherwise
+// idle on this screen. lv_refr_now() forces the status string to paint
+// before we begin the blocking HTTP call so the user actually sees it.
+static void onOtaButtonClicked(lv_event_t* /*e*/) {
+  if (s_otaStatusLabel) {
+    lv_label_set_text(s_otaStatusLabel, "Checking...");
+    lv_obj_set_style_text_color(s_otaStatusLabel, COL_TEXT, 0);
+  }
+  lv_refr_now(nullptr);
+
+  OtaCheckResult r = walkerOtaCheck();
+  if (!r.ok) {
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Error: %s", r.error.c_str());
+    if (s_otaStatusLabel) {
+      lv_label_set_text(s_otaStatusLabel, msg);
+      lv_obj_set_style_text_color(s_otaStatusLabel, COL_RED, 0);
+    }
+    return;
+  }
+  if (!r.updateAvailable) {
+    if (s_otaStatusLabel) {
+      lv_label_set_text(s_otaStatusLabel, "Up to date");
+      lv_obj_set_style_text_color(s_otaStatusLabel, COL_EMERALD, 0);
+    }
+    return;
+  }
+
+  char banner[160];
+  snprintf(banner, sizeof(banner), "New: %s, updating...", r.latestVersion.c_str());
+  if (s_otaStatusLabel) {
+    lv_label_set_text(s_otaStatusLabel, banner);
+    lv_obj_set_style_text_color(s_otaStatusLabel, COL_AMBER, 0);
+  }
+  lv_refr_now(nullptr);
+
+  String err;
+  if (!walkerOtaApply(r.url, r.md5, nullptr, err)) {
+    snprintf(banner, sizeof(banner), "Failed: %s", err.c_str());
+    if (s_otaStatusLabel) {
+      lv_label_set_text(s_otaStatusLabel, banner);
+      lv_obj_set_style_text_color(s_otaStatusLabel, COL_RED, 0);
+    }
+    return;
+  }
+  // walkerOtaApply reboots on success and never returns.
 }
 
 // ── Track list ────────────────────────────────────────────────────────────
