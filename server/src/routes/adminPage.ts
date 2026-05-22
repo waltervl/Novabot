@@ -448,6 +448,19 @@ export function adminPageHtml(): string {
           <div style="font-size:11px;font-weight:600;color:#cbd5e1;margin-bottom:6px">Auto-saved snapshots</div>
           <div id="portableBackupListContent" style="font-size:11px;color:#aaa"></div>
         </div>
+        <div style="margin-top: 14px; padding: 10px; border: 1px solid rgba(168,139,250,.3); border-radius: 6px; background: rgba(168,139,250,.05);">
+          <div style="font-size: 12px; font-weight: 600; color: #a78bfa; margin-bottom: 8px;">RTK Walker bundle</div>
+          <div style="font-size: 11px; color: #94a3b8; margin-bottom: 8px; line-height: 1.4;">
+            Upload a .novabundle exported from the RTK walker device. Server reads the mower's
+            live charging pose, Δ-rotates the walker polygons into the mower frame, rasterizes
+            them, then runs through apply-verbatim. The dock-anchor refresh modal will appear
+            afterwards.
+          </div>
+          <input id="walkerBundleFile" type="file" accept=".novabundle,.zip" style="display:none" onchange="startWalkerImport()">
+          <button onclick="document.getElementById('walkerBundleFile').click()" style="padding:7px 18px;background:rgba(168,139,250,.2);color:#a78bfa;border:1px solid rgba(168,139,250,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">
+            Import walker bundle...
+          </button>
+        </div>
       </div>
 
       <details style="padding:8px 12px;background:rgba(124,58,237,.04);border:1px solid rgba(124,58,237,.15);border-radius:8px;margin-top:16px">
@@ -2923,6 +2936,56 @@ async function startPortableImport() {
   portableSourceSn = j.sourceSn || null;
   portableSourceSnMatches = !!j.sourceSnMatches;
   renderPortableImportWizard(sn, 'UPLOADED');
+}
+
+async function startWalkerImport() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) {
+    await appAlert('Select a mower first', { accent: 'danger' });
+    return;
+  }
+  var input = document.getElementById('walkerBundleFile');
+  if (!input.files || !input.files[0]) return;
+  var file = input.files[0];
+
+  // Sanity warn if the file looks too small.
+  if (file.size < 200) {
+    await appAlert('Selected file looks empty (' + file.size + ' bytes)', { accent: 'danger' });
+    input.value = '';
+    return;
+  }
+
+  var fd = new FormData();
+  fd.append('bundle', file);
+
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-walker-bundle', {
+    method: 'POST',
+    headers: { 'Authorization': token },
+    body: fd,
+  });
+  var j = await r.json();
+  input.value = '';
+
+  if (!j.ok) {
+    await appAlert('Walker import failed: ' + (j.error || 'unknown'), { accent: 'danger' });
+    return;
+  }
+
+  portableStagingId = j.stagingId;
+  portableVerbatimRestore = !!j.verbatimRestore;
+  portableExactRestore = !!j.exactRestore;
+  portableSourceSnMatches = true;
+  portableSourceSn = j.sourceSn || null;
+
+  var polygonSummary = (j.polygons || [])
+    .map(function(p) { return '· ' + (p.alias || p.name) + ' (' + p.pointCount + ' pts)'; })
+    .join('\\n');
+  var msg = 'Walker bundle staged.\\n\\n' +
+            (polygonSummary || '(no polygon details returned)') + '\\n\\n' +
+            'Apply verbatim now? The dock-anchor refresh modal will follow.';
+  if (!(await appConfirm(msg, { okText: 'Apply' }))) return;
+
+  await portableApplyVerbatim();
 }
 
 function renderPortableImportWizard(sn, state) {
