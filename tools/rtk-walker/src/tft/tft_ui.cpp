@@ -145,6 +145,7 @@ static void build_tracks_screen();
 static void refresh_status_cb(lv_timer_t* t);
 static void open_settings(lv_event_t* e);
 static void open_tracks(lv_event_t* e);
+static void open_maps(lv_event_t* e);
 static void back_to_main(lv_event_t* e);
 static void toggle_recording(lv_event_t* e);
 static void dismiss_no_gnss(lv_event_t* e);
@@ -363,6 +364,10 @@ static void build_main_screen() {
   lv_obj_center(lbl_record);
 
   make_tab_btn(bot, LV_SYMBOL_LIST     "  Tracks",   open_tracks,   lv_color_hex(0x374151))->user_data = NULL;
+  // Maps button — entry point into the new multi-file session UI
+  // (s_screenMain). Without this the new screens are unreachable from
+  // the boot screen, so it must stay wired even after Tasks 4 + 5 land.
+  make_tab_btn(bot, LV_SYMBOL_DIRECTORY "  Maps",    open_maps,     lv_color_hex(0x374151))->user_data = NULL;
   make_tab_btn(bot, LV_SYMBOL_SETTINGS "  Settings", open_settings, lv_color_hex(0x374151))->user_data = NULL;
 
   // "No GNSS module" overlay (hidden by default — refresh_status_cb
@@ -768,6 +773,13 @@ static void open_settings(lv_event_t* e) {
 static void open_tracks(lv_event_t* e) {
   reload_tracks_list();
   lv_scr_load(scr_tracks);
+}
+
+static void open_maps(lv_event_t* /*e*/) {
+  // Drop the keyboard if it's somehow still up so the screen swap is
+  // clean (mirrors back_to_main's defensive behaviour).
+  if (keyboard) set_keyboard_visible(false);
+  tft_ui_set_screen(UiScreen::Main);
 }
 
 static void back_to_main(lv_event_t* e) {
@@ -1470,12 +1482,31 @@ static lv_obj_t* s_mainTitle = nullptr;
 static void onAddMapClicked(lv_event_t* e);
 static void onMapRowClicked(lv_event_t* e);
 static void onExportClicked(lv_event_t* e);
+static void onBackToGpsClicked(lv_event_t* e);
 static void refreshMainScreen();
 
 static void buildSessionMainScreen() {
     s_screenMain = lv_obj_create(nullptr);
     lv_obj_set_style_bg_color(s_screenMain, lv_color_hex(0x111111), 0);
     lv_obj_clear_flag(s_screenMain, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Back-to-GPS button — small, top-left corner so it doesn't overlap
+    // the centered title or the map list below. Returns the user to the
+    // legacy live GPS/RTK screen (scr_main) so the new UI stays a
+    // reachable side-trip rather than a one-way trap.
+    lv_obj_t* btnBack = lv_btn_create(s_screenMain);
+    lv_obj_set_size(btnBack, 90, 32);
+    lv_obj_align(btnBack, LV_ALIGN_TOP_LEFT, 6, 6);
+    lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x374151), 0);
+    lv_obj_set_style_radius(btnBack, 6, 0);
+    lv_obj_set_style_border_width(btnBack, 0, 0);
+    lv_obj_set_style_shadow_width(btnBack, 0, 0);
+    lv_obj_add_event_cb(btnBack, onBackToGpsClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lblBack = lv_label_create(btnBack);
+    lv_label_set_text(lblBack, LV_SYMBOL_LEFT "  GPS");
+    lv_obj_set_style_text_color(lblBack, lv_color_hex(0xeeeeee), 0);
+    lv_obj_set_style_text_font(lblBack, &lv_font_montserrat_14, 0);
+    lv_obj_center(lblBack);
 
     s_mainTitle = lv_label_create(s_screenMain);
     lv_label_set_text(s_mainTitle, "RTK Walker");
@@ -1525,6 +1556,10 @@ static void buildSessionRecordingPlaceholder() {
 
 static void refreshMainScreen() {
     if (!s_mapList) return;
+    // Reset the title every refresh so prior error/info hijacks from
+    // onAddMapClicked / onExportClicked don't stick when the user comes
+    // back to the screen.
+    if (s_mainTitle) lv_label_set_text(s_mainTitle, "RTK Walker");
     lv_obj_clean(s_mapList);
     MapEntry entries[3];
     size_t count = 0;
@@ -1581,6 +1616,15 @@ static void onMapRowClicked(lv_event_t* e) {
 
 static void onExportClicked(lv_event_t* /*e*/) {
     if (s_mainTitle) lv_label_set_text(s_mainTitle, "Export - Task 6");
+}
+
+static void onBackToGpsClicked(lv_event_t* /*e*/) {
+    // Hop back to the legacy live-GPS screen. We intentionally don't
+    // update s_currentScreen here — the new-screen state machine still
+    // logically points at Main; we just temporarily swap LVGL's active
+    // screen to scr_main. Re-entry via the bottom-bar Maps button calls
+    // tft_ui_set_screen(UiScreen::Main) which restores the new screen.
+    if (scr_main) lv_scr_load(scr_main);
 }
 
 // Build the new screens once after tftSetup() has finished its LVGL
