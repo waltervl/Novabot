@@ -179,6 +179,22 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     </form>
   </details>
 
+  <details class="card config">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">OpenNova server setup</summary>
+    <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
+      Required for "Upload to server" + OTA firmware updates. The server URL points to
+      your OpenNova instance (LAN IP + port). The admin token is a JWT bearer issued by
+      the admin user account on that server.
+    </p>
+    <form id="srvForm">
+      <label>Server URL<input id="srv_url" type="text" placeholder="http://192.168.0.247:8080"></label>
+      <label>Mower SN <span style="color:var(--text-dim);font-weight:400;font-size:10px">(legacy / OTA target hint, optional)</span><input id="srv_msn" type="text" placeholder="LFIN2230700238"></label>
+      <label>Admin token <span style="color:var(--text-dim);font-weight:400;font-size:10px">(leave blank to keep stored value)</span><input id="srv_token" type="text" placeholder="eyJhbGc... (unchanged if empty)"></label>
+      <button type="submit" style="margin-top:12px">Save server config</button>
+      <div id="srvStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
+    </form>
+  </details>
+
   <div class="card">
     <h3 style="margin:0 0 10px;font-size:14px;letter-spacing:-0.01em">Firmware</h3>
     <div class="row"><span class="label">Current</span><span class="value" id="ota-current">loading...</span></div>
@@ -337,6 +353,69 @@ document.getElementById('cfgForm').addEventListener('submit', function(e) {
   e.preventDefault();
   saveConfig();
 });
+
+// Server config (separate form because saving doesn't reboot the
+// device — adopting a new server URL / mower SN / admin token should
+// take effect on the next upload without losing the active recording.)
+async function loadServerConfig() {
+  try {
+    const r = await fetch('/api/config/server');
+    if (!r.ok) return;
+    const c = await r.json();
+    const urlEl = document.getElementById('srv_url');
+    const msnEl = document.getElementById('srv_msn');
+    if (urlEl && c.serverUrl) urlEl.value = c.serverUrl;
+    if (msnEl && c.mowerSn) msnEl.value = c.mowerSn;
+    // Token field stays empty — server returns only a tail preview so
+    // the user knows "set" vs "unset" without exposing the full bearer
+    // back to the browser. We surface the preview in the status line.
+    if (c.tokenPreview) {
+      const status = document.getElementById('srvStatus');
+      if (status) {
+        status.style.color = 'var(--text-dim)';
+        status.textContent = 'Stored token: ' + c.tokenPreview;
+      }
+    }
+  } catch (e) { /* keep silent — settings UI just stays blank */ }
+}
+
+async function saveServerConfig() {
+  const status = document.getElementById('srvStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Saving...';
+  const body = {
+    serverUrl: document.getElementById('srv_url').value.trim(),
+    mowerSn: document.getElementById('srv_msn').value.trim(),
+    adminToken: document.getElementById('srv_token').value,
+  };
+  try {
+    const r = await fetch('/api/config/server', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!r.ok) {
+      status.style.color = 'var(--red)';
+      status.textContent = 'Save failed: HTTP ' + r.status;
+      return;
+    }
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Saved. Upload + OTA can use these credentials now.';
+    // Clear the token field so the preview line refreshes from /api/config/server
+    document.getElementById('srv_token').value = '';
+    loadServerConfig();
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Save failed: ' + (e && e.message ? e.message : e);
+  }
+}
+
+document.getElementById('srvForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  saveServerConfig();
+});
+
+loadServerConfig();
 
 // ── Live map ──────────────────────────────────────────────────────
 // Default centre is somewhere on land; the first incoming fix or
