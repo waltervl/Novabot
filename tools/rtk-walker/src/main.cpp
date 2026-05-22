@@ -94,8 +94,9 @@ struct Config {
   // button. Empty until the user fills the new section in /api/config/server.
   // The token is a JWT Bearer; the bundle endpoint requires admin auth.
   String serverUrl;           // e.g. "http://192.168.0.247:8080"
-  String mowerSn;             // e.g. "LFIN2230700238"
-  String adminToken;          // raw bearer, NEVER printed/logged
+  // mowerSn + adminToken removed: walker is SN-agnostic for uploads and
+  // OTA runs against a public LAN-only binary endpoint, so neither value
+  // serves any purpose anymore. Keys are also dropped from NVS below.
 
   // OTA auto-check on boot. Default true — walker pulls the manifest from
   // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
@@ -277,8 +278,7 @@ static void loadConfig() {
   // Server upload target (Task 10). NVS key budget: 15 chars, so we use
   // short keys ("surl", "msn", "atok").
   cfg.serverUrl   = prefs.getString("surl", "");
-  cfg.mowerSn     = prefs.getString("msn", "");
-  cfg.adminToken  = prefs.getString("atok", "");
+  // Legacy keys ("msn", "atok") are silently removed below if present.
   cfg.otaAutoCheck = prefs.getBool("otaauto", true);
 }
 
@@ -291,8 +291,9 @@ static void saveConfig() {
   prefs.putString("nuser", cfg.ntripUser);
   prefs.putString("npass", cfg.ntripPass);
   prefs.putString("surl", cfg.serverUrl);
-  prefs.putString("msn", cfg.mowerSn);
-  prefs.putString("atok", cfg.adminToken);
+  // Drop legacy keys that older firmware wrote.
+  prefs.remove("msn");
+  prefs.remove("atok");
   prefs.putBool("otaauto", cfg.otaAutoCheck);
 }
 
@@ -1275,18 +1276,6 @@ static void handleConfigPost() {
 static void handleConfigServerGet() {
   JsonDocument doc;
   doc["serverUrl"] = cfg.serverUrl;
-  doc["mowerSn"]   = cfg.mowerSn;
-  // The token is sensitive — only expose its tail so the UI can confirm
-  // a value is stored without dumping the JWT into the DOM. An attacker
-  // with read-access to the form would otherwise own the admin account.
-  String t = cfg.adminToken;
-  if (t.length() > 8) {
-    doc["tokenPreview"] = String("...") + t.substring(t.length() - 8);
-  } else if (t.length() > 0) {
-    doc["tokenPreview"] = "set";
-  } else {
-    doc["tokenPreview"] = "";
-  }
   sendJson(200, doc);
 }
 
@@ -1296,21 +1285,15 @@ static void handleConfigServerPost() {
   if (deserializeJson(body, server.arg("plain"))) {
     server.send(400, "text/plain", "bad json"); return;
   }
-  // Treat empty incoming strings as "leave stored value alone" — same
-  // semantics as the WiFi/NTRIP form. That lets the user update only
-  // the mower SN without re-pasting the JWT every time.
-  auto maybeSet = [&](const char* key, String& target) {
-    if (!body[key].is<const char*>()) return;
-    String v = String((const char*) body[key]);
-    if (v.length() == 0) return;
-    target = v;
-  };
-  maybeSet("serverUrl",  cfg.serverUrl);
-  maybeSet("mowerSn",    cfg.mowerSn);
-  maybeSet("adminToken", cfg.adminToken);
+  // Empty value means "leave existing alone". serverUrl is the only
+  // field; mowerSn + adminToken were removed because the server-side
+  // walker-bundles upload + walker-firmware binary download are both
+  // public LAN-only endpoints now.
+  if (body["serverUrl"].is<const char*>()) {
+    String v = String((const char*) body["serverUrl"]);
+    if (v.length() > 0) cfg.serverUrl = v;
+  }
   saveConfig();
-  // DELIBERATELY do not log token length here — even the length leaks
-  // a tiny amount of info to anyone tailing weblog/Serial.
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -1327,9 +1310,7 @@ bool uploadBundleToServer(String& outMsg) {
   // Walker is now SN-agnostic for uploads — the server stores the bundle in
   // a shared library and the operator assigns it to a specific mower later
   // via the admin UI. Upload is mounted publicly on the server (LAN-only
-  // threat model), so the walker no longer needs an admin token at all.
-  // cfg.adminToken is still kept around for the OTA flow which IS bearer-
-  // protected (executable firmware download = higher risk surface).
+  // threat model), so the walker no longer needs any auth token at all.
   if (cfg.serverUrl.isEmpty()) {
     outMsg = "Server URL not set";
     return false;
@@ -1826,8 +1807,6 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.ntripUser       = cfg.ntripUser;
   out.ntripPassMasked = cfg.ntripPass.length() ? "********" : "";
   out.serverUrl       = cfg.serverUrl;
-  out.mowerSn         = cfg.mowerSn;
-  out.adminToken      = cfg.adminToken;
   out.otaAutoCheck    = cfg.otaAutoCheck;
 }
 

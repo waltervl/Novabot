@@ -42,7 +42,12 @@ import { startMqttBroker } from './mqtt/broker.js';
 import { cloudHttpProxy } from './proxy/httpProxy.js';
 import { mountCloudApi } from './cloud-api/index.js';
 import { initDashboardSocket, pushMqttLog } from './dashboard/socketHandler.js';
-import { adminStatusRouter, walkerBundleUploadMulter, handleWalkerBundleUpload } from './routes/adminStatus.js';
+import {
+  adminStatusRouter,
+  walkerBundleUploadMulter,
+  handleWalkerBundleUpload,
+  handleWalkerFirmwareBinary,
+} from './routes/adminStatus.js';
 import { adminPageHtml } from './routes/adminPage.js';
 import { authMiddleware, adminMiddleware, dashboardMiddleware, verifyAuthToken } from './middleware/auth.js';
 import { userRepo } from './db/repositories/users.js';
@@ -317,6 +322,11 @@ if (PROXY_MODE === 'cloud') {
   // still admin-auth on the adminStatusRouter side.
   app.post('/api/walker-bundles', walkerBundleUploadMulter, handleWalkerBundleUpload);
 
+  // Public OTA binary download — same LAN-only reasoning as bundle upload.
+  // Walker no longer carries an admin token, so the firmware path it gets
+  // back from /api/walker-firmware/latest has to be reachable without auth.
+  app.get('/api/walker-firmware/binary/:filename', handleWalkerFirmwareBinary);
+
   app.get('/api/walker-firmware/latest', (req: express.Request, res: express.Response) => {
     const currentVersion = String(req.query.currentVersion ?? '');
     const latest = otaVersionRepo.findLatestByDeviceType('walker');
@@ -331,7 +341,7 @@ if (PROXY_MODE === 'cloud') {
       ok: true,
       updateAvailable,
       version: latest.version,
-      url: `${baseUrl}/api/admin-status/walker-firmware/binary/${encodeURIComponent(filename)}`,
+      url: `${baseUrl}/api/walker-firmware/binary/${encodeURIComponent(filename)}`,
       md5: latest.md5 ?? '',
       releaseNotes: latest.release_notes ?? '',
     });

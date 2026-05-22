@@ -46,12 +46,9 @@ struct WalkerConfigView {
   String   ntripMount;
   String   ntripUser;
   String   ntripPassMasked;
-  // Server upload + OTA fields (NOT masked — server URL is plain config,
-  // the admin token is needed by walker_ota.cpp). The token is only ever
-  // sent via Authorization headers, never logged.
+  // Server URL drives both Upload to server and OTA. Both endpoints are
+  // public on the LAN-only server now, so there is no token to store.
   String   serverUrl;
-  String   mowerSn;
-  String   adminToken;
   bool     otaAutoCheck = true;
 };
 

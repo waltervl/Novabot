@@ -4,7 +4,7 @@
  * Flow:
  *   walkerOtaCheck()  GETs <serverUrl>/api/walker-firmware/latest?currentVersion=<v>
  *                     and returns the parsed manifest.
- *   walkerOtaApply()  GETs the firmware URL with `Authorization: Bearer <adminToken>`,
+ *   walkerOtaApply()  GETs the firmware URL with no auth (LAN-only public endpoint),
  *                     streams it through Update.write() and reboots on success.
  *   walkerOtaAutoTick(force) runs both, respecting the `otaAutoCheck` flag unless
  *                     `force` is true.
@@ -83,20 +83,15 @@ OtaCheckResult walkerOtaCheck() {
 
 bool walkerOtaApply(const String& url, const String& expectedMd5,
                     void (*progressCb)(int pct), String& outErr) {
-    WalkerConfigView cfg;
-    walkerGetConfig(cfg);
-    if (cfg.adminToken.length() == 0) {
-        outErr = "admin token required";
-        return false;
-    }
-
+    // Binary endpoint is mounted publicly on the server (LAN-only) — no
+    // Authorization header needed. cfg lookup kept in case future flows
+    // want to inject one again, but we no longer require any token.
     HTTPClient http;
     http.setTimeout(60000);
     if (!http.begin(url)) {
         outErr = "http begin failed";
         return false;
     }
-    http.addHeader("Authorization", String("Bearer ") + cfg.adminToken);
 
     int code = http.GET();
     if (code != 200) {

@@ -182,14 +182,12 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   <details class="card config">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">OpenNova server setup</summary>
     <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
-      Server URL is enough for "Upload to server" (LAN-only public endpoint, no token
-      required). Admin token is only needed for OTA firmware updates (the bearer-
-      protected binary download); leave blank if you don't plan to OTA-upgrade.
+      Server URL is the only thing the walker needs. Bundle upload and OTA firmware
+      download both run against public LAN-only endpoints, so no JWT or mower SN to
+      paste here.
     </p>
     <form id="srvForm">
       <label>Server URL<input id="srv_url" type="text" placeholder="http://192.168.0.247:8080"></label>
-      <label>Mower SN <span style="color:var(--text-dim);font-weight:400;font-size:10px">(legacy hint, optional)</span><input id="srv_msn" type="text" placeholder="LFIN2230700238"></label>
-      <label>Admin token <span style="color:var(--text-dim);font-weight:400;font-size:10px">(only for OTA — leave blank if not using)</span><input id="srv_token" type="text" placeholder="eyJhbGc... (unchanged if empty)"></label>
       <button type="submit" style="margin-top:12px">Save server config</button>
       <div id="srvStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
     </form>
@@ -363,19 +361,7 @@ async function loadServerConfig() {
     if (!r.ok) return;
     const c = await r.json();
     const urlEl = document.getElementById('srv_url');
-    const msnEl = document.getElementById('srv_msn');
     if (urlEl && c.serverUrl) urlEl.value = c.serverUrl;
-    if (msnEl && c.mowerSn) msnEl.value = c.mowerSn;
-    // Token field stays empty — server returns only a tail preview so
-    // the user knows "set" vs "unset" without exposing the full bearer
-    // back to the browser. We surface the preview in the status line.
-    if (c.tokenPreview) {
-      const status = document.getElementById('srvStatus');
-      if (status) {
-        status.style.color = 'var(--text-dim)';
-        status.textContent = 'Stored token: ' + c.tokenPreview;
-      }
-    }
   } catch (e) { /* keep silent — settings UI just stays blank */ }
 }
 
@@ -385,8 +371,6 @@ async function saveServerConfig() {
   status.textContent = 'Saving...';
   const body = {
     serverUrl: document.getElementById('srv_url').value.trim(),
-    mowerSn: document.getElementById('srv_msn').value.trim(),
-    adminToken: document.getElementById('srv_token').value,
   };
   try {
     const r = await fetch('/api/config/server', {
@@ -400,9 +384,7 @@ async function saveServerConfig() {
       return;
     }
     status.style.color = 'var(--emerald)';
-    status.textContent = 'Saved. Upload + OTA can use these credentials now.';
-    // Clear the token field so the preview line refreshes from /api/config/server
-    document.getElementById('srv_token').value = '';
+    status.textContent = 'Saved. Upload + OTA can use the server immediately.';
     loadServerConfig();
   } catch (e) {
     status.style.color = 'var(--red)';

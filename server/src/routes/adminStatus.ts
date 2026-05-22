@@ -763,11 +763,13 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
   }
 });
 
-// GET /api/admin-status/walker-firmware/binary/:filename — stream the walker
-// .bin to the device. Bearer auth (admin token) — the walker stores the token
-// in NVS (T10 of the previous plan). Filename is sanitized via path.basename
-// and rejected if it contains traversal sequences or starts with a dot.
-adminStatusRouter.get('/walker-firmware/binary/:filename', (req: AuthRequest, res: Response) => {
+// Shared handler so the walker firmware binary is reachable both via the
+// admin-router (legacy, bearer-auth) and via a public path mounted in
+// index.ts. Firmware is already published openly on downloads.* and the
+// threat model is LAN-only, so making OTA install auth-free matches the
+// same logic applied to the walker-bundles upload — no point making
+// users paste a JWT to download a publicly-available binary.
+export function handleWalkerFirmwareBinary(req: express.Request, res: express.Response): void {
   const safe = path.basename(req.params.filename);
   if (!safe || safe.includes('..') || safe.startsWith('.') || safe.includes('/') || safe.includes('\\')) {
     res.status(400).json({ ok: false, error: 'invalid filename' });
@@ -782,7 +784,11 @@ adminStatusRouter.get('/walker-firmware/binary/:filename', (req: AuthRequest, re
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
   fs.createReadStream(filePath).pipe(res);
-});
+}
+
+// GET /api/admin-status/walker-firmware/binary/:filename — legacy admin-auth
+// path; kept for backwards compatibility with any operator-side tooling.
+adminStatusRouter.get('/walker-firmware/binary/:filename', handleWalkerFirmwareBinary);
 
 // ── Server self-update check ─────────────────────────────────────────────────
 
