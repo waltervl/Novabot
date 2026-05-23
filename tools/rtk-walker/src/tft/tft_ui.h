@@ -39,6 +39,16 @@ UiScreen tft_ui_current_screen();
 // a map) so the main/detail screens can refresh.
 void tft_ui_refresh_current();
 
+// Cross-task hooks so the HTTP layer (web UI) can drive the TFT's
+// "viewing a saved map" state. Returns false when no map exists in
+// the slot or the slot has no origin yet (same constraints the on-
+// device tap honours). tft_ui_current_view_slot returns -1 when not
+// viewing any saved map. All three are safe to call from the main
+// loop's HTTP handler; LVGL events and HTTP run on the same task.
+bool tft_ui_view_map_slot(int slot);
+void tft_ui_exit_view_map();
+int  tft_ui_current_view_slot();
+
 #else
 
 inline void tftSetup() {}
@@ -47,5 +57,9 @@ inline void tftTick() {}
 inline void tft_ui_set_screen(UiScreen, int = -1) {}
 inline UiScreen tft_ui_current_screen() { return UiScreen::Main; }
 inline void tft_ui_refresh_current() {}
+
+inline bool tft_ui_view_map_slot(int) { return false; }
+inline void tft_ui_exit_view_map() {}
+inline int  tft_ui_current_view_slot() { return -1; }
 
 #endif

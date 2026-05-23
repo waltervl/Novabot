@@ -3066,4 +3066,43 @@ void tft_ui_refresh_current() {
     }
 }
 
+// ── Web-UI driven viewing-mode hooks ────────────────────────────────────
+// Mirror what on_map_row_clicked does but skip the LVGL bits the HTTP
+// caller doesn't need (no spinner overlay, no screen navigation). The
+// HTTP layer wants two things: "load this map into viewing_buffer so
+// the next /api/maps poll reports the correct slot + I get the polygon
+// data back" and "the next time the user looks at the device, the TFT
+// is already on that map". Both are achieved by setting viewing_map_
+// slot + the related buffers; the periodic refresh timer picks it up
+// on the next 200 ms tick.
+bool tft_ui_view_map_slot(int slot) {
+    if (slot < 0) return false;
+    if (!load_saved_map_polygon(slot)) return false;
+    load_saved_map_obstacles(slot);
+    viewing_map_slot = slot;
+    reset_map_view();
+    // Resolve the alias from the maps list so the home-screen pts label
+    // shows "Viewing: Garden" rather than "map0".
+    MapEntry entries[3];
+    size_t cnt = 0;
+    sessionStore.listMaps(entries, 3, cnt);
+    viewing_map_alias = String("map") + slot;
+    for (size_t i = 0; i < cnt; i++) {
+        if (entries[i].slot == slot) { viewing_map_alias = entries[i].alias; break; }
+    }
+    // If the device is parked on the Recording screen the HTTP caller
+    // probably still expects the home screen to come up — flip there
+    // so the user sees the map immediately when they glance over.
+    if (s_currentScreen != UiScreen::Main) tft_ui_set_screen(UiScreen::Main);
+    return true;
+}
+
+void tft_ui_exit_view_map() {
+    exit_viewing_mode();
+}
+
+int tft_ui_current_view_slot() {
+    return viewing_map_slot;
+}
+
 #endif  // HAS_TFT_DISPLAY

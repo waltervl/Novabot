@@ -1390,6 +1390,10 @@ static void handleStatus() {
   doc["gnssHz"]     = gnssRateHz;
   doc["gnss5HzAcked"] = pair050Acked;
   doc["authConfigured"] = cfg.authToken.length() > 0;
+  // viewingSlot mirrors the on-device "currently loaded saved map" state
+  // so the web UI can highlight the active row in its Maps list without
+  // a separate poll.
+  doc["viewingSlot"] = tft_ui_current_view_slot();
 #ifdef BAT_ADC
   if (batteryReady) {
     doc["batteryVolts"]    = batteryVoltsEma;
@@ -1743,6 +1747,218 @@ static void handleBatteryRaw() {
 #endif
 }
 
+// ── Saved-maps endpoints (web UI mirror of the TFT Maps tab) ──────────
+//
+// /api/maps         — list every saved map with metadata + which one (if
+//                     any) is currently being viewed on the TFT.
+// /api/maps/N       — full polygon + obstacle rings + channels for slot
+//                     N, in lat/lng so the web UI can render them on the
+//                     same canvas it uses for the live track.
+// /api/maps/view    — POST {slot:N} to drive the TFT into viewing slot
+//                     N; POST {slot:-1} to exit viewing mode. Mirrors a
+//                     row tap on the device.
+//
+// All three are unauthenticated reads / authenticated writes per the
+// pattern the rest of the API uses — listing maps is not sensitive,
+// changing what the operator sees on the screen is.
+static void handleMapsList() {
+  JsonDocument doc;
+  MapEntry entries[3];
+  size_t count = 0;
+  sessionStore.listMaps(entries, 3, count);
+  JsonArray arr = doc["maps"].to<JsonArray>();
+  for (size_t i = 0; i < count; i++) {
+    JsonObject m = arr.add<JsonObject>();
+    m["slot"]            = entries[i].slot;
+    m["alias"]           = entries[i].alias;
+    m["boundaryPoints"]  = entries[i].boundaryPoints;
+    m["obstacleCount"]   = entries[i].obstacleCount;
+    m["channelCount"]    = entries[i].channelCount;
+  }
+  doc["viewingSlot"] = tft_ui_current_view_slot();
+  sendJson(200, doc);
+}
+
+// Stream one polygon CSV (local meters x,y) into a JsonArray of
+// {lat,lng}. Returns the row count actually written; <0 on hard error.
+// Used by both the boundary and obstacle endpoints so the conversion
+// path stays identical.
+static int streamPolygonAsLatLng(const String& path, JsonArray out, size_t maxPoints) {
+  if (!LittleFS.exists(path)) return -1;
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) return -1;
+  size_t written = 0;
+  while (f.available() && written < maxPoints) {
+    String line = f.readStringUntil('\n');
+    if (line.endsWith("\r")) line.remove(line.length() - 1);
+    if (line.length() == 0) continue;
+    int c1 = line.indexOf(',');
+    if (c1 < 0) continue;
+    double x = line.substring(0, c1).toDouble();
+    double y = line.substring(c1 + 1).toDouble();
+    double lat = 0, lng = 0;
+    if (!sessionStore.localToGps(x, y, lat, lng)) continue;
+    JsonObject p = out.add<JsonObject>();
+    p["lat"] = lat;
+    p["lng"] = lng;
+    written++;
+  }
+  f.close();
+  return (int) written;
+}
+
+static void handleMapDetail() {
+  String uri = server.uri();
+  // Strip the "/api/maps/" prefix to get the slot. The suffix must be a
+  // single digit 0..2 — anything else (e.g. "view" sneaking through a
+  // GET request, or trailing path components) is rejected so we don't
+  // misinterpret it as slot 0 via toInt()'s permissive parsing.
+  String suffix = uri.substring(strlen("/api/maps/"));
+  if (suffix.length() != 1 || suffix[0] < '0' || suffix[0] > '2') {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid slot\"}");
+    return;
+  }
+  int slot = suffix[0] - '0';
+
+  // Bail early if the map doesn't exist on disk. Spares the web UI
+  // having to handle empty polygons gracefully.
+  String workPath = String("/session/map") + slot + "_work.csv";
+  if (!LittleFS.exists(workPath)) {
+    server.send(404, "application/json", "{\"ok\":false,\"error\":\"map not found\"}");
+    return;
+  }
+
+  // Need the origin to project local meters back to lat/lng. Without
+  // it the polygon is meaningless to the web UI's lat/lng canvas.
+  double oLat = 0, oLng = 0;
+  if (!sessionStore.getOrigin(oLat, oLng)) {
+    server.send(409, "application/json", "{\"ok\":false,\"error\":\"map has no origin\"}");
+    return;
+  }
+
+  // Capture alias from listMaps (single dir scan, much cheaper than
+  // re-deriving from the metadata.json directly).
+  MapEntry entries[3];
+  size_t cnt = 0;
+  sessionStore.listMaps(entries, 3, cnt);
+  String alias = String("map") + slot;
+  int obstacleCount = 0, channelCount = 0, boundaryPoints = 0;
+  for (size_t i = 0; i < cnt; i++) {
+    if (entries[i].slot == slot) {
+      alias          = entries[i].alias;
+      obstacleCount  = entries[i].obstacleCount;
+      channelCount   = entries[i].channelCount;
+      boundaryPoints = entries[i].boundaryPoints;
+      break;
+    }
+  }
+
+  // Allocate the doc on the heap — a typical map with a few thousand
+  // points + a handful of obstacle rings doesn't fit in a stack-bound
+  // StaticJsonDocument. Filtered + heap-allocated keeps the response
+  // accurate without forcing a 64 KB stack.
+  DynamicJsonDocument doc(32768);
+  doc["ok"]              = true;
+  doc["slot"]            = slot;
+  doc["alias"]           = alias;
+  doc["boundaryPoints"]  = boundaryPoints;
+  doc["obstacleCount"]   = obstacleCount;
+  doc["channelCount"]    = channelCount;
+
+  JsonArray work = doc["work"].to<JsonArray>();
+  streamPolygonAsLatLng(workPath, work, 1500);
+
+  // Obstacles — iterate /session/ for mapN_*_obstacle.csv files.
+  JsonArray obstacles = doc["obstacles"].to<JsonArray>();
+  String prefix = String("map") + slot + "_";
+  File dir = LittleFS.open("/session");
+  if (dir && dir.isDirectory()) {
+    File entry = dir.openNextFile();
+    while (entry) {
+      String name = entry.name();
+      int slash = name.lastIndexOf('/');
+      if (slash >= 0) name = name.substring(slash + 1);
+      if (name.startsWith(prefix) && name.endsWith("_obstacle.csv")) {
+        String full = String("/session/") + name;
+        entry.close();
+        JsonObject ring = obstacles.add<JsonObject>();
+        ring["name"] = name;
+        JsonArray pts = ring["points"].to<JsonArray>();
+        streamPolygonAsLatLng(full, pts, 512);
+      } else {
+        entry.close();
+      }
+      entry = dir.openNextFile();
+    }
+    dir.close();
+  }
+
+  // Channels — same layout, _unicom suffix instead of _obstacle.
+  JsonArray channels = doc["channels"].to<JsonArray>();
+  File dir2 = LittleFS.open("/session");
+  if (dir2 && dir2.isDirectory()) {
+    File entry = dir2.openNextFile();
+    while (entry) {
+      String name = entry.name();
+      int slash = name.lastIndexOf('/');
+      if (slash >= 0) name = name.substring(slash + 1);
+      // Channel filename: mapNto<target>_unicom.csv
+      String chPrefix = String("map") + slot + "to";
+      if (name.startsWith(chPrefix) && name.endsWith("_unicom.csv")) {
+        // Pull the target name out of the middle.
+        int afterTo = chPrefix.length();
+        int beforeSuffix = name.length() - strlen("_unicom.csv");
+        String target = (beforeSuffix > afterTo)
+                          ? name.substring(afterTo, beforeSuffix) : String("?");
+        String full = String("/session/") + name;
+        entry.close();
+        JsonObject ch = channels.add<JsonObject>();
+        ch["target"] = target;
+        JsonArray pts = ch["points"].to<JsonArray>();
+        streamPolygonAsLatLng(full, pts, 1500);
+      } else {
+        entry.close();
+      }
+      entry = dir2.openNextFile();
+    }
+    dir2.close();
+  }
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+static void handleMapView() {
+  if (!requireAuth()) return;
+  if (!server.hasArg("plain")) {
+    server.send(400, "text/plain", "no body"); return;
+  }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  int slot = body["slot"] | -2;
+  if (slot < -1 || slot >= 3) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"slot must be -1..2\"}");
+    return;
+  }
+  if (slot < 0) {
+    tft_ui_exit_view_map();
+    server.send(200, "application/json", "{\"ok\":true,\"viewingSlot\":-1}");
+    return;
+  }
+  if (!tft_ui_view_map_slot(slot)) {
+    server.send(409, "application/json",
+                "{\"ok\":false,\"error\":\"map not loadable (no origin or missing)\"}");
+    return;
+  }
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["viewingSlot"] = slot;
+  sendJson(200, resp);
+}
+
 static void handleConfigGet() {
   JsonDocument doc;
   coreLock();
@@ -2063,6 +2279,11 @@ void setup() {
   server.on("/api/record",        HTTP_POST, handleRecord);
   server.on("/api/tracks",        HTTP_GET,  handleTracks);
   server.on("/api/track/current", HTTP_GET,  handleTrackCurrent);
+  // Session maps (Recording-screen output) exposed for the web UI so it
+  // can mirror the Maps tab the operator sees on the device. List + per-
+  // slot detail are GET; view-control is POST.
+  server.on("/api/maps",          HTTP_GET,  handleMapsList);
+  server.on("/api/maps/view",     HTTP_POST, handleMapView);
   server.on("/api/log",           HTTP_GET,  handleLog);
   server.on("/api/gnss/send",     HTTP_POST, handleGnssSend);
   server.on("/api/i2c-scan",      HTTP_GET,  handleI2cScan);
@@ -2144,6 +2365,14 @@ void setup() {
   server.onNotFound([]() {
     if (server.uri().startsWith("/track/")) {
       handleTrackDownload();
+      return;
+    }
+    // /api/maps/<slot> is a dynamic path that ESP32 WebServer's static
+    // `server.on(...)` can't match, so route it through here. The list
+    // endpoint /api/maps is registered explicitly below and takes
+    // precedence over this fallback.
+    if (server.uri().startsWith("/api/maps/") && server.method() == HTTP_GET) {
+      handleMapDetail();
       return;
     }
     server.send(404, "text/plain", "not found");

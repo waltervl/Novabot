@@ -169,7 +169,23 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   </details>
 
   <div class="tracks">
+    <h1>Saved maps</h1>
+    <div style="font-size:11px;color:var(--text-dim);margin:-6px 0 8px;line-height:1.4">
+      Maps captured on the walker via the +Channel / +Obstacle flow.
+      Tapping a row loads that map on the TFT too — useful for verifying
+      a freshly walked boundary against the live cursor before recording
+      obstacles inside it.
+    </div>
+    <div id="mapList"></div>
+  </div>
+
+  <div class="tracks">
     <h1>Saved tracks</h1>
+    <div style="font-size:11px;color:var(--text-dim);margin:-6px 0 8px;line-height:1.4">
+      Legacy single-polygon recordings. New work belongs in Saved Maps
+      above; this section stays for tracks that haven't been promoted
+      via the Save as area flow yet.
+    </div>
     <div id="trackList"></div>
   </div>
 
@@ -313,6 +329,20 @@ async function refresh() {
     const fixCode = d.fix != null ? d.fix : 0;
     fixPill.className = 'fix-pill fix-' + fixCode;
     setText('fixLabel', FIX_LABELS[fixCode] || ('FIX ' + fixCode));
+
+    // The walker may have loaded (or exited) a saved map on its own
+    // (TFT tap, BLE, anything). Mirror that into the web UI so the
+    // canvas + map list stay in sync without a manual refresh.
+    const dSlot = (d.viewingSlot != null) ? d.viewingSlot : -1;
+    if (dSlot >= 0 && viewingSavedMap !== dSlot) {
+      // Device picked a different slot — render that one. viewSavedMap
+      // re-POSTs the slot but the server short-circuits when it's
+      // already viewing, so this is cheap.
+      viewSavedMap(dSlot);
+    } else if (dSlot < 0 && viewingSavedMap != null) {
+      // Device exited viewing mode — drop our overlay too.
+      backToLiveSavedMap();
+    }
   } catch (e) { /* ignore */ }
 }
 
@@ -400,6 +430,78 @@ async function loadTracks() {
   const container = document.getElementById('trackList');
   while (container.firstChild) container.removeChild(container.firstChild);
   for (const t of list) container.appendChild(makeTrackRow(t));
+}
+
+// ── Saved maps (Recording-screen output) ───────────────────────────
+// Mirrors what the on-device Maps tab shows. Each row has an alias,
+// a metadata line (boundary / obstacle / channel counts) and a click
+// handler that asks the walker to load that map (POST /api/maps/view)
+// and pulls the polygon data down for the Leaflet canvas.
+let lastViewingSlot = -1;
+
+function makeMapRow(m, active) {
+  const wrap = document.createElement('div');
+  wrap.className = 'track';
+  if (active) {
+    wrap.style.borderLeft = '3px solid var(--emerald)';
+    wrap.style.background = 'rgba(0,212,170,0.06)';
+  }
+
+  const left = document.createElement('div');
+  const name = document.createElement('div');
+  name.textContent = m.alias || ('map' + m.slot);
+  name.style.cursor = 'pointer';
+  name.style.color = active ? 'var(--emerald)' : '#cbd5f5';
+  name.style.fontWeight = '600';
+  name.addEventListener('click', function() { viewSavedMap(m.slot); });
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.textContent = (m.boundaryPoints || 0) + ' pts boundary · ' +
+                     (m.obstacleCount || 0) + ' obstacles · ' +
+                     (m.channelCount || 0) + ' channels';
+  left.appendChild(name);
+  left.appendChild(meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'track-actions';
+
+  const view = document.createElement('a');
+  view.href = '#';
+  view.textContent = active ? 'Viewing' : 'View on walker';
+  view.style.color = active ? 'var(--emerald)' : 'var(--text)';
+  view.addEventListener('click', function(e) {
+    e.preventDefault();
+    if (active) backToLiveSavedMap();
+    else viewSavedMap(m.slot);
+  });
+  actions.appendChild(view);
+
+  wrap.appendChild(left);
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+async function loadMaps() {
+  try {
+    const r = await fetch('/api/maps');
+    if (!r.ok) return;
+    const d = await r.json();
+    lastViewingSlot = (d.viewingSlot != null) ? d.viewingSlot : -1;
+    const container = document.getElementById('mapList');
+    while (container.firstChild) container.removeChild(container.firstChild);
+    const maps = d.maps || [];
+    if (maps.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'meta';
+      empty.style.padding = '12px 0';
+      empty.textContent = 'No saved maps yet. Walk a boundary on the walker and tap Save as area.';
+      container.appendChild(empty);
+      return;
+    }
+    for (const m of maps) {
+      container.appendChild(makeMapRow(m, m.slot === lastViewingSlot));
+    }
+  } catch (e) { /* ignore */ }
 }
 
 async function loadConfig() {
@@ -517,6 +619,12 @@ let mapInitialised = false;
 let mapAutoFitDone = false;
 let lastPointCount = 0;
 
+// Layer group holding everything that belongs to the saved-map view
+// (boundary polygon, obstacle rings, channel polylines). Created on
+// initMap, populated by viewSavedMap, cleared by backToLiveSavedMap.
+let savedMapLayer = null;
+let viewingSavedMap = null;  // slot number, or null when in live mode
+
 function initMap() {
   if (mapInitialised) return;
   map = L.map('map', {
@@ -529,6 +637,7 @@ function initMap() {
     crossOrigin: true,
   }).addTo(map);
   trackLine = L.polyline([], { color: '#00d4aa', weight: 4 }).addTo(map);
+  savedMapLayer = L.layerGroup().addTo(map);
   mapInitialised = true;
 }
 
@@ -576,12 +685,118 @@ function backToLive() {
   if (btn) btn.remove();
 }
 
+// Load a saved map onto the Leaflet canvas AND tell the walker to mirror
+// the same map on the TFT. The two halves run in parallel so the
+// experience is "tap once, both screens update".
+async function viewSavedMap(slot) {
+  try {
+    // Show a small overlay hint immediately so the user knows the click
+    // landed even before the fetches complete.
+    setOverlay('loading map ' + slot + '...');
+
+    // Drive the on-device view in parallel with the data fetch. The
+    // POST requires auth; ignore 401 here and just render the data —
+    // the user can save a token via the auth card if they want the
+    // device to follow along too.
+    authFetch('/api/maps/view', {
+      method: 'POST',
+      body: JSON.stringify({ slot: slot }),
+      headers: { 'Content-Type': 'application/json' },
+    }).catch(function() { /* best-effort; data fetch still runs */ });
+
+    const r = await fetch('/api/maps/' + slot);
+    if (!r.ok) {
+      setOverlay('map ' + slot + ' load failed');
+      return;
+    }
+    const d = await r.json();
+
+    // Wipe any previous saved-map render + the live track polyline.
+    if (savedMapLayer) savedMapLayer.clearLayers();
+    if (trackLine) trackLine.setLatLngs([]);
+
+    const work = (d.work || []).map(function(p){ return [p.lat, p.lng]; });
+    if (work.length >= 2) {
+      // Boundary as a closed emerald polygon. Polygon (not Polyline) so
+      // Leaflet auto-closes the ring + we can tint the fill lightly.
+      L.polygon(work, {
+        color: '#00d4aa', weight: 3, fillColor: '#00d4aa', fillOpacity: 0.08,
+      }).addTo(savedMapLayer);
+    }
+
+    // Obstacles — red, semi-transparent fill so the operator can see
+    // the work polygon through them.
+    (d.obstacles || []).forEach(function(ob) {
+      const pts = (ob.points || []).map(function(p){ return [p.lat, p.lng]; });
+      if (pts.length >= 2) {
+        L.polygon(pts, {
+          color: '#ef4444', weight: 2, fillColor: '#ef4444', fillOpacity: 0.15,
+        }).addTo(savedMapLayer);
+      }
+    });
+
+    // Channels — blue lines (not polygons; channels are routes, not
+    // areas). Dashed so they don't get confused with the boundary.
+    (d.channels || []).forEach(function(ch) {
+      const pts = (ch.points || []).map(function(p){ return [p.lat, p.lng]; });
+      if (pts.length >= 2) {
+        L.polyline(pts, {
+          color: '#a5b4fc', weight: 3, dashArray: '6,4',
+        }).addTo(savedMapLayer);
+      }
+    });
+
+    // Fit to the boundary (or the obstacle if no boundary somehow).
+    if (work.length >= 2) {
+      const bounds = L.polygon(work).getBounds();
+      map.fitBounds(bounds, { padding: [30, 30], maxZoom: 21 });
+    }
+
+    viewingSavedMap = slot;
+    mapAutoFitDone = true;
+    const alias = d.alias || ('map' + slot);
+    setOverlay('viewing ' + alias + ' · ' + (d.boundaryPoints || 0) + ' pts · '
+               + (d.obstacleCount || 0) + ' obs');
+
+    // Same "back to live" affordance the legacy track viewer uses.
+    const ov = document.getElementById('mapOverlay');
+    if (ov && !document.getElementById('backToLive')) {
+      const btn = document.createElement('button');
+      btn.id = 'backToLive';
+      btn.textContent = 'Back to live';
+      btn.style.cssText = 'margin-left:8px;padding:2px 8px;font-size:11px;border:0;border-radius:4px;background:rgba(0,212,170,0.2);color:var(--emerald);cursor:pointer';
+      btn.addEventListener('click', backToLiveSavedMap);
+      ov.appendChild(btn);
+    }
+
+    // Refresh the maps list so the active row highlights.
+    loadMaps();
+  } catch (e) {
+    setOverlay('viewSavedMap failed: ' + (e && e.message ? e.message : e));
+  }
+}
+
+function backToLiveSavedMap() {
+  viewingSavedMap = null;
+  mapAutoFitDone = false;
+  if (savedMapLayer) savedMapLayer.clearLayers();
+  const btn = document.getElementById('backToLive');
+  if (btn) btn.remove();
+  // Tell the walker to exit viewing too. Auth-gated; fail silently.
+  authFetch('/api/maps/view', {
+    method: 'POST',
+    body: JSON.stringify({ slot: -1 }),
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(function() {});
+  loadMaps();
+}
+
 async function refreshMap() {
   if (!mapInitialised) return;
-  // While viewing a saved track, don't overwrite its polyline with the
-  // live recording's. The cursor still moves so the user can see where
-  // they are vs the loaded track.
-  if (viewingTrack) {
+  // While viewing a saved track OR a saved session map, don't overwrite
+  // its polyline with the live recording's. The cursor still moves so
+  // the user can see where they are vs the loaded geometry.
+  if (viewingTrack || viewingSavedMap != null) {
     try {
       const sresp = await fetch('/api/status');
       const s = await sresp.json();
@@ -815,10 +1030,14 @@ initMap();
 setInterval(refresh, 500);
 setInterval(refreshMap, 1000);
 setInterval(refreshLog, 1000);
+// Maps list refresh every 3 s so a recording finished on the walker
+// appears in the web list without the operator having to reload.
+setInterval(loadMaps, 3000);
 refresh();
 refreshMap();
 refreshLog();
 loadTracks();
+loadMaps();
 loadConfig();
 loadAuthStatus();
 otaLoadCurrent();
