@@ -65,6 +65,7 @@
 #define NTRIP_TCP_CONNECT_TIMEOUT_MS 500
 #define NTRIP_HANDSHAKE_TIMEOUT_MS 900
 #define NTRIP_HEADER_MAX 4096
+#define NTRIP_HEADER_BYTES_PER_PUMP 512
 
 // How often to push the latest GGA back to the NTRIP caster. VRS / NEAREST
 // mountpoints (Centipede NLDB, RTK2go VRS, NetR9, etc.) need a periodic
@@ -148,10 +149,32 @@ static double        firstLat = 0, firstLng = 0;  // first point of current trac
 static double        prevLat  = 0, prevLng  = 0;  // last point appended (for incremental length)
 static double        walkedM  = 0;                // running path length while recording
 static double        lastAreaM2 = 0;              // Shoelace area, computed at stopRecording()
-static unsigned long ntripLastConnectAttemptMs = 0;
+enum NtripState : uint8_t {
+  NTRIP_IDLE,
+  NTRIP_TCP_CONNECTING,
+  NTRIP_SEND_REQUEST,
+  NTRIP_WAIT_HEADER,
+  NTRIP_STREAMING,
+  NTRIP_BACKOFF
+};
+enum NtripHeaderResult : uint8_t {
+  NTRIP_HEADER_STREAM,
+  NTRIP_HEADER_SOURCETABLE,
+  NTRIP_HEADER_REJECT
+};
+static uint32_t      ntripLastConnectAttemptMs = 0;
 static uint32_t      ntripGgaLastSentMs        = 0;
-static bool          ntripConnecting = false;
-static String        ntripRecvBuf;
+static bool          ntripGgaUploadLogged      = false;
+static NtripState    ntripState                = NTRIP_IDLE;
+static uint32_t      ntripBackoffUntilMs       = 0;
+static uint32_t      ntripHandshakeDeadlineMs  = 0;
+static char          ntripHeader[NTRIP_HEADER_MAX + 1] = {0};
+static size_t        ntripHeaderLen            = 0;
+static String        ntripRequestHost;
+static String        ntripRequestMount;
+static String        ntripRequestUser;
+static String        ntripRequestPass;
+static uint16_t      ntripRequestPort          = 0;
 static int           lastButtonRead = HIGH;
 static unsigned long lastButtonChangeMs = 0;
 
@@ -596,98 +619,196 @@ static void appendPoint() {
 }
 
 // ── NTRIP ───────────────────────────────────────────────────────────
-// Forward decls — the real owners live in the GNSS pump section below
-// but ntripConnect needs to gate on them.
+// Forward decls: the real owner lives in the GNSS pump section below,
+// but NTRIP gates correction streaming until the module is awake.
 extern bool     gnssDetected;
-extern uint32_t lastGnssByteMs;
-static void     gnssPump();
+static bool ntripTimeReached(uint32_t nowMs, uint32_t deadlineMs) {
+  return (int32_t)(nowMs - deadlineMs) >= 0;
+}
 
-static void ntripConnect() {
+static void ntripClearHeader() {
+  ntripHeaderLen = 0;
+  ntripHeader[0] = '\0';
+}
+
+static void ntripClearRequestSnapshot() {
+  ntripRequestHost = "";
+  ntripRequestMount = "";
+  ntripRequestUser = "";
+  ntripRequestPass = "";
+  ntripRequestPort = 0;
+}
+
+static bool ntripReadyToRun() {
   coreLock();
-  String host = cfg.ntripHost;
-  uint16_t port = cfg.ntripPort;
-  String mount = cfg.ntripMount;
-  String user = cfg.ntripUser;
-  String pass = cfg.ntripPass;
+  bool haveHost = cfg.ntripHost.length() > 0;
+  bool haveMount = cfg.ntripMount.length() > 0;
+  bool havePort = cfg.ntripPort > 0;
+  coreUnlock();
+  if (!haveHost || !haveMount || !havePort) return false;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  // No GNSS module: no point fetching RTCM corrections, there is
+  // nothing on the other end of the UART to consume them. Skip until
+  // the first NMEA byte proves the module is awake.
+  if (!gnssDetected) return false;
+  return true;
+}
+
+static void ntripEnterIdle(bool stopSocket) {
+  if (stopSocket) ntrip.stop();
+  ntripClearHeader();
+  ntripClearRequestSnapshot();
+  ntripState = NTRIP_IDLE;
+}
+
+static void ntripEnterBackoff(bool stopSocket) {
+  if (stopSocket) ntrip.stop();
+  ntripClearHeader();
+  ntripClearRequestSnapshot();
+  uint32_t nowMs = millis();
+  uint32_t retryAtMs = ntripLastConnectAttemptMs + NTRIP_RECONNECT_MS;
+  ntripBackoffUntilMs = ntripTimeReached(nowMs, retryAtMs) ? nowMs : retryAtMs;
+  ntripState = NTRIP_BACKOFF;
+}
+
+static NtripHeaderResult ntripClassifyHeader(const char* header) {
+  // Centipede returns "SOURCETABLE 200 OK" (a 200 status!) when the
+  // mountpoint is unknown, followed by a 250 KB list of every base
+  // station as the body. Detect SOURCETABLE explicitly and bail out
+  // before any of the body can be forwarded as if it were RTCM.
+  if (strstr(header, "SOURCETABLE")) return NTRIP_HEADER_SOURCETABLE;
+  if (strstr(header, "ICY 200")
+      || strstr(header, "HTTP/1.0 200")
+      || strstr(header, "HTTP/1.1 200")) {
+    return NTRIP_HEADER_STREAM;
+  }
+  return NTRIP_HEADER_REJECT;
+}
+
+static bool ntripHeaderComplete() {
+  if (ntripHeaderLen >= 4
+      && memcmp(ntripHeader + ntripHeaderLen - 4, "\r\n\r\n", 4) == 0) {
+    return true;
+  }
+  if (ntripHeaderLen >= 2
+      && memcmp(ntripHeader + ntripHeaderLen - 2, "\n\n", 2) == 0) {
+    return true;
+  }
+  return false;
+}
+
+static void ntripStartTcpConnect() {
+  coreLock();
+  ntripRequestHost = cfg.ntripHost;
+  ntripRequestPort = cfg.ntripPort;
+  ntripRequestMount = cfg.ntripMount;
+  ntripRequestUser = cfg.ntripUser;
+  ntripRequestPass = cfg.ntripPass;
   coreUnlock();
 
-  if (mount.length() == 0) return;
-  if (WiFi.status() != WL_CONNECTED) return;
-  // No GNSS module → no point fetching RTCM corrections, there's
-  // nothing on the other end of the UART to consume them. Skip
-  // until the first NMEA byte proves the module is awake.
-  if (!gnssDetected) return;
-  if (ntripConnecting) return;
-  unsigned long nowMs = millis();
-  if (nowMs - ntripLastConnectAttemptMs < NTRIP_RECONNECT_MS) return;
+  uint32_t nowMs = millis();
   ntripLastConnectAttemptMs = nowMs;
+  ntripState = NTRIP_TCP_CONNECTING;
 
-  ntripConnecting = true;
   weblogf("[ntrip] connecting %s:%u/%s\n",
-          host.c_str(), port, mount.c_str());
+          ntripRequestHost.c_str(), ntripRequestPort, ntripRequestMount.c_str());
 
-  if (!ntrip.connect(host.c_str(), port, NTRIP_TCP_CONNECT_TIMEOUT_MS)) {
+  // Arduino ESP32 WiFiClient exposes only a synchronous TCP connect.
+  // Keep this as the single bounded wait in the NTRIP path; header
+  // waiting/parsing is handled incrementally by ntripPump().
+  if (!ntrip.connect(ntripRequestHost.c_str(), ntripRequestPort, NTRIP_TCP_CONNECT_TIMEOUT_MS)) {
     weblogf("[ntrip] tcp connect failed\n");
-    ntripConnecting = false;
+    ntripEnterBackoff(false);
     return;
   }
-  String auth = base64::encode(user + ":" + pass);
-  ntrip.printf("GET /%s HTTP/1.0\r\n", mount.c_str());
+  ntripState = NTRIP_SEND_REQUEST;
+}
+
+static void ntripSendRequest() {
+  if (!ntrip.connected()) {
+    weblogf("[ntrip] tcp disconnected before request\n");
+    ntripEnterBackoff(false);
+    return;
+  }
+
+  String credentials = ntripRequestUser + ":" + ntripRequestPass;
+  String auth = base64::encode(credentials);
+  ntrip.printf("GET /%s HTTP/1.0\r\n", ntripRequestMount.c_str());
   ntrip.printf("User-Agent: NTRIP rtk-walker/1.0\r\n");
   ntrip.printf("Authorization: Basic %s\r\n", auth.c_str());
   ntrip.printf("Accept: */*\r\n");
   ntrip.printf("Connection: close\r\n\r\n");
+  ntripClearRequestSnapshot();
+  ntripClearHeader();
+  ntripHandshakeDeadlineMs = millis() + NTRIP_HANDSHAKE_TIMEOUT_MS;
+  ntripState = NTRIP_WAIT_HEADER;
+}
 
-  // Wait briefly for the 200 OK / ICY 200 OK line. Keep polling GNSS while
-  // waiting so a slow caster handshake does not starve UART parsing.
-  unsigned long deadline = millis() + NTRIP_HANDSHAKE_TIMEOUT_MS;
-  String header;
-  while (millis() < deadline) {
-    while (ntrip.available()) {
-      char c = ntrip.read();
-      header += c;
-      if (header.length() > NTRIP_HEADER_MAX) {
-        weblogf("[ntrip] handshake header too large; aborting\n");
-        ntrip.stop();
-        ntripConnecting = false;
-        return;
-      }
-      if (header.endsWith("\r\n\r\n") || header.endsWith("\n\n")) {
-        // Centipede returns "SOURCETABLE 200 OK" (a 200 status!) when the
-        // mountpoint is unknown, followed by a 250 KB list of every base
-        // station as the body. Our old check was just `indexOf("200")`,
-        // which matched the SOURCETABLE line too, so we'd happily forward
-        // the entire sourcetable as if it were RTCM — flooding the
-        // LC29HDA UART and starving the WebServer for tens of seconds.
-        // Detect SOURCETABLE explicitly and bail out before any of the
-        // body shows up.
-        bool isSourcetable = header.indexOf("SOURCETABLE") >= 0;
-        bool isStream      = header.indexOf("ICY 200") >= 0
-                          || header.indexOf("HTTP/1.0 200") >= 0
-                          || header.indexOf("HTTP/1.1 200") >= 0;
-        if (isSourcetable) {
-          weblogf("[ntrip] mountpoint unknown (SOURCETABLE response). Check the mountpoint config.\n");
-          ntrip.stop();
-        } else if (!isStream) {
-          weblogf("[ntrip] handshake failed: %s", header.c_str());
-          ntrip.stop();
-        } else {
-          weblogf("[ntrip] handshake OK\n");
-          // Force the first GGA push to land immediately rather than
-          // waiting a full NTRIP_GGA_INTERVAL_MS. VRS mountpoints stay
-          // in "no virtual base" mode until they see at least one GGA.
-          ntripGgaLastSentMs = millis() - NTRIP_GGA_INTERVAL_MS;
-        }
-        ntripConnecting = false;
-        return;
-      }
-    }
-    gnssPump();
-    delay(1);
+static void ntripFinishHandshake() {
+  switch (ntripClassifyHeader(ntripHeader)) {
+    case NTRIP_HEADER_SOURCETABLE:
+      weblogf("[ntrip] mountpoint unknown (SOURCETABLE response). Check the mountpoint config.\n");
+      ntripEnterBackoff(true);
+      return;
+    case NTRIP_HEADER_REJECT:
+      weblogf("[ntrip] handshake failed: %s", ntripHeader);
+      ntripEnterBackoff(true);
+      return;
+    case NTRIP_HEADER_STREAM:
+      weblogf("[ntrip] handshake OK\n");
+      // Force the first GGA push to land immediately rather than
+      // waiting a full NTRIP_GGA_INTERVAL_MS. VRS mountpoints stay
+      // in "no virtual base" mode until they see at least one GGA.
+      ntripGgaLastSentMs = millis() - NTRIP_GGA_INTERVAL_MS;
+      ntripGgaUploadLogged = false;
+      ntripClearHeader();
+      ntripState = NTRIP_STREAMING;
+      return;
   }
-  weblogf("[ntrip] handshake timeout\n");
-  ntrip.stop();
-  ntripConnecting = false;
+}
+
+static void ntripPumpHandshake() {
+  if (!ntrip.connected() && ntrip.available() <= 0) {
+    weblogf("[ntrip] disconnected during handshake\n");
+    ntripEnterBackoff(false);
+    return;
+  }
+
+  uint32_t nowMs = millis();
+  if (ntripTimeReached(nowMs, ntripHandshakeDeadlineMs)) {
+    weblogf("[ntrip] handshake timeout\n");
+    ntripEnterBackoff(true);
+    return;
+  }
+
+  size_t budget = NTRIP_HEADER_BYTES_PER_PUMP;
+  while (budget-- > 0 && ntrip.available()) {
+    int b = ntrip.read();
+    if (b < 0) break;
+    if (ntripHeaderLen >= NTRIP_HEADER_MAX) {
+      weblogf("[ntrip] handshake header too large; aborting\n");
+      ntripEnterBackoff(true);
+      return;
+    }
+    ntripHeader[ntripHeaderLen++] = (char) b;
+    ntripHeader[ntripHeaderLen] = '\0';
+    if (ntripHeaderComplete()) {
+      ntripFinishHandshake();
+      return;
+    }
+  }
+
+  nowMs = millis();
+  if (ntripTimeReached(nowMs, ntripHandshakeDeadlineMs)) {
+    weblogf("[ntrip] handshake timeout\n");
+    ntripEnterBackoff(true);
+    return;
+  }
+
+  if (!ntrip.connected() && ntrip.available() <= 0) {
+    weblogf("[ntrip] disconnected during handshake\n");
+    ntripEnterBackoff(false);
+  }
 }
 
 // Push the most recent GGA back up the NTRIP socket. Required by VRS and
@@ -702,10 +823,9 @@ static void ntripPushGga() {
   // First upload after handshake gets a single log line so a stuck-FLOAT
   // user can confirm "yes, we are talking to the VRS". Subsequent pushes
   // are silent.
-  static bool ggaUploadLogged = false;
-  if (!ggaUploadLogged) {
+  if (!ntripGgaUploadLogged) {
     weblogf("[ntrip] uploading GGA → caster (VRS / NEAREST support)\n");
-    ggaUploadLogged = true;
+    ntripGgaUploadLogged = true;
   }
   ntripGgaLastSentMs = now;
   // The buffered line has no trailing CRLF — NTRIP rev2 spec wants one,
@@ -716,19 +836,62 @@ static void ntripPushGga() {
 }
 
 static void ntripPump() {
-  if (!ntrip.connected()) {
-    coreLock();
-    bool haveMount = cfg.ntripMount.length() > 0;
-    coreUnlock();
-    if (haveMount && WiFi.status() == WL_CONNECTED) ntripConnect();
+  if (!ntripReadyToRun()) {
+    if (ntripState != NTRIP_IDLE || ntrip.connected()) {
+      ntripEnterIdle(true);
+    }
     return;
   }
+
+  switch (ntripState) {
+    case NTRIP_IDLE:
+      if (!ntripTimeReached(millis(), ntripBackoffUntilMs)) {
+        ntripState = NTRIP_BACKOFF;
+        return;
+      }
+      ntripStartTcpConnect();
+      return;
+
+    case NTRIP_BACKOFF:
+      if (!ntripTimeReached(millis(), ntripBackoffUntilMs)) return;
+      ntripState = NTRIP_IDLE;
+      ntripStartTcpConnect();
+      return;
+
+    case NTRIP_TCP_CONNECTING:
+      // connect() is synchronous, so this state should only be visible
+      // inside ntripStartTcpConnect(). Recover defensively if observed.
+      if (ntrip.connected()) {
+        ntripState = NTRIP_SEND_REQUEST;
+      } else {
+        ntripEnterBackoff(false);
+      }
+      return;
+
+    case NTRIP_SEND_REQUEST:
+      ntripSendRequest();
+      return;
+
+    case NTRIP_WAIT_HEADER:
+      ntripPumpHandshake();
+      return;
+
+    case NTRIP_STREAMING:
+      break;
+  }
+
+  if (!ntrip.connected()) {
+    weblogf("[ntrip] stream disconnected\n");
+    ntripEnterBackoff(false);
+    return;
+  }
+
   ntripPushGga();
   // Drain everything the TCP socket has pending each loop iter. The old
   // 1 KB-per-iter budget was added to defend against a 250 KB sourcetable
   // response flooding the UART, but that's now caught one layer up in
-  // ntripConnect() (the handshake aborts when it sees `SOURCETABLE`), so
-  // by the time we're here we know it's RTCM. Throttling becomes harmful:
+  // the handshake state (it aborts when it sees `SOURCETABLE`), so by
+  // the time we're here we know it's RTCM. Throttling becomes harmful:
   // NL multi-constellation VRS streams (Centipede NLDB, MSM4/5 + 1019
   // + 1005/1006 + 1230) burst at 2-3 KB/s. With tftTick + LVGL pushing
   // each loop iter into the tens-of-ms range, 1 KB/iter falls behind and
@@ -751,7 +914,7 @@ static void ntripPump() {
 // ── GNSS pump ───────────────────────────────────────────────────────
 static uint32_t lastNmeaStatsMs = 0;
 static uint32_t nmeaBytesThisSec = 0;
-// Definitions for the forward-declared gating flags up by ntripConnect().
+// Definitions for the forward-declared gating flags up by the NTRIP pump.
 uint32_t lastGnssByteMs = 0;   // ms of the most recent byte from the LC29HDA — drives the "no GNSS" overlay
 bool     gnssDetected = false; // flips true on the first byte ever — gates PAIR command, heartbeat, NTRIP
 
@@ -1210,7 +1373,7 @@ static void handleStatus() {
   doc["points"]     = st.recPoints;
   doc["ntripBytes"] = st.ntripBytes;
   doc["wifiSsid"]   = cfg.ssid;
-  doc["ntripUp"]    = ntrip.connected();
+  doc["ntripUp"]    = (ntripState == NTRIP_STREAMING);
   doc["walkedM"]    = walkedM;
   if (firstLat != 0 || firstLng != 0) {
     doc["closingM"] = haversineM(st.lat, st.lng, firstLat, firstLng);
@@ -2080,7 +2243,7 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   out.ntripBytes = st.ntripBytes;
   out.wifiUp     = (WiFi.status() == WL_CONNECTED);
   out.apMode     = !out.wifiUp && WiFi.getMode() == WIFI_AP;
-  out.ntripUp    = ntrip.connected();
+  out.ntripUp    = (ntripState == NTRIP_STREAMING);
   out.gnssAlive  = (lastGnssByteMs != 0);
   out.msSinceGnssByte = lastGnssByteMs ? (millis() - lastGnssByteMs) : (uint32_t) 0xFFFFFFFF;
   out.gnssRateHz   = gnssRateHz;
