@@ -19,6 +19,8 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 struct MapEntry {
     int slot;            // 0..2 (max 3 work maps)
@@ -31,6 +33,8 @@ struct MapEntry {
 class SessionStore {
 public:
     bool begin();
+    void lock();
+    void unlock();
     bool reset();
     int allocWorkSlot();
     bool setAlias(int slot, const String& alias);
@@ -42,7 +46,7 @@ public:
     bool appendRawRow(const String& baseName, unsigned long ts, double lat, double lng,
                       double alt, int fix, int sats, double hdop);
     bool deleteMap(int slot);
-    bool setOrigin(double lat, double lng);
+    bool setOrigin(double lat, double lng, bool overwrite = false);
     bool getOrigin(double& lat, double& lng);
     bool gpsToLocal(double lat, double lng, double& outX, double& outY);
     // Inverse of gpsToLocal: convert stored x,y in local meters back to a
@@ -55,6 +59,8 @@ public:
 private:
     static constexpr const char* kSessionDir = "/session";
     static constexpr const char* kMetaFile = "/session/metadata.json";
+    SemaphoreHandle_t mux_ = nullptr;
+    void ensureMutex();
     bool ensureMetadata();
     bool readMetadata(JsonDocument& doc);
     bool writeMetadata(const JsonDocument& doc);

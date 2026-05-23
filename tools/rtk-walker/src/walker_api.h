@@ -23,8 +23,8 @@ struct WalkerSnapshot {
   bool     ntripUp;
   bool     gnssAlive;      // true once at least one byte arrived from the LC29HDA
   uint32_t msSinceGnssByte; // ms since the most recent byte from the GNSS module
-  uint16_t gnssRateHz;     // measured GGA updates per second (1 = default, 5 = PAIR050 confirmed)
-  bool     gnss5HzAcked;   // true once PAIR001,050,0 ACK seen (5 Hz config accepted by module)
+  uint16_t gnssRateHz;     // measured GGA updates per second
+  bool     gnss5HzAcked;   // legacy name; true once PAIR001,050,0 ACK accepts PAIR050
   bool     wifiConnectFailed;  // true if a configured SSID was attempted at boot and timed out
   String   wifiFailReason;     // last STA-disconnect reason name (only meaningful when wifiConnectFailed)
   String   wifiIp;         // STA IP or AP IP, whichever applies
@@ -36,6 +36,7 @@ struct WalkerSnapshot {
   float    walkedM;            // running total path length while recording (Haversine sum)
   float    closingM;           // distance from current position to the first recorded point
   float    areaM2;             // Shoelace area of the closed polygon - only meaningful after stopRecording
+  bool     authConfigured;      // true once protected HTTP endpoints require a token
 };
 
 struct WalkerConfigView {
@@ -50,6 +51,7 @@ struct WalkerConfigView {
   // public on the LAN-only server now, so there is no token to store.
   String   serverUrl;
   bool     otaAutoCheck = true;
+  bool     authConfigured = false;
 };
 
 struct WalkerConfigUpdate {

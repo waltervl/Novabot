@@ -62,6 +62,9 @@
 #define BUTTON_PIN    0    // BOOT
 #define BUTTON_DEBOUNCE_MS 60
 #define NTRIP_RECONNECT_MS 5000
+#define NTRIP_TCP_CONNECT_TIMEOUT_MS 500
+#define NTRIP_HANDSHAKE_TIMEOUT_MS 900
+#define NTRIP_HEADER_MAX 4096
 
 // How often to push the latest GGA back to the NTRIP caster. VRS / NEAREST
 // mountpoints (Centipede NLDB, RTK2go VRS, NetR9, etc.) need a periodic
@@ -98,9 +101,9 @@ struct Config {
   String ntripUser = "centipede";
   String ntripPass = "centipede";
 
-  // Server upload target — used by /api/upload and the TFT "Upload to server"
-  // button. Empty until the user fills the new section in /api/config/server.
-  // The token is a JWT Bearer; the bundle endpoint requires admin auth.
+  // Server upload target — used by /api/upload, OTA manifest checks, and the
+  // TFT "Upload to server" button. Empty until the user fills the new section
+  // in /api/config/server.
   String serverUrl;           // e.g. "http://192.168.0.247:8080"
   // mowerSn + adminToken removed: walker is SN-agnostic for uploads and
   // OTA runs against a public LAN-only binary endpoint, so neither value
@@ -112,6 +115,9 @@ struct Config {
   // bricked-firmware scenario can be recovered by toggling this off and
   // flashing manually over USB.
   bool   otaAutoCheck = true;
+  // Local web/API guard for dangerous endpoints. NVS key is "auth" to stay
+  // within the 15-char Preferences key budget.
+  String authToken;
 } cfg;
 
 struct Status {
@@ -172,6 +178,11 @@ static SemaphoreHandle_t livePointsMux = nullptr;
 static void livePointsLock()   { if (livePointsMux) xSemaphoreTakeRecursive(livePointsMux, portMAX_DELAY); }
 static void livePointsUnlock() { if (livePointsMux) xSemaphoreGiveRecursive(livePointsMux); }
 
+// Guards legacy track globals, Status, WiFi-failure text and config snapshots.
+static SemaphoreHandle_t coreMux = nullptr;
+static void coreLock()   { if (coreMux) xSemaphoreTakeRecursive(coreMux, portMAX_DELAY); }
+static void coreUnlock() { if (coreMux) xSemaphoreGiveRecursive(coreMux); }
+
 // Web-log ring buffer. Anything sent through weblogf() lands here in
 // addition to Serial, so the phone can tail it via /api/log after the
 // USB-C cable is disconnected. Buffer is bounded at WEB_LOG_MAX bytes;
@@ -180,6 +191,9 @@ static void livePointsUnlock() { if (livePointsMux) xSemaphoreGiveRecursive(live
 #define WEB_LOG_MAX 8192
 static String  webLogBuf;
 static uint32_t webLogSeq = 0;
+static SemaphoreHandle_t webLogMux = nullptr;
+static void webLogLock()   { if (webLogMux) xSemaphoreTakeRecursive(webLogMux, portMAX_DELAY); }
+static void webLogUnlock() { if (webLogMux) xSemaphoreGiveRecursive(webLogMux); }
 
 static void weblogf(const char* fmt, ...) {
   char buf[256];
@@ -189,11 +203,13 @@ static void weblogf(const char* fmt, ...) {
   va_end(args);
   if (n <= 0) return;
   Serial.print(buf);
+  webLogLock();
   webLogBuf += buf;
   webLogSeq += (uint32_t) strlen(buf);
   while (webLogBuf.length() > WEB_LOG_MAX) {
     webLogBuf.remove(0, WEB_LOG_MAX / 4);
   }
+  webLogUnlock();
 }
 
 // ── GNSS command + response watcher ─────────────────────────────────
@@ -222,7 +238,7 @@ static size_t   lastGgaLen      = 0;
 static uint32_t lastGgaAtMs     = 0;
 
 // Tracks the most recent PAIR001 ACK so the post-detect command flow
-// can verify that PAIR050 (5 Hz) was actually accepted. The LC29HDA
+// can verify that PAIR050 (rate config) was actually accepted. The LC29HDA
 // silently drops PAIR commands if its parser is busy, so we have to
 // look for `$PAIR001,050,0*XX` (cmd=050, result=0 → success).
 static int      lastPair001Cmd = -1;
@@ -256,7 +272,20 @@ static void gnssLineFeed(char c) {
       if (nmeaLineLen >= 6 && nmeaLineBuf[0] == '$' &&
           (strncmp(nmeaLineBuf, "$GNGGA,", 7) == 0 ||
            strncmp(nmeaLineBuf, "$GPGGA,", 7) == 0)) {
-        if (nmeaLineLen < sizeof(lastGgaLine) - 1) {
+        int commaCount = 0;
+        bool hasFix = false;
+        for (size_t i = 0; i < nmeaLineLen; i++) {
+          if (nmeaLineBuf[i] != ',') continue;
+          commaCount++;
+          if (commaCount == 6) {
+            char q = (i + 1 < nmeaLineLen) ? nmeaLineBuf[i + 1] : '\0';
+            hasFix = (q != '0' && q != ',' && q != '*' && q != '\0');
+            break;
+          }
+        }
+        if (!hasFix) {
+          lastGgaLen = 0;
+        } else if (nmeaLineLen < sizeof(lastGgaLine) - 1) {
           memcpy(lastGgaLine, nmeaLineBuf, nmeaLineLen);
           lastGgaLine[nmeaLineLen] = '\0';
           lastGgaLen = nmeaLineLen;
@@ -316,6 +345,7 @@ static void loadConfig() {
   cfg.serverUrl   = prefs.getString("surl", "");
   // Legacy keys ("msn", "atok") are silently removed below if present.
   cfg.otaAutoCheck = prefs.getBool("otaauto", true);
+  cfg.authToken = prefs.getString("auth", "");
 }
 
 static void saveConfig() {
@@ -331,6 +361,7 @@ static void saveConfig() {
   prefs.remove("msn");
   prefs.remove("atok");
   prefs.putBool("otaauto", cfg.otaAutoCheck);
+  prefs.putString("auth", cfg.authToken);
 }
 
 // Haversine distance between two lat/lng points in metres. Accurate to
@@ -343,6 +374,65 @@ static double haversineM(double lat1, double lon1, double lat2, double lon2) {
              cos(lat1 * (M_PI / 180.0)) * cos(lat2 * (M_PI / 180.0)) *
              sin(dLon / 2) * sin(dLon / 2);
   return R * 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+}
+
+static bool isRtkUsableFix(int fix) {
+  return fix == 4 || fix == 5;
+}
+
+static bool isSafeLeafName(const String& name) {
+  if (name.length() == 0 || name.indexOf("..") >= 0) return false;
+  for (size_t i = 0; i < name.length(); i++) {
+    char c = name.charAt(i);
+    bool ok = (c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+static String makeUniqueTrackPath() {
+  time_t now;
+  time(&now);
+  uint32_t ms = millis();
+  for (uint8_t i = 0; i < 100; i++) {
+    char nameBuf[64];
+    if (i == 0) {
+      snprintf(nameBuf, sizeof(nameBuf), "/tracks/track-%lu-%08lx.csv",
+               (unsigned long) now, (unsigned long) ms);
+    } else {
+      snprintf(nameBuf, sizeof(nameBuf), "/tracks/track-%lu-%08lx-%u.csv",
+               (unsigned long) now, (unsigned long) ms, (unsigned) i);
+    }
+    if (!LittleFS.exists(nameBuf)) return String(nameBuf);
+  }
+  return String();
+}
+
+static String setupApSsid() {
+  uint32_t suffix = (uint32_t) (ESP.getEfuseMac() & 0xFFFFFFFFu);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "rtk-walker-%08lX", (unsigned long) suffix);
+  return String(buf);
+}
+
+static String setupApPassword() {
+  // Device-specific WPA2 password: "rtk" + the 8 hex chars in the setup SSID.
+  // This avoids one global hardcoded password while keeping setup recoverable.
+  uint32_t suffix = (uint32_t) (ESP.getEfuseMac() & 0xFFFFFFFFu);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "rtk%08lX", (unsigned long) suffix);
+  return String(buf);
+}
+
+static void startSetupAp() {
+  String ssid = setupApSsid();
+  String pass = setupApPassword();
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid.c_str(), pass.c_str());
+  weblogf("[wifi] setup AP ssid=%s (device-specific password)\n", ssid.c_str());
 }
 
 // Shoelace area on an equirectangular projection anchored at the first
@@ -366,18 +456,21 @@ static double polygonAreaM2() {
 
 // ── Track recording ─────────────────────────────────────────────────
 static void startRecording() {
-  if (st.recording) return;
+  coreLock();
+  if (st.recording) { coreUnlock(); return; }
   if (!LittleFS.exists("/tracks")) LittleFS.mkdir("/tracks");
 
-  time_t now;
-  time(&now);
-  char nameBuf[48];
-  snprintf(nameBuf, sizeof(nameBuf), "/tracks/track-%lu.csv", (unsigned long) now);
-  currentTrackName = String(nameBuf);
+  currentTrackName = makeUniqueTrackPath();
+  if (currentTrackName.length() == 0) {
+    weblogf("[rec] failed to allocate unique track name\n");
+    coreUnlock();
+    return;
+  }
 
   trackFile = LittleFS.open(currentTrackName, FILE_WRITE);
   if (!trackFile) {
     weblogf("[rec] failed to open %s\n", currentTrackName.c_str());
+    coreUnlock();
     return;
   }
   trackFile.println("timestamp_unix,lat,lng,alt_m,fix,sats,hdop");
@@ -400,10 +493,12 @@ static void startRecording() {
   walkedM = 0;
   lastAreaM2 = 0;
   weblogf("[rec] started %s\n", currentTrackName.c_str());
+  coreUnlock();
 }
 
 static void stopRecording() {
-  if (!st.recording) return;
+  coreLock();
+  if (!st.recording) { coreUnlock(); return; }
   if (trackFile) {
     trackFile.flush();
     trackFile.close();
@@ -421,15 +516,14 @@ static void stopRecording() {
   lastTrackPoints = st.recPoints;
   weblogf("[rec] stopped (%u points, %.1f m walked, area %.1f m2)\n",
           st.recPoints, walkedM, lastAreaM2);
+  coreUnlock();
 }
 
 // Quality and motion filters that decide whether a fresh fix gets
 // written to the track. Tunable from the top of the file.
-//   MIN_FIX_QUALITY  - drop anything worse than RTK FIX (4). Setting
-//                      to 5 also accepts RTK FLOAT (decimeter-grade,
-//                      good enough for a lawn boundary if RTK FIX
-//                      momentarily drops). Lower values let in plain
-//                      GPS / DGPS which adds metres of noise.
+//   RTK quality     - only GGA fix 4 (RTK fixed) and 5 (RTK float) are
+//                     accepted. Estimated/manual/simulation fixes (6/7/8)
+//                     are explicit non-RTK modes and must not be recorded.
 //   MIN_DISPLACEMENT_M - skip fixes that haven't moved at least N cm
 //                      from the previous accepted point. Cleans up
 //                      standstill jitter, but set too high and slow
@@ -443,23 +537,22 @@ static void stopRecording() {
 //                      reasonable. RTK FIX noise is ~1 cm too so this
 //                      sits at the edge but standstill jitter still
 //                      filters because cm-level noise stays in place.
-#define MIN_FIX_QUALITY     4
 #define MIN_DISPLACEMENT_M  0.01
 
 static void appendPoint() {
-  if (!st.recording || !trackFile) return;
+  coreLock();
+  if (!st.recording || !trackFile) { coreUnlock(); return; }
   // Only record actual GPS solutions. fix=0 means we have no usable
   // position; logging that would pollute the trail with zeros.
-  if (st.fix == 0 || st.lat == 0 || st.lng == 0) return;
-  // Quality filter: drop everything below RTK FIX. Accepts FLOAT (5)
-  // as well since FLOAT is decimeter-grade and still useful for a
-  // lawn outline. Plain GPS or DGPS are way too noisy for cm work.
-  if (st.fix < MIN_FIX_QUALITY) return;
+  if (st.fix == 0 || st.lat == 0 || st.lng == 0) { coreUnlock(); return; }
+  // Quality filter: only RTK fixed/float. Reject estimated/manual/simulated
+  // GGA modes even though their numeric values are higher than 5.
+  if (!isRtkUsableFix(st.fix)) { coreUnlock(); return; }
   // Motion filter: skip fixes within 5 cm of the last accepted point
   // (standstill RTK jitter at 5 Hz looks like a zigzag without this).
   if (firstLat != 0 || firstLng != 0) {
     double d = haversineM(prevLat, prevLng, st.lat, st.lng);
-    if (d < MIN_DISPLACEMENT_M) return;
+    if (d < MIN_DISPLACEMENT_M) { coreUnlock(); return; }
   }
 
   time_t now;
@@ -499,6 +592,7 @@ static void appendPoint() {
   // Flush every 8 rows so an unexpected reset doesn't lose the entire
   // walk — but skip the flush most of the time to spare flash writes.
   if ((st.recPoints & 0x07) == 0) trackFile.flush();
+  coreUnlock();
 }
 
 // ── NTRIP ───────────────────────────────────────────────────────────
@@ -506,9 +600,18 @@ static void appendPoint() {
 // but ntripConnect needs to gate on them.
 extern bool     gnssDetected;
 extern uint32_t lastGnssByteMs;
+static void     gnssPump();
 
 static void ntripConnect() {
-  if (cfg.ntripMount.length() == 0) return;
+  coreLock();
+  String host = cfg.ntripHost;
+  uint16_t port = cfg.ntripPort;
+  String mount = cfg.ntripMount;
+  String user = cfg.ntripUser;
+  String pass = cfg.ntripPass;
+  coreUnlock();
+
+  if (mount.length() == 0) return;
   if (WiFi.status() != WL_CONNECTED) return;
   // No GNSS module → no point fetching RTCM corrections, there's
   // nothing on the other end of the UART to consume them. Skip
@@ -521,27 +624,34 @@ static void ntripConnect() {
 
   ntripConnecting = true;
   weblogf("[ntrip] connecting %s:%u/%s\n",
-          cfg.ntripHost.c_str(), cfg.ntripPort, cfg.ntripMount.c_str());
+          host.c_str(), port, mount.c_str());
 
-  if (!ntrip.connect(cfg.ntripHost.c_str(), cfg.ntripPort)) {
+  if (!ntrip.connect(host.c_str(), port, NTRIP_TCP_CONNECT_TIMEOUT_MS)) {
     weblogf("[ntrip] tcp connect failed\n");
     ntripConnecting = false;
     return;
   }
-  String auth = base64::encode(cfg.ntripUser + ":" + cfg.ntripPass);
-  ntrip.printf("GET /%s HTTP/1.0\r\n", cfg.ntripMount.c_str());
+  String auth = base64::encode(user + ":" + pass);
+  ntrip.printf("GET /%s HTTP/1.0\r\n", mount.c_str());
   ntrip.printf("User-Agent: NTRIP rtk-walker/1.0\r\n");
   ntrip.printf("Authorization: Basic %s\r\n", auth.c_str());
   ntrip.printf("Accept: */*\r\n");
   ntrip.printf("Connection: close\r\n\r\n");
 
-  // Wait briefly for the 200 OK / ICY 200 OK line.
-  unsigned long deadline = millis() + 3000;
+  // Wait briefly for the 200 OK / ICY 200 OK line. Keep polling GNSS while
+  // waiting so a slow caster handshake does not starve UART parsing.
+  unsigned long deadline = millis() + NTRIP_HANDSHAKE_TIMEOUT_MS;
   String header;
   while (millis() < deadline) {
     while (ntrip.available()) {
       char c = ntrip.read();
       header += c;
+      if (header.length() > NTRIP_HEADER_MAX) {
+        weblogf("[ntrip] handshake header too large; aborting\n");
+        ntrip.stop();
+        ntripConnecting = false;
+        return;
+      }
       if (header.endsWith("\r\n\r\n") || header.endsWith("\n\n")) {
         // Centipede returns "SOURCETABLE 200 OK" (a 200 status!) when the
         // mountpoint is unknown, followed by a 250 KB list of every base
@@ -572,7 +682,8 @@ static void ntripConnect() {
         return;
       }
     }
-    delay(10);
+    gnssPump();
+    delay(1);
   }
   weblogf("[ntrip] handshake timeout\n");
   ntrip.stop();
@@ -606,7 +717,10 @@ static void ntripPushGga() {
 
 static void ntripPump() {
   if (!ntrip.connected()) {
-    if (cfg.ntripMount.length() > 0 && WiFi.status() == WL_CONNECTED) ntripConnect();
+    coreLock();
+    bool haveMount = cfg.ntripMount.length() > 0;
+    coreUnlock();
+    if (haveMount && WiFi.status() == WL_CONNECTED) ntripConnect();
     return;
   }
   ntripPushGga();
@@ -628,7 +742,9 @@ static void ntripPump() {
     int n = ntrip.read(chunk, sizeof(chunk));
     if (n <= 0) break;
     gnssSerial.write(chunk, n);
+    coreLock();
     st.ntripBytes += n;
+    coreUnlock();
   }
 }
 
@@ -681,7 +797,7 @@ static bool     batteryCharging = false;
 static uint32_t gnssDetectedAtMs = 0; // millis() when first byte arrived (used to delay the post-detect PAIR queries)
 static bool     pair021Sent = false; // firmware version query
 static bool     pair050_1HzSent = false; // force 1 Hz fix rate (override NV)
-// PAIR050,200 (5 Hz) retry state. The LC29HDA silently drops the cmd
+// PAIR050 rate-config ACK state. The LC29HDA silently drops the cmd
 // if its serial parser is busy, so resend up to 4 times spaced 2 s
 // apart and stop once PAIR001,050,0 ACK is observed. Confirmation goes
 // into gnssRateHz so the UI can show the real measured fix rate.
@@ -748,6 +864,10 @@ static void gnssPump() {
     sendGnssCommand("PAIR050,1000");
     pair050_1HzSent = true;
   }
+  if (!pair050Acked && lastPair001Cmd == 50 && lastPair001Result == 0) {
+    pair050Acked = true;
+    weblogf("[gnss] PAIR050 ACKed\n");
+  }
 #if NMEA_HEARTBEAT
   // Periodic heartbeat so you can tell "no bytes" apart from "bytes
   // flowing but no fix indoors". Every 2 s prints a one-liner with
@@ -755,9 +875,15 @@ static void gnssPump() {
   // so the phone keeps seeing it after USB is unplugged.
   uint32_t nowMs = millis();
   if (nowMs - lastNmeaStatsMs >= 2000) {
+    coreLock();
+    int satsLog = st.sats;
+    int fixLog = st.fix;
+    double hdopLog = st.hdop;
+    uint32_t lastFixLog = st.lastFixMs;
+    coreUnlock();
     weblogf("[nmea] rx=%u bytes / 2s, sats=%d, fix=%d, hdop=%.1f, lastFixAgo=%ldms\n",
-            nmeaBytesThisSec, st.sats, st.fix, st.hdop,
-            st.lastFixMs ? (long)(nowMs - st.lastFixMs) : -1L);
+            nmeaBytesThisSec, satsLog, fixLog, hdopLog,
+            lastFixLog ? (long)(nowMs - lastFixLog) : -1L);
     nmeaBytesThisSec = 0;
     lastNmeaStatsMs = nowMs;
   }
@@ -766,6 +892,14 @@ static void gnssPump() {
   // is parsed. We mirror it into Status only when we have a full new
   // sentence, otherwise we'd race against half-parsed values.
   if (gps.location.isUpdated()) {
+    int fixNow;
+    int satsNow;
+    double latNow;
+    double lngNow;
+    double altNow;
+    double hdopNow;
+    uint32_t lastFixNow;
+    coreLock();
     st.lat  = gps.location.lat();
     st.lng  = gps.location.lng();
     st.alt  = gps.altitude.isValid() ? gps.altitude.meters() : st.alt;
@@ -777,6 +911,13 @@ static void gnssPump() {
       st.fix = atoi(ggaFixQualityGP.value());
     }
     st.lastFixMs = millis();
+    latNow = st.lat;
+    lngNow = st.lng;
+    altNow = st.alt;
+    fixNow = st.fix;
+    satsNow = st.sats;
+    hdopNow = st.hdop;
+    lastFixNow = st.lastFixMs;
     // Rolling 1-second window counter so the UI can show the actual
     // fix rate. Window closes when 1000 ms elapses; final count gets
     // latched into gnssRateHz and the window restarts at the current
@@ -791,6 +932,7 @@ static void gnssPump() {
       gnssRateWinStartMs = nowRate;
     }
     appendPoint();
+    coreUnlock();
     // Feed the new session recorder. No-op when recorder is idle, so
     // this costs essentially nothing when we're not actively capturing
     // a work/obstacle/channel session. Uses the same NMEA-decoded fix
@@ -798,9 +940,9 @@ static void gnssPump() {
     // from $GxGGA field 6) so quality gating stays consistent across
     // the two pipelines until Task 11 retires the legacy logger.
     recorder.onFix(
-        (unsigned long)(st.lastFixMs / 1000UL),
-        st.lat, st.lng, st.alt,
-        st.fix, st.sats, st.hdop
+        (unsigned long)(lastFixNow / 1000UL),
+        latNow, lngNow, altNow,
+        fixNow, satsNow, hdopNow
     );
   }
 }
@@ -901,7 +1043,7 @@ static bool i2cProbe(uint8_t addr) {
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
   i2c_master_stop(cmd);
-  esp_err_t ret = i2c_master_cmd_begin(I2C_BUS_NUM, cmd, pdMS_TO_TICKS(50));
+  esp_err_t ret = i2c_master_cmd_begin(I2C_BUS_NUM, cmd, pdMS_TO_TICKS(8));
   i2c_cmd_link_delete(cmd);
   return ret == ESP_OK;
 #else
@@ -939,7 +1081,10 @@ static void buttonPump() {
   if (millis() - lastButtonChangeMs >= BUTTON_DEBOUNCE_MS && stable != raw) {
     stable = raw;
     if (raw == LOW) {            // press edge
-      if (st.recording) stopRecording(); else startRecording();
+      coreLock();
+      bool wasRecording = st.recording;
+      coreUnlock();
+      if (wasRecording) stopRecording(); else startRecording();
     }
   }
 }
@@ -951,12 +1096,110 @@ static void sendJson(int code, const JsonDocument& doc) {
   server.send(code, "application/json", out);
 }
 
+static String authTokenSnapshot() {
+  coreLock();
+  String token = cfg.authToken;
+  coreUnlock();
+  return token;
+}
+
+static bool secureEquals(const String& a, const String& b) {
+  if (a.length() != b.length()) return false;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < a.length(); i++) {
+    diff |= (uint8_t) a[i] ^ (uint8_t) b[i];
+  }
+  return diff == 0;
+}
+
+static String requestAuthToken() {
+  String token = server.header("X-Auth-Token");
+  token.trim();
+  if (token.length() > 0) return token;
+
+  String auth = server.header("Authorization");
+  auth.trim();
+  const String bearerPrefix = "Bearer ";
+  if (auth.startsWith(bearerPrefix)) {
+    token = auth.substring(bearerPrefix.length());
+    token.trim();
+    return token;
+  }
+  return String();
+}
+
+static bool requireAuth() {
+  String configured = authTokenSnapshot();
+  if (configured.length() == 0) {
+    // First-time recovery/setup must stay possible before a token exists.
+    // Only allow unauthenticated protected endpoints while the device is in
+    // its WPA2 setup AP. Once it joins the normal LAN, require the operator to
+    // create a token through /api/auth before config/OTA/upload endpoints work.
+    bool setupApMode = (WiFi.getMode() & WIFI_AP) != 0;
+    if (setupApMode) {
+      static uint32_t lastWarnMs = 0;
+      uint32_t now = millis();
+      if (lastWarnMs == 0 || now - lastWarnMs > 30000) {
+        weblogf("[auth] WARNING: no API token configured; protected endpoints are open only on setup AP\n");
+        lastWarnMs = now;
+      }
+      return true;
+    }
+
+    server.send(403, "application/json", "{\"ok\":false,\"error\":\"api token not configured; set one via /api/auth first\"}");
+    return false;
+  }
+
+  if (secureEquals(requestAuthToken(), configured)) return true;
+
+  server.sendHeader("WWW-Authenticate", "Bearer realm=\"rtk-walker\"");
+  server.send(401, "application/json", "{\"ok\":false,\"error\":\"auth required\"}");
+  return false;
+}
+
+static bool validNewAuthToken(const String& token) {
+  if (token.length() < 8 || token.length() > 96) return false;
+  for (size_t i = 0; i < token.length(); i++) {
+    unsigned char c = (unsigned char) token[i];
+    if (c < 0x21 || c > 0x7e) return false;
+  }
+  return true;
+}
+
+static void handleAuthGet() {
+  JsonDocument doc;
+  doc["configured"] = authTokenSnapshot().length() > 0;
+  sendJson(200, doc);
+}
+
+static void handleAuthPost() {
+  if (authTokenSnapshot().length() > 0 && !requireAuth()) return;
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  String token = body["token"].as<String>();
+  token.trim();
+  if (!validNewAuthToken(token)) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"token must be 8-96 printable ASCII chars\"}");
+    return;
+  }
+  coreLock();
+  cfg.authToken = token;
+  saveConfig();
+  coreUnlock();
+  weblogf("[auth] API token updated\n");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 static void handleRoot() {
   server.send_P(200, "text/html", INDEX_HTML);
 }
 
 static void handleStatus() {
   JsonDocument doc;
+  coreLock();
   doc["fix"]        = st.fix;
   doc["sats"]       = st.sats;
   doc["hdop"]       = st.hdop;
@@ -974,7 +1217,8 @@ static void handleStatus() {
   }
   doc["areaM2"]     = lastAreaM2;
   doc["gnssHz"]     = gnssRateHz;
-  doc["gnss5HzAcked"] = pair050Acked && lastPair001Result == 0;
+  doc["gnss5HzAcked"] = pair050Acked;
+  doc["authConfigured"] = cfg.authToken.length() > 0;
 #ifdef BAT_ADC
   if (batteryReady) {
     doc["batteryVolts"]    = batteryVoltsEma;
@@ -982,10 +1226,12 @@ static void handleStatus() {
     doc["batteryCharging"] = batteryCharging;
   }
 #endif
+  coreUnlock();
   sendJson(200, doc);
 }
 
 static void handleRecord() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
   JsonDocument body;
   if (deserializeJson(body, server.arg("plain"))) {
@@ -994,12 +1240,15 @@ static void handleRecord() {
   bool want = body["recording"] | false;
   if (want) startRecording(); else stopRecording();
   JsonDocument out;
+  coreLock();
   out["recording"] = st.recording;
   out["track"]     = currentTrackName;
+  coreUnlock();
   sendJson(200, out);
 }
 
 static void handleGnssSend() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
   JsonDocument body;
   if (deserializeJson(body, server.arg("plain"))) {
@@ -1021,22 +1270,27 @@ static void handleGnssSend() {
 }
 
 static void handleLog() {
+  if (!requireAuth()) return;
   // Polling-friendly snapshot: returns the current buffer text + the
   // monotonic byte offset of the newest byte. Client should remember
   // `seq` between polls and skip the first (seq - prevSeq) chars on
   // subsequent fetches if it wants to append rather than replace.
-  uint32_t firstSeq = webLogSeq - (uint32_t) webLogBuf.length();
+  webLogLock();
+  String logCopy = webLogBuf;
+  uint32_t seqCopy = webLogSeq;
+  webLogUnlock();
+  uint32_t firstSeq = seqCopy - (uint32_t) logCopy.length();
   String out;
-  out.reserve(webLogBuf.length() + 64);
+  out.reserve(logCopy.length() + 64);
   out += "{\"seq\":";
-  out += webLogSeq;
+  out += seqCopy;
   out += ",\"firstSeq\":";
   out += firstSeq;
   out += ",\"buf\":";
   // JSON-escape the buffer content
   out += '\"';
-  for (size_t i = 0; i < webLogBuf.length(); i++) {
-    char c = webLogBuf[i];
+  for (size_t i = 0; i < logCopy.length(); i++) {
+    char c = logCopy[i];
     switch (c) {
       case '\"': out += "\\\""; break;
       case '\\': out += "\\\\"; break;
@@ -1058,13 +1312,17 @@ static void handleLog() {
 }
 
 static void handleTrackCurrent() {
+  if (!requireAuth()) return;
   // Emit JSON as a streaming string to keep peak heap low on long
   // walks. Format: { recording: bool, points: [[lat,lng,fix], ...] }.
   String out;
+  coreLock();
+  bool recordingNow = st.recording;
+  coreUnlock();
   livePointsLock();
   out.reserve(64 + livePoints.size() * 32);
   out += "{\"recording\":";
-  out += (st.recording ? "true" : "false");
+  out += (recordingNow ? "true" : "false");
   out += ",\"count\":";
   out += (uint32_t) livePoints.size();
   out += ",\"points\":[";
@@ -1084,6 +1342,7 @@ static void handleTrackCurrent() {
 }
 
 static void handleTracks() {
+  if (!requireAuth()) return;
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   if (LittleFS.exists("/tracks")) {
@@ -1108,6 +1367,7 @@ static void handleTracks() {
 }
 
 static void handleTrackDownload() {
+  if (!requireAuth()) return;
   String uri = server.uri();
   // /track/<name>            → full raw CSV
   // /track/<name>.polygon    → reformatted to bare lat,lng pairs for
@@ -1128,6 +1388,11 @@ static void handleTrackDownload() {
   const size_t jsonSuffixLen = strlen(jsonSuffix);
   bool jsonMode = !polygonMode && name.endsWith(jsonSuffix);
   if (jsonMode) name = name.substring(0, name.length() - jsonSuffixLen);
+
+  if (!isSafeLeafName(name)) {
+    server.send(400, "text/plain", "bad track name");
+    return;
+  }
 
   String path = String("/tracks/") + name;
   if (!LittleFS.exists(path)) { server.send(404, "text/plain", "no such track"); return; }
@@ -1229,14 +1494,22 @@ static void handleI2cScan() {
 #else
   JsonDocument doc;
   JsonArray arr = doc["found"].to<JsonArray>();
+  bool truncated = false;
+  uint32_t deadline = millis() + 750;
   // 7-bit addresses 0x03..0x77 are the valid scan window; 0x00..0x02
   // and 0x78..0x7F are reserved.
   for (uint8_t a = 0x03; a <= 0x77; a++) {
     if (i2cProbe(a)) arr.add((unsigned) a);
+    if ((a & 0x0F) == 0) gnssPump();
+    if ((int32_t)(millis() - deadline) >= 0) {
+      truncated = true;
+      break;
+    }
   }
   doc["sda"] = TOUCH_SDA;
   doc["scl"] = TOUCH_SCL;
   doc["bus"] = "IDF I2C_NUM_0 (touch bus)";
+  doc["truncated"] = truncated;
   sendJson(200, doc);
 #endif
 }
@@ -1301,15 +1574,18 @@ static void handleBatteryRaw() {
 
 static void handleConfigGet() {
   JsonDocument doc;
+  coreLock();
   doc["ssid"]  = cfg.ssid;
   doc["host"]  = cfg.ntripHost;
   doc["port"]  = cfg.ntripPort;
   doc["mount"] = cfg.ntripMount;
   doc["user"]  = cfg.ntripUser;
+  coreUnlock();
   sendJson(200, doc);
 }
 
 static void handleConfigPost() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
   JsonDocument body;
   if (deserializeJson(body, server.arg("plain"))) {
@@ -1326,14 +1602,24 @@ static void handleConfigPost() {
     if (v.length() == 0) return;
     target = v;
   };
+  coreLock();
   if (body["ssid"].is<const char*>())  cfg.ssid       = String((const char*) body["ssid"]);
   maybeSetString("pass",  cfg.pass);
   if (body["host"].is<const char*>())  cfg.ntripHost  = String((const char*) body["host"]);
-  if (body["port"].is<int>())          cfg.ntripPort  = (uint16_t) (int) body["port"];
+  if (body["port"].is<int>()) {
+    int port = (int) body["port"];
+    if (port < 1 || port > 65535) {
+      coreUnlock();
+      server.send(400, "application/json", "{\"ok\":false,\"error\":\"port out of range\"}");
+      return;
+    }
+    cfg.ntripPort = (uint16_t) port;
+  }
   if (body["mount"].is<const char*>()) cfg.ntripMount = String((const char*) body["mount"]);
   if (body["user"].is<const char*>())  cfg.ntripUser  = String((const char*) body["user"]);
   maybeSetString("npass", cfg.ntripPass);
   saveConfig();
+  coreUnlock();
   server.send(200, "application/json", "{\"ok\":true}");
   delay(500);
   ESP.restart();
@@ -1345,11 +1631,14 @@ static void handleConfigPost() {
 // — the values are read fresh on every upload).
 static void handleConfigServerGet() {
   JsonDocument doc;
+  coreLock();
   doc["serverUrl"] = cfg.serverUrl;
+  coreUnlock();
   sendJson(200, doc);
 }
 
 static void handleConfigServerPost() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
   JsonDocument body;
   if (deserializeJson(body, server.arg("plain"))) {
@@ -1359,11 +1648,13 @@ static void handleConfigServerPost() {
   // field; mowerSn + adminToken were removed because the server-side
   // walker-bundles upload + walker-firmware binary download are both
   // public LAN-only endpoints now.
+  coreLock();
   if (body["serverUrl"].is<const char*>()) {
     String v = String((const char*) body["serverUrl"]);
     if (v.length() > 0) cfg.serverUrl = v;
   }
   saveConfig();
+  coreUnlock();
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -1381,7 +1672,11 @@ bool uploadBundleToServer(String& outMsg) {
   // a shared library and the operator assigns it to a specific mower later
   // via the admin UI. Upload is mounted publicly on the server (LAN-only
   // threat model), so the walker no longer needs any auth token at all.
-  if (cfg.serverUrl.isEmpty()) {
+  coreLock();
+  String serverUrl = cfg.serverUrl;
+  coreUnlock();
+
+  if (serverUrl.isEmpty()) {
     outMsg = "Server URL not set";
     return false;
   }
@@ -1417,20 +1712,6 @@ bool uploadBundleToServer(String& outMsg) {
     return (uint8_t*) p;
   };
 
-  uint8_t* fileBuf = allocBuf(fileSize);
-  if (!fileBuf) {
-    f.close();
-    outMsg = "Bundle alloc failed (" + String((unsigned) fileSize) + " B)";
-    return false;
-  }
-  size_t got = f.read(fileBuf, fileSize);
-  f.close();
-  if (got != fileSize) {
-    free(fileBuf);
-    outMsg = "Short read";
-    return false;
-  }
-
   String boundary = "----RtkWalkerBoundary7K9zQp";
   String head = "--" + boundary + "\r\n"
                 "Content-Disposition: form-data; name=\"bundle\"; filename=\"walker.novabundle\"\r\n"
@@ -1440,16 +1721,21 @@ bool uploadBundleToServer(String& outMsg) {
   size_t totalLen = head.length() + fileSize + tail.length();
   uint8_t* body = allocBuf(totalLen);
   if (!body) {
-    free(fileBuf);
+    f.close();
     outMsg = "Body alloc failed (" + String((unsigned) totalLen) + " B)";
     return false;
   }
   memcpy(body, head.c_str(), head.length());
-  memcpy(body + head.length(), fileBuf, fileSize);
+  size_t got = f.read(body + head.length(), fileSize);
+  f.close();
+  if (got != fileSize) {
+    free(body);
+    outMsg = "Short read";
+    return false;
+  }
   memcpy(body + head.length() + fileSize, tail.c_str(), tail.length());
-  free(fileBuf);
 
-  String url = cfg.serverUrl;
+  String url = serverUrl;
   // Allow user to enter the host with or without a trailing slash.
   if (url.endsWith("/")) url.remove(url.length() - 1);
   // Public LAN-only upload endpoint — no Authorization header required.
@@ -1485,6 +1771,7 @@ bool uploadBundleToServer(String& outMsg) {
 
 // HTTP wrapper around uploadBundleToServer() for the web UI / curl tests.
 static void handleUploadPost() {
+  if (!requireAuth()) return;
   String msg;
   bool ok = uploadBundleToServer(msg);
   JsonDocument doc;
@@ -1497,6 +1784,9 @@ static void handleUploadPost() {
 void setup() {
   Serial.begin(115200);
   delay(200);
+  webLogMux = xSemaphoreCreateRecursiveMutex();
+  coreMux = xSemaphoreCreateRecursiveMutex();
+  livePointsMux = xSemaphoreCreateRecursiveMutex();
   weblogf("[rtk-walker] boot\n");
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -1522,29 +1812,12 @@ void setup() {
     weblogf("[session] init failed\n");
   }
 
-  livePointsMux = xSemaphoreCreateRecursiveMutex();
-
   loadConfig();
+  if (cfg.authToken.length() == 0) {
+    weblogf("[auth] WARNING: no API token configured; setup endpoints remain open until a token is set\n");
+  }
 
   if (cfg.ssid.length() > 0) {
-    // TEMP debug: dump stored creds so we can verify the keyboard
-    // didn't sneak hidden chars (tabs, CRs, smart quotes) into NVS.
-    // Remove this block once the no-connect cause is identified.
-    auto hexDump = [](const char* label, const String& s) {
-      if (s.length() == 0) {
-        weblogf("[wifi-dbg] %s hex= <EMPTY>\n", label);
-        return;
-      }
-      String hex;
-      hex.reserve(s.length() * 3 + 8);
-      for (size_t i = 0; i < s.length(); i++) {
-        char b[4];
-        snprintf(b, sizeof(b), "%02x ", (unsigned) (uint8_t) s[i]);
-        hex += b;
-      }
-      weblogf("[wifi-dbg] %s hex= %s\n", label, hex.c_str());
-    };
-
     static int lastDisconnectReason = 0;
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
       lastDisconnectReason = info.wifi_sta_disconnected.reason;
@@ -1552,7 +1825,9 @@ void setup() {
       // Stash for the snapshot so the TFT banner has the human-readable
       // reason to show. Each new disconnect overwrites — the most recent
       // failure is what the user wants to see.
+      coreLock();
       wifiFailReason = name ? String(name) : String("");
+      coreUnlock();
       weblogf("[wifi-evt] STA disconnected - reason=%d (%s)\n",
               (int) lastDisconnectReason, name ? name : "?");
     }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
@@ -1568,22 +1843,10 @@ void setup() {
     }
     WiFi.scanDelete();
 
-    // Creds dump immediately before WiFi.begin so it sits at the bottom
-    // of the terminal scrollback, impossible to lose. Build stamp pinpoints
-    // which firmware revision is actually running on the device.
-    weblogf("[creds] ##### build %s %s #####\n", __DATE__, __TIME__);
-    weblogf("[creds] ssid=\"%s\" (%u chars)\n",
-            cfg.ssid.c_str(), (unsigned) cfg.ssid.length());
-    hexDump("ssid", cfg.ssid);
-    if (cfg.pass.length() == 0) {
-      weblogf("[creds] !!!!! PASSWORD IS EMPTY IN NVS !!!!!\n");
-      weblogf("[creds] pass=\"\" (0 chars)\n");
-    } else {
-      weblogf("[creds] pass=\"%s\" (%u chars)\n",
-              cfg.pass.c_str(), (unsigned) cfg.pass.length());
-    }
-    hexDump("pass", cfg.pass);
-    weblogf("[creds] #################################\n");
+    weblogf("[creds] build %s %s, ssid=\"%s\" (%u chars), wifi pass length=%u\n",
+            __DATE__, __TIME__,
+            cfg.ssid.c_str(), (unsigned) cfg.ssid.length(),
+            (unsigned) cfg.pass.length());
 
     weblogf("[wifi] connecting to %s\n", cfg.ssid.c_str());
     WiFi.mode(WIFI_STA);
@@ -1607,20 +1870,25 @@ void setup() {
       // (4_WAY_HANDSHAKE_TIMEOUT, AUTH_FAIL, NO_AP_FOUND, etc.).
       weblogf("[wifi] connect timeout — status=%d, falling back to AP\n",
               (int) WiFi.status());
+      coreLock();
       wifiConnectFailed = true;
       if (wifiFailReason.length() == 0) wifiFailReason = "TIMEOUT";
-      WiFi.mode(WIFI_AP);
-      WiFi.softAP("rtk-walker-setup", "rtkwalker");
+      coreUnlock();
+      startSetupAp();
     }
   } else {
     weblogf("[wifi] no SSID configured — running AP only\n");
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("rtk-walker-setup", "rtkwalker");
+    startSetupAp();
     weblogf("[wifi] AP ip=%s\n", WiFi.softAPIP().toString().c_str());
   }
 
+  static const char* authHeaderKeys[] = { "Authorization", "X-Auth-Token" };
+  server.collectHeaders(authHeaderKeys, 2);
+
   server.on("/",           HTTP_GET,  handleRoot);
   server.on("/api/status",        HTTP_GET,  handleStatus);
+  server.on("/api/auth",          HTTP_GET,  handleAuthGet);
+  server.on("/api/auth",          HTTP_POST, handleAuthPost);
   server.on("/api/record",        HTTP_POST, handleRecord);
   server.on("/api/tracks",        HTTP_GET,  handleTracks);
   server.on("/api/track/current", HTTP_GET,  handleTrackCurrent);
@@ -1647,6 +1915,7 @@ void setup() {
     doc["updateAvailable"] = r.updateAvailable;
     doc["currentVersion"] = r.currentVersion;
     doc["latestVersion"] = r.latestVersion;
+    doc["hasMd5"] = r.md5.length() == 32;
     doc["error"] = r.error;
     String out;
     serializeJson(doc, out);
@@ -1657,13 +1926,14 @@ void setup() {
   // can't apply a payload that has since been superseded. walkerOtaApply
   // reboots on success and never returns; if we get here, it failed.
   server.on("/api/ota/apply", HTTP_POST, []() {
+    if (!requireAuth()) return;
     OtaCheckResult r = walkerOtaCheck();
     if (!r.ok || !r.updateAvailable) {
       server.send(200, "application/json", "{\"ok\":false,\"error\":\"no update\"}");
       return;
     }
     String err;
-    bool ok = walkerOtaApply(r.url, r.md5, nullptr, err);
+    bool ok = walkerOtaApply(r.url, r.md5, r.sha256, nullptr, err);
     StaticJsonDocument<256> doc;
     doc["ok"] = ok;
     doc["error"] = err;
@@ -1677,6 +1947,7 @@ void setup() {
   // mower bundle. Always rebuilds on request so the latest /session/ state
   // is reflected; the build cost is ~hundreds of ms for typical sessions.
   server.on("/bundle.novabundle", HTTP_GET, []() {
+    if (!requireAuth()) return;
     BundleBuilder bb(sessionStore);
     String path = bb.build();
     if (path.isEmpty()) {
@@ -1797,6 +2068,7 @@ void loop() {
 // uses these via tft_ui.cpp; the headless target compiles them too
 // (they're cheap) but nothing calls them.
 void walkerGetSnapshot(WalkerSnapshot& out) {
+  coreLock();
   out.lat        = st.lat;
   out.lng        = st.lng;
   out.alt        = st.alt;
@@ -1812,7 +2084,7 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   out.gnssAlive  = (lastGnssByteMs != 0);
   out.msSinceGnssByte = lastGnssByteMs ? (millis() - lastGnssByteMs) : (uint32_t) 0xFFFFFFFF;
   out.gnssRateHz   = gnssRateHz;
-  out.gnss5HzAcked = pair050Acked && lastPair001Result == 0;
+  out.gnss5HzAcked = pair050Acked;
   out.wifiConnectFailed = wifiConnectFailed;
   out.wifiFailReason    = wifiFailReason;
 #ifdef BAT_ADC
@@ -1835,12 +2107,15 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   }
   out.areaM2   = (float) lastAreaM2;
   out.wifiSsid   = cfg.ssid;
+  out.authConfigured = cfg.authToken.length() > 0;
+  coreUnlock();
   if (out.wifiUp)        out.wifiIp = WiFi.localIP().toString();
   else if (out.apMode)   out.wifiIp = WiFi.softAPIP().toString();
   else                   out.wifiIp = "";
 }
 
 void walkerGetConfig(WalkerConfigView& out) {
+  coreLock();
   out.wifiSsid        = cfg.ssid;
   out.wifiPassMasked  = cfg.pass.length() ? "********" : "";
   out.ntripHost       = cfg.ntripHost;
@@ -1850,6 +2125,8 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.ntripPassMasked = cfg.ntripPass.length() ? "********" : "";
   out.serverUrl       = cfg.serverUrl;
   out.otaAutoCheck    = cfg.otaAutoCheck;
+  out.authConfigured  = cfg.authToken.length() > 0;
+  coreUnlock();
 }
 
 void walkerApplyConfig(const WalkerConfigUpdate& upd) {
@@ -1872,6 +2149,7 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
           upd.ntripUserSet  ? "set" : "kept",
           upd.ntripPassSet  ? "set" : "kept (blank in form)");
 
+  coreLock();
   if (upd.wifiSsidSet)  { cfg.ssid       = upd.wifiSsid;  }
   if (upd.wifiPassSet)  { cfg.pass       = upd.wifiPass;  }
   if (upd.ntripHostSet) { cfg.ntripHost  = upd.ntripHost; }
@@ -1883,21 +2161,42 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   saveConfig();
   weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
           (unsigned) cfg.pass.length());
+  coreUnlock();
   delay(500);
   ESP.restart();
 }
 
 bool walkerToggleRecording() {
-  if (st.recording) stopRecording();
+  coreLock();
+  bool wasRecording = st.recording;
+  coreUnlock();
+  if (wasRecording) stopRecording();
   else              startRecording();
-  return st.recording;
+  coreLock();
+  bool nowRecording = st.recording;
+  coreUnlock();
+  return nowRecording;
 }
 
-String walkerLastTrackPath() { return lastTrackPath; }
-uint32_t walkerLastTrackPoints() { return lastTrackPoints; }
+String walkerLastTrackPath() {
+  coreLock();
+  String path = lastTrackPath;
+  coreUnlock();
+  return path;
+}
+
+uint32_t walkerLastTrackPoints() {
+  coreLock();
+  uint32_t points = lastTrackPoints;
+  coreUnlock();
+  return points;
+}
+
 void walkerSetLastTrack(const String& path, uint32_t points) {
+  coreLock();
   lastTrackPath = path;
   lastTrackPoints = points;
+  coreUnlock();
 }
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {

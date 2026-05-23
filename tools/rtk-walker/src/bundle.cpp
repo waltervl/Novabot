@@ -26,6 +26,8 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 
+#include <algorithm>
+#include <string.h>
 #include <vector>
 
 namespace {
@@ -33,6 +35,8 @@ namespace {
 constexpr const char* kExportDir  = "/export";
 constexpr const char* kBundlePath = "/export/walker.novabundle";
 constexpr const char* kSessionDir = "/session";
+constexpr size_t kMaxBundlePointsPerFile = 4000;
+constexpr size_t kMaxBundleTotalPoints = 12000;
 
 // Same file-tree we mirror raw into walker/<name> inside the zip.
 constexpr const char* kZipWalkerDir = "walker/";
@@ -84,6 +88,14 @@ struct ZipEntry {
     uint32_t crc;
     uint32_t size;        // both compressed and uncompressed (stored mode)
     uint32_t offset;      // offset of local header in the zip
+};
+
+class BundleSessionGuard {
+public:
+    explicit BundleSessionGuard(SessionStore& s) : s_(s) { s_.lock(); }
+    ~BundleSessionGuard() { s_.unlock(); }
+private:
+    SessionStore& s_;
 };
 
 // Write a Local File Header for `name`. Caller MUST follow with exactly
@@ -230,11 +242,30 @@ String leafName(const String& raw) {
 // Each emitted element is {x: <num>, y: <num>}. Lines that don't parse
 // as two floats are skipped silently — the walker writes well-formed
 // rows, so the only reason to bail is a stray empty trailing line.
-void csvToPointArray(const String& path, JsonArray out) {
+bool csvToPointArray(const String& path, JsonArray out, size_t& totalPoints) {
     File f = LittleFS.open(path, FILE_READ);
-    if (!f) return;
+    if (!f) return false;
 
     String line;
+    size_t filePoints = 0;
+    auto addPoint = [&](const String& xs, const String& ys) -> bool {
+        if (filePoints >= kMaxBundlePointsPerFile ||
+            totalPoints >= kMaxBundleTotalPoints) {
+            Serial.printf("[bundle] point limit hit while reading %s\n", path.c_str());
+            return false;
+        }
+        JsonObject p = out.add<JsonObject>();
+        if (p.isNull()) {
+            Serial.printf("[bundle] JSON alloc failed while reading %s\n", path.c_str());
+            return false;
+        }
+        p["x"] = xs.toDouble();
+        p["y"] = ys.toDouble();
+        filePoints++;
+        totalPoints++;
+        return true;
+    };
+
     while (f.available()) {
         char c = (char) f.read();
         if (c == '\n' || c == '\r') {
@@ -246,9 +277,10 @@ void csvToPointArray(const String& path, JsonArray out) {
                     xs.trim();
                     ys.trim();
                     if (xs.length() > 0 && ys.length() > 0) {
-                        JsonObject p = out.add<JsonObject>();
-                        p["x"] = xs.toDouble();
-                        p["y"] = ys.toDouble();
+                        if (!addPoint(xs, ys)) {
+                            f.close();
+                            return false;
+                        }
                     }
                 }
                 line = "";
@@ -260,12 +292,18 @@ void csvToPointArray(const String& path, JsonArray out) {
     if (line.length() > 0) {
         int comma = line.indexOf(',');
         if (comma > 0) {
-            JsonObject p = out.add<JsonObject>();
-            p["x"] = line.substring(0, comma).toDouble();
-            p["y"] = line.substring(comma + 1).toDouble();
+            String xs = line.substring(0, comma);
+            String ys = line.substring(comma + 1);
+            xs.trim();
+            ys.trim();
+            if (!addPoint(xs, ys)) {
+                f.close();
+                return false;
+            }
         }
     }
     f.close();
+    return true;
 }
 
 // Collect bare leaf names of files under /session/ matching a suffix.
@@ -306,6 +344,14 @@ String synthSessionId() {
     return String(buf);
 }
 
+int obstacleIndexFromLeaf(const String& leaf) {
+    int first = leaf.indexOf('_');
+    if (first < 0) return -1;
+    int second = leaf.indexOf('_', first + 1);
+    if (second < 0) return -1;
+    return leaf.substring(first + 1, second).toInt();
+}
+
 }  // namespace
 
 String BundleBuilder::build() {
@@ -313,6 +359,9 @@ String BundleBuilder::build() {
         Serial.println("[bundle] LittleFS begin failed");
         return String();
     }
+    // Export reads several session files directly. Hold the SessionStore
+    // mutex for a coherent snapshot instead of racing recorder appends.
+    BundleSessionGuard sessionGuard(sess_);
     if (!LittleFS.exists(kExportDir)) {
         if (!LittleFS.mkdir(kExportDir)) {
             Serial.println("[bundle] mkdir /export failed");
@@ -322,7 +371,6 @@ String BundleBuilder::build() {
     if (LittleFS.exists(kBundlePath)) {
         LittleFS.remove(kBundlePath);
     }
-
     // Enumerate work maps + aliases once; reused by metadata, polygons,
     // obstacles, unicom.
     MapEntry mapEntries[3];
@@ -335,6 +383,8 @@ String BundleBuilder::build() {
     // Bounds tracking (optional) — populated as we walk the work CSVs.
     bool   haveBounds = false;
     double minX = 0, maxX = 0, minY = 0, maxY = 0;
+    bool jsonOk = true;
+    size_t totalJsonPoints = 0;
 
     // ── Build polygons.json (and bounds) ────────────────────────────
     String polygonsJson;
@@ -348,7 +398,10 @@ String BundleBuilder::build() {
             JsonObject obj = arr.add<JsonObject>();
             obj["name"] = String("map") + slot;
             JsonArray pts = obj["points"].to<JsonArray>();
-            csvToPointArray(path, pts);
+            if (!csvToPointArray(path, pts, totalJsonPoints)) {
+                jsonOk = false;
+                break;
+            }
             // Walk the just-added points to update bounds.
             for (JsonObject p : pts) {
                 double x = p["x"].as<double>();
@@ -365,6 +418,7 @@ String BundleBuilder::build() {
                 }
             }
         }
+        if (!jsonOk) return String();
         serializeJson(doc, polygonsJson);
     }
 
@@ -379,17 +433,25 @@ String BundleBuilder::build() {
             int slot = mapEntries[i].slot;
             String prefix = String("map") + slot + "_";
             std::vector<String> files = listSessionFiles(prefix, "_obstacle.csv");
-            // Sort lexicographically — file names are mapN_<i>_obstacle.csv
-            // so this also sorts by index numerically up to 9.
-            std::sort(files.begin(), files.end());
+            std::sort(files.begin(), files.end(), [](const String& a, const String& b) {
+                int ai = obstacleIndexFromLeaf(a);
+                int bi = obstacleIndexFromLeaf(b);
+                if (ai != bi) return ai < bi;
+                return strcmp(a.c_str(), b.c_str()) < 0;
+            });
             for (const String& leaf : files) {
                 JsonObject obj = arr.add<JsonObject>();
                 String nameNoExt = leaf.substring(0, leaf.length() - 4);  // strip .csv
                 obj["name"] = nameNoExt;
                 JsonArray pts = obj["points"].to<JsonArray>();
-                csvToPointArray(String(kSessionDir) + "/" + leaf, pts);
+                if (!csvToPointArray(String(kSessionDir) + "/" + leaf, pts, totalJsonPoints)) {
+                    jsonOk = false;
+                    break;
+                }
             }
+            if (!jsonOk) break;
         }
+        if (!jsonOk) return String();
         serializeJson(doc, obstaclesJson);
     }
 
@@ -408,9 +470,14 @@ String BundleBuilder::build() {
                 String nameNoExt = leaf.substring(0, leaf.length() - 4);
                 obj["name"] = nameNoExt;
                 JsonArray pts = obj["points"].to<JsonArray>();
-                csvToPointArray(String(kSessionDir) + "/" + leaf, pts);
+                if (!csvToPointArray(String(kSessionDir) + "/" + leaf, pts, totalJsonPoints)) {
+                    jsonOk = false;
+                    break;
+                }
             }
+            if (!jsonOk) break;
         }
+        if (!jsonOk) return String();
         serializeJson(doc, unicomJson);
     }
 

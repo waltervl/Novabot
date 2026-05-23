@@ -132,7 +132,7 @@ enum RecordBtnState {
   RBS_START,          // ready and RTK FIX achieved — emerald, clickable
   RBS_STOP,           // recording in progress — red, clickable
   RBS_WAITING_GNSS,   // module not detected — gray, disabled
-  RBS_WAITING_RTK,    // module alive but fix < 4 — gray, disabled
+  RBS_WAITING_RTK,    // module alive but not RTK fixed/float
 };
 static RecordBtnState current_record_state = RBS_START;
 
@@ -1108,6 +1108,13 @@ static void on_save_settings(lv_event_t* e) {
   if (s != cfg_baseline.ntripHost) { upd.ntripHostSet = true; upd.ntripHost = s; }
   s = taText(ta_ntrip_port);
   uint32_t portVal = s.toInt();
+  if (s.length() > 0 && (portVal < 1 || portVal > 65535)) {
+    if (lbl_save_status) {
+      lv_label_set_text(lbl_save_status, LV_SYMBOL_WARNING "  Port must be 1-65535");
+      lv_obj_set_style_text_color(lbl_save_status, COL_RED, 0);
+    }
+    return;
+  }
   if (portVal > 0 && portVal != cfg_baseline.ntripPort) {
     upd.ntripPortSet = true; upd.ntripPort = (uint16_t) portVal;
   }
@@ -1167,7 +1174,7 @@ static void onOtaButtonClicked(lv_event_t* /*e*/) {
   lv_refr_now(nullptr);
 
   String err;
-  if (!walkerOtaApply(r.url, r.md5, nullptr, err)) {
+  if (!walkerOtaApply(r.url, r.md5, r.sha256, nullptr, err)) {
     snprintf(banner, sizeof(banner), "Failed: %s", err.c_str());
     if (s_otaStatusLabel) {
       lv_label_set_text(s_otaStatusLabel, banner);
@@ -1424,6 +1431,10 @@ static void toggle_recording(lv_event_t* e) {
 // polygon shape; below that the area is meaningless.
 #define SAVE_AREA_MIN_POINTS 5
 
+static bool tftRtkUsable(int fix) {
+  return fix == 4 || fix == 5;
+}
+
 // Reveal/hide the Save-as-area button. Called from refresh_status_cb so
 // the visibility tracks live recording state and the most recent stop.
 // Centralised so the toggle logic is in exactly one place.
@@ -1526,12 +1537,16 @@ static int import_track_as_area(const String& trackPath, const String& alias) {
     double lat = latStr.toDouble();
     double lng = lngStr.toDouble();
     int fix = fixStr.toInt();
-    if (fix < 4) continue;   // only cm-grade rows make it into the polygon
+    if (!tftRtkUsable(fix)) continue;   // only RTK fixed/float rows make it into the polygon
     if (lat == 0 || lng == 0) continue;
 
     if (!originSet) {
-      // First good row anchors the SessionStore coordinate system.
-      sessionStore.setOrigin(lat, lng);
+      // First good row anchors only an empty SessionStore. Existing maps
+      // already share an origin and importing another area must not move it.
+      double oLat = 0, oLng = 0;
+      if (!sessionStore.getOrigin(oLat, oLng)) {
+        sessionStore.setOrigin(lat, lng);
+      }
       originSet = true;
     }
     double x = 0, y = 0;
@@ -1935,7 +1950,7 @@ static void refresh_status_cb(lv_timer_t* t) {
   RecordBtnState wanted;
   if (snap.recording)         wanted = RBS_STOP;
   else if (missing)           wanted = RBS_WAITING_GNSS;
-  else if (snap.fix != 4)     wanted = RBS_WAITING_RTK;
+  else if (!tftRtkUsable(snap.fix)) wanted = RBS_WAITING_RTK;
   else                        wanted = RBS_START;
   apply_record_btn_state(wanted);
 
@@ -1946,7 +1961,7 @@ static void refresh_status_cb(lv_timer_t* t) {
   // user gets the same warning from two places.
   if (rtk_warning_banner) {
     bool wantBanner = (viewing_map_slot < 0) &&
-                      snap.fix != 4 && !missing;
+                      !tftRtkUsable(snap.fix) && !missing;
     if (wantBanner) lv_obj_clear_flag(rtk_warning_banner, LV_OBJ_FLAG_HIDDEN);
     else            lv_obj_add_flag(rtk_warning_banner, LV_OBJ_FLAG_HIDDEN);
   }
@@ -2339,7 +2354,7 @@ static void recRebuildLivePts(const WalkerSnapshot& snap) {
         // While recording with no points yet but we DO have a current
         // fix, still place the cursor where the user is standing — gives
         // immediate "yes the GPS is alive" feedback.
-        if (snap.fix >= 4 && s_recBboxValid && s_recCursor) {
+        if (tftRtkUsable(snap.fix) && s_recBboxValid && s_recCursor) {
             float fx, fy;
             rec_project(snap.lat, snap.lng, fx, fy);
             lv_obj_set_pos(s_recCursor, (lv_coord_t)(fx - 7), (lv_coord_t)(fy - 7));
@@ -2451,9 +2466,10 @@ static void refreshRecordingScreen() {
     // Banner: while armed we show the pending mode + parent. Once the
     // recorder is running we mirror the recorder's own state in case
     // the slot allocation tweaked anything (obstacle index, etc.).
-    RecordingMode bannerMode = s_recArmed ? s_pendingRecMode : recorder.state().mode;
-    int parentSlot = s_recArmed ? s_pendingRecParent : recorder.state().parentSlot;
-    const String& chTarget = s_recArmed ? s_pendingRecChannelTo : recorder.state().channelTarget;
+    RecordingState recState = recorder.state();
+    RecordingMode bannerMode = s_recArmed ? s_pendingRecMode : recState.mode;
+    int parentSlot = s_recArmed ? s_pendingRecParent : recState.parentSlot;
+    String chTarget = s_recArmed ? s_pendingRecChannelTo : recState.channelTarget;
 
     const char* modeStr = "?";
     uint32_t color = 0x86efac;
@@ -2488,7 +2504,7 @@ static void refreshRecordingScreen() {
 
     // Bad-signal overlay only while recording — during armed state the
     // user is just walking to the start, no need to scream BAD at them.
-    if (!s_recArmed && snap.fix < 4) {
+    if (!s_recArmed && !tftRtkUsable(snap.fix)) {
         lv_obj_clear_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
@@ -2501,7 +2517,7 @@ static void refreshRecordingScreen() {
         recRebuildLivePts(snap);
         return;
     }
-    const auto& st = recorder.state();
+    RecordingState st = recorder.state();
     char ptsTxt[32];
     snprintf(ptsTxt, sizeof(ptsTxt), "%lu pts", st.pointsCaptured);
     lv_label_set_text(s_recPoints, ptsTxt);

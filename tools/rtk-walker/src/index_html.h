@@ -100,6 +100,15 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
 <body>
   <h1>RTK Walker</h1>
 
+  <details class="card config" id="authCard">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">API auth</summary>
+    <form id="authForm">
+      <label>API token<input id="auth_token" type="password" placeholder="8+ characters"></label>
+      <button type="submit" style="margin-top:12px">Save token</button>
+      <div id="authStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
+    </form>
+  </details>
+
   <div class="card">
     <div class="row">
       <span class="label">Fix</span>
@@ -205,10 +214,76 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
 <script>
 let recording = false;
 const FIX_LABELS = { 0: 'NO FIX', 1: 'GPS', 2: 'DGPS', 4: 'RTK FIX', 5: 'RTK FLOAT' };
+let authToken = localStorage.getItem('rtkWalkerAuthToken') || '';
 
 function setText(id, v) {
   const el = document.getElementById(id);
   if (el) el.textContent = v;
+}
+
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (authToken) h['X-Auth-Token'] = authToken;
+  return h;
+}
+
+function authFetch(url, opts) {
+  const o = Object.assign({}, opts || {});
+  o.headers = authHeaders(o.headers);
+  return fetch(url, o);
+}
+
+function showAuthNeeded(targetId) {
+  const msg = 'Auth required. Enter the API token above.';
+  if (targetId) {
+    const el = document.getElementById(targetId);
+    if (el) { el.style.color = 'var(--red)'; el.textContent = msg; return; }
+  }
+  alert(msg);
+}
+
+async function loadAuthStatus() {
+  try {
+    const r = await fetch('/api/auth');
+    const d = await r.json();
+    const el = document.getElementById('authStatus');
+    if (!el) return;
+    el.style.color = d.configured ? 'var(--emerald)' : 'var(--amber)';
+    el.textContent = d.configured ? 'Token configured on device.' : 'No token configured; protected endpoints only work unauthenticated on the setup AP.';
+  } catch (e) { /* ignore */ }
+}
+
+async function saveAuthToken() {
+  const status = document.getElementById('authStatus');
+  const nextToken = document.getElementById('auth_token').value.trim();
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Saving...';
+  if (nextToken.length < 8) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Token must be at least 8 characters.';
+    return;
+  }
+  try {
+    const r = await authFetch('/api/auth', {
+      method: 'POST',
+      body: JSON.stringify({ token: nextToken }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!r.ok) {
+      status.style.color = 'var(--red)';
+      status.textContent = r.status === 401 ? 'Current token required to change it.' : ('Save failed: HTTP ' + r.status);
+      return;
+    }
+    authToken = nextToken;
+    localStorage.setItem('rtkWalkerAuthToken', authToken);
+    document.getElementById('auth_token').value = '';
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Token saved.';
+    loadTracks();
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Save failed: ' + (e && e.message ? e.message : e);
+  }
 }
 
 async function refresh() {
@@ -242,7 +317,7 @@ async function refresh() {
 }
 
 async function toggleRecord() {
-  await fetch('/api/record', {
+  await authFetch('/api/record', {
     method: 'POST',
     body: JSON.stringify({ recording: !recording }),
     headers: { 'Content-Type': 'application/json' }
@@ -275,15 +350,22 @@ function makeTrackRow(t) {
   actions.className = 'track-actions';
 
   const csv = document.createElement('a');
-  csv.href = '/track/' + encodeURIComponent(t.name);
-  csv.setAttribute('download', '');
+  csv.href = '#';
   csv.textContent = 'Download CSV';
+  csv.addEventListener('click', function(e) {
+    e.preventDefault();
+    downloadProtected('/track/' + encodeURIComponent(t.name), t.name);
+  });
 
   const poly = document.createElement('a');
-  poly.href = '/track/' + encodeURIComponent(t.name) + '.polygon';
-  poly.setAttribute('download', '');
+  poly.href = '#';
   poly.textContent = 'Novabot polygon';
   poly.title = 'lat,lng pairs only, deduped — drop into OpenNova polygon import';
+  poly.addEventListener('click', function(e) {
+    e.preventDefault();
+    const base = t.name.replace(/\.[^.]+$/, '');
+    downloadProtected('/track/' + encodeURIComponent(t.name) + '.polygon', base + '-polygon.csv');
+  });
 
   actions.appendChild(csv);
   actions.appendChild(poly);
@@ -293,8 +375,27 @@ function makeTrackRow(t) {
   return wrap;
 }
 
+async function downloadProtected(url, filename) {
+  try {
+    const r = await authFetch(url);
+    if (r.status === 401) { showAuthNeeded(); return; }
+    if (!r.ok) { alert('Download failed: HTTP ' + r.status); return; }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  } catch (e) {
+    alert('Download failed: ' + e);
+  }
+}
+
 async function loadTracks() {
-  const r = await fetch('/api/tracks');
+  const r = await authFetch('/api/tracks');
+  if (r.status === 401) { showAuthNeeded(); return; }
   const list = await r.json();
   const container = document.getElementById('trackList');
   while (container.firstChild) container.removeChild(container.firstChild);
@@ -324,14 +425,14 @@ async function saveConfig() {
     npass: document.getElementById('cfg_npass').value,
   };
   try {
-    const r = await fetch('/api/config', {
+    const r = await authFetch('/api/config', {
       method: 'POST',
       body: JSON.stringify(body),
       headers: { 'Content-Type': 'application/json' },
     });
     if (!r.ok) {
       status.style.color = 'var(--red)';
-      status.textContent = 'Save failed: HTTP ' + r.status;
+      status.textContent = r.status === 401 ? 'Auth required.' : ('Save failed: HTTP ' + r.status);
       return;
     }
     status.style.color = 'var(--emerald)';
@@ -353,8 +454,8 @@ document.getElementById('cfgForm').addEventListener('submit', function(e) {
 });
 
 // Server config (separate form because saving doesn't reboot the
-// device — adopting a new server URL / mower SN / admin token should
-// take effect on the next upload without losing the active recording.)
+// device — adopting a new server URL should take effect on the next
+// upload or OTA check without losing the active recording.)
 async function loadServerConfig() {
   try {
     const r = await fetch('/api/config/server');
@@ -373,14 +474,14 @@ async function saveServerConfig() {
     serverUrl: document.getElementById('srv_url').value.trim(),
   };
   try {
-    const r = await fetch('/api/config/server', {
+    const r = await authFetch('/api/config/server', {
       method: 'POST',
       body: JSON.stringify(body),
       headers: { 'Content-Type': 'application/json' },
     });
     if (!r.ok) {
       status.style.color = 'var(--red)';
-      status.textContent = 'Save failed: HTTP ' + r.status;
+      status.textContent = r.status === 401 ? 'Auth required.' : ('Save failed: HTTP ' + r.status);
       return;
     }
     status.style.color = 'var(--emerald)';
@@ -395,6 +496,10 @@ async function saveServerConfig() {
 document.getElementById('srvForm').addEventListener('submit', function(e) {
   e.preventDefault();
   saveServerConfig();
+});
+document.getElementById('authForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  saveAuthToken();
 });
 
 loadServerConfig();
@@ -438,7 +543,8 @@ let viewingTrack = null;
 
 async function viewTrack(name) {
   try {
-    const r = await fetch('/track/' + encodeURIComponent(name) + '.json');
+    const r = await authFetch('/track/' + encodeURIComponent(name) + '.json');
+    if (r.status === 401) { showAuthNeeded(); return; }
     if (!r.ok) { alert('Could not load ' + name); return; }
     const d = await r.json();
     const pts = (d.points || []).map(function(p){ return [p[0], p[1]]; });
@@ -500,7 +606,8 @@ async function refreshMap() {
     // Polyline from the active recording (server keeps it in RAM
     // capped at LIVE_POINTS_MAX). We also drop a "cursor" marker on
     // the latest known live position regardless of recording state.
-    const r = await fetch('/api/track/current');
+    const r = await authFetch('/api/track/current');
+    if (r.status === 401) { setOverlay('auth required'); return; }
     const d = await r.json();
     const pts = (d.points || []).map(function(p){ return [p[0], p[1]]; });
 
@@ -574,7 +681,8 @@ let lastSeenSeq = 0;
 
 async function refreshLog() {
   try {
-    const r = await fetch('/api/log');
+    const r = await authFetch('/api/log');
+    if (r.status === 401 || r.status === 403) { showAuthNeeded('logView'); return; }
     const d = await r.json();
     const view = document.getElementById('logView');
     if (!view) return;
@@ -606,11 +714,12 @@ document.getElementById('logClear').addEventListener('click', function() {
 // ── GNSS command sender ─────────────────────────────────────────
 async function sendGnssCmd(cmd) {
   if (!cmd) return;
-  await fetch('/api/gnss/send', {
+  const r = await authFetch('/api/gnss/send', {
     method: 'POST',
     body: JSON.stringify({ cmd: cmd }),
     headers: { 'Content-Type': 'application/json' },
   });
+  if (r.status === 401) { showAuthNeeded(); return; }
   // Immediate poll so the [gnss-tx] line shows up without 1 s lag.
   setTimeout(refreshLog, 100);
 }
@@ -682,7 +791,7 @@ async function otaApply() {
   const applyBtn = document.getElementById('ota-apply');
   if (applyBtn) applyBtn.disabled = true;
   try {
-    const res = await fetch('/api/ota/apply', { method: 'POST' });
+    const res = await authFetch('/api/ota/apply', { method: 'POST' });
     // If the request returned, the apply failed before reboot.
     try {
       const r = await res.json();
@@ -711,6 +820,7 @@ refreshMap();
 refreshLog();
 loadTracks();
 loadConfig();
+loadAuthStatus();
 otaLoadCurrent();
 </script>
 </body>

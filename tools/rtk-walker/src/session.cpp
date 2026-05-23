@@ -67,9 +67,47 @@ bool appendLine(const String& path, const String& line) {
     return wrote == want;
 }
 
+bool isSafeName(const String& s) {
+    if (s.length() == 0) return false;
+    if (s.indexOf("..") >= 0) return false;
+    for (size_t i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        bool ok = (c >= 'A' && c <= 'Z') ||
+                  (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') ||
+                  c == '.' || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+class SessionGuard {
+public:
+    explicit SessionGuard(SessionStore& s) : s_(s) { s_.lock(); }
+    ~SessionGuard() { s_.unlock(); }
+private:
+    SessionStore& s_;
+};
+
 }  // namespace
 
+void SessionStore::ensureMutex() {
+    if (!mux_) {
+        mux_ = xSemaphoreCreateRecursiveMutex();
+    }
+}
+
+void SessionStore::lock() {
+    ensureMutex();
+    if (mux_) xSemaphoreTakeRecursive(mux_, portMAX_DELAY);
+}
+
+void SessionStore::unlock() {
+    if (mux_) xSemaphoreGiveRecursive(mux_);
+}
+
 bool SessionStore::begin() {
+    SessionGuard guard(*this);
     if (!LittleFS.begin(true)) {
         return false;
     }
@@ -82,6 +120,7 @@ bool SessionStore::begin() {
 }
 
 bool SessionStore::reset() {
+    SessionGuard guard(*this);
     // Wipe every file under /session/.
     File dir = LittleFS.open(kSessionDir);
     if (!dir || !dir.isDirectory()) {
@@ -104,6 +143,7 @@ bool SessionStore::reset() {
 }
 
 int SessionStore::allocWorkSlot() {
+    SessionGuard guard(*this);
     for (int slot = 0; slot < kMaxWorkSlots; slot++) {
         if (!LittleFS.exists(workPath(slot))) {
             return slot;
@@ -113,6 +153,7 @@ int SessionStore::allocWorkSlot() {
 }
 
 bool SessionStore::setAlias(int slot, const String& alias) {
+    SessionGuard guard(*this);
     if (slot < 0 || slot >= kMaxWorkSlots) return false;
     JsonDocument doc;
     if (!readMetadata(doc)) return false;
@@ -125,6 +166,7 @@ bool SessionStore::setAlias(int slot, const String& alias) {
 }
 
 int SessionStore::allocObstacleIndex(int parentSlot) {
+    SessionGuard guard(*this);
     if (parentSlot < 0 || parentSlot >= kMaxWorkSlots) return -1;
     for (int i = 0; i < kMaxObstacles; i++) {
         if (!LittleFS.exists(obstaclePath(parentSlot, i))) {
@@ -135,6 +177,7 @@ int SessionStore::allocObstacleIndex(int parentSlot) {
 }
 
 bool SessionStore::listMaps(MapEntry* out, size_t maxEntries, size_t& count) {
+    SessionGuard guard(*this);
     count = 0;
     if (!out || maxEntries == 0) return false;
 
@@ -199,6 +242,7 @@ bool SessionStore::listMaps(MapEntry* out, size_t maxEntries, size_t& count) {
 }
 
 bool SessionStore::appendWorkPoint(int slot, double x, double y) {
+    SessionGuard guard(*this);
     if (slot < 0 || slot >= kMaxWorkSlots) return false;
     char buf[64];
     snprintf(buf, sizeof(buf), "%.4f,%.4f\n", x, y);
@@ -206,6 +250,7 @@ bool SessionStore::appendWorkPoint(int slot, double x, double y) {
 }
 
 bool SessionStore::appendObstaclePoint(int parentSlot, int obstacleIdx, double x, double y) {
+    SessionGuard guard(*this);
     if (parentSlot < 0 || parentSlot >= kMaxWorkSlots) return false;
     if (obstacleIdx < 0 || obstacleIdx >= kMaxObstacles) return false;
     char buf[64];
@@ -214,8 +259,9 @@ bool SessionStore::appendObstaclePoint(int parentSlot, int obstacleIdx, double x
 }
 
 bool SessionStore::appendChannelPoint(int parentSlot, const String& target, double x, double y) {
+    SessionGuard guard(*this);
     if (parentSlot < 0 || parentSlot >= kMaxWorkSlots) return false;
-    if (target.length() == 0) return false;
+    if (!isSafeName(target)) return false;
     char buf[64];
     snprintf(buf, sizeof(buf), "%.4f,%.4f\n", x, y);
     return appendLine(channelPath(parentSlot, target), buf);
@@ -223,9 +269,9 @@ bool SessionStore::appendChannelPoint(int parentSlot, const String& target, doub
 
 bool SessionStore::appendRawRow(const String& baseName, unsigned long ts, double lat,
                                  double lng, double alt, int fix, int sats, double hdop) {
+    SessionGuard guard(*this);
     // Reject path-traversal attempts before composing a filesystem path.
-    if (baseName.length() == 0 || baseName.indexOf('/') >= 0 ||
-        baseName.indexOf('\\') >= 0 || baseName.startsWith(".")) {
+    if (!isSafeName(baseName)) {
         Serial.printf("[session] appendRawRow rejected baseName: %s\n", baseName.c_str());
         return false;
     }
@@ -250,6 +296,7 @@ bool SessionStore::appendRawRow(const String& baseName, unsigned long ts, double
 }
 
 bool SessionStore::deleteMap(int slot) {
+    SessionGuard guard(*this);
     if (slot < 0 || slot >= kMaxWorkSlots) return false;
     String prefix = String("map") + slot;
 
@@ -300,9 +347,16 @@ bool SessionStore::deleteMap(int slot) {
     return true;
 }
 
-bool SessionStore::setOrigin(double lat, double lng) {
+bool SessionStore::setOrigin(double lat, double lng, bool overwrite) {
+    SessionGuard guard(*this);
     JsonDocument doc;
     if (!readMetadata(doc)) return false;
+    if (!overwrite && doc["origin"].is<JsonObject>()) {
+        JsonObject existing = doc["origin"].as<JsonObject>();
+        if (existing["lat"].is<double>() && existing["lng"].is<double>()) {
+            return true;
+        }
+    }
     JsonObject origin = doc["origin"].is<JsonObject>()
                             ? doc["origin"].as<JsonObject>()
                             : doc["origin"].to<JsonObject>();
@@ -312,6 +366,7 @@ bool SessionStore::setOrigin(double lat, double lng) {
 }
 
 bool SessionStore::getOrigin(double& lat, double& lng) {
+    SessionGuard guard(*this);
     JsonDocument doc;
     if (!readMetadata(doc)) return false;
     if (!doc["origin"].is<JsonObject>()) return false;
@@ -323,6 +378,7 @@ bool SessionStore::getOrigin(double& lat, double& lng) {
 }
 
 bool SessionStore::gpsToLocal(double lat, double lng, double& outX, double& outY) {
+    SessionGuard guard(*this);
     double oLat = 0, oLng = 0;
     if (!getOrigin(oLat, oLng)) {
         if (!setOrigin(lat, lng)) return false;

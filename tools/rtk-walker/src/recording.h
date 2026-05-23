@@ -2,7 +2,7 @@
 //
 // Recorder — state machine that bridges UI/CLI actions to SessionStore.
 // Tracks the active recording mode (Work / Obstacle / Channel), filters
-// inbound GPS fixes by RTK quality (fix>=4 and HDOP<=2 by default), and
+// inbound GPS fixes by RTK quality (fix 4/5 and HDOP<=2 by default), and
 // persists accepted points through the SessionStore.
 //
 // This class is a no-op when in Idle mode, so it is safe to call onFix()
@@ -10,6 +10,8 @@
 // progress.
 #pragma once
 #include <Arduino.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "session.h"
 
 enum class RecordingMode : uint8_t {
@@ -20,7 +22,7 @@ enum class RecordingMode : uint8_t {
 };
 
 enum class FixQuality : uint8_t {
-    Bad = 0,        // fix < 4
+    Bad = 0,        // anything except GGA fix 4/5
     Float = 5,      // fix == 5
     Fix = 4,        // fix == 4
 };
@@ -47,15 +49,20 @@ public:
     bool onFix(unsigned long ts, double lat, double lng, double alt,
                int fix, int sats, double hdop);
 
-    const RecordingState& state() const { return state_; }
-    bool isRecording() const { return state_.mode != RecordingMode::Idle; }
+    RecordingState state() const;
+    RecordingState snapshot() const;
+    bool isRecording() const;
 
-    static constexpr int kMinFix = 4;
     static constexpr double kMaxHdop = 2.0;
     static constexpr bool kAllowFloat = true;
 
 private:
+    friend class RecorderGuard;
     SessionStore& sess_;
     RecordingState state_;
+    mutable SemaphoreHandle_t mux_ = nullptr;
+    void ensureMutex() const;
+    void lock() const;
+    void unlock() const;
     bool ensureOrigin(double lat, double lng);
 };

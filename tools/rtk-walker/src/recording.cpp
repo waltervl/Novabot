@@ -29,9 +29,61 @@ String currentBaseName(const RecordingState& s) {
     }
 }
 
+bool isSafeRecordingName(const String& s) {
+    if (s.length() == 0) return false;
+    if (s.indexOf("..") >= 0) return false;
+    for (size_t i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        bool ok = (c >= 'A' && c <= 'Z') ||
+                  (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') ||
+                  c == '.' || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
 }  // namespace
 
+void Recorder::ensureMutex() const {
+    if (!mux_) {
+        mux_ = xSemaphoreCreateRecursiveMutex();
+    }
+}
+
+void Recorder::lock() const {
+    ensureMutex();
+    if (mux_) xSemaphoreTakeRecursive(mux_, portMAX_DELAY);
+}
+
+void Recorder::unlock() const {
+    if (mux_) xSemaphoreGiveRecursive(mux_);
+}
+
+class RecorderGuard {
+public:
+    explicit RecorderGuard(const Recorder& r) : r_(r) { r_.lock(); }
+    ~RecorderGuard() { r_.unlock(); }
+private:
+    const Recorder& r_;
+};
+
+RecordingState Recorder::snapshot() const {
+    RecorderGuard guard(*this);
+    return state_;
+}
+
+RecordingState Recorder::state() const {
+    return snapshot();
+}
+
+bool Recorder::isRecording() const {
+    RecorderGuard guard(*this);
+    return state_.mode != RecordingMode::Idle;
+}
+
 bool Recorder::startWork(int& outSlot) {
+    RecorderGuard guard(*this);
     int slot = sess_.allocWorkSlot();
     if (slot < 0) return false;
     state_ = RecordingState{};
@@ -43,6 +95,7 @@ bool Recorder::startWork(int& outSlot) {
 }
 
 bool Recorder::startObstacle(int parentSlot) {
+    RecorderGuard guard(*this);
     int idx = sess_.allocObstacleIndex(parentSlot);
     if (idx < 0) return false;
     state_ = RecordingState{};
@@ -54,6 +107,8 @@ bool Recorder::startObstacle(int parentSlot) {
 }
 
 bool Recorder::startChannel(int parentSlot, const String& target) {
+    RecorderGuard guard(*this);
+    if (parentSlot < 0 || !isSafeRecordingName(target)) return false;
     state_ = RecordingState{};
     state_.mode = RecordingMode::Channel;
     state_.parentSlot = parentSlot;
@@ -63,6 +118,7 @@ bool Recorder::startChannel(int parentSlot, const String& target) {
 }
 
 bool Recorder::stop(bool discard) {
+    RecorderGuard guard(*this);
     if (discard && state_.mode != RecordingMode::Idle) {
         String base = currentBaseName(state_);
         if (base.length() > 0) {
@@ -84,10 +140,12 @@ bool Recorder::ensureOrigin(double lat, double lng) {
 
 bool Recorder::onFix(unsigned long ts, double lat, double lng, double alt,
                      int fix, int sats, double hdop) {
+    RecorderGuard guard(*this);
     if (state_.mode == RecordingMode::Idle) return false;
 
-    // Quality gate: drop anything below RTK FIX (fix < 4).
-    if (fix < kMinFix) {
+    // Quality gate: only RTK fixed (4) and RTK float (5). Higher numeric GGA
+    // modes are estimated/manual/simulation and are not valid RTK captures.
+    if (fix != 4 && fix != 5) {
         state_.pointsDropped++;
         state_.lastFixQuality = FixQuality::Bad;
         return false;
@@ -144,7 +202,10 @@ bool Recorder::onFix(unsigned long ts, double lat, double lng, double alt,
         return false;
     }
 
-    sess_.appendRawRow(base, ts, lat, lng, alt, fix, sats, hdop);
+    if (!sess_.appendRawRow(base, ts, lat, lng, alt, fix, sats, hdop)) {
+        state_.pointsDropped++;
+        return false;
+    }
     state_.pointsCaptured++;
     return true;
 }
