@@ -1791,14 +1791,26 @@ static void handleMapsList() {
 // {"lat":..,"lng":..} JSON object, glues them into ~1 KB chunks and
 // flushes each chunk through sendContent(). yield() + gnssPump() in
 // the loop keep the rest of the firmware alive.
+// Fixed 4 KB output buffer + snprintf for the per-point formatting.
+// Arduino String += in a tight loop fragments the heap and triples the
+// per-point cost vs. writing into a preallocated char[]. Yielding every
+// flush (instead of every chunk) is also dropped — yield() costs a
+// scheduler tick + a gnssPump() costs a UART drain, neither of which
+// we need eight times per second of streaming. Once per 4 KB chunk is
+// plenty: 800 boundary points × ~40 B per point ≈ 32 KB → 8 yields.
+#define POLY_STREAM_BUF 4096
+
 static int streamPolygonChunked(const String& path, size_t maxPoints,
                                 bool& firstPoint) {
   if (!LittleFS.exists(path)) return -1;
   File f = LittleFS.open(path, FILE_READ);
   if (!f) return -1;
   size_t written = 0;
-  String chunk;
-  chunk.reserve(1200);
+  // Static so this allocation only happens once over the whole run.
+  // Two concurrent streams would clobber it — but the WebServer is
+  // single-threaded so that's not a real concern.
+  static char buf[POLY_STREAM_BUF];
+  size_t bufLen = 0;
   while (f.available() && written < maxPoints) {
     String line = f.readStringUntil('\n');
     if (line.endsWith("\r")) line.remove(line.length() - 1);
@@ -1810,27 +1822,23 @@ static int streamPolygonChunked(const String& path, size_t maxPoints,
     double lat = 0, lng = 0;
     if (!sessionStore.localToGps(x, y, lat, lng)) continue;
 
-    if (!firstPoint) chunk += ',';
-    firstPoint = false;
-    chunk += "{\"lat\":";
-    chunk += String(lat, 7);
-    chunk += ",\"lng\":";
-    chunk += String(lng, 7);
-    chunk += '}';
-    written++;
-
-    if (chunk.length() > 1024) {
-      server.sendContent(chunk);
-      chunk = "";
-      // Keep the rest of the firmware alive while we stream.
+    // ~55 B worst case per point ("{\"lat\":52.1234567,\"lng\":5.1234567},").
+    // Flush before we risk overflow, then format into the fresh buffer.
+    if (bufLen + 64 > POLY_STREAM_BUF) {
+      server.sendContent(buf, bufLen);
+      bufLen = 0;
       gnssPump();
       yield();
     }
+    int n = snprintf(buf + bufLen, POLY_STREAM_BUF - bufLen,
+                     "%s{\"lat\":%.7f,\"lng\":%.7f}",
+                     firstPoint ? "" : ",", lat, lng);
+    if (n > 0) bufLen += (size_t) n;
+    firstPoint = false;
+    written++;
   }
-  if (chunk.length() > 0) {
-    server.sendContent(chunk);
-    gnssPump();
-    yield();
+  if (bufLen > 0) {
+    server.sendContent(buf, bufLen);
   }
   f.close();
   return (int) written;

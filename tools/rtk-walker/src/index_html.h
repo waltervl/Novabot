@@ -293,6 +293,7 @@ async function saveAuthToken() {
 }
 
 async function refresh() {
+  if (mapLoading) return;  // single-threaded WebServer — don't queue behind the polygon stream
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
@@ -396,6 +397,7 @@ function makeMapRow(m, active) {
 }
 
 async function loadMaps() {
+  if (mapLoading) return;
   try {
     const r = await fetch('/api/maps');
     if (!r.ok) return;
@@ -560,24 +562,34 @@ function setOverlay(text) {
   if (el) el.textContent = text;
 }
 
-// Load a saved map onto the Leaflet canvas AND tell the walker to mirror
-// the same map on the TFT. The two halves run in parallel so the
-// experience is "tap once, both screens update".
+// Tracks whether a saved-map fetch is in flight. Live status / log /
+// map / maps-list polls all short-circuit while this is true so the
+// ESP32 WebServer (single-threaded — only one request at a time) can
+// focus on streaming the polygon response. Without this every poll
+// fires from the browser in parallel and stacks up behind the slow
+// GET, making the user-visible load time 5-10x worse than it has to
+// be.
+let mapLoading = false;
+
 async function viewSavedMap(slot) {
+  if (mapLoading) return;  // ignore double-clicks while one is in flight
+  mapLoading = true;
   try {
-    // Show a small overlay hint immediately so the user knows the click
-    // landed even before the fetches complete.
     setOverlay('loading map ' + slot + '...');
 
-    // Drive the on-device view in parallel with the data fetch. The
-    // POST requires auth; ignore 401 here and just render the data —
-    // the user can save a token via the auth card if they want the
-    // device to follow along too.
-    authFetch('/api/maps/view', {
-      method: 'POST',
-      body: JSON.stringify({ slot: slot }),
-      headers: { 'Content-Type': 'application/json' },
-    }).catch(function() { /* best-effort; data fetch still runs */ });
+    // First: tell the walker which map to load on its TFT. This must
+    // complete BEFORE the polygon GET so the walker's HTTP handler can
+    // start the LittleFS scan in parallel with our request — and it's
+    // a tiny POST, single-digit-ms on the wire. Auth-gated; if no
+    // token is set the device just won't follow along (the canvas
+    // still renders).
+    try {
+      await authFetch('/api/maps/view', {
+        method: 'POST',
+        body: JSON.stringify({ slot: slot }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (e) { /* best-effort */ }
 
     const r = await fetch('/api/maps/' + slot);
     if (!r.ok) {
@@ -648,6 +660,8 @@ async function viewSavedMap(slot) {
     loadMaps();
   } catch (e) {
     setOverlay('viewSavedMap failed: ' + (e && e.message ? e.message : e));
+  } finally {
+    mapLoading = false;
   }
 }
 
@@ -668,6 +682,7 @@ function backToLiveSavedMap() {
 
 async function refreshMap() {
   if (!mapInitialised) return;
+  if (mapLoading) return;  // wait for the polygon stream to finish
   // While viewing a saved session map, don't overwrite its polyline with
   // the live recording's. The cursor still moves so the user can see
   // where they are vs the loaded geometry.
@@ -770,6 +785,7 @@ toggleRecord = async function() {
 let lastSeenSeq = 0;
 
 async function refreshLog() {
+  if (mapLoading) return;
   try {
     const r = await authFetch('/api/log');
     if (r.status === 401 || r.status === 403) { showAuthNeeded('logView'); return; }
