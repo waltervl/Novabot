@@ -2398,10 +2398,11 @@ void setup() {
       weblogf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
       // Sync time so CSV timestamps are real wall-clock seconds.
       configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
-      // OTA auto-check (respects cfg.otaAutoCheck). Applies + reboots on
-      // success, returns silently on no-update or any failure mode so the
-      // boot flow continues into the normal app loop.
-      walkerOtaAutoTick(false);
+      // OTA boot-check used to run here, but a 30 s HTTP timeout on an
+      // unreachable server would block server.begin() and the user
+      // couldn't reach the web UI until the timeout fired. Deferred to
+      // the main loop now (see otaBootCheckDoneMs below) so the
+      // WebServer is listening on :80 before any OTA network I/O.
     } else {
       // status() : WL_NO_SSID_AVAIL (1) AP not seen, WL_CONNECT_FAILED (4)
       //            wrong password / auth reject, WL_DISCONNECTED (6) timeout.
@@ -2549,6 +2550,14 @@ void setup() {
 // ── Loop ────────────────────────────────────────────────────────────
 static uint32_t mainTickCount = 0;
 
+// Deferred OTA boot-check: runs *once*, ~3 s after the WebServer comes
+// up. Putting this in setup() before server.begin() means a slow or
+// dead manifest endpoint blocks setup() for up to 30 s (the HTTPClient
+// default timeout) — and during those 30 s the user can't load the
+// web UI. Running it from the main loop instead lets server.handleClient()
+// answer requests immediately while OTA still checks on its own.
+static bool otaBootCheckDone = false;
+
 void loop() {
   // gnssPump() drains the UART RX buffer first — bytes flowing at
   // 3-4 KB/s at 5 Hz overflow the (now 4 KB) FIFO if HTTP or NTRIP
@@ -2561,6 +2570,15 @@ void loop() {
   buttonPump();
   batteryPump();
   tftTick();
+
+  // Deferred OTA boot-check. Wait 3 s after boot so WiFi + WebServer
+  // are firmly up + the first user request (if any) lands fast. After
+  // that one tick we're done — manual checks via /api/ota/check or the
+  // TFT button take over.
+  if (!otaBootCheckDone && millis() > 3000 && WiFi.status() == WL_CONNECTED) {
+    otaBootCheckDone = true;
+    walkerOtaAutoTick(false);
+  }
 
   // Diagnostic heartbeats were noisy on the serial console after the UI
   // refactor — both [main-tick] and [lvgl-tick] are removed. If a future
