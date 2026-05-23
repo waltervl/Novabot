@@ -154,9 +154,6 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
       <span id="obstacleCount" style="font-weight:400;color:var(--text-dim);font-size:12px"></span>
     </h3>
     <div id="obstacleList"></div>
-    <button type="button" id="obstacleKeepLatest" style="display:none;margin-top:8px">
-      Keep only newest (remove older)
-    </button>
     <div id="obstacleStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);min-height:16px"></div>
   </div>
 
@@ -686,16 +683,15 @@ async function viewSavedMap(slot) {
   }
 }
 
-// Populate the Obstacles card with one row per loaded ring + a bulk
-// "Keep only newest" action when there are 2+. obstacleRecs comes
-// straight from /api/maps/N — each entry has {name, points: [...]}.
+// Populate the Obstacles card with one row per loaded ring. Each row
+// has its own Delete link. obstacleRecs comes straight from
+// /api/maps/N — each entry has {name, points: [...]}.
 function renderObstacleManager(slot, obstacleRecs) {
   const card = document.getElementById('obstacleManager');
   const list = document.getElementById('obstacleList');
   const countEl = document.getElementById('obstacleCount');
-  const keepLatestBtn = document.getElementById('obstacleKeepLatest');
   const status = document.getElementById('obstacleStatus');
-  if (!card || !list || !keepLatestBtn) return;
+  if (!card || !list) return;
 
   // Reset state
   while (list.firstChild) list.removeChild(list.firstChild);
@@ -749,15 +745,6 @@ function renderObstacleManager(slot, obstacleRecs) {
     row.appendChild(actions);
     list.appendChild(row);
   });
-
-  // Bulk action only meaningful with 2+ obstacles.
-  if (obstacleRecs.length >= 2) {
-    keepLatestBtn.style.display = '';
-    keepLatestBtn.onclick = function() { keepLatestObstacle(slot); };
-  } else {
-    keepLatestBtn.style.display = 'none';
-    keepLatestBtn.onclick = null;
-  }
 }
 
 async function deleteObstacle(slot, name) {
@@ -785,35 +772,6 @@ async function deleteObstacle(slot, name) {
   } catch (e) {
     status.style.color = 'var(--red)';
     status.textContent = 'Delete error: ' + (e && e.message ? e.message : e);
-  }
-}
-
-async function keepLatestObstacle(slot) {
-  const status = document.getElementById('obstacleStatus');
-  status.style.color = 'var(--text-dim)';
-  status.textContent = 'Removing older obstacles...';
-  try {
-    const r = await authFetch('/api/maps/' + slot + '/obstacles/keep-latest', {
-      method: 'POST',
-    });
-    if (r.status === 401 || r.status === 403) {
-      showAuthNeeded('obstacleStatus');
-      return;
-    }
-    if (!r.ok) {
-      const txt = await r.text();
-      status.style.color = 'var(--red)';
-      status.textContent = 'Cleanup failed: ' + txt;
-      return;
-    }
-    const d = await r.json();
-    status.style.color = 'var(--emerald)';
-    status.textContent = 'Removed ' + (d.removed || 0) + ' older obstacle' +
-                         ((d.removed === 1) ? '' : 's') + '. Reloading...';
-    await viewSavedMap(slot);
-  } catch (e) {
-    status.style.color = 'var(--red)';
-    status.textContent = 'Cleanup error: ' + (e && e.message ? e.message : e);
   }
 }
 
