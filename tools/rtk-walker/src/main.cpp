@@ -2079,6 +2079,10 @@ void setup() {
     doc["currentVersion"] = r.currentVersion;
     doc["latestVersion"] = r.latestVersion;
     doc["hasMd5"] = r.md5.length() == 32;
+    doc["hasSha256"] = r.sha256.length() == 64;
+    doc["hasSignature"] = r.signature.length() > 0;
+    doc["size"] = r.size;
+    doc["keyId"] = r.keyId;
     doc["error"] = r.error;
     String out;
     serializeJson(doc, out);
@@ -2096,7 +2100,9 @@ void setup() {
       return;
     }
     String err;
-    bool ok = walkerOtaApply(r.url, r.md5, r.sha256, nullptr, err);
+    bool ok = walkerOtaApply(r.url, r.md5, r.sha256, r.size,
+                             r.latestVersion, r.signature, r.keyId,
+                             nullptr, err);
     StaticJsonDocument<256> doc;
     doc["ok"] = ok;
     doc["error"] = err;

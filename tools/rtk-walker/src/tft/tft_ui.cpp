@@ -1174,7 +1174,9 @@ static void onOtaButtonClicked(lv_event_t* /*e*/) {
   lv_refr_now(nullptr);
 
   String err;
-  if (!walkerOtaApply(r.url, r.md5, r.sha256, nullptr, err)) {
+  if (!walkerOtaApply(r.url, r.md5, r.sha256, r.size,
+                      r.latestVersion, r.signature, r.keyId,
+                      nullptr, err)) {
     snprintf(banner, sizeof(banner), "Failed: %s", err.c_str());
     if (s_otaStatusLabel) {
       lv_label_set_text(s_otaStatusLabel, banner);

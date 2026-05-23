@@ -52,7 +52,7 @@ import { adminPageHtml } from './routes/adminPage.js';
 import { authMiddleware, adminMiddleware, dashboardMiddleware, verifyAuthToken } from './middleware/auth.js';
 import { userRepo } from './db/repositories/users.js';
 import { dashboardRouter, initFirmwareSync, getOtaBaseUrl } from './routes/dashboard.js';
-import { otaVersionRepo } from './db/repositories/otaVersions.js';
+import { buildWalkerFirmwareLatestResponse } from './routes/walkerFirmware.js';
 import { eventsRouter } from './notifications/route.js';
 import { pushRegisterRouter } from './notifications/registerRoute.js';
 import { renderRouter } from './render/route.js';
@@ -329,22 +329,7 @@ if (PROXY_MODE === 'cloud') {
 
   app.get('/api/walker-firmware/latest', (req: express.Request, res: express.Response) => {
     const currentVersion = String(req.query.currentVersion ?? '');
-    const latest = otaVersionRepo.findLatestByDeviceType('walker');
-    if (!latest) {
-      res.json({ ok: true, updateAvailable: false, version: '', url: '', md5: '' });
-      return;
-    }
-    const updateAvailable = latest.version > currentVersion;
-    const filename = (latest.download_url ?? '').split('/').pop() ?? '';
-    const baseUrl = getOtaBaseUrl();
-    res.json({
-      ok: true,
-      updateAvailable,
-      version: latest.version,
-      url: `${baseUrl}/api/walker-firmware/binary/${encodeURIComponent(filename)}`,
-      md5: latest.md5 ?? '',
-      releaseNotes: latest.release_notes ?? '',
-    });
+    res.json(buildWalkerFirmwareLatestResponse(currentVersion, getOtaBaseUrl()));
   });
 
   // App self-update flow lives entirely client-side now: the app polls the

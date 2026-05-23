@@ -43,6 +43,21 @@ import unzipper from 'unzipper';
 
 export const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.json';
 
+interface FirmwareManifestEntry {
+  version: string;
+  device_type: string;
+  url: string;
+  md5?: string;
+  sha256?: string;
+  size?: number;
+  signature?: string;
+  signing_key_id?: string;
+  signingKeyId?: string;
+  keyId?: string;
+  description?: string;
+  filename?: string;
+}
+
 /**
  * Issue #26: the published manifest still references the legacy host
  * `download.ramonvanbruggen.nl/file/...` — both wrong:
@@ -628,7 +643,7 @@ function getLocalIp(): string {
 // GET /api/admin-status/check-firmware-updates — compare remote manifest with local versions
 adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: Response) => {
   try {
-    const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: Array<{ version: string; device_type: string; url: string; md5: string; description: string; filename?: string }> };
+    const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: FirmwareManifestEntry[] };
     const remoteFirmwares = manifest.firmwares || [];
 
     // Get locally installed versions
@@ -676,7 +691,15 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
 
     res.json({
       available,
-      installed: localVersions.map(v => ({ version: v.version, device_type: v.device_type, md5: v.md5 })),
+      installed: localVersions.map(v => ({
+        version: v.version,
+        device_type: v.device_type,
+        md5: v.md5,
+        sha256: v.sha256,
+        size: v.size,
+        signature: v.signature,
+        keyId: v.signing_key_id,
+      })),
     });
   } catch (err) {
     console.error('[Admin] Failed to check firmware updates:', err);
@@ -686,9 +709,31 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
 
 // POST /api/admin-status/download-firmware — download firmware from remote URL and register locally
 adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Response) => {
-  const { url: rawUrl, filename, version, device_type, md5, description } = req.body as {
-    url?: string; filename?: string; version?: string; device_type?: string; md5?: string; description?: string;
+  const {
+    url: rawUrl,
+    filename,
+    version,
+    device_type,
+    md5,
+    sha256,
+    size,
+    signature,
+    description,
+  } = req.body as {
+    url?: string;
+    filename?: string;
+    version?: string;
+    device_type?: string;
+    md5?: string;
+    sha256?: string;
+    size?: number;
+    signature?: string;
+    description?: string;
   };
+  const signingKeyId = (req.body as { signing_key_id?: string; signingKeyId?: string; keyId?: string }).signing_key_id
+    ?? (req.body as { signingKeyId?: string }).signingKeyId
+    ?? (req.body as { keyId?: string }).keyId
+    ?? null;
 
   if (!rawUrl || !filename || !version || !device_type) {
     res.status(400).json({ error: 'url, filename, version, and device_type are required' });
@@ -712,11 +757,23 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
     // Verify MD5
     const fileBuffer = fs.readFileSync(filePath);
     const fileMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    const fileSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const fileSize = fileBuffer.length;
 
     if (md5 && fileMd5 !== md5) {
       // Clean up failed download
       try { fs.unlinkSync(filePath); } catch { /* ignore */ }
       res.status(400).json({ error: `MD5 mismatch: expected ${md5}, got ${fileMd5}` });
+      return;
+    }
+    if (sha256 && fileSha256 !== sha256) {
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      res.status(400).json({ error: `SHA256 mismatch: expected ${sha256}, got ${fileSha256}` });
+      return;
+    }
+    if (size && fileSize !== size) {
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      res.status(400).json({ error: `Size mismatch: expected ${size}, got ${fileSize}` });
       return;
     }
 
@@ -732,6 +789,11 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
       device_type,
       filename,
       md5: fileMd5,
+      sha256: fileSha256,
+      size: fileSize,
+      signature: signature || '',
+      signing_key_id: signingKeyId,
+      keyId: signingKeyId,
       description: description || '',
     }, null, 2));
 
@@ -741,6 +803,10 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
       otaVersionRepo.updateById(existing.id, {
         download_url: localUrl,
         md5: fileMd5,
+        sha256: fileSha256,
+        size: fileSize,
+        signature: signature || null,
+        signing_key_id: signingKeyId,
         release_notes: description || existing.release_notes,
       });
     } else {
@@ -749,12 +815,25 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
         device_type,
         download_url: localUrl,
         md5: fileMd5,
+        sha256: fileSha256,
+        size: fileSize,
+        signature: signature || null,
+        signing_key_id: signingKeyId,
         release_notes: description || null,
       });
     }
 
-    console.log(`[Admin] Firmware ${version} downloaded and registered (${(fileBuffer.length / 1024 / 1024).toFixed(1)} MB)`);
-    res.json({ ok: true, version, localPath: filePath, md5: fileMd5, size: fileBuffer.length });
+    console.log(`[Admin] Firmware ${version} downloaded and registered (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+    res.json({
+      ok: true,
+      version,
+      localPath: filePath,
+      md5: fileMd5,
+      sha256: fileSha256,
+      size: fileSize,
+      signature: signature || null,
+      keyId: signingKeyId,
+    });
   } catch (err) {
     // Clean up on error
     try { fs.unlinkSync(filePath); } catch { /* ignore */ }

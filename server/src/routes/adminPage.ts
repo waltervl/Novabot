@@ -5005,6 +5005,10 @@ async function downloadWalkerFw(fw, btn) {
       version: fw.version,
       device_type: 'walker',
       md5: fw.md5,
+      sha256: fw.sha256,
+      size: fw.size,
+      signature: fw.signature,
+      keyId: fw.keyId || fw.signingKeyId || fw.signing_key_id,
       description: fw.description || '',
     });
     if (d && d.ok) {

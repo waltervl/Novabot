@@ -2825,7 +2825,10 @@ function syncFirmwareVersions(): void {
 
   for (const filename of files) {
     const filePath = path.join(firmwareDir, filename);
-    const md5 = crypto.createHash('md5').update(readFileSync(filePath)).digest('hex');
+    const fileBuffer = readFileSync(filePath);
+    const md5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const size = fileBuffer.length;
     const downloadUrl = `${baseUrl}/api/dashboard/firmware/${encodeURIComponent(filename)}`;
 
     // Read metadata from companion .json if available
@@ -2835,16 +2838,28 @@ function syncFirmwareVersions(): void {
       ?? (filename.endsWith('.deb') ? 'mower'
           : filename.startsWith('walker_firmware_') ? 'walker'
           : 'charger');
+    const signature = meta?.signature ?? null;
+    const signingKeyId = meta?.signing_key_id ?? meta?.signingKeyId ?? meta?.keyId ?? null;
 
     const existing = dbByFilename.get(filename);
     if (existing) {
       validDbIds.add(existing.id);
-      if (existing.md5 !== md5) {
-        // File changed — update version + md5
+      if (
+        existing.md5 !== md5
+        || existing.sha256 !== sha256
+        || existing.size !== size
+        || existing.signature !== signature
+        || existing.signing_key_id !== signingKeyId
+      ) {
+        // File or companion metadata changed.
         otaVersionRepo.updateById(existing.id, {
           version,
           device_type: deviceType,
           md5,
+          sha256,
+          size,
+          signature,
+          signing_key_id: signingKeyId,
           download_url: downloadUrl,
         });
         console.log(`\x1b[38;5;208m[OTA] Auto-updated: ${filename} (${version})\x1b[0m`);
@@ -2863,6 +2878,10 @@ function syncFirmwareVersions(): void {
         device_type: deviceType,
         download_url: downloadUrl,
         md5,
+        sha256,
+        size,
+        signature,
+        signing_key_id: signingKeyId,
       });
       console.log(`\x1b[38;5;208m[OTA] Auto-registered: ${filename} (${version}, ${deviceType})\x1b[0m`);
     }
@@ -3016,7 +3035,7 @@ dashboardRouter.get('/firmware-list', (_req: Request, res: Response) => {
 dashboardRouter.get('/firmware-check-updates', async (_req: Request, res: Response) => {
   try {
     const { MANIFEST_URL, fetchJson, normaliseFirmwareDownloadUrl } = await import('./adminStatus.js');
-    const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: Array<{ version: string; device_type: string; url: string; md5: string; description: string; filename?: string }> };
+    const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: Array<FirmwareMeta & { version: string; device_type: string; url: string; filename?: string }> };
     const remoteFirmwares = manifest.firmwares || [];
     const localVersions = otaVersionRepo.listAll();
     const localVersionSet = new Set(localVersions.map((v: { version: string }) => v.version));
@@ -3041,8 +3060,14 @@ dashboardRouter.get('/firmware-check-updates', async (_req: Request, res: Respon
       .sort((a, b) => cmp.compare(b.version, a.version));
     res.json({
       available,
-      installed: localVersions.map((v: { version: string; device_type: string; md5: string | null }) => ({
-        version: v.version, device_type: v.device_type, md5: v.md5,
+      installed: localVersions.map((v: OtaVersionRow) => ({
+        version: v.version,
+        device_type: v.device_type,
+        md5: v.md5,
+        sha256: v.sha256,
+        size: v.size,
+        signature: v.signature,
+        keyId: v.signing_key_id,
       })),
     });
   } catch (err) {
@@ -3055,9 +3080,21 @@ dashboardRouter.get('/firmware-check-updates', async (_req: Request, res: Respon
 // manifest into the local firmware/ directory and register it in the OTA
 // versions table so the OTA flow can pick it up.
 dashboardRouter.post('/firmware-download', async (req: Request, res: Response) => {
-  const { url: rawUrl, filename, version, device_type, md5, description } = req.body as {
-    url?: string; filename?: string; version?: string; device_type?: string; md5?: string; description?: string;
+  const { url: rawUrl, filename, version, device_type, md5, sha256, size, signature, description } = req.body as {
+    url?: string;
+    filename?: string;
+    version?: string;
+    device_type?: string;
+    md5?: string;
+    sha256?: string;
+    size?: number;
+    signature?: string;
+    description?: string;
   };
+  const signingKeyId = (req.body as FirmwareMeta).signing_key_id
+    ?? (req.body as FirmwareMeta).signingKeyId
+    ?? (req.body as FirmwareMeta).keyId
+    ?? null;
   if (!rawUrl || !filename || !version || !device_type) {
     res.status(400).json({ error: 'url, filename, version, and device_type are required' });
     return;
@@ -3070,28 +3107,71 @@ dashboardRouter.post('/firmware-download', async (req: Request, res: Response) =
     await downloadFile(url, filePath);
     const fileBuffer = readFileSync(filePath);
     const fileMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    const fileSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const fileSize = fileBuffer.length;
     if (md5 && fileMd5 !== md5) {
       try { unlinkSync(filePath); } catch { /* ignore */ }
       res.status(400).json({ error: `MD5 mismatch: expected ${md5}, got ${fileMd5}` });
       return;
     }
+    if (sha256 && fileSha256 !== sha256) {
+      try { unlinkSync(filePath); } catch { /* ignore */ }
+      res.status(400).json({ error: `SHA256 mismatch: expected ${sha256}, got ${fileSha256}` });
+      return;
+    }
+    if (size && fileSize !== size) {
+      try { unlinkSync(filePath); } catch { /* ignore */ }
+      res.status(400).json({ error: `Size mismatch: expected ${size}, got ${fileSize}` });
+      return;
+    }
     const metaPath = filePath.replace(/\.(deb|bin)$/, '.json');
     fs.writeFileSync(metaPath, JSON.stringify({
-      version, device_type, filename, md5: fileMd5, description: description || '',
+      version,
+      device_type,
+      filename,
+      md5: fileMd5,
+      sha256: fileSha256,
+      size: fileSize,
+      signature: signature || '',
+      signing_key_id: signingKeyId,
+      keyId: signingKeyId,
+      description: description || '',
     }, null, 2));
     const port = process.env.PORT ?? '3000';
     const localUrl = `http://${process.env.TARGET_IP ?? '127.0.0.1'}:${port}/api/dashboard/firmware/${encodeURIComponent(filename)}`;
     const existing = otaVersionRepo.listAll().find((v: { version: string; device_type: string }) => v.version === version && v.device_type === device_type);
     if (existing) {
       otaVersionRepo.updateById(existing.id, {
-        download_url: localUrl, md5: fileMd5, release_notes: description || existing.release_notes,
+        download_url: localUrl,
+        md5: fileMd5,
+        sha256: fileSha256,
+        size: fileSize,
+        signature: signature || null,
+        signing_key_id: signingKeyId,
+        release_notes: description || existing.release_notes,
       });
     } else {
       otaVersionRepo.create({
-        version, device_type, download_url: localUrl, md5: fileMd5, release_notes: description || null,
+        version,
+        device_type,
+        download_url: localUrl,
+        md5: fileMd5,
+        sha256: fileSha256,
+        size: fileSize,
+        signature: signature || null,
+        signing_key_id: signingKeyId,
+        release_notes: description || null,
       });
     }
-    res.json({ ok: true, version, md5: fileMd5, size: fileBuffer.length });
+    res.json({
+      ok: true,
+      version,
+      md5: fileMd5,
+      sha256: fileSha256,
+      size: fileSize,
+      signature: signature || null,
+      keyId: signingKeyId,
+    });
   } catch (err) {
     console.error('[Dashboard] firmware download failed:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'Download failed' });
@@ -3109,9 +3189,9 @@ dashboardRouter.post('/firmware-download', async (req: Request, res: Response) =
  */
 /**
  * Read companion .json metadata for a firmware file (OpenNova builds).
- * Returns { version, device_type, description, md5 } or null.
+ * Returns companion metadata or null.
  */
-function readFirmwareMeta(filePath: string): { version?: string; device_type?: string; description?: string; md5?: string } | null {
+function readFirmwareMeta(filePath: string): FirmwareMeta | null {
   const jsonPath = filePath.replace(/\.(bin|deb)$/, '.json');
   if (!existsSync(jsonPath)) return null;
   try {
@@ -3218,7 +3298,24 @@ interface OtaVersionRow {
   release_notes: string | null;
   download_url: string | null;
   md5: string | null;
+  sha256: string | null;
+  signature: string | null;
+  size: number | null;
+  signing_key_id: string | null;
   created_at: string;
+}
+
+interface FirmwareMeta {
+  version?: string;
+  device_type?: string;
+  description?: string;
+  md5?: string;
+  sha256?: string;
+  signature?: string;
+  size?: number;
+  signing_key_id?: string;
+  signingKeyId?: string;
+  keyId?: string;
 }
 
 // POST /api/dashboard/ota/sync — forceer firmware directory sync
@@ -3236,17 +3333,26 @@ dashboardRouter.get('/ota/versions', (_req: Request, res: Response) => {
 
 // POST /api/dashboard/ota/versions — voeg een OTA versie toe
 dashboardRouter.post('/ota/versions', (req: Request, res: Response) => {
-  const { version, device_type, download_url, release_notes, md5 } = req.body as {
+  const { version, device_type, download_url, release_notes, md5, sha256, size, signature } = req.body as {
     version: string;
     device_type?: string;
     download_url?: string;
     release_notes?: string;
     md5?: string;
+    sha256?: string;
+    size?: number;
+    signature?: string;
   };
+  const signingKeyId = (req.body as FirmwareMeta).signing_key_id
+    ?? (req.body as FirmwareMeta).signingKeyId
+    ?? (req.body as FirmwareMeta).keyId
+    ?? null;
 
   // Auto-versie en md5 uit firmware bestand halen als download_url naar lokaal bestand wijst
   let resolvedVersion = version ?? null;
   let calculatedMd5 = md5 ?? null;
+  let calculatedSha256 = sha256 ?? null;
+  let calculatedSize = size ?? null;
   let detectedDeviceType = device_type ?? null;
 
   if (download_url) {
@@ -3254,11 +3360,14 @@ dashboardRouter.post('/ota/versions', (req: Request, res: Response) => {
     if (match) {
       const filePath = path.join(firmwareDir, match[1]);
       if (existsSync(filePath)) {
-        // Auto-bereken md5
+        const fileBuffer = readFileSync(filePath);
+        // Auto-bereken hashes
         if (!calculatedMd5) {
-          calculatedMd5 = crypto.createHash('md5').update(readFileSync(filePath)).digest('hex');
+          calculatedMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
           console.log(`\x1b[38;5;208m[OTA] Auto-berekende md5 voor ${match[1]}: ${calculatedMd5}\x1b[0m`);
         }
+        if (!calculatedSha256) calculatedSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+        if (!calculatedSize) calculatedSize = fileBuffer.length;
         // Auto-detecteer versie uit binair bestand
         const fileVersion = extractFirmwareVersion(filePath);
         if (fileVersion) {
@@ -3288,22 +3397,42 @@ dashboardRouter.post('/ota/versions', (req: Request, res: Response) => {
     download_url: download_url ?? null,
     release_notes: release_notes ?? null,
     md5: calculatedMd5,
+    sha256: calculatedSha256,
+    size: calculatedSize,
+    signature: signature ?? null,
+    signing_key_id: signingKeyId,
   });
 
   console.log(`\x1b[38;5;208m[OTA] Versie toegevoegd: ${resolvedVersion} (${detectedDeviceType ?? 'charger'}) id=${id}\x1b[0m`);
-  res.json({ ok: true, id, version: resolvedVersion, device_type: detectedDeviceType ?? 'charger', md5: calculatedMd5 });
+  res.json({
+    ok: true,
+    id,
+    version: resolvedVersion,
+    device_type: detectedDeviceType ?? 'charger',
+    md5: calculatedMd5,
+    sha256: calculatedSha256,
+    size: calculatedSize,
+    signature: signature ?? null,
+    keyId: signingKeyId,
+  });
 });
 
 // PATCH /api/dashboard/ota/versions/:id — bewerk een OTA versie
 dashboardRouter.patch('/ota/versions/:id', (req: Request, res: Response) => {
   const id = parseInt(req.params.id);
-  const { version, device_type, download_url, release_notes, md5 } = req.body as {
+  const { version, device_type, download_url, release_notes, md5, sha256, size, signature } = req.body as {
     version?: string;
     device_type?: string;
     download_url?: string;
     release_notes?: string;
     md5?: string;
+    sha256?: string;
+    size?: number;
+    signature?: string;
   };
+  const signingKeyId = (req.body as FirmwareMeta).signing_key_id
+    ?? (req.body as FirmwareMeta).signingKeyId
+    ?? (req.body as FirmwareMeta).keyId;
 
   const existing = otaVersionRepo.findById(id);
   if (!existing) {
@@ -3312,13 +3441,18 @@ dashboardRouter.patch('/ota/versions/:id', (req: Request, res: Response) => {
   }
 
   // Auto-recalculate md5 als download_url wijzigt naar lokaal bestand
-  let calculatedMd5 = md5 ?? null;
-  if (download_url && !calculatedMd5) {
+  let calculatedMd5 = md5;
+  let calculatedSha256 = sha256;
+  let calculatedSize = size;
+  if (download_url && (!calculatedMd5 || !calculatedSha256 || !calculatedSize)) {
     const urlMatch = download_url.match(/\/firmware\/(.+)$/);
     if (urlMatch) {
       const filePath = path.join(firmwareDir, urlMatch[1]);
       if (existsSync(filePath)) {
-        calculatedMd5 = crypto.createHash('md5').update(readFileSync(filePath)).digest('hex');
+        const fileBuffer = readFileSync(filePath);
+        calculatedMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+        if (!calculatedSha256) calculatedSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+        if (!calculatedSize) calculatedSize = fileBuffer.length;
       }
     }
   }
@@ -3329,6 +3463,10 @@ dashboardRouter.patch('/ota/versions/:id', (req: Request, res: Response) => {
     download_url,
     release_notes,
     md5: calculatedMd5,
+    sha256: calculatedSha256,
+    size: calculatedSize,
+    signature,
+    signing_key_id: signingKeyId,
   });
 
   console.log(`\x1b[38;5;208m[OTA] Versie bijgewerkt: id=${id}${version ? ` version=${version}` : ''}\x1b[0m`);

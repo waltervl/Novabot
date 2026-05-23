@@ -136,6 +136,11 @@ export function initDb(): void {
       device_type TEXT    NOT NULL DEFAULT 'mower',
       release_notes TEXT,
       download_url  TEXT,
+      md5         TEXT,
+      sha256      TEXT,
+      signature   TEXT,
+      size        INTEGER,
+      signing_key_id TEXT,
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -551,6 +556,14 @@ export function initDb(): void {
 
   // OTA versions: voeg md5 kolom toe (migratie)
   try { db.exec(`ALTER TABLE ota_versions ADD COLUMN md5 TEXT`); }
+  catch { /* kolom bestaat al */ }
+  try { db.exec(`ALTER TABLE ota_versions ADD COLUMN sha256 TEXT`); }
+  catch { /* kolom bestaat al */ }
+  try { db.exec(`ALTER TABLE ota_versions ADD COLUMN signature TEXT`); }
+  catch { /* kolom bestaat al */ }
+  try { db.exec(`ALTER TABLE ota_versions ADD COLUMN size INTEGER`); }
+  catch { /* kolom bestaat al */ }
+  try { db.exec(`ALTER TABLE ota_versions ADD COLUMN signing_key_id TEXT`); }
   catch { /* kolom bestaat al */ }
 
   // IP-adres van apparaten opslaan voor SSH upload (migratie)

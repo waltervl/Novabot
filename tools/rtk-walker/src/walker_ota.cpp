@@ -4,8 +4,9 @@
  * Flow:
  *   walkerOtaCheck()  GETs <serverUrl>/api/walker-firmware/latest?currentVersion=<v>
  *                     and returns the parsed manifest.
- *   walkerOtaApply()  GETs the firmware URL over HTTP/HTTPS, requires the
- *                     manifest MD5, streams through Update.write(), reboots.
+ *   walkerOtaApply()  GETs the firmware URL over HTTP/HTTPS, requires signed
+ *                     manifest metadata, streams through Update.write(),
+ *                     verifies SHA-256 + ECDSA before finalizing, reboots.
  *   walkerOtaAutoTick(force) runs both, respecting the `otaAutoCheck` flag unless
  *                     `force` is true.
  *
@@ -21,12 +22,26 @@
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include <ArduinoJson.h>
+#include <cstring>
+#include <mbedtls/base64.h>
+#include <mbedtls/md.h>
+#include <mbedtls/pk.h>
 
 #include "walker_api.h"
 
 const char* walkerFirmwareVersion() { return FIRMWARE_VERSION; }
 
 namespace {
+
+const char* kWalkerOtaSigningKeyId = "walker-p256-2026-01";
+
+// Development/test public key only. Replace this PEM and kWalkerOtaSigningKeyId
+// with the production public key before shipping signed public releases.
+const char kWalkerOtaPublicKeyPem[] =
+"-----BEGIN PUBLIC KEY-----\n"
+"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENZscH37tN3r/cf4xyJ8roAY+ovPM\n"
+"ESuuZldCF568dhoZ7/VzyFpCYI9nbcrYgCMnNIR0uBwMKC655hP08WD81Q==\n"
+"-----END PUBLIC KEY-----\n";
 
 bool isHexDigest(const String& s, size_t len) {
     if (s.length() != len) return false;
@@ -36,6 +51,93 @@ bool isHexDigest(const String& s, size_t len) {
                   (c >= 'a' && c <= 'f') ||
                   (c >= 'A' && c <= 'F');
         if (!ok) return false;
+    }
+    return true;
+}
+
+String lowerHex(const String& s) {
+    String out = s;
+    out.toLowerCase();
+    return out;
+}
+
+String bytesToHex(const uint8_t* bytes, size_t len) {
+    static const char* hex = "0123456789abcdef";
+    String out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; i++) {
+        out += hex[(bytes[i] >> 4) & 0x0f];
+        out += hex[bytes[i] & 0x0f];
+    }
+    return out;
+}
+
+String canonicalOtaPayload(const String& version, size_t size, const String& sha256) {
+    String payload;
+    payload.reserve(120 + version.length() + sha256.length());
+    payload += "walker-ota-v1\n";
+    payload += "device_type=walker\n";
+    payload += "version=";
+    payload += version;
+    payload += "\n";
+    payload += "size=";
+    payload += String((unsigned long) size);
+    payload += "\n";
+    payload += "sha256=";
+    payload += lowerHex(sha256);
+    payload += "\n";
+    return payload;
+}
+
+bool verifyOtaSignature(const String& version, size_t size, const String& sha256,
+                        const String& signatureB64, const String& keyId,
+                        String& outErr) {
+    if (keyId.length() > 0 && keyId != kWalkerOtaSigningKeyId) {
+        outErr = "unsupported signing key";
+        return false;
+    }
+
+    uint8_t signatureDer[160];
+    size_t signatureLen = 0;
+    int rc = mbedtls_base64_decode(
+        signatureDer, sizeof(signatureDer), &signatureLen,
+        reinterpret_cast<const unsigned char*>(signatureB64.c_str()),
+        signatureB64.length());
+    if (rc != 0 || signatureLen == 0) {
+        outErr = "signature base64 invalid";
+        return false;
+    }
+
+    String payload = canonicalOtaPayload(version, size, sha256);
+    uint8_t payloadHash[32];
+    const mbedtls_md_info_t* shaInfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!shaInfo || mbedtls_md(shaInfo,
+                               reinterpret_cast<const unsigned char*>(payload.c_str()),
+                               payload.length(),
+                               payloadHash) != 0) {
+        outErr = "signature payload hash failed";
+        return false;
+    }
+
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    rc = mbedtls_pk_parse_public_key(
+        &pk,
+        reinterpret_cast<const unsigned char*>(kWalkerOtaPublicKeyPem),
+        strlen(kWalkerOtaPublicKeyPem) + 1);
+    if (rc != 0) {
+        mbedtls_pk_free(&pk);
+        outErr = "public key parse failed";
+        return false;
+    }
+
+    rc = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256,
+                           payloadHash, sizeof(payloadHash),
+                           signatureDer, signatureLen);
+    mbedtls_pk_free(&pk);
+    if (rc != 0) {
+        outErr = "signature verify failed";
+        return false;
     }
     return true;
 }
@@ -98,7 +200,7 @@ OtaCheckResult walkerOtaCheck() {
     String body = http.getString();
     http.end();
 
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<2048> doc;
     DeserializationError jerr = deserializeJson(doc, body);
     if (jerr) {
         r.error = "manifest parse failed";
@@ -111,22 +213,56 @@ OtaCheckResult walkerOtaCheck() {
     r.url             = (const char*) (doc["url"] | "");
     r.md5             = (const char*) (doc["md5"] | "");
     r.sha256          = (const char*) (doc["sha256"] | "");
+    r.size            = (size_t) (doc["size"] | 0);
+    r.signature       = (const char*) (doc["signature"] | "");
+    const char* keyId = (const char*) (doc["keyId"] | "");
+    if (!keyId || keyId[0] == '\0') keyId = (const char*) (doc["signingKeyId"] | "");
+    r.keyId           = keyId ? keyId : "";
     if (r.updateAvailable && r.url.length() == 0) {
         r.ok = false;
         r.error = "manifest missing url";
     } else if (r.updateAvailable && !isHexDigest(r.md5, 32)) {
         r.ok = false;
         r.error = "manifest missing valid md5";
+    } else if (r.updateAvailable && !isHexDigest(r.sha256, 64)) {
+        r.ok = false;
+        r.error = "manifest missing valid sha256";
+    } else if (r.updateAvailable && r.size == 0) {
+        r.ok = false;
+        r.error = "manifest missing size";
+    } else if (r.updateAvailable && r.signature.length() == 0) {
+        r.ok = false;
+        r.error = "manifest missing signature";
+    } else if (r.updateAvailable && r.keyId.length() > 0 && r.keyId != kWalkerOtaSigningKeyId) {
+        r.ok = false;
+        r.error = "manifest signing key unsupported";
     }
     return r;
 }
 
 bool walkerOtaApply(const String& url, const String& expectedMd5,
-                    const String& expectedSha256,
+                    const String& expectedSha256, size_t expectedSize,
+                    const String& version, const String& signature,
+                    const String& keyId,
                     void (*progressCb)(int pct), String& outErr) {
-    (void) expectedSha256;
     if (!isHexDigest(expectedMd5, 32)) {
         outErr = "valid md5 required";
+        return false;
+    }
+    if (!isHexDigest(expectedSha256, 64)) {
+        outErr = "valid sha256 required";
+        return false;
+    }
+    if (expectedSize == 0) {
+        outErr = "valid size required";
+        return false;
+    }
+    if (version.length() == 0) {
+        outErr = "version required";
+        return false;
+    }
+    if (signature.length() == 0) {
+        outErr = "signature required";
         return false;
     }
     // Binary endpoint is mounted publicly on the server (LAN-only) — no
@@ -154,12 +290,40 @@ bool walkerOtaApply(const String& url, const String& expectedMd5,
         http.end();
         return false;
     }
-
-    if (!Update.begin(len)) {
-        outErr = Update.errorString();
+    if ((size_t) len != expectedSize) {
+        outErr = "content-length size mismatch";
         http.end();
         return false;
     }
+
+    mbedtls_md_context_t shaCtx;
+    mbedtls_md_init(&shaCtx);
+    bool shaReady = false;
+    bool updateStarted = false;
+    auto fail = [&](const String& msg) -> bool {
+        outErr = msg;
+        if (updateStarted) Update.abort();
+        if (shaReady) {
+            mbedtls_md_free(&shaCtx);
+            shaReady = false;
+        }
+        http.end();
+        return false;
+    };
+
+    const mbedtls_md_info_t* shaInfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!shaInfo
+        || mbedtls_md_setup(&shaCtx, shaInfo, 0) != 0
+        || mbedtls_md_starts(&shaCtx) != 0) {
+        return fail("sha256 init failed");
+    }
+    shaReady = true;
+
+    if (!Update.begin(len)) {
+        String err = Update.errorString();
+        return fail(err);
+    }
+    updateStarted = true;
     if (expectedMd5.length() > 0) {
         Update.setMD5(expectedMd5.c_str());
     }
@@ -173,16 +337,10 @@ bool walkerOtaApply(const String& url, const String& expectedMd5,
     while (written < len) {
         if (!stream->available()) {
             if (!stream->connected()) {
-                outErr = "download disconnected";
-                Update.abort();
-                http.end();
-                return false;
+                return fail("download disconnected");
             }
             if (millis() - lastDataMs > idleTimeoutMs) {
-                outErr = "download timeout";
-                Update.abort();
-                http.end();
-                return false;
+                return fail("download timeout");
             }
             delay(5);
             continue;
@@ -192,20 +350,18 @@ bool walkerOtaApply(const String& url, const String& expectedMd5,
         int n = stream->readBytes(buf, want);
         if (n <= 0) {
             if (millis() - lastDataMs > idleTimeoutMs) {
-                outErr = "download timeout";
-                Update.abort();
-                http.end();
-                return false;
+                return fail("download timeout");
             }
             delay(5);
             continue;
         }
         lastDataMs = millis();
+        if (mbedtls_md_update(&shaCtx, buf, (size_t) n) != 0) {
+            return fail("sha256 update failed");
+        }
         if (Update.write(buf, n) != (size_t) n) {
-            outErr = Update.errorString();
-            Update.abort();
-            http.end();
-            return false;
+            String err = Update.errorString();
+            return fail(err);
         }
         written += n;
         if (progressCb) {
@@ -217,11 +373,31 @@ bool walkerOtaApply(const String& url, const String& expectedMd5,
         }
     }
 
-    if (!Update.end(true)) {
-        outErr = Update.errorString();
-        http.end();
-        return false;
+    if ((size_t) written != expectedSize) {
+        return fail("written size mismatch");
     }
+
+    uint8_t digest[32];
+    if (mbedtls_md_finish(&shaCtx, digest) != 0) {
+        return fail("sha256 finish failed");
+    }
+    mbedtls_md_free(&shaCtx);
+    shaReady = false;
+
+    String computedSha256 = bytesToHex(digest, sizeof(digest));
+    if (!computedSha256.equalsIgnoreCase(expectedSha256)) {
+        return fail("sha256 mismatch");
+    }
+
+    if (!verifyOtaSignature(version, expectedSize, expectedSha256, signature, keyId, outErr)) {
+        return fail(outErr);
+    }
+
+    if (!Update.end(true)) {
+        String err = Update.errorString();
+        return fail(err);
+    }
+    updateStarted = false;
     http.end();
 
     Serial.println("[ota] applied, rebooting...");
@@ -243,7 +419,9 @@ void walkerOtaAutoTick(bool force) {
 
     if (r.ok && r.updateAvailable) {
         String err;
-        if (!walkerOtaApply(r.url, r.md5, r.sha256, nullptr, err)) {
+        if (!walkerOtaApply(r.url, r.md5, r.sha256, r.size,
+                            r.latestVersion, r.signature, r.keyId,
+                            nullptr, err)) {
             Serial.printf("[ota] apply failed: %s\n", err.c_str());
         }
     }
