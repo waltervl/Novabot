@@ -1779,38 +1779,31 @@ static void handleMapsList() {
   sendJson(200, doc);
 }
 
-// Streamed JSON polygon output. We CANNOT build the full document in a
-// big JsonDocument and call serializeJson — that blocks the main loop
-// for seconds on real polygons + a few obstacle rings, which starves
-// gnssPump() (UART FIFO overruns, "RTK module not found") and the WiFi
-// task (DNS lookups fail, NTRIP socket idles out). Instead we emit
-// chunked output via server.sendContent() and yield to the OS
-// scheduler + drain the GNSS UART every chunk.
+// Append one polygon CSV (local meters x,y) to a destination String as
+// JSON {"lat":..,"lng":..} objects. Caller passes the running String
+// by reference and a "is this the first point in the array?" flag so
+// commas land in the right places. Capped at maxPoints — a typical
+// garden polygon needs <200; we keep it low so the whole response
+// fits comfortably under a single server.send() call (no chunked
+// transfer, no streaming).
 //
-// streamPolygonChunked() opens a CSV, converts each row to a tiny
-// {"lat":..,"lng":..} JSON object, glues them into ~1 KB chunks and
-// flushes each chunk through sendContent(). yield() + gnssPump() in
-// the loop keep the rest of the firmware alive.
-// Fixed 4 KB output buffer + snprintf for the per-point formatting.
-// Arduino String += in a tight loop fragments the heap and triples the
-// per-point cost vs. writing into a preallocated char[]. Yielding every
-// flush (instead of every chunk) is also dropped — yield() costs a
-// scheduler tick + a gnssPump() costs a UART drain, neither of which
-// we need eight times per second of streaming. Once per 4 KB chunk is
-// plenty: 800 boundary points × ~40 B per point ≈ 32 KB → 8 yields.
-#define POLY_STREAM_BUF 4096
-
-static int streamPolygonChunked(const String& path, size_t maxPoints,
-                                bool& firstPoint) {
+// Why not chunked? An earlier version used
+// server.setContentLength(CONTENT_LENGTH_UNKNOWN) + many
+// server.sendContent() calls so the response could be megabytes if it
+// wanted to. On this hardware the chunked path *also* broke inbound
+// networking: while a chunked GET was in flight, the device stopped
+// responding to ICMP and refused new TCP connections — likely an
+// lwIP RX-queue / WebServer state interaction we can't fix from
+// user space. A single big String + server.send() is slower per-byte
+// but doesn't trigger that bug, so we eat the latency and stay
+// reachable. Hard cap on points keeps the worst case bounded.
+static int polygonToJsonAppend(const String& path, size_t maxPoints,
+                               String& out, bool& firstPoint) {
   if (!LittleFS.exists(path)) return -1;
   File f = LittleFS.open(path, FILE_READ);
   if (!f) return -1;
   size_t written = 0;
-  // Static so this allocation only happens once over the whole run.
-  // Two concurrent streams would clobber it — but the WebServer is
-  // single-threaded so that's not a real concern.
-  static char buf[POLY_STREAM_BUF];
-  size_t bufLen = 0;
+  char buf[80];
   while (f.available() && written < maxPoints) {
     String line = f.readStringUntil('\n');
     if (line.endsWith("\r")) line.remove(line.length() - 1);
@@ -1822,23 +1815,12 @@ static int streamPolygonChunked(const String& path, size_t maxPoints,
     double lat = 0, lng = 0;
     if (!sessionStore.localToGps(x, y, lat, lng)) continue;
 
-    // ~55 B worst case per point ("{\"lat\":52.1234567,\"lng\":5.1234567},").
-    // Flush before we risk overflow, then format into the fresh buffer.
-    if (bufLen + 64 > POLY_STREAM_BUF) {
-      server.sendContent(buf, bufLen);
-      bufLen = 0;
-      gnssPump();
-      yield();
-    }
-    int n = snprintf(buf + bufLen, POLY_STREAM_BUF - bufLen,
+    int n = snprintf(buf, sizeof(buf),
                      "%s{\"lat\":%.7f,\"lng\":%.7f}",
                      firstPoint ? "" : ",", lat, lng);
-    if (n > 0) bufLen += (size_t) n;
+    if (n > 0 && n < (int) sizeof(buf)) out += buf;
     firstPoint = false;
     written++;
-  }
-  if (bufLen > 0) {
-    server.sendContent(buf, bufLen);
   }
   f.close();
   return (int) written;
@@ -1874,10 +1856,6 @@ static String jsonEscape(const String& s) {
 
 static void handleMapDetail() {
   String uri = server.uri();
-  // Strip the "/api/maps/" prefix to get the slot. The suffix must be a
-  // single digit 0..2 — anything else (e.g. "view" sneaking through a
-  // GET request, or trailing path components) is rejected so we don't
-  // misinterpret it as slot 0 via toInt()'s permissive parsing.
   String suffix = uri.substring(strlen("/api/maps/"));
   if (suffix.length() != 1 || suffix[0] < '0' || suffix[0] > '2') {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid slot\"}");
@@ -1890,14 +1868,12 @@ static void handleMapDetail() {
     server.send(404, "application/json", "{\"ok\":false,\"error\":\"map not found\"}");
     return;
   }
-
   double oLat = 0, oLng = 0;
   if (!sessionStore.getOrigin(oLat, oLng)) {
     server.send(409, "application/json", "{\"ok\":false,\"error\":\"map has no origin\"}");
     return;
   }
 
-  // Single listMaps call for alias + counts; reused for the header.
   MapEntry entries[3];
   size_t cnt = 0;
   sessionStore.listMaps(entries, 3, cnt);
@@ -1913,13 +1889,16 @@ static void handleMapDetail() {
     }
   }
 
-  // Switch to chunked transfer. CONTENT_LENGTH_UNKNOWN tells WebServer
-  // to use Transfer-Encoding: chunked instead of Content-Length, which
-  // is exactly what we want for streamed output of unknown total size.
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200, "application/json", "");
-
-  // Header — fixed-size, fits in a small buffer.
+  // Build the whole response into a single String, then send it in one
+  // server.send() call. Hard caps everywhere — a polygon with thousands
+  // of points isn't useful on a 480x320 panel or a small browser
+  // anyway. Caps:
+  //   boundary: 300 points  (typical garden walks land at 50-150)
+  //   obstacle: 100 points  (rings are tiny by nature)
+  //   channel : 300 points  (long routes)
+  // Pre-reserve so the String doesn't constantly realloc.
+  String body;
+  body.reserve(12288);
   {
     char hdr[256];
     snprintf(hdr, sizeof(hdr),
@@ -1928,27 +1907,19 @@ static void handleMapDetail() {
              "\"work\":[",
              slot, jsonEscape(alias).c_str(),
              boundaryPoints, obstacleCount, channelCount);
-    server.sendContent(hdr);
+    body += hdr;
   }
-
-  // Boundary points (cap 800 — plenty for a typical garden; large maps
-  // get decimated client-side anyway).
   {
     bool first = true;
-    streamPolygonChunked(workPath, 800, first);
+    polygonToJsonAppend(workPath, 300, body, first);
   }
-  server.sendContent("],\"obstacles\":[");
+  body += "],\"obstacles\":[";
 
-  // Obstacles + channels — single directory scan emits both lists. The
-  // /session/ tree is flat so one pass picks up everything; this avoids
-  // the double-scan the prior version did.
+  String prefix = String("map") + slot + "_";
+  String chPrefix = String("map") + slot + "to";
   {
-    String prefix = String("map") + slot + "_";
-    String chPrefix = String("map") + slot + "to";
+    bool firstObs = true;
     File dir = LittleFS.open("/session");
-
-    // First pass: obstacles.
-    bool firstObstacle = true;
     if (dir && dir.isDirectory()) {
       File entry = dir.openNextFile();
       while (entry) {
@@ -1958,15 +1929,14 @@ static void handleMapDetail() {
         if (name.startsWith(prefix) && name.endsWith("_obstacle.csv")) {
           String full = String("/session/") + name;
           entry.close();
-          if (!firstObstacle) server.sendContent(",");
-          firstObstacle = false;
-          String hdr = String("{\"name\":\"") + jsonEscape(name) + "\",\"points\":[";
-          server.sendContent(hdr);
+          if (!firstObs) body += ',';
+          firstObs = false;
+          body += "{\"name\":\"";
+          body += jsonEscape(name);
+          body += "\",\"points\":[";
           bool firstPt = true;
-          streamPolygonChunked(full, 256, firstPt);
-          server.sendContent("]}");
-          gnssPump();
-          yield();
+          polygonToJsonAppend(full, 100, body, firstPt);
+          body += "]}";
         } else {
           entry.close();
         }
@@ -1974,13 +1944,10 @@ static void handleMapDetail() {
       }
       dir.close();
     }
-
-    server.sendContent("],\"channels\":[");
-
-    // Second pass: channels. Two passes instead of one because emitting
-    // obstacles + channels intermixed would require buffering one of
-    // them — and the whole point of this rewrite is *not* to buffer.
-    bool firstChannel = true;
+  }
+  body += "],\"channels\":[";
+  {
+    bool firstCh = true;
     File dir2 = LittleFS.open("/session");
     if (dir2 && dir2.isDirectory()) {
       File entry = dir2.openNextFile();
@@ -1995,15 +1962,14 @@ static void handleMapDetail() {
                             ? name.substring(afterTo, beforeSuffix) : String("?");
           String full = String("/session/") + name;
           entry.close();
-          if (!firstChannel) server.sendContent(",");
-          firstChannel = false;
-          String hdr = String("{\"target\":\"") + jsonEscape(target) + "\",\"points\":[";
-          server.sendContent(hdr);
+          if (!firstCh) body += ',';
+          firstCh = false;
+          body += "{\"target\":\"";
+          body += jsonEscape(target);
+          body += "\",\"points\":[";
           bool firstPt = true;
-          streamPolygonChunked(full, 800, firstPt);
-          server.sendContent("]}");
-          gnssPump();
-          yield();
+          polygonToJsonAppend(full, 300, body, firstPt);
+          body += "]}";
         } else {
           entry.close();
         }
@@ -2012,9 +1978,13 @@ static void handleMapDetail() {
       dir2.close();
     }
   }
-  server.sendContent("]}");
-  // Empty chunk terminates the chunked response.
-  server.sendContent("");
+  body += "]}";
+
+  // One Content-Length response, no chunked transfer. ESP32 WebServer
+  // emits proper headers + body and closes the socket cleanly. The
+  // device stays pingable through this whole call (was the bug we hit
+  // with the previous streaming code).
+  server.send(200, "application/json", body);
 }
 
 // Delete one obstacle CSV by its filesystem name. Auth-required. The
