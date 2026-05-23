@@ -1779,15 +1779,26 @@ static void handleMapsList() {
   sendJson(200, doc);
 }
 
-// Stream one polygon CSV (local meters x,y) into a JsonArray of
-// {lat,lng}. Returns the row count actually written; <0 on hard error.
-// Used by both the boundary and obstacle endpoints so the conversion
-// path stays identical.
-static int streamPolygonAsLatLng(const String& path, JsonArray out, size_t maxPoints) {
+// Streamed JSON polygon output. We CANNOT build the full document in a
+// big JsonDocument and call serializeJson — that blocks the main loop
+// for seconds on real polygons + a few obstacle rings, which starves
+// gnssPump() (UART FIFO overruns, "RTK module not found") and the WiFi
+// task (DNS lookups fail, NTRIP socket idles out). Instead we emit
+// chunked output via server.sendContent() and yield to the OS
+// scheduler + drain the GNSS UART every chunk.
+//
+// streamPolygonChunked() opens a CSV, converts each row to a tiny
+// {"lat":..,"lng":..} JSON object, glues them into ~1 KB chunks and
+// flushes each chunk through sendContent(). yield() + gnssPump() in
+// the loop keep the rest of the firmware alive.
+static int streamPolygonChunked(const String& path, size_t maxPoints,
+                                bool& firstPoint) {
   if (!LittleFS.exists(path)) return -1;
   File f = LittleFS.open(path, FILE_READ);
   if (!f) return -1;
   size_t written = 0;
+  String chunk;
+  chunk.reserve(1200);
   while (f.available() && written < maxPoints) {
     String line = f.readStringUntil('\n');
     if (line.endsWith("\r")) line.remove(line.length() - 1);
@@ -1798,13 +1809,59 @@ static int streamPolygonAsLatLng(const String& path, JsonArray out, size_t maxPo
     double y = line.substring(c1 + 1).toDouble();
     double lat = 0, lng = 0;
     if (!sessionStore.localToGps(x, y, lat, lng)) continue;
-    JsonObject p = out.add<JsonObject>();
-    p["lat"] = lat;
-    p["lng"] = lng;
+
+    if (!firstPoint) chunk += ',';
+    firstPoint = false;
+    chunk += "{\"lat\":";
+    chunk += String(lat, 7);
+    chunk += ",\"lng\":";
+    chunk += String(lng, 7);
+    chunk += '}';
     written++;
+
+    if (chunk.length() > 1024) {
+      server.sendContent(chunk);
+      chunk = "";
+      // Keep the rest of the firmware alive while we stream.
+      gnssPump();
+      yield();
+    }
+  }
+  if (chunk.length() > 0) {
+    server.sendContent(chunk);
+    gnssPump();
+    yield();
   }
   f.close();
   return (int) written;
+}
+
+// JSON-escape a filesystem-derived string (alias, channel target, file
+// name). Quotes, backslashes and control characters get escaped — the
+// rest passes through. Defensive against names containing weird chars
+// that would break the response otherwise.
+static String jsonEscape(const String& s) {
+  String out;
+  out.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if ((uint8_t) c < 0x20) {
+          char esc[8];
+          snprintf(esc, sizeof(esc), "\\u%04x", (uint8_t) c);
+          out += esc;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
 }
 
 static void handleMapDetail() {
@@ -1820,24 +1877,19 @@ static void handleMapDetail() {
   }
   int slot = suffix[0] - '0';
 
-  // Bail early if the map doesn't exist on disk. Spares the web UI
-  // having to handle empty polygons gracefully.
   String workPath = String("/session/map") + slot + "_work.csv";
   if (!LittleFS.exists(workPath)) {
     server.send(404, "application/json", "{\"ok\":false,\"error\":\"map not found\"}");
     return;
   }
 
-  // Need the origin to project local meters back to lat/lng. Without
-  // it the polygon is meaningless to the web UI's lat/lng canvas.
   double oLat = 0, oLng = 0;
   if (!sessionStore.getOrigin(oLat, oLng)) {
     server.send(409, "application/json", "{\"ok\":false,\"error\":\"map has no origin\"}");
     return;
   }
 
-  // Capture alias from listMaps (single dir scan, much cheaper than
-  // re-deriving from the metadata.json directly).
+  // Single listMaps call for alias + counts; reused for the header.
   MapEntry entries[3];
   size_t cnt = 0;
   sessionStore.listMaps(entries, 3, cnt);
@@ -1853,80 +1905,108 @@ static void handleMapDetail() {
     }
   }
 
-  // Allocate the doc on the heap — a typical map with a few thousand
-  // points + a handful of obstacle rings doesn't fit in a stack-bound
-  // StaticJsonDocument. Filtered + heap-allocated keeps the response
-  // accurate without forcing a 64 KB stack.
-  DynamicJsonDocument doc(32768);
-  doc["ok"]              = true;
-  doc["slot"]            = slot;
-  doc["alias"]           = alias;
-  doc["boundaryPoints"]  = boundaryPoints;
-  doc["obstacleCount"]   = obstacleCount;
-  doc["channelCount"]    = channelCount;
+  // Switch to chunked transfer. CONTENT_LENGTH_UNKNOWN tells WebServer
+  // to use Transfer-Encoding: chunked instead of Content-Length, which
+  // is exactly what we want for streamed output of unknown total size.
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
 
-  JsonArray work = doc["work"].to<JsonArray>();
-  streamPolygonAsLatLng(workPath, work, 1500);
-
-  // Obstacles — iterate /session/ for mapN_*_obstacle.csv files.
-  JsonArray obstacles = doc["obstacles"].to<JsonArray>();
-  String prefix = String("map") + slot + "_";
-  File dir = LittleFS.open("/session");
-  if (dir && dir.isDirectory()) {
-    File entry = dir.openNextFile();
-    while (entry) {
-      String name = entry.name();
-      int slash = name.lastIndexOf('/');
-      if (slash >= 0) name = name.substring(slash + 1);
-      if (name.startsWith(prefix) && name.endsWith("_obstacle.csv")) {
-        String full = String("/session/") + name;
-        entry.close();
-        JsonObject ring = obstacles.add<JsonObject>();
-        ring["name"] = name;
-        JsonArray pts = ring["points"].to<JsonArray>();
-        streamPolygonAsLatLng(full, pts, 512);
-      } else {
-        entry.close();
-      }
-      entry = dir.openNextFile();
-    }
-    dir.close();
+  // Header — fixed-size, fits in a small buffer.
+  {
+    char hdr[256];
+    snprintf(hdr, sizeof(hdr),
+             "{\"ok\":true,\"slot\":%d,\"alias\":\"%s\","
+             "\"boundaryPoints\":%d,\"obstacleCount\":%d,\"channelCount\":%d,"
+             "\"work\":[",
+             slot, jsonEscape(alias).c_str(),
+             boundaryPoints, obstacleCount, channelCount);
+    server.sendContent(hdr);
   }
 
-  // Channels — same layout, _unicom suffix instead of _obstacle.
-  JsonArray channels = doc["channels"].to<JsonArray>();
-  File dir2 = LittleFS.open("/session");
-  if (dir2 && dir2.isDirectory()) {
-    File entry = dir2.openNextFile();
-    while (entry) {
-      String name = entry.name();
-      int slash = name.lastIndexOf('/');
-      if (slash >= 0) name = name.substring(slash + 1);
-      // Channel filename: mapNto<target>_unicom.csv
-      String chPrefix = String("map") + slot + "to";
-      if (name.startsWith(chPrefix) && name.endsWith("_unicom.csv")) {
-        // Pull the target name out of the middle.
-        int afterTo = chPrefix.length();
-        int beforeSuffix = name.length() - strlen("_unicom.csv");
-        String target = (beforeSuffix > afterTo)
-                          ? name.substring(afterTo, beforeSuffix) : String("?");
-        String full = String("/session/") + name;
-        entry.close();
-        JsonObject ch = channels.add<JsonObject>();
-        ch["target"] = target;
-        JsonArray pts = ch["points"].to<JsonArray>();
-        streamPolygonAsLatLng(full, pts, 1500);
-      } else {
-        entry.close();
-      }
-      entry = dir2.openNextFile();
-    }
-    dir2.close();
+  // Boundary points (cap 800 — plenty for a typical garden; large maps
+  // get decimated client-side anyway).
+  {
+    bool first = true;
+    streamPolygonChunked(workPath, 800, first);
   }
+  server.sendContent("],\"obstacles\":[");
 
-  String out;
-  serializeJson(doc, out);
-  server.send(200, "application/json", out);
+  // Obstacles + channels — single directory scan emits both lists. The
+  // /session/ tree is flat so one pass picks up everything; this avoids
+  // the double-scan the prior version did.
+  {
+    String prefix = String("map") + slot + "_";
+    String chPrefix = String("map") + slot + "to";
+    File dir = LittleFS.open("/session");
+
+    // First pass: obstacles.
+    bool firstObstacle = true;
+    if (dir && dir.isDirectory()) {
+      File entry = dir.openNextFile();
+      while (entry) {
+        String name = entry.name();
+        int sl = name.lastIndexOf('/');
+        if (sl >= 0) name = name.substring(sl + 1);
+        if (name.startsWith(prefix) && name.endsWith("_obstacle.csv")) {
+          String full = String("/session/") + name;
+          entry.close();
+          if (!firstObstacle) server.sendContent(",");
+          firstObstacle = false;
+          String hdr = String("{\"name\":\"") + jsonEscape(name) + "\",\"points\":[";
+          server.sendContent(hdr);
+          bool firstPt = true;
+          streamPolygonChunked(full, 256, firstPt);
+          server.sendContent("]}");
+          gnssPump();
+          yield();
+        } else {
+          entry.close();
+        }
+        entry = dir.openNextFile();
+      }
+      dir.close();
+    }
+
+    server.sendContent("],\"channels\":[");
+
+    // Second pass: channels. Two passes instead of one because emitting
+    // obstacles + channels intermixed would require buffering one of
+    // them — and the whole point of this rewrite is *not* to buffer.
+    bool firstChannel = true;
+    File dir2 = LittleFS.open("/session");
+    if (dir2 && dir2.isDirectory()) {
+      File entry = dir2.openNextFile();
+      while (entry) {
+        String name = entry.name();
+        int sl = name.lastIndexOf('/');
+        if (sl >= 0) name = name.substring(sl + 1);
+        if (name.startsWith(chPrefix) && name.endsWith("_unicom.csv")) {
+          int afterTo = chPrefix.length();
+          int beforeSuffix = name.length() - strlen("_unicom.csv");
+          String target = (beforeSuffix > afterTo)
+                            ? name.substring(afterTo, beforeSuffix) : String("?");
+          String full = String("/session/") + name;
+          entry.close();
+          if (!firstChannel) server.sendContent(",");
+          firstChannel = false;
+          String hdr = String("{\"target\":\"") + jsonEscape(target) + "\",\"points\":[";
+          server.sendContent(hdr);
+          bool firstPt = true;
+          streamPolygonChunked(full, 800, firstPt);
+          server.sendContent("]}");
+          gnssPump();
+          yield();
+        } else {
+          entry.close();
+        }
+        entry = dir2.openNextFile();
+      }
+      dir2.close();
+    }
+  }
+  server.sendContent("]}");
+  // Empty chunk terminates the chunked response.
+  server.sendContent("");
 }
 
 static void handleMapView() {

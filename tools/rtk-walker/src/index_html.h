@@ -179,16 +179,6 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <div id="mapList"></div>
   </div>
 
-  <div class="tracks">
-    <h1>Saved tracks</h1>
-    <div style="font-size:11px;color:var(--text-dim);margin:-6px 0 8px;line-height:1.4">
-      Legacy single-polygon recordings. New work belongs in Saved Maps
-      above; this section stays for tracks that haven't been promoted
-      via the Save as area flow yet.
-    </div>
-    <div id="trackList"></div>
-  </div>
-
   <details class="card config">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">WiFi &amp; NTRIP setup</summary>
     <form id="cfgForm">
@@ -295,7 +285,7 @@ async function saveAuthToken() {
     document.getElementById('auth_token').value = '';
     status.style.color = 'var(--emerald)';
     status.textContent = 'Token saved.';
-    loadTracks();
+    loadMaps();
   } catch (e) {
     status.style.color = 'var(--red)';
     status.textContent = 'Save failed: ' + (e && e.message ? e.message : e);
@@ -353,83 +343,7 @@ async function toggleRecord() {
     headers: { 'Content-Type': 'application/json' }
   });
   refresh();
-  loadTracks();
-}
-
-function makeTrackRow(t) {
-  const wrap = document.createElement('div');
-  wrap.className = 'track';
-
-  const left = document.createElement('div');
-  const name = document.createElement('div');
-  name.textContent = t.name;
-  // Click the track name to load it onto the map. Cheaper than a
-  // separate "View" button; the .meta line below tells the user how
-  // many points are in there before they pull the trigger.
-  name.style.cursor = 'pointer';
-  name.style.color = 'var(--emerald)';
-  name.style.fontWeight = '600';
-  name.addEventListener('click', function() { viewTrack(t.name); });
-  const meta = document.createElement('div');
-  meta.className = 'meta';
-  meta.textContent = (t.points != null ? t.points : 0) + ' pts · ' + (t.size != null ? t.size : 0) + ' bytes';
-  left.appendChild(name);
-  left.appendChild(meta);
-
-  const actions = document.createElement('div');
-  actions.className = 'track-actions';
-
-  const csv = document.createElement('a');
-  csv.href = '#';
-  csv.textContent = 'Download CSV';
-  csv.addEventListener('click', function(e) {
-    e.preventDefault();
-    downloadProtected('/track/' + encodeURIComponent(t.name), t.name);
-  });
-
-  const poly = document.createElement('a');
-  poly.href = '#';
-  poly.textContent = 'Novabot polygon';
-  poly.title = 'lat,lng pairs only, deduped — drop into OpenNova polygon import';
-  poly.addEventListener('click', function(e) {
-    e.preventDefault();
-    const base = t.name.replace(/\.[^.]+$/, '');
-    downloadProtected('/track/' + encodeURIComponent(t.name) + '.polygon', base + '-polygon.csv');
-  });
-
-  actions.appendChild(csv);
-  actions.appendChild(poly);
-
-  wrap.appendChild(left);
-  wrap.appendChild(actions);
-  return wrap;
-}
-
-async function downloadProtected(url, filename) {
-  try {
-    const r = await authFetch(url);
-    if (r.status === 401) { showAuthNeeded(); return; }
-    if (!r.ok) { alert('Download failed: HTTP ' + r.status); return; }
-    const blob = await r.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    URL.revokeObjectURL(a.href);
-    a.remove();
-  } catch (e) {
-    alert('Download failed: ' + e);
-  }
-}
-
-async function loadTracks() {
-  const r = await authFetch('/api/tracks');
-  if (r.status === 401) { showAuthNeeded(); return; }
-  const list = await r.json();
-  const container = document.getElementById('trackList');
-  while (container.firstChild) container.removeChild(container.firstChild);
-  for (const t of list) container.appendChild(makeTrackRow(t));
+  loadMaps();
 }
 
 // ── Saved maps (Recording-screen output) ───────────────────────────
@@ -646,45 +560,6 @@ function setOverlay(text) {
   if (el) el.textContent = text;
 }
 
-// Viewing a saved track from the list pauses the live polyline poll
-// and renders the loaded points instead. null = live mode (default).
-let viewingTrack = null;
-
-async function viewTrack(name) {
-  try {
-    const r = await authFetch('/track/' + encodeURIComponent(name) + '.json');
-    if (r.status === 401) { showAuthNeeded(); return; }
-    if (!r.ok) { alert('Could not load ' + name); return; }
-    const d = await r.json();
-    const pts = (d.points || []).map(function(p){ return [p[0], p[1]]; });
-    viewingTrack = name;
-    if (trackLine) trackLine.setLatLngs(pts);
-    if (pts.length >= 2) {
-      map.fitBounds(trackLine.getBounds(), { padding: [30, 30], maxZoom: 21 });
-    }
-    mapAutoFitDone = true;
-    setOverlay('viewing ' + name + ' · ' + pts.length + ' pts');
-    // Slip a back-to-live button into the overlay container.
-    const ov = document.getElementById('mapOverlay');
-    if (ov && !document.getElementById('backToLive')) {
-      const btn = document.createElement('button');
-      btn.id = 'backToLive';
-      btn.textContent = 'Back to live';
-      btn.style.cssText = 'margin-left:8px;padding:2px 8px;font-size:11px;border:0;border-radius:4px;background:rgba(0,212,170,0.2);color:var(--emerald);cursor:pointer';
-      btn.addEventListener('click', backToLive);
-      ov.appendChild(btn);
-    }
-  } catch (e) { alert('Failed to load track: ' + e); }
-}
-
-function backToLive() {
-  viewingTrack = null;
-  mapAutoFitDone = false;
-  if (trackLine) trackLine.setLatLngs([]);
-  const btn = document.getElementById('backToLive');
-  if (btn) btn.remove();
-}
-
 // Load a saved map onto the Leaflet canvas AND tell the walker to mirror
 // the same map on the TFT. The two halves run in parallel so the
 // experience is "tap once, both screens update".
@@ -793,10 +668,10 @@ function backToLiveSavedMap() {
 
 async function refreshMap() {
   if (!mapInitialised) return;
-  // While viewing a saved track OR a saved session map, don't overwrite
-  // its polyline with the live recording's. The cursor still moves so
-  // the user can see where they are vs the loaded geometry.
-  if (viewingTrack || viewingSavedMap != null) {
+  // While viewing a saved session map, don't overwrite its polyline with
+  // the live recording's. The cursor still moves so the user can see
+  // where they are vs the loaded geometry.
+  if (viewingSavedMap != null) {
     try {
       const sresp = await fetch('/api/status');
       const s = await sresp.json();
@@ -878,8 +753,8 @@ async function refreshMap() {
 const origToggleRecord = toggleRecord;
 toggleRecord = async function() {
   // Starting a recording always drops you back into live mode - it'd
-  // be weird if Start Recording left a saved track on the map.
-  if (viewingTrack) backToLive();
+  // be weird if Start Recording left a saved session map on the canvas.
+  if (viewingSavedMap != null) backToLiveSavedMap();
   await origToggleRecord();
   mapAutoFitDone = false;
   if (trackLine) trackLine.setLatLngs([]);
@@ -1036,7 +911,6 @@ setInterval(loadMaps, 3000);
 refresh();
 refreshMap();
 refreshLog();
-loadTracks();
 loadMaps();
 loadConfig();
 loadAuthStatus();
