@@ -192,6 +192,14 @@ static unsigned long lastButtonChangeMs = 0;
 struct LivePoint { double lat, lng; uint8_t fix; };
 static std::vector<LivePoint> livePoints;
 
+// Deferred on-device view refresh. HTTP handlers that modify the
+// session (obstacle delete, etc.) can't safely re-load the polygon /
+// obstacles inline — those operations are 500+ ms of LittleFS work
+// and would starve gnssPump(). Instead the handler sets this slot and
+// the main loop picks it up between gnssPump() ticks. -1 = no refresh
+// pending; 0..2 = refresh that slot's on-device view.
+static int g_pendingViewRefreshSlot = -1;
+
 // Guards every access to `livePoints` so the main task (push_back +
 // erase) and the LVGL task on the other core (walkerCopyLivePoints +
 // /api/track/current serialise) don't trample each other. Standard
@@ -1821,6 +1829,18 @@ static int polygonToJsonAppend(const String& path, size_t maxPoints,
     if (n > 0 && n < (int) sizeof(buf)) out += buf;
     firstPoint = false;
     written++;
+
+    // Drain the GNSS UART + yield to the scheduler every 32 points.
+    // We're not streaming the response (the previous chunked path
+    // broke ICMP), but we can still keep the rest of the firmware
+    // alive WHILE the response is being built in memory. The 256 B
+    // UART RX FIFO fills in ~22 ms at 115200 baud, and 32 points of
+    // String concat + LittleFS read is well under that — so the
+    // GNSS module never reports "module not found" mid-request.
+    if ((written & 0x1F) == 0) {
+      gnssPump();
+      yield();
+    }
   }
   f.close();
   return (int) written;
@@ -1911,7 +1931,7 @@ static void handleMapDetail() {
   }
   {
     bool first = true;
-    polygonToJsonAppend(workPath, 300, body, first);
+    polygonToJsonAppend(workPath, 200, body, first);
   }
   body += "],\"obstacles\":[";
 
@@ -1935,7 +1955,7 @@ static void handleMapDetail() {
           body += jsonEscape(name);
           body += "\",\"points\":[";
           bool firstPt = true;
-          polygonToJsonAppend(full, 100, body, firstPt);
+          polygonToJsonAppend(full, 60, body, firstPt);
           body += "]}";
         } else {
           entry.close();
@@ -1968,7 +1988,7 @@ static void handleMapDetail() {
           body += jsonEscape(target);
           body += "\",\"points\":[";
           bool firstPt = true;
-          polygonToJsonAppend(full, 300, body, firstPt);
+          polygonToJsonAppend(full, 200, body, firstPt);
           body += "]}";
         } else {
           entry.close();
@@ -2038,11 +2058,16 @@ static void handleObstacleDelete() {
   }
   weblogf("[obstacle] deleted %s\n", name.c_str());
 
-  // If the currently-viewed map owns this obstacle, refresh its on-
-  // device buffer so the home screen drops the now-missing ring.
+  // DON'T refresh the on-device view inline — tft_ui_view_map_slot
+  // does multiple LittleFS reads + a per-point lat/lng conversion
+  // which can block the main loop for hundreds of ms. While we're
+  // blocked the 256 B UART RX FIFO overruns and the GNSS module
+  // reports "RTK module not found" within ~25 ms. Instead, defer the
+  // refresh to the main loop: it'll pick up the flag on the next
+  // iteration and do the work outside the HTTP critical section.
   int viewing = tft_ui_current_view_slot();
   if (viewing >= 0 && (slotChar - '0') == viewing) {
-    tft_ui_view_map_slot(viewing);
+    g_pendingViewRefreshSlot = viewing;
   }
 
   JsonDocument resp;
@@ -2548,6 +2573,19 @@ void loop() {
   if (!otaBootCheckDone && millis() > 3000 && WiFi.status() == WL_CONNECTED) {
     otaBootCheckDone = true;
     walkerOtaAutoTick(false);
+  }
+
+  // Drain a deferred on-device view refresh requested by an HTTP
+  // handler (e.g. /api/maps/obstacles/delete). Runs OUTSIDE the
+  // HTTP critical section so the few hundred ms of LittleFS work
+  // doesn't starve gnssPump(). gnssPump() ran two lines up already
+  // and runs again right after this, so even the worst-case UART
+  // pause stays under the FIFO depth.
+  if (g_pendingViewRefreshSlot >= 0) {
+    int slot = g_pendingViewRefreshSlot;
+    g_pendingViewRefreshSlot = -1;
+    tft_ui_view_map_slot(slot);
+    gnssPump();
   }
 
   // Diagnostic heartbeats were noisy on the serial console after the UI
