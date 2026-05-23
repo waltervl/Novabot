@@ -170,6 +170,31 @@ static lv_obj_t* maps_status = nullptr;
 // gigabytes during a long walk.
 #define MAP_POINT_MAX 1500
 static lv_point_t map_pts[MAP_POINT_MAX];
+
+// User-controlled zoom + pan for the home-screen map. zoom == 1.0 is
+// auto-fit-to-bbox; pan is a pixel offset on top of the centred fit.
+// Reset whenever the visible content changes (entering viewing mode,
+// starting/stopping a recording) so the user never lands on an empty
+// panel because they zoomed out of view of the new data.
+static float    map_user_zoom = 1.0f;
+static lv_coord_t map_pan_x   = 0;
+static lv_coord_t map_pan_y   = 0;
+// Drag tracking: previous touch coords during an in-progress pan, plus
+// a flag so the press-handler can latch its starting position without
+// re-reading transient LVGL pointer state mid-gesture.
+static bool       map_drag_active = false;
+static lv_coord_t map_drag_prev_x = 0;
+static lv_coord_t map_drag_prev_y = 0;
+
+// Obstacles overlaid on the home-screen map when viewing a saved work
+// map. See the loader / renderer further down; the constants need to
+// be visible to setup_main_screen() so the line widgets get created
+// in the right pass.
+#define MAX_VIEW_OBSTACLES    4
+#define MAX_VIEW_OBSTACLE_PTS 64
+static lv_obj_t*  map_obstacle_lines[MAX_VIEW_OBSTACLES] = {nullptr};
+static lv_point_t map_obstacle_pts[MAX_VIEW_OBSTACLES][MAX_VIEW_OBSTACLE_PTS + 1];
+static uint16_t   map_obstacle_pts_used[MAX_VIEW_OBSTACLES] = {0};
 static uint16_t   map_pts_used = 0;
 
 // Original "untouched at boot" snapshot — used to decide which fields
@@ -204,6 +229,18 @@ static void update_save_area_button(const WalkerSnapshot& snap);
 static void update_map_action_buttons(const WalkerSnapshot& snap);
 static void on_add_channel_clicked(lv_event_t* e);
 static void on_add_obstacle_clicked(lv_event_t* e);
+
+// Map zoom + pan controls. The +/- buttons live as widgets on the
+// home-screen map_panel; drag handlers are attached to the same panel
+// so the user can pan with one finger. reset_map_view restores the
+// auto-fit state (zoom=1, no pan) and is called whenever the visible
+// content changes (entering viewing mode, starting a recording).
+static void on_zoom_in_clicked(lv_event_t* e);
+static void on_zoom_out_clicked(lv_event_t* e);
+static void on_map_panel_pressed(lv_event_t* e);
+static void on_map_panel_pressing(lv_event_t* e);
+static void on_map_panel_released(lv_event_t* e);
+static void reset_map_view();
 static bool load_saved_map_polygon(int slot);
 static void exit_viewing_mode();
 
@@ -353,6 +390,16 @@ static void build_main_screen() {
   lv_obj_set_style_line_width(map_line, 3, 0);
   lv_obj_set_style_line_rounded(map_line, true, 0);
 
+  // Obstacle overlay lines — one widget per slot. Created hidden; populated
+  // by redraw_map() when viewing a saved map with obstacles on disk.
+  for (size_t i = 0; i < MAX_VIEW_OBSTACLES; i++) {
+    map_obstacle_lines[i] = lv_line_create(map_panel);
+    lv_obj_set_style_line_color(map_obstacle_lines[i], COL_RED, 0);
+    lv_obj_set_style_line_width(map_obstacle_lines[i], 2, 0);
+    lv_obj_set_style_line_rounded(map_obstacle_lines[i], true, 0);
+    lv_obj_add_flag(map_obstacle_lines[i], LV_OBJ_FLAG_HIDDEN);
+  }
+
   map_cursor = lv_obj_create(map_panel);
   lv_obj_set_size(map_cursor, 12, 12);
   lv_obj_set_style_bg_color(map_cursor, COL_EMERALD, 0);
@@ -368,6 +415,46 @@ static void build_main_screen() {
   lv_obj_set_style_text_color(map_north_label, COL_DIM, 0);
   lv_obj_set_style_text_font(map_north_label, &lv_font_montserrat_14, 0);
   lv_obj_align(map_north_label, LV_ALIGN_TOP_RIGHT, -4, 4);
+
+  // Zoom controls — small +/- buttons stacked vertically along the right
+  // edge of the map panel. Bottom-right corner is reserved for the pts
+  // label so we stack from below the North label down a bit.
+  lv_obj_t* btn_zoom_in = lv_btn_create(map_panel);
+  lv_obj_set_size(btn_zoom_in, 32, 32);
+  lv_obj_align(btn_zoom_in, LV_ALIGN_TOP_RIGHT, -4, 28);
+  lv_obj_set_style_bg_color(btn_zoom_in, COL_CARD, 0);
+  lv_obj_set_style_bg_opa(btn_zoom_in, LV_OPA_80, 0);
+  lv_obj_set_style_radius(btn_zoom_in, 6, 0);
+  lv_obj_set_style_border_width(btn_zoom_in, 0, 0);
+  lv_obj_set_style_shadow_width(btn_zoom_in, 0, 0);
+  lv_obj_add_event_cb(btn_zoom_in, on_zoom_in_clicked, LV_EVENT_CLICKED, NULL);
+  lv_obj_t* lbl_zoom_in = lv_label_create(btn_zoom_in);
+  lv_label_set_text(lbl_zoom_in, LV_SYMBOL_PLUS);
+  lv_obj_set_style_text_color(lbl_zoom_in, COL_TEXT, 0);
+  lv_obj_center(lbl_zoom_in);
+
+  lv_obj_t* btn_zoom_out = lv_btn_create(map_panel);
+  lv_obj_set_size(btn_zoom_out, 32, 32);
+  lv_obj_align(btn_zoom_out, LV_ALIGN_TOP_RIGHT, -4, 64);
+  lv_obj_set_style_bg_color(btn_zoom_out, COL_CARD, 0);
+  lv_obj_set_style_bg_opa(btn_zoom_out, LV_OPA_80, 0);
+  lv_obj_set_style_radius(btn_zoom_out, 6, 0);
+  lv_obj_set_style_border_width(btn_zoom_out, 0, 0);
+  lv_obj_set_style_shadow_width(btn_zoom_out, 0, 0);
+  lv_obj_add_event_cb(btn_zoom_out, on_zoom_out_clicked, LV_EVENT_CLICKED, NULL);
+  lv_obj_t* lbl_zoom_out = lv_label_create(btn_zoom_out);
+  lv_label_set_text(lbl_zoom_out, LV_SYMBOL_MINUS);
+  lv_obj_set_style_text_color(lbl_zoom_out, COL_TEXT, 0);
+  lv_obj_center(lbl_zoom_out);
+
+  // Pan handlers — attached to the map panel itself so the entire map
+  // surface acts as a drag area. LVGL's PRESS / PRESSING / RELEASED
+  // events give us per-frame deltas we accumulate into map_pan_x/y.
+  lv_obj_add_flag(map_panel, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(map_panel, on_map_panel_pressed,  LV_EVENT_PRESSED,  NULL);
+  lv_obj_add_event_cb(map_panel, on_map_panel_pressing, LV_EVENT_PRESSING, NULL);
+  lv_obj_add_event_cb(map_panel, on_map_panel_released, LV_EVENT_RELEASED, NULL);
+  lv_obj_add_event_cb(map_panel, on_map_panel_released, LV_EVENT_PRESS_LOST, NULL);
 
   // Bottom-left corner: lat/lng + point count, so the user can read
   // exact coords without going to the web UI.
@@ -1200,6 +1287,16 @@ static size_t          viewing_count = 0;
 static int             viewing_map_slot = -1;
 static String          viewing_map_alias;
 
+// Obstacles attached to the currently viewed map. The home-screen map
+// renderer draws each loaded obstacle as a red ring on top of the work
+// polygon so the operator gets immediate "yes my obstacle is saved"
+// feedback without needing to open a detail screen. The lv_line widgets
+// + pixel buffer live near the top of the file (so setup_main_screen()
+// can create them); only the lat/lng source buffers stay here.
+static WalkerLivePoint viewing_obstacle_buf[MAX_VIEW_OBSTACLES][MAX_VIEW_OBSTACLE_PTS];
+static size_t          viewing_obstacle_count[MAX_VIEW_OBSTACLES] = {0};
+static size_t          viewing_obstacles_loaded = 0;
+
 // Load /session/map<slot>_work.csv (x,y in local meters) into viewing_buffer
 // converted back to lat/lng via the SessionStore origin. Returns false when
 // the origin hasn't been set (cannot project) or the file is missing/empty.
@@ -1247,6 +1344,70 @@ static bool load_saved_map_polygon(int slot) {
   return viewing_count > 0;
 }
 
+// Scan /session/ for obstacle files attached to <slot> and decode them
+// into viewing_obstacle_buf. Indexed by discovery order, not by the
+// original obstacleIdx in the filename — the home view only needs to
+// show shapes, not preserve identity. Anything beyond MAX_VIEW_OBSTACLES
+// is silently skipped (the data is intact on flash; a future detail
+// screen can render the rest).
+static void load_saved_map_obstacles(int slot) {
+  viewing_obstacles_loaded = 0;
+  for (size_t i = 0; i < MAX_VIEW_OBSTACLES; i++) viewing_obstacle_count[i] = 0;
+  if (slot < 0) return;
+  double oLat = 0, oLng = 0;
+  if (!sessionStore.getOrigin(oLat, oLng)) return;
+
+  String prefix = String("map") + slot + "_";
+  File dir = LittleFS.open("/session");
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return;
+  }
+  File entry = dir.openNextFile();
+  while (entry && viewing_obstacles_loaded < MAX_VIEW_OBSTACLES) {
+    String name = entry.name();
+    int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+
+    if (!name.startsWith(prefix) || !name.endsWith("_obstacle.csv")) {
+      entry.close();
+      entry = dir.openNextFile();
+      continue;
+    }
+
+    String fullPath = String("/session/") + name;
+    entry.close();
+    File f = LittleFS.open(fullPath, FILE_READ);
+    if (!f) {
+      entry = dir.openNextFile();
+      continue;
+    }
+
+    size_t slot_idx = viewing_obstacles_loaded;
+    size_t& outCount = viewing_obstacle_count[slot_idx];
+    outCount = 0;
+    while (f.available() && outCount < MAX_VIEW_OBSTACLE_PTS) {
+      String line = f.readStringUntil('\n');
+      if (line.endsWith("\r")) line.remove(line.length() - 1);
+      if (line.length() == 0) continue;
+      int c1 = line.indexOf(',');
+      if (c1 < 0) continue;
+      double x = line.substring(0, c1).toDouble();
+      double y = line.substring(c1 + 1).toDouble();
+      double lat = 0, lng = 0;
+      if (!sessionStore.localToGps(x, y, lat, lng)) continue;
+      viewing_obstacle_buf[slot_idx][outCount].lat = lat;
+      viewing_obstacle_buf[slot_idx][outCount].lng = lng;
+      viewing_obstacle_buf[slot_idx][outCount].fix = 4;
+      outCount++;
+    }
+    f.close();
+    if (outCount >= 2) viewing_obstacles_loaded++;
+    entry = dir.openNextFile();
+  }
+  dir.close();
+}
+
 // Called by toggle_recording / on_add_*_clicked to drop out of viewing
 // mode so the live polyline (or fresh sub-recording) doesn't draw on
 // top of a stale polygon.
@@ -1254,6 +1415,16 @@ static void exit_viewing_mode() {
   viewing_map_slot = -1;
   viewing_map_alias = "";
   viewing_count = 0;
+  viewing_obstacles_loaded = 0;
+  for (size_t i = 0; i < MAX_VIEW_OBSTACLES; i++) {
+    viewing_obstacle_count[i] = 0;
+    map_obstacle_pts_used[i] = 0;
+    if (map_obstacle_lines[i]) lv_obj_add_flag(map_obstacle_lines[i], LV_OBJ_FLAG_HIDDEN);
+  }
+  // New content on the map → drop any prior zoom/pan so the user lands
+  // back at auto-fit. Otherwise switching from a zoomed-in obstacle view
+  // to live-recording would leave the live trail off-screen.
+  reset_map_view();
 }
 
 // LV_EVENT_DELETE fires when lv_obj_clean tears the maps list down.
@@ -1264,14 +1435,82 @@ static void on_map_row_deleted(lv_event_t* e) {
 }
 
 // Single tap on a map row — load the polygon, jump to home, switch
-// the GPS tab into viewing mode for the chosen slot.
+// the GPS tab into viewing mode for the chosen slot. The load itself
+// is blocking (LittleFS directory scan + per-point lat/lng conversion
+// of every obstacle ring) and takes long enough that the user wonders
+// whether their tap landed. So we paint a Loading overlay first, force
+// LVGL to flush, *then* start the work — pure UX, no async required.
+static lv_obj_t* maps_loading_overlay = nullptr;
+static lv_obj_t* maps_loading_label   = nullptr;
+
+static void show_maps_loading(int slot, const String& alias) {
+  if (!scr_maps) return;
+  if (!maps_loading_overlay) {
+    maps_loading_overlay = lv_obj_create(scr_maps);
+    lv_obj_set_size(maps_loading_overlay, LV_PCT(80), 120);
+    lv_obj_center(maps_loading_overlay);
+    lv_obj_set_style_bg_color(maps_loading_overlay, COL_CARD, 0);
+    lv_obj_set_style_bg_opa(maps_loading_overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(maps_loading_overlay, COL_EMERALD, 0);
+    lv_obj_set_style_border_width(maps_loading_overlay, 2, 0);
+    lv_obj_set_style_radius(maps_loading_overlay, 10, 0);
+    lv_obj_set_style_pad_all(maps_loading_overlay, 16, 0);
+    lv_obj_clear_flag(maps_loading_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* spinner = lv_spinner_create(maps_loading_overlay, 1000, 60);
+    lv_obj_set_size(spinner, 50, 50);
+    lv_obj_align(spinner, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_arc_color(spinner, COL_DIM, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(spinner, COL_EMERALD, LV_PART_INDICATOR);
+
+    maps_loading_label = lv_label_create(maps_loading_overlay);
+    lv_obj_set_style_text_color(maps_loading_label, COL_TEXT, 0);
+    lv_obj_set_style_text_font(maps_loading_label, &lv_font_montserrat_14, 0);
+    lv_label_set_long_mode(maps_loading_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(maps_loading_label, LV_PCT(60));
+    lv_obj_align(maps_loading_label, LV_ALIGN_RIGHT_MID, 0, 0);
+  }
+  if (maps_loading_label) {
+    char buf[96];
+    const char* aliasC = alias.length() ? alias.c_str() : "map";
+    snprintf(buf, sizeof(buf), LV_SYMBOL_DIRECTORY "  Loading %s\n(slot %d)",
+             aliasC, slot);
+    lv_label_set_text(maps_loading_label, buf);
+  }
+  lv_obj_move_foreground(maps_loading_overlay);
+  lv_obj_clear_flag(maps_loading_overlay, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void hide_maps_loading() {
+  if (maps_loading_overlay) lv_obj_add_flag(maps_loading_overlay, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void on_map_row_clicked(lv_event_t* e) {
   int* slotPtr = (int*) lv_event_get_user_data(e);
   if (!slotPtr) return;
   int slot = *slotPtr;
+
+  // Try to learn the alias before we do the heavy work so the overlay
+  // text is meaningful. listMaps is cheap (single directory scan, no
+  // per-point conversion) and we'd be doing it for the alias lookup
+  // below anyway.
+  MapEntry entries[3];
+  size_t cnt = 0;
+  sessionStore.listMaps(entries, 3, cnt);
+  String alias = String("map") + slot;
+  for (size_t i = 0; i < cnt; i++) {
+    if (entries[i].slot == slot) { alias = entries[i].alias; break; }
+  }
+
+  // Paint the spinner overlay and force LVGL to flush its display
+  // buffer before we begin the blocking load. Without lv_refr_now the
+  // overlay would only appear after the load completes — defeating the
+  // entire point.
+  show_maps_loading(slot, alias);
+  lv_refr_now(NULL);
+
   if (!load_saved_map_polygon(slot)) {
-    // Couldn't load — leave viewing mode off and tell the user. We
-    // can't easily show a toast here so we re-use the status label.
+    hide_maps_loading();
     if (maps_status) {
       lv_label_set_text(maps_status,
                         LV_SYMBOL_WARNING "  Map has no origin yet - record on GPS tab first");
@@ -1279,15 +1518,11 @@ static void on_map_row_clicked(lv_event_t* e) {
     }
     return;
   }
+  load_saved_map_obstacles(slot);
   viewing_map_slot = slot;
-  // Pull the alias for the home-screen status text.
-  MapEntry entries[3];
-  size_t cnt = 0;
-  sessionStore.listMaps(entries, 3, cnt);
-  viewing_map_alias = String("map") + slot;
-  for (size_t i = 0; i < cnt; i++) {
-    if (entries[i].slot == slot) { viewing_map_alias = entries[i].alias; break; }
-  }
+  reset_map_view();
+  viewing_map_alias = alias;
+  hide_maps_loading();
   lv_scr_load(scr_main);
 }
 
@@ -1494,6 +1729,72 @@ static void on_add_obstacle_clicked(lv_event_t* /*e*/) {
   tft_ui_set_screen(UiScreen::Recording);
 }
 
+// ── Map zoom + pan handlers ──────────────────────────────────────────────
+// Min zoom < 1 so the user can pull back below auto-fit (useful when
+// pan'd off-screen). Max zoom of 10x is plenty for cm-level inspection
+// on a 480x320 panel — beyond that LVGL's lv_coord_t precision starts
+// to bite.
+#define MAP_ZOOM_MIN  0.3f
+#define MAP_ZOOM_MAX  10.0f
+#define MAP_ZOOM_STEP 1.5f
+
+static void reset_map_view() {
+  map_user_zoom = 1.0f;
+  map_pan_x     = 0;
+  map_pan_y     = 0;
+  map_drag_active = false;
+}
+
+static void on_zoom_in_clicked(lv_event_t* /*e*/) {
+  float z = map_user_zoom * MAP_ZOOM_STEP;
+  if (z > MAP_ZOOM_MAX) z = MAP_ZOOM_MAX;
+  map_user_zoom = z;
+}
+
+static void on_zoom_out_clicked(lv_event_t* /*e*/) {
+  float z = map_user_zoom / MAP_ZOOM_STEP;
+  if (z < MAP_ZOOM_MIN) z = MAP_ZOOM_MIN;
+  map_user_zoom = z;
+  // Zooming out toward fit naturally returns to centred; nudge any
+  // accumulated pan back to zero once we're at or below 1x so the user
+  // doesn't end up with content slid off the panel after a few taps.
+  if (z <= 1.0f + 0.001f) {
+    map_pan_x = 0;
+    map_pan_y = 0;
+  }
+}
+
+static void on_map_panel_pressed(lv_event_t* /*e*/) {
+  lv_point_t p;
+  lv_indev_t* indev = lv_indev_get_act();
+  if (!indev) return;
+  lv_indev_get_point(indev, &p);
+  map_drag_prev_x = p.x;
+  map_drag_prev_y = p.y;
+  map_drag_active = true;
+}
+
+static void on_map_panel_pressing(lv_event_t* /*e*/) {
+  if (!map_drag_active) return;
+  lv_point_t p;
+  lv_indev_t* indev = lv_indev_get_act();
+  if (!indev) return;
+  lv_indev_get_point(indev, &p);
+  lv_coord_t dx = p.x - map_drag_prev_x;
+  lv_coord_t dy = p.y - map_drag_prev_y;
+  // Reject tiny shimmer (touch jitter) so a clean tap on zoom buttons
+  // doesn't accidentally pan the map by a pixel or two.
+  if (dx == 0 && dy == 0) return;
+  map_pan_x += dx;
+  map_pan_y += dy;
+  map_drag_prev_x = p.x;
+  map_drag_prev_y = p.y;
+}
+
+static void on_map_panel_released(lv_event_t* /*e*/) {
+  map_drag_active = false;
+}
+
 // Read /tracks/<...>.csv row by row, convert each fix>=4 lat/lng into
 // SessionStore local meters, and append to the freshly allocated slot.
 // Returns the number of points written, or -1 on hard failure (file
@@ -1680,6 +1981,9 @@ static void redraw_map(const WalkerSnapshot& snap) {
     if (lbl_lat) lv_obj_add_flag(lbl_lat, LV_OBJ_FLAG_HIDDEN);
     if (lbl_lng) lv_obj_add_flag(lbl_lng, LV_OBJ_FLAG_HIDDEN);
     map_pts_used = 0;
+    for (size_t i = 0; i < MAX_VIEW_OBSTACLES; i++) {
+      if (map_obstacle_lines[i]) lv_obj_add_flag(map_obstacle_lines[i], LV_OBJ_FLAG_HIDDEN);
+    }
     return;
   }
   lv_obj_add_flag(map_empty_label, LV_OBJ_FLAG_HIDDEN);
@@ -1714,16 +2018,41 @@ static void redraw_map(const WalkerSnapshot& snap) {
   lv_coord_t innerH = h - topPad - botPad;
   if (innerW < 20 || innerH < 20) return;
 
-  // Equal-aspect scaling — without this a long-thin garden gets
-  // grotesquely stretched along one axis. Use the smaller of the two
-  // scales and centre what's left.
-  float latM = (float) innerH / latSpan;
-  float lngM = (float) innerW / lngSpan;
-  float scale = (latM < lngM) ? latM : lngM;
-  float drawW = lngSpan * scale;
-  float drawH = latSpan * scale;
-  float offX = pad + (innerW - drawW) / 2;
-  float offY = topPad + (innerH - drawH) / 2;
+  // Equirectangular projection: convert lat/lng spans into METERS first
+  // so X and Y share a single meters-per-pixel scale. Without the
+  // cos(lat) correction on the longitude axis, polygons captured at NL
+  // latitudes get squashed horizontally by ~38% (1° lng ≈ 61% of 1°
+  // lat at lat 52°). Equator-only projection looks fine; anywhere
+  // else the aspect ratio is wrong.
+  const double LAT_M_PER_DEG = 111139.0;
+  double centerLat = (minLat + maxLat) / 2;
+  double centerLng = (minLng + maxLng) / 2;
+  double cosLat    = cos(centerLat * M_PI / 180.0);
+  double spanY_m   = latSpan * LAT_M_PER_DEG;
+  double spanX_m   = lngSpan * LAT_M_PER_DEG * cosLat;
+  if (spanY_m < 0.1) spanY_m = 0.1;
+  if (spanX_m < 0.1) spanX_m = 0.1;
+
+  // Auto-fit-to-bbox scale (pixels per meter), then apply the
+  // user's zoom level on top. Both axes share the same scale so the
+  // aspect ratio is preserved at every zoom.
+  float fitYScale = (float) innerH / (float) spanY_m;
+  float fitXScale = (float) innerW / (float) spanX_m;
+  float fitScale  = (fitYScale < fitXScale) ? fitYScale : fitXScale;
+  float scale     = fitScale * map_user_zoom;
+
+  // Centre the auto-fit content inside the inner area, then add the
+  // user's pan offset (panned coordinates persist across frames so the
+  // map stays where the user dragged it to).
+  float cx = pad + innerW * 0.5f + (float) map_pan_x;
+  float cy = topPad + innerH * 0.5f + (float) map_pan_y;
+  // Lambda capturing the projection so the parent polygon, obstacle
+  // overlays and live-cursor all use the *exact* same mapping (any drift
+  // between them would show as obstacles floating off the boundary).
+  auto project = [&](double lat, double lng, float& outX, float& outY) {
+    outX = cx + (float)((lng - centerLng) * LAT_M_PER_DEG * cosLat) * scale;
+    outY = cy - (float)((lat - centerLat) * LAT_M_PER_DEG) * scale;
+  };
 
   // Cap to MAP_POINT_MAX (storage size). If the live buffer is bigger
   // (e.g. 4000), decimate evenly so the polyline shape stays faithful.
@@ -1736,15 +2065,46 @@ static void redraw_map(const WalkerSnapshot& snap) {
   }
   uint16_t wi = 0;
   for (size_t i = 0; i < n && wi < outN && wi < MAP_POINT_MAX; i += step) {
-    float fx = offX + (pts[i].lng - minLng) * scale;
-    // Latitude → Y, inverted (north up).
-    float fy = offY + (maxLat - pts[i].lat) * scale;
+    float fx, fy;
+    project(pts[i].lat, pts[i].lng, fx, fy);
     map_pts[wi].x = (lv_coord_t) fx;
     map_pts[wi].y = (lv_coord_t) fy;
     wi++;
   }
   map_pts_used = wi;
   lv_line_set_points(map_line, map_pts, map_pts_used);
+
+  // Obstacles overlay: only meaningful when we're viewing a saved map.
+  // Project each loaded obstacle through the *same* lambda we used for
+  // the parent polygon so the rings sit visually where they were walked.
+  for (size_t obi = 0; obi < MAX_VIEW_OBSTACLES; obi++) {
+    if (!map_obstacle_lines[obi]) continue;
+    size_t obn = (viewing_map_slot >= 0 && obi < viewing_obstacles_loaded)
+                   ? viewing_obstacle_count[obi]
+                   : 0;
+    if (obn < 2) {
+      lv_obj_add_flag(map_obstacle_lines[obi], LV_OBJ_FLAG_HIDDEN);
+      map_obstacle_pts_used[obi] = 0;
+      continue;
+    }
+    uint16_t owi = 0;
+    for (size_t i = 0; i < obn && owi < MAX_VIEW_OBSTACLE_PTS; i++) {
+      float ofx, ofy;
+      project(viewing_obstacle_buf[obi][i].lat,
+              viewing_obstacle_buf[obi][i].lng, ofx, ofy);
+      map_obstacle_pts[obi][owi].x = (lv_coord_t) ofx;
+      map_obstacle_pts[obi][owi].y = (lv_coord_t) ofy;
+      owi++;
+    }
+    // Close the ring so the renderer paints it as a polygon outline.
+    if (owi >= 2 && owi <= MAX_VIEW_OBSTACLE_PTS) {
+      map_obstacle_pts[obi][owi] = map_obstacle_pts[obi][0];
+      owi++;
+    }
+    map_obstacle_pts_used[obi] = owi;
+    lv_line_set_points(map_obstacle_lines[obi], map_obstacle_pts[obi], owi);
+    lv_obj_clear_flag(map_obstacle_lines[obi], LV_OBJ_FLAG_HIDDEN);
+  }
 
   if (map_pts_used > 0) {
     lv_coord_t cx = map_pts[map_pts_used - 1].x - 6;
@@ -1820,6 +2180,29 @@ static lv_color_t fixColor(int fix) {
   }
 }
 
+// Sticky FIX display: real GGA streams flick FIX→FLOAT→FIX between epochs
+// when corrections lag a few ms, especially right after the ambiguity
+// resolves. Without hold-off the pill blinks amber every couple of
+// seconds even though the RTK engine is solidly locked. Hold the FIX
+// display value for FIX_HOLD_MS after the last 4-quality sample so a
+// single 5-quality epoch doesn't visually demote the reading. FLOAT and
+// lower are reported live (we never lie *upwards* — a real downgrade
+// shows immediately once the hold window expires).
+#define FIX_HOLD_MS 2000
+static uint32_t s_lastFix4Ms = 0;
+static int stickyFixForDisplay(int rawFix) {
+  uint32_t now = lv_tick_get();
+  if (rawFix == 4) {
+    s_lastFix4Ms = now;
+    return 4;
+  }
+  if (rawFix == 5 && s_lastFix4Ms != 0 && (now - s_lastFix4Ms) < FIX_HOLD_MS) {
+    // Hold FIX through a transient FLOAT epoch.
+    return 4;
+  }
+  return rawFix;
+}
+
 // Updated by refresh_status_cb on every checkpoint. The main loop reads
 // this every 5 s — if the same checkpoint number stays stuck for two
 // consecutive prints, that's exactly the line where the LVGL task wedged.
@@ -1840,8 +2223,9 @@ static void refresh_status_cb(lv_timer_t* t) {
 
   g_lvgl_checkpoint = 4;
   // Top bar.
-  lv_label_set_text(lbl_fix_pill, fixLabel(snap.fix));
-  lv_obj_set_style_bg_color(lbl_fix_pill, fixColor(snap.fix), 0);
+  int displayFix = stickyFixForDisplay(snap.fix);
+  lv_label_set_text(lbl_fix_pill, fixLabel(displayFix));
+  lv_obj_set_style_bg_color(lbl_fix_pill, fixColor(displayFix), 0);
 
   char buf[64];
   if (snap.sats > 0) {
@@ -2073,51 +2457,67 @@ static void recRebuildLivePts(const WalkerSnapshot& snap);
 
 static void buildRecordingScreen() {
     s_screenRecord = lv_obj_create(nullptr);
-    lv_obj_set_style_bg_color(s_screenRecord, lv_color_hex(0x111111), 0);
+    lv_obj_set_style_bg_color(s_screenRecord, COL_BG, 0);
+    lv_obj_set_style_bg_opa(s_screenRecord, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_screenRecord, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(s_screenRecord, 0, 0);
 
-    // Banner — mode + parent map context (e.g. "OBSTACLE in map0"). Text
-    // colour swaps per mode in refreshRecordingScreen(). Compact at the
-    // very top so the map panel below gets every pixel it can.
-    s_recBanner = lv_label_create(s_screenRecord);
+    // ── Topbar ────────────────────────────────────────────────────────────
+    // Same footprint as the home screen topbar so the map panel below gets
+    // identical real estate. Banner sits left/center, pts counter + RTK pill
+    // tucked into the right edge.
+    lv_obj_t* top = lv_obj_create(s_screenRecord);
+    lv_obj_set_size(top, SCREEN_W, TOPBAR_H);
+    lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(top, COL_CARD_DIM, 0);
+    lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(top, 0, 0);
+    lv_obj_set_style_radius(top, 0, 0);
+    lv_obj_set_style_pad_all(top, 6, 0);
+    lv_obj_clear_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_recBanner = lv_label_create(top);
     lv_label_set_text(s_recBanner, "(idle)");
     lv_obj_set_style_text_color(s_recBanner, lv_color_hex(0x86efac), 0);
-    lv_obj_set_style_text_font(s_recBanner, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recBanner, LV_ALIGN_TOP_MID, 0, 6);
+    lv_obj_set_style_text_font(s_recBanner, &lv_font_montserrat_20, 0);
+    lv_obj_align(s_recBanner, LV_ALIGN_LEFT_MID, 8, 0);
 
-    // Captured count (top-left) + RTK dot/label (top-right) flank the
-    // banner row. Two compact strings — the user wants the map prominent.
-    s_recPoints = lv_label_create(s_screenRecord);
+    s_recPoints = lv_label_create(top);
     lv_label_set_text(s_recPoints, "0 pts");
-    lv_obj_set_style_text_color(s_recPoints, lv_color_hex(0xeeeeee), 0);
+    lv_obj_set_style_text_color(s_recPoints, COL_TEXT, 0);
     lv_obj_set_style_text_font(s_recPoints, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recPoints, LV_ALIGN_TOP_LEFT, 8, 8);
+    // The fix pill takes ~95 px on the right edge ("RTK FLOAT" + 12+12
+    // horizontal padding). Park the counter just to its left with 8 px
+    // breathing room so the two never overlap.
+    lv_obj_align(s_recPoints, LV_ALIGN_RIGHT_MID, -110, 0);
 
-    s_recRtkDot = lv_obj_create(s_screenRecord);
-    lv_obj_set_size(s_recRtkDot, 10, 10);
-    lv_obj_set_style_radius(s_recRtkDot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_recRtkDot, lv_color_hex(0xdc2626), 0);
-    lv_obj_set_style_border_width(s_recRtkDot, 0, 0);
-    lv_obj_clear_flag(s_recRtkDot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(s_recRtkDot, LV_ALIGN_TOP_RIGHT, -54, 12);
-
-    s_recRtkLabel = lv_label_create(s_screenRecord);
-    lv_label_set_text(s_recRtkLabel, "BAD");
-    lv_obj_set_style_text_color(s_recRtkLabel, lv_color_hex(0xeeeeee), 0);
+    // Same fix pill style as the home screen — colored badge with the
+    // full "RTK FIX" / "RTK FLOAT" / etc. label so the two screens are
+    // immediately recognisable as "this is the GPS status indicator".
+    // The previous tiny dot + 14pt label was too easy to misread.
+    s_recRtkLabel = lv_label_create(top);
+    lv_label_set_text(s_recRtkLabel, "NO FIX");
+    lv_obj_set_style_text_color(s_recRtkLabel, lv_color_hex(0x00211a), 0);
     lv_obj_set_style_text_font(s_recRtkLabel, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recRtkLabel, LV_ALIGN_TOP_RIGHT, -8, 8);
+    lv_obj_set_style_bg_color(s_recRtkLabel, COL_DIM, 0);
+    lv_obj_set_style_bg_opa(s_recRtkLabel, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_recRtkLabel, 12, 0);
+    lv_obj_set_style_pad_hor(s_recRtkLabel, 12, 0);
+    lv_obj_set_style_pad_ver(s_recRtkLabel, 4, 0);
+    lv_obj_align(s_recRtkLabel, LV_ALIGN_RIGHT_MID, -8, 0);
+    // The old dot widget is gone; keep the variable nullptr so any
+    // accidental refresh code that still references it is a no-op.
+    s_recRtkDot = nullptr;
 
-    // Map panel: bordered card that hosts the parent backdrop, the live
-    // polyline, the start vertex and the cursor. Sized to leave room for
-    // the banner above and the action buttons below.
-    s_recMapPanel = lv_obj_create(s_screenRecord);
-    lv_obj_set_size(s_recMapPanel, LV_PCT(96), 200);
-    lv_obj_align(s_recMapPanel, LV_ALIGN_TOP_MID, 0, 32);
-    lv_obj_set_style_bg_color(s_recMapPanel, lv_color_hex(0x1f2937), 0);
-    lv_obj_set_style_border_width(s_recMapPanel, 1, 0);
-    lv_obj_set_style_border_color(s_recMapPanel, lv_color_hex(0x374151), 0);
-    lv_obj_set_style_radius(s_recMapPanel, 8, 0);
-    lv_obj_clear_flag(s_recMapPanel, LV_OBJ_FLAG_SCROLLABLE);
+    // ── Map panel ─────────────────────────────────────────────────────────
+    // EXACT same size and position as scr_main's map_panel — the user wants
+    // the map to look identical to the home screen when a saved map is
+    // loaded. Anything smaller is unreadable on a 480x320 display.
+    s_recMapPanel = make_card(s_screenRecord,
+                              SCREEN_W - 2 * MAP_PAD,
+                              SCREEN_H - TOPBAR_H - BOTTOMBAR_H - 2 * MAP_PAD);
+    lv_obj_align(s_recMapPanel, LV_ALIGN_TOP_LEFT, MAP_PAD, TOPBAR_H + MAP_PAD);
+    lv_obj_set_style_bg_color(s_recMapPanel, COL_CARD_DIM, 0);
     lv_obj_set_style_pad_all(s_recMapPanel, 0, 0);
 
     // Parent map polygon — drawn first so it sits behind the live line.
@@ -2160,30 +2560,52 @@ static void buildRecordingScreen() {
     lv_obj_clear_flag(s_recCursor, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_recCursor, LV_OBJ_FLAG_HIDDEN);
 
-    // Closure hint — under the map panel. Shows "Closure: X.X m" while
-    // walking, switches to a green "Polygon closeable — tap Save"
-    // message when the cursor returns within 1.5 m of the start vertex.
-    s_recClosure = lv_label_create(s_screenRecord);
+    // Closure hint — overlay along the bottom edge of the map panel so it
+    // sits over the map (saving vertical real estate) while still reading
+    // as map-context. Background-tinted so it doesn't get lost on the
+    // polylines underneath.
+    s_recClosure = lv_label_create(s_recMapPanel);
     lv_label_set_text(s_recClosure, "");
     lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xcbd5f5), 0);
     lv_obj_set_style_text_font(s_recClosure, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_recClosure, LV_ALIGN_TOP_MID, 0, 238);
+    lv_obj_set_style_bg_color(s_recClosure, COL_BG, 0);
+    lv_obj_set_style_bg_opa(s_recClosure, LV_OPA_70, 0);
+    lv_obj_set_style_pad_hor(s_recClosure, 8, 0);
+    lv_obj_set_style_pad_ver(s_recClosure, 3, 0);
+    lv_obj_set_style_radius(s_recClosure, 4, 0);
+    lv_obj_align(s_recClosure, LV_ALIGN_BOTTOM_MID, 0, -6);
 
     // Bad-signal overlay — sits over the map panel when the latest fix
     // is below RTK quality.
-    s_recBadOverlay = lv_label_create(s_screenRecord);
+    s_recBadOverlay = lv_label_create(s_recMapPanel);
     lv_label_set_text(s_recBadOverlay, "Bad RTK signal");
     lv_obj_set_style_text_color(s_recBadOverlay, lv_color_hex(0xdc2626), 0);
-    lv_obj_set_style_text_font(s_recBadOverlay, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_recBadOverlay, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_bg_color(s_recBadOverlay, COL_BG, 0);
+    lv_obj_set_style_bg_opa(s_recBadOverlay, LV_OPA_70, 0);
+    lv_obj_set_style_pad_all(s_recBadOverlay, 8, 0);
+    lv_obj_set_style_radius(s_recBadOverlay, 6, 0);
     lv_obj_align(s_recBadOverlay, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_recBadOverlay, LV_OBJ_FLAG_HIDDEN);
 
-    // Action row. Armed state: one wide Start (left) + Back (right).
-    // Recording state: Save (left) + Cancel (right). The widgets exist
-    // once; recArmUi / recRecordingUi swap labels + visibility.
-    s_recBtnStart = lv_btn_create(s_screenRecord);
-    lv_obj_set_size(s_recBtnStart, LV_PCT(60), 50);
-    lv_obj_align(s_recBtnStart, LV_ALIGN_BOTTOM_LEFT, 6, -10);
+    // ── Bottom action bar ────────────────────────────────────────────────
+    // Same height as the home screen bottom bar. Armed state shows the wide
+    // red Start button on the left + Back on the right. Recording state
+    // swaps Start for a Save button. Single bar, three widgets, visibility
+    // toggled by recArmUi / recRecordingUi.
+    lv_obj_t* bot = lv_obj_create(s_screenRecord);
+    lv_obj_set_size(bot, SCREEN_W, BOTTOMBAR_H);
+    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(bot, COL_CARD_DIM, 0);
+    lv_obj_set_style_bg_opa(bot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(bot, 0, 0);
+    lv_obj_set_style_radius(bot, 0, 0);
+    lv_obj_set_style_pad_all(bot, 6, 0);
+    lv_obj_clear_flag(bot, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_recBtnStart = lv_btn_create(bot);
+    lv_obj_set_size(s_recBtnStart, LV_PCT(60), BOTTOMBAR_H - 12);
+    lv_obj_align(s_recBtnStart, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(s_recBtnStart, lv_color_hex(0xef4444), 0);
     lv_obj_set_style_radius(s_recBtnStart, 6, 0);
     lv_obj_set_style_border_width(s_recBtnStart, 0, 0);
@@ -2192,24 +2614,26 @@ static void buildRecordingScreen() {
     lv_obj_t* lblStart = lv_label_create(s_recBtnStart);
     lv_label_set_text(lblStart, LV_SYMBOL_PLAY "  Start record");
     lv_obj_set_style_text_color(lblStart, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lblStart, &lv_font_montserrat_20, 0);
     lv_obj_center(lblStart);
 
-    s_recBtnSave = lv_btn_create(s_screenRecord);
-    lv_obj_set_size(s_recBtnSave, LV_PCT(42), 50);
-    lv_obj_align(s_recBtnSave, LV_ALIGN_BOTTOM_LEFT, 6, -10);
+    s_recBtnSave = lv_btn_create(bot);
+    lv_obj_set_size(s_recBtnSave, LV_PCT(60), BOTTOMBAR_H - 12);
+    lv_obj_align(s_recBtnSave, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(s_recBtnSave, lv_color_hex(0x16a34a), 0);
     lv_obj_set_style_radius(s_recBtnSave, 6, 0);
     lv_obj_set_style_border_width(s_recBtnSave, 0, 0);
     lv_obj_set_style_shadow_width(s_recBtnSave, 0, 0);
     lv_obj_add_event_cb(s_recBtnSave, onSaveClicked, LV_EVENT_CLICKED, nullptr);
     lv_obj_t* lblSave = lv_label_create(s_recBtnSave);
-    lv_label_set_text(lblSave, "Save");
+    lv_label_set_text(lblSave, LV_SYMBOL_SAVE "  Save");
     lv_obj_set_style_text_color(lblSave, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lblSave, &lv_font_montserrat_20, 0);
     lv_obj_center(lblSave);
 
-    s_recBtnCancel = lv_btn_create(s_screenRecord);
-    lv_obj_set_size(s_recBtnCancel, LV_PCT(36), 50);
-    lv_obj_align(s_recBtnCancel, LV_ALIGN_BOTTOM_RIGHT, -6, -10);
+    s_recBtnCancel = lv_btn_create(bot);
+    lv_obj_set_size(s_recBtnCancel, LV_PCT(36), BOTTOMBAR_H - 12);
+    lv_obj_align(s_recBtnCancel, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(s_recBtnCancel, lv_color_hex(0x4b5563), 0);
     lv_obj_set_style_radius(s_recBtnCancel, 6, 0);
     lv_obj_set_style_border_width(s_recBtnCancel, 0, 0);
@@ -2218,6 +2642,7 @@ static void buildRecordingScreen() {
     s_recLblCancel = lv_label_create(s_recBtnCancel);
     lv_label_set_text(s_recLblCancel, "Back");
     lv_obj_set_style_text_color(s_recLblCancel, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(s_recLblCancel, &lv_font_montserrat_20, 0);
     lv_obj_center(s_recLblCancel);
 
     // 250ms refresh timer — runs continuously but the callback short-
@@ -2289,16 +2714,25 @@ static void rec_project(double lat, double lng, float& outX, float& outY) {
     if (latSpan < 0.00005) { double c = (s_recMinLat + s_recMaxLat) / 2; s_recMinLat = c - 0.000025; s_recMaxLat = c + 0.000025; latSpan = s_recMaxLat - s_recMinLat; }
     if (lngSpan < 0.00005) { double c = (s_recMinLng + s_recMaxLng) / 2; s_recMinLng = c - 0.000025; s_recMaxLng = c + 0.000025; lngSpan = s_recMaxLng - s_recMinLng; }
 
-    float latM = (float) innerH / latSpan;
-    float lngM = (float) innerW / lngSpan;
-    float scale = (latM < lngM) ? latM : lngM;
-    float drawW = lngSpan * scale;
-    float drawH = latSpan * scale;
-    float offX = pad + (innerW - drawW) / 2;
-    float offY = pad + (innerH - drawH) / 2;
+    // Equirectangular meters projection — same cos(lat) correction used
+    // on the home screen so the two screens are bit-identical on aspect.
+    const double LAT_M_PER_DEG = 111139.0;
+    double centerLat = (s_recMinLat + s_recMaxLat) / 2;
+    double centerLng = (s_recMinLng + s_recMaxLng) / 2;
+    double cosLat    = cos(centerLat * M_PI / 180.0);
+    double spanY_m   = latSpan * LAT_M_PER_DEG;
+    double spanX_m   = lngSpan * LAT_M_PER_DEG * cosLat;
+    if (spanY_m < 0.1) spanY_m = 0.1;
+    if (spanX_m < 0.1) spanX_m = 0.1;
 
-    outX = offX + (lng - s_recMinLng) * scale;
-    outY = offY + (s_recMaxLat - lat) * scale;  // invert: north up
+    float fitYScale = (float) innerH / (float) spanY_m;
+    float fitXScale = (float) innerW / (float) spanX_m;
+    float scale     = (fitYScale < fitXScale) ? fitYScale : fitXScale;
+    float cx = pad + innerW * 0.5f;
+    float cy = pad + innerH * 0.5f;
+
+    outX = cx + (float)((lng - centerLng) * LAT_M_PER_DEG * cosLat) * scale;
+    outY = cy - (float)((lat - centerLat) * LAT_M_PER_DEG)          * scale;
 }
 
 static void recRebuildParentPts() {
@@ -2495,14 +2929,15 @@ static void refreshRecordingScreen() {
     lv_label_set_text(s_recBanner, banner);
     lv_obj_set_style_text_color(s_recBanner, lv_color_hex(color), 0);
 
-    // RTK pill — from the live snapshot (recorder.state().lastFixQuality
-    // only updates on accepted points, which doesn't help when we're
-    // armed and not yet recording).
-    uint32_t dotColor = 0xdc2626; const char* qLbl = "BAD";
-    if (snap.fix == 4) { dotColor = 0x16a34a; qLbl = "FIX"; }
-    if (snap.fix == 5) { dotColor = 0xeab308; qLbl = "FLOAT"; }
-    lv_obj_set_style_bg_color(s_recRtkDot, lv_color_hex(dotColor), 0);
-    lv_label_set_text(s_recRtkLabel, qLbl);
+    // RTK pill — same helpers as the home screen so the two displays are
+    // bit-identical for any given fix value. stickyFixForDisplay holds
+    // FIX across single-epoch FLOAT blips so the pill doesn't visually
+    // demote when the RTK engine is still solidly locked.
+    int displayFix = stickyFixForDisplay(snap.fix);
+    if (s_recRtkLabel) {
+        lv_label_set_text(s_recRtkLabel, fixLabel(displayFix));
+        lv_obj_set_style_bg_color(s_recRtkLabel, fixColor(displayFix), 0);
+    }
 
     // Bad-signal overlay only while recording — during armed state the
     // user is just walking to the start, no need to scream BAD at them.
@@ -2520,8 +2955,13 @@ static void refreshRecordingScreen() {
         return;
     }
     RecordingState st = recorder.state();
-    char ptsTxt[32];
-    snprintf(ptsTxt, sizeof(ptsTxt), "%lu pts", st.pointsCaptured);
+    char ptsTxt[48];
+    if (snap.walkedM > 0.1f) {
+        snprintf(ptsTxt, sizeof(ptsTxt), "%lu pts  %.1f m",
+                 st.pointsCaptured, snap.walkedM);
+    } else {
+        snprintf(ptsTxt, sizeof(ptsTxt), "%lu pts", st.pointsCaptured);
+    }
     lv_label_set_text(s_recPoints, ptsTxt);
 
     recRebuildLivePts(snap);
@@ -2534,7 +2974,7 @@ static void onStartRecordClicked(lv_event_t* /*e*/) {
     // Clear the live-points ring so the polyline starts at the user's
     // current position. Without this the buffer would still contain
     // wherever the home-screen walk last drifted.
-    walkerClearLivePoints();
+    walkerResetTrail();
     s_recLivePtsUsed = 0;
 
     bool ok = false;

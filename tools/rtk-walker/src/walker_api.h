@@ -94,12 +94,12 @@ struct WalkerLivePoint { double lat; double lng; uint8_t fix; };
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount);
 
-// Reset the live-points ring buffer to empty. Used by the Recording
-// screen's "Start record" button: clearing on arm-to-record transition
-// means the obstacle/channel polyline starts fresh and the user sees
-// exactly the shape they walked from the moment they pressed Start
-// (not whatever drift the previous home-screen view had accumulated).
-void walkerClearLivePoints();
+// Full trail reset: clears livePoints AND zeroes the running walkedM /
+// closingM anchors (firstLat/Lng/prevLat/prevLng). Use this on Start
+// record for obstacle/channel sessions so the snapshot's walked +
+// closing distances reflect just the current sub-recording rather than
+// whatever the home-screen polygon left behind.
+void walkerResetTrail();
 
 // Upload the current /session/ bundle to the configured Novabot server.
 // Synchronous: blocks the calling task for the full POST (typically a

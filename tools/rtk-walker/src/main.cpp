@@ -564,33 +564,41 @@ static void stopRecording() {
 
 static void appendPoint() {
   coreLock();
-  if (!st.recording || !trackFile) { coreUnlock(); return; }
+  // Accept points when EITHER the legacy track recorder is active OR the
+  // new session recorder (obstacle/channel/work) is. Track-file write
+  // below is still gated on the legacy state, but the live-points ring
+  // and walked-metres counters update for both so the obstacle/channel
+  // recording screen sees a real trail with running distance + closure.
+  bool legacyActive  = st.recording && trackFile;
+  bool sessionActive = recorder.isRecording();
+  if (!legacyActive && !sessionActive) { coreUnlock(); return; }
   // Only record actual GPS solutions. fix=0 means we have no usable
   // position; logging that would pollute the trail with zeros.
   if (st.fix == 0 || st.lat == 0 || st.lng == 0) { coreUnlock(); return; }
   // Quality filter: only RTK fixed/float. Reject estimated/manual/simulated
   // GGA modes even though their numeric values are higher than 5.
   if (!isRtkUsableFix(st.fix)) { coreUnlock(); return; }
-  // Motion filter: skip fixes within 5 cm of the last accepted point
-  // (standstill RTK jitter at 5 Hz looks like a zigzag without this).
+  // Motion filter: skip fixes within MIN_DISPLACEMENT_M of the last
+  // accepted point (standstill RTK jitter looks like a zigzag without
+  // this).
   if (firstLat != 0 || firstLng != 0) {
     double d = haversineM(prevLat, prevLng, st.lat, st.lng);
     if (d < MIN_DISPLACEMENT_M) { coreUnlock(); return; }
   }
 
-  time_t now;
-  time(&now);
+  if (legacyActive) {
+    time_t now;
+    time(&now);
+    char line[160];
+    snprintf(line, sizeof(line), "%lu,%.8f,%.8f,%.2f,%d,%d,%.2f",
+             (unsigned long) now, st.lat, st.lng, st.alt, st.fix, st.sats, st.hdop);
+    trackFile.println(line);
+    st.recPoints++;
+  }
 
-  char line[160];
-  snprintf(line, sizeof(line), "%lu,%.8f,%.8f,%.2f,%d,%d,%.2f",
-           (unsigned long) now, st.lat, st.lng, st.alt, st.fix, st.sats, st.hdop);
-  trackFile.println(line);
-  st.recPoints++;
-
-  // Mirror into the live-points ring so the web UI's map polls a
-  // cheap JSON instead of re-reading the CSV every second. When we
-  // hit the cap, drop the oldest point so the most recent N stay
-  // visible — full trace still on flash.
+  // Mirror into the live-points ring so the UI polls a cheap JSON
+  // instead of re-reading the CSV every frame. When we hit the cap,
+  // drop the oldest point so the most recent N stay visible.
   livePointsLock();
   if (livePoints.size() >= LIVE_POINTS_MAX) {
     livePoints.erase(livePoints.begin());
@@ -614,7 +622,7 @@ static void appendPoint() {
 
   // Flush every 8 rows so an unexpected reset doesn't lose the entire
   // walk — but skip the flush most of the time to spare flash writes.
-  if ((st.recPoints & 0x07) == 0) trackFile.flush();
+  if (legacyActive && (st.recPoints & 0x07) == 0) trackFile.flush();
   coreUnlock();
 }
 
@@ -2396,8 +2404,15 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
   return result;
 }
 
-void walkerClearLivePoints() {
+void walkerResetTrail() {
   livePointsLock();
   livePoints.clear();
   livePointsUnlock();
+  coreLock();
+  firstLat = 0;
+  firstLng = 0;
+  prevLat  = 0;
+  prevLng  = 0;
+  walkedM  = 0;
+  coreUnlock();
 }
