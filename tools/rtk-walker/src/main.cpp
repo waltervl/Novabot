@@ -2017,6 +2017,151 @@ static void handleMapDetail() {
   server.sendContent("");
 }
 
+// Delete one obstacle CSV by its filesystem name. Auth-required. The
+// filename ships in as a query parameter (not the path) so we don't
+// have to wrestle with WebServer's lack of path params; the body
+// would also work but auth-headers + query is simpler client-side.
+//
+// Safety: name MUST match the expected `mapN_<i>_obstacle.csv` pattern
+// AND live under /session/. Anything else (path traversal, deletion
+// of work polygons or unrelated files) is rejected with 400.
+static void handleObstacleDelete() {
+  if (!requireAuth()) return;
+  String name;
+  if (server.hasArg("name")) name = server.arg("name");
+  name.trim();
+
+  // Length-bounded sanity check before we even hit the regex-ish test.
+  if (name.length() < 18 || name.length() > 40) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad name length\"}");
+    return;
+  }
+  // No path separators / parent dirs / hidden files.
+  if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.startsWith(".")) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"path not allowed\"}");
+    return;
+  }
+  // Must look like mapN_<i>_obstacle.csv (N: 0..2, i: 0..31). Cheap
+  // hand-rolled match — sscanf is too lenient and accepts negatives.
+  if (!name.startsWith("map") || !name.endsWith("_obstacle.csv")) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"not an obstacle file\"}");
+    return;
+  }
+  if (name.length() < 5 || name[4] != '_') {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad map slot\"}");
+    return;
+  }
+  char slotChar = name[3];
+  if (slotChar < '0' || slotChar > '2') {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad map slot\"}");
+    return;
+  }
+
+  String fullPath = String("/session/") + name;
+  if (!LittleFS.exists(fullPath)) {
+    server.send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
+    return;
+  }
+  if (!LittleFS.remove(fullPath)) {
+    server.send(500, "application/json", "{\"ok\":false,\"error\":\"remove failed\"}");
+    return;
+  }
+  weblogf("[obstacle] deleted %s\n", name.c_str());
+
+  // If the currently-viewed map owns this obstacle, refresh its on-
+  // device buffer so the home screen drops the now-missing ring.
+  int viewing = tft_ui_current_view_slot();
+  if (viewing >= 0 && (slotChar - '0') == viewing) {
+    tft_ui_view_map_slot(viewing);
+  }
+
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["deleted"] = name;
+  sendJson(200, resp);
+}
+
+// Convenience: delete every obstacle except the highest-indexed one
+// for slot N. Mirrors the "walked it twice, only the last walk is the
+// real one" cleanup the user keeps running into. POST so it can be
+// auth-gated and to make it explicit this is destructive.
+static void handleObstacleKeepLatest() {
+  if (!requireAuth()) return;
+  String suffix = server.uri().substring(strlen("/api/maps/"));
+  // expected: "<digit>/obstacles/keep-latest"
+  if (suffix.length() < 1 || suffix[0] < '0' || suffix[0] > '2') {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad slot\"}");
+    return;
+  }
+  int slot = suffix[0] - '0';
+
+  String prefix = String("map") + slot + "_";
+  // Two-pass: first find the max index, then remove anything < max.
+  int maxIdx = -1;
+  File dir = LittleFS.open("/session");
+  if (dir && dir.isDirectory()) {
+    File entry = dir.openNextFile();
+    while (entry) {
+      String name = entry.name();
+      int sl = name.lastIndexOf('/');
+      if (sl >= 0) name = name.substring(sl + 1);
+      entry.close();
+      if (name.startsWith(prefix) && name.endsWith("_obstacle.csv")) {
+        int idxStart = prefix.length();
+        int idxEnd = name.indexOf('_', idxStart);
+        if (idxEnd > idxStart) {
+          int idx = name.substring(idxStart, idxEnd).toInt();
+          if (idx > maxIdx) maxIdx = idx;
+        }
+      }
+      entry = dir.openNextFile();
+    }
+    dir.close();
+  }
+
+  if (maxIdx < 0) {
+    server.send(200, "application/json", "{\"ok\":true,\"removed\":0,\"kept\":0}");
+    return;
+  }
+
+  int removed = 0;
+  File dir2 = LittleFS.open("/session");
+  if (dir2 && dir2.isDirectory()) {
+    File entry = dir2.openNextFile();
+    while (entry) {
+      String name = entry.name();
+      int sl = name.lastIndexOf('/');
+      if (sl >= 0) name = name.substring(sl + 1);
+      entry.close();
+      if (name.startsWith(prefix) && name.endsWith("_obstacle.csv")) {
+        int idxStart = prefix.length();
+        int idxEnd = name.indexOf('_', idxStart);
+        if (idxEnd > idxStart) {
+          int idx = name.substring(idxStart, idxEnd).toInt();
+          if (idx < maxIdx) {
+            if (LittleFS.remove(String("/session/") + name)) {
+              removed++;
+              weblogf("[obstacle] keep-latest removed %s\n", name.c_str());
+            }
+          }
+        }
+      }
+      entry = dir2.openNextFile();
+    }
+    dir2.close();
+  }
+
+  // Refresh on-device buffer if this is the active map.
+  int viewing = tft_ui_current_view_slot();
+  if (viewing == slot) tft_ui_view_map_slot(slot);
+
+  char body[64];
+  snprintf(body, sizeof(body),
+           "{\"ok\":true,\"removed\":%d,\"kept\":1,\"keptIdx\":%d}",
+           removed, maxIdx);
+  server.send(200, "application/json", body);
+}
+
 static void handleMapView() {
   if (!requireAuth()) return;
   if (!server.hasArg("plain")) {
@@ -2372,6 +2517,11 @@ void setup() {
   // slot detail are GET; view-control is POST.
   server.on("/api/maps",          HTTP_GET,  handleMapsList);
   server.on("/api/maps/view",     HTTP_POST, handleMapView);
+  // Obstacle cleanup. Individual delete = POST /api/maps/obstacles/delete
+  // {name}. Bulk "keep only newest" = POST /api/maps/<slot>/obstacles/
+  // keep-latest. The bulk path is dynamic (slot in URL) so it routes
+  // via the onNotFound fallback below.
+  server.on("/api/maps/obstacles/delete", HTTP_POST, handleObstacleDelete);
   server.on("/api/log",           HTTP_GET,  handleLog);
   server.on("/api/gnss/send",     HTTP_POST, handleGnssSend);
   server.on("/api/i2c-scan",      HTTP_GET,  handleI2cScan);
@@ -2461,6 +2611,14 @@ void setup() {
     // precedence over this fallback.
     if (server.uri().startsWith("/api/maps/") && server.method() == HTTP_GET) {
       handleMapDetail();
+      return;
+    }
+    // POST /api/maps/<slot>/obstacles/keep-latest — dynamic path, same
+    // routing pattern.
+    if (server.uri().startsWith("/api/maps/")
+        && server.uri().endsWith("/obstacles/keep-latest")
+        && server.method() == HTTP_POST) {
+      handleObstacleKeepLatest();
       return;
     }
     server.send(404, "text/plain", "not found");

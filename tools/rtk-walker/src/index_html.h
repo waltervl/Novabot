@@ -143,6 +143,23 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     </div>
   </div>
 
+  <!-- Obstacle management for the currently-viewed saved map. Hidden
+       unless the user is actually viewing a map AND that map has at
+       least one obstacle ring on disk. Lists each ring with its file
+       name + point count + a delete button, plus a one-click "Keep
+       only newest" convenience when there are 2+ rings. -->
+  <div id="obstacleManager" class="card" style="display:none">
+    <h3 style="margin:0 0 8px;font-size:14px;letter-spacing:-0.01em">
+      Obstacles
+      <span id="obstacleCount" style="font-weight:400;color:var(--text-dim);font-size:12px"></span>
+    </h3>
+    <div id="obstacleList"></div>
+    <button type="button" id="obstacleKeepLatest" style="display:none;margin-top:8px">
+      Keep only newest (remove older)
+    </button>
+    <div id="obstacleStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);min-height:16px"></div>
+  </div>
+
   <details class="card log-card">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">Console log</summary>
     <div class="log-toolbar">
@@ -656,6 +673,10 @@ async function viewSavedMap(slot) {
       ov.appendChild(btn);
     }
 
+    // Populate the Obstacles card so the user can prune duplicates
+    // ("I walked it twice, only the last one is real").
+    renderObstacleManager(slot, d.obstacles || []);
+
     // Refresh the maps list so the active row highlights.
     loadMaps();
   } catch (e) {
@@ -665,12 +686,145 @@ async function viewSavedMap(slot) {
   }
 }
 
+// Populate the Obstacles card with one row per loaded ring + a bulk
+// "Keep only newest" action when there are 2+. obstacleRecs comes
+// straight from /api/maps/N — each entry has {name, points: [...]}.
+function renderObstacleManager(slot, obstacleRecs) {
+  const card = document.getElementById('obstacleManager');
+  const list = document.getElementById('obstacleList');
+  const countEl = document.getElementById('obstacleCount');
+  const keepLatestBtn = document.getElementById('obstacleKeepLatest');
+  const status = document.getElementById('obstacleStatus');
+  if (!card || !list || !keepLatestBtn) return;
+
+  // Reset state
+  while (list.firstChild) list.removeChild(list.firstChild);
+  status.textContent = '';
+  status.style.color = 'var(--text-dim)';
+  if (obstacleRecs.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  countEl.textContent = ' (' + obstacleRecs.length + ')';
+
+  // Sort by extracted index so the user sees them in capture order.
+  // Filename format: mapN_<i>_obstacle.csv — pull the <i> out so we
+  // can highlight the newest one (highest index) too.
+  obstacleRecs.forEach(function(ob) {
+    const m = (ob.name || '').match(/^map\d+_(\d+)_obstacle\.csv$/);
+    ob._idx = m ? parseInt(m[1], 10) : 0;
+  });
+  obstacleRecs.sort(function(a, b) { return a._idx - b._idx; });
+  const newestIdx = obstacleRecs[obstacleRecs.length - 1]._idx;
+
+  obstacleRecs.forEach(function(ob) {
+    const row = document.createElement('div');
+    row.className = 'track';
+    const left = document.createElement('div');
+    const title = document.createElement('div');
+    const isNewest = ob._idx === newestIdx;
+    title.textContent = (isNewest ? 'newest · ' : '') + 'obstacle ' + ob._idx;
+    title.style.color = isNewest ? 'var(--emerald)' : '#cbd5f5';
+    title.style.fontWeight = '600';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = (ob.points || []).length + ' pts · ' + ob.name;
+    left.appendChild(title);
+    left.appendChild(meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'track-actions';
+    const del = document.createElement('a');
+    del.href = '#';
+    del.textContent = 'Delete';
+    del.style.color = 'var(--red)';
+    del.addEventListener('click', function(e) {
+      e.preventDefault();
+      deleteObstacle(slot, ob.name);
+    });
+    actions.appendChild(del);
+
+    row.appendChild(left);
+    row.appendChild(actions);
+    list.appendChild(row);
+  });
+
+  // Bulk action only meaningful with 2+ obstacles.
+  if (obstacleRecs.length >= 2) {
+    keepLatestBtn.style.display = '';
+    keepLatestBtn.onclick = function() { keepLatestObstacle(slot); };
+  } else {
+    keepLatestBtn.style.display = 'none';
+    keepLatestBtn.onclick = null;
+  }
+}
+
+async function deleteObstacle(slot, name) {
+  const status = document.getElementById('obstacleStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Deleting ' + name + '...';
+  try {
+    const r = await authFetch('/api/maps/obstacles/delete?name=' + encodeURIComponent(name), {
+      method: 'POST',
+    });
+    if (r.status === 401 || r.status === 403) {
+      showAuthNeeded('obstacleStatus');
+      return;
+    }
+    if (!r.ok) {
+      const txt = await r.text();
+      status.style.color = 'var(--red)';
+      status.textContent = 'Delete failed: ' + txt;
+      return;
+    }
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Deleted. Reloading...';
+    // Re-fetch the map so the canvas + obstacle list reflect reality.
+    await viewSavedMap(slot);
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Delete error: ' + (e && e.message ? e.message : e);
+  }
+}
+
+async function keepLatestObstacle(slot) {
+  const status = document.getElementById('obstacleStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Removing older obstacles...';
+  try {
+    const r = await authFetch('/api/maps/' + slot + '/obstacles/keep-latest', {
+      method: 'POST',
+    });
+    if (r.status === 401 || r.status === 403) {
+      showAuthNeeded('obstacleStatus');
+      return;
+    }
+    if (!r.ok) {
+      const txt = await r.text();
+      status.style.color = 'var(--red)';
+      status.textContent = 'Cleanup failed: ' + txt;
+      return;
+    }
+    const d = await r.json();
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Removed ' + (d.removed || 0) + ' older obstacle' +
+                         ((d.removed === 1) ? '' : 's') + '. Reloading...';
+    await viewSavedMap(slot);
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Cleanup error: ' + (e && e.message ? e.message : e);
+  }
+}
+
 function backToLiveSavedMap() {
   viewingSavedMap = null;
   mapAutoFitDone = false;
   if (savedMapLayer) savedMapLayer.clearLayers();
   const btn = document.getElementById('backToLive');
   if (btn) btn.remove();
+  const om = document.getElementById('obstacleManager');
+  if (om) om.style.display = 'none';
   // Tell the walker to exit viewing too. Auth-gated; fail silently.
   authFetch('/api/maps/view', {
     method: 'POST',
