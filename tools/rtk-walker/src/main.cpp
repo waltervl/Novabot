@@ -51,6 +51,7 @@
 #include "walker_api.h"
 #include "walker_lora.h"
 #include "walker_ota.h"
+#include "rtcm_log.h"
 #include "session.h"
 #include "recording.h"
 #include "bundle.h"
@@ -942,6 +943,7 @@ static void ntripPump() {
     if (n <= 0) break;
     if (!walkerLoraActive()) {
       gnssSerial.write(chunk, n);
+      rtcmLogAppend(chunk, n, RTCM_SRC_NTRIP);
     }
     // st.ntripBytes counts bytes received from the socket regardless of
     // whether we forwarded them — keeps the "NTRIP up" metric honest even

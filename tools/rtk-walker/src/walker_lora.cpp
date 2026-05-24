@@ -1,6 +1,7 @@
 // walker_lora.cpp — EBYTE E22-900T22S configuration sequence + (Task 3)
 // frame parsing. We're a passive listener; never transmit user data.
 #include "walker_lora.h"
+#include "rtcm_log.h"
 
 #ifdef LORA_PRESENT
 
@@ -187,6 +188,7 @@ void walkerLoraPump() {
                     g_lastValidMs = millis();
                     if (g_lastCmd == 0x31 && g_payloadLen > 0) {
                         gnssSerial.write(g_payloadBuf, g_payloadLen);
+                        rtcmLogAppend(g_payloadBuf, g_payloadLen, RTCM_SRC_LORA);
                         g_bytesForwarded += g_payloadLen;
                     }
                 } else {
