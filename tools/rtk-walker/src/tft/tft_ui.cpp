@@ -153,6 +153,10 @@ static lv_obj_t* ta_ntrip_port = nullptr;
 static lv_obj_t* ta_ntrip_mount = nullptr;
 static lv_obj_t* ta_ntrip_user = nullptr;
 static lv_obj_t* ta_ntrip_pass = nullptr;
+static lv_obj_t* ta_lora_addr    = nullptr;
+static lv_obj_t* ta_lora_channel = nullptr;
+static lv_obj_t* ta_lora_hc      = nullptr;
+static lv_obj_t* ta_lora_lc      = nullptr;
 static lv_obj_t* keyboard = nullptr;
 static lv_obj_t* lbl_save_status = nullptr;
 
@@ -873,9 +877,11 @@ static void build_settings_screen() {
 
   lv_obj_t* tab_wifi  = lv_tabview_add_tab(tv, LV_SYMBOL_WIFI     "  WiFi");
   lv_obj_t* tab_ntrip = lv_tabview_add_tab(tv, LV_SYMBOL_UPLOAD   "  NTRIP");
+  lv_obj_t* tab_lora  = lv_tabview_add_tab(tv,                       "  LoRa");
   lv_obj_t* tab_fw    = lv_tabview_add_tab(tv, LV_SYMBOL_DOWNLOAD "  Firmware");
   lv_obj_set_style_pad_all(tab_wifi, 12, 0);
   lv_obj_set_style_pad_all(tab_ntrip, 12, 0);
+  lv_obj_set_style_pad_all(tab_lora, 12, 0);
   lv_obj_set_style_pad_all(tab_fw, 12, 0);
 
   lv_obj_set_flex_flow(tab_wifi, LV_FLEX_FLOW_COLUMN);
@@ -904,6 +910,14 @@ static void build_settings_screen() {
   make_field(tab_ntrip, "Mountpoint", &ta_ntrip_mount, false, "NLDB / NLAMS00FRA0");
   make_field(tab_ntrip, "User",       &ta_ntrip_user,  false, "centipede");
   make_field(tab_ntrip, "Password",   &ta_ntrip_pass,  true,  "(blank = keep stored)");
+
+  // ── LoRa tab ────────────────────────────────────────────────────────
+  lv_obj_set_flex_flow(tab_lora, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(tab_lora, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  make_field(tab_lora, "Address (1-65535)", &ta_lora_addr,    false, "718");
+  make_field(tab_lora, "Channel (0-83)",    &ta_lora_channel, false, "17");
+  make_field(tab_lora, "HC (scan upper)",   &ta_lora_hc,      false, "20");
+  make_field(tab_lora, "LC (scan lower)",   &ta_lora_lc,      false, "14");
 
   // ── Firmware tab ────────────────────────────────────────────────────
   // Flex column with: section header, current-version label, Check +
@@ -1092,8 +1106,10 @@ static void focus_textarea(lv_obj_t* ta) {
   if (!ta) return;
   lv_keyboard_set_textarea(keyboard, ta);
 
-  // Numeric mode for the port field, alpha otherwise.
-  if (ta == ta_ntrip_port) {
+  // Numeric mode for the port and LoRa fields, alpha otherwise.
+  if (ta == ta_ntrip_port ||
+      ta == ta_lora_addr || ta == ta_lora_channel ||
+      ta == ta_lora_hc   || ta == ta_lora_lc) {
     lv_keyboard_set_mode(keyboard, LV_KEYBOARD_MODE_NUMBER);
   } else {
     lv_keyboard_set_mode(keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
@@ -1133,6 +1149,7 @@ static void on_keyboard_event(lv_event_t* e) {
   lv_obj_t* wifiOrder[]  = { ta_wifi_ssid, ta_wifi_pass };
   lv_obj_t* ntripOrder[] = { ta_ntrip_host, ta_ntrip_port, ta_ntrip_mount,
                              ta_ntrip_user, ta_ntrip_pass };
+  lv_obj_t* loraOrder[]  = { ta_lora_addr, ta_lora_channel, ta_lora_hc, ta_lora_lc };
   auto advance = [&](lv_obj_t** chain, size_t n) -> lv_obj_t* {
     for (size_t i = 0; i + 1 < n; i++) {
       if (chain[i] == current) return chain[i + 1];
@@ -1142,6 +1159,9 @@ static void on_keyboard_event(lv_event_t* e) {
   lv_obj_t* next = advance(wifiOrder, sizeof(wifiOrder) / sizeof(wifiOrder[0]));
   if (!next) {
     next = advance(ntripOrder, sizeof(ntripOrder) / sizeof(ntripOrder[0]));
+  }
+  if (!next) {
+    next = advance(loraOrder, sizeof(loraOrder) / sizeof(loraOrder[0]));
   }
   if (next) {
     focus_textarea(next);
@@ -1168,6 +1188,16 @@ static void load_settings_values() {
   lv_textarea_set_text(ta_ntrip_mount, cfg_baseline.ntripMount.c_str());
   lv_textarea_set_text(ta_ntrip_user,  cfg_baseline.ntripUser.c_str());
   lv_textarea_set_text(ta_ntrip_pass,  "");
+
+  char loraBuf[8];
+  snprintf(loraBuf, sizeof(loraBuf), "%u", (unsigned) cfg_baseline.loraAddr);
+  lv_textarea_set_text(ta_lora_addr, loraBuf);
+  snprintf(loraBuf, sizeof(loraBuf), "%u", (unsigned) cfg_baseline.loraChannel);
+  lv_textarea_set_text(ta_lora_channel, loraBuf);
+  snprintf(loraBuf, sizeof(loraBuf), "%u", (unsigned) cfg_baseline.loraHc);
+  lv_textarea_set_text(ta_lora_hc, loraBuf);
+  snprintf(loraBuf, sizeof(loraBuf), "%u", (unsigned) cfg_baseline.loraLc);
+  lv_textarea_set_text(ta_lora_lc, loraBuf);
 
   // Hint that a password is stored — empty placeholder otherwise.
   if (cfg_baseline.wifiPassMasked.length() > 0) {
@@ -1237,6 +1267,27 @@ static void on_save_settings(lv_event_t* e) {
   if (s != cfg_baseline.ntripUser)  { upd.ntripUserSet = true; upd.ntripUser  = s; }
   s = taText(ta_ntrip_pass);
   if (s.length() > 0)               { upd.ntripPassSet = true; upd.ntripPass  = s; }
+
+  s = taText(ta_lora_addr);
+  uint32_t addrVal = s.toInt();
+  if (addrVal > 0 && addrVal <= 65535 && (uint16_t) addrVal != cfg_baseline.loraAddr) {
+    upd.loraAddrSet = true; upd.loraAddr = (uint16_t) addrVal;
+  }
+  s = taText(ta_lora_channel);
+  int chVal = s.toInt();
+  if (chVal >= 0 && chVal <= 83 && (uint8_t) chVal != cfg_baseline.loraChannel) {
+    upd.loraChannelSet = true; upd.loraChannel = (uint8_t) chVal;
+  }
+  s = taText(ta_lora_hc);
+  int hcVal = s.toInt();
+  if (hcVal >= 0 && hcVal <= 83 && (uint8_t) hcVal != cfg_baseline.loraHc) {
+    upd.loraHcSet = true; upd.loraHc = (uint8_t) hcVal;
+  }
+  s = taText(ta_lora_lc);
+  int lcVal = s.toInt();
+  if (lcVal >= 0 && lcVal <= 83 && (uint8_t) lcVal != cfg_baseline.loraLc) {
+    upd.loraLcSet = true; upd.loraLc = (uint8_t) lcVal;
+  }
 
   if (lbl_save_status) {
     lv_label_set_text(lbl_save_status, LV_SYMBOL_REFRESH "  Saving and rebooting...");
