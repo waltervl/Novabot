@@ -1435,6 +1435,13 @@ static void handleStatus() {
   }
 #endif
   coreUnlock();
+  WalkerLoraStats lstats;
+  walkerLoraGetStats(lstats);
+  JsonObject lora = doc["lora"].to<JsonObject>();
+  lora["active"]      = lstats.active;
+  lora["moduleReady"] = lstats.moduleReady;
+  lora["bytes"]       = lstats.bytesForwarded;
+  lora["frames"]      = lstats.framesReceived;
   sendJson(200, doc);
 }
 
