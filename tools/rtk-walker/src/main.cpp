@@ -86,6 +86,9 @@
 
 // ── Globals ─────────────────────────────────────────────────────────
 HardwareSerial gnssSerial(1);
+#ifdef LORA_PRESENT
+HardwareSerial loraSerial(2);
+#endif
 TinyGPSPlus    gps;
 WebServer      server(80);
 WiFiClient     ntrip;
@@ -2375,6 +2378,18 @@ void setup() {
   // and crashed the board on boot. Leaving the buffer alone keeps the
   // memory map LVGL needs intact.
   gnssSerial.begin(GNSS_BAUD, SERIAL_8N1, GNSS_RX_PIN, GNSS_TX_PIN);
+#ifdef LORA_PRESENT
+  // EBYTE E22-900T22S default UART is 9600 8N1. Mode pins start in
+  // config mode (1,1); walker_lora.cpp lowers M0+M1 to data mode
+  // (0,0) after the module config command ACKs.
+  pinMode(LORA_M0_PIN, OUTPUT);
+  pinMode(LORA_M1_PIN, OUTPUT);
+  digitalWrite(LORA_M0_PIN, HIGH);
+  digitalWrite(LORA_M1_PIN, HIGH);
+  loraSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
+  weblogf("[lora] UART2 + pins initialised (RX=%d TX=%d M0=%d M1=%d)\n",
+          LORA_RX_PIN, LORA_TX_PIN, LORA_M0_PIN, LORA_M1_PIN);
+#endif
 
   if (!LittleFS.begin(true)) {
     weblogf("[fs] mount failed\n");
