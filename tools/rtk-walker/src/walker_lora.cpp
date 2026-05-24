@@ -48,6 +48,15 @@ static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
         0x00,        // CRYPT_H (no encryption)
         0x00,        // CRYPT_L (no encryption)
     };
+    // (Re)claim the mode pins + UART2. A prior failed probe releases
+    // them (pins → INPUT, UART2 → end()), so a later reconfigure after
+    // the user wires the module must re-establish everything here.
+    // loraSerial.begin() is safe to call repeatedly — the ESP32
+    // HardwareSerial re-inits cleanly.
+    pinMode(LORA_M0_PIN, OUTPUT);
+    pinMode(LORA_M1_PIN, OUTPUT);
+    loraSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
+
     // Make sure module is in config mode.
     digitalWrite(LORA_M0_PIN, HIGH);
     digitalWrite(LORA_M1_PIN, HIGH);
@@ -135,7 +144,17 @@ bool walkerLoraSetup(const WalkerLoraConfig& cfg) {
         delay(25);
         walkerPumpGnss();
     } else {
-        loraLogf("config FAILED — module wiring or band mismatch?\n");
+        loraLogf("config FAILED — no module? releasing LoRa pins\n");
+        // No module ACK. Stop driving the mode pins (back to high-Z
+        // input) and close UART2 so a walker WITHOUT the E22 wired
+        // behaves exactly like the pre-LoRa firmware: no held GPIOs,
+        // no open UART. Leaving M0/M1 driven HIGH or UART2 open was
+        // disturbing the LC29HDA on the JC3248W535 (one of GPIO
+        // 11/41/42/44 collides with a board net), which surfaced as
+        // the "RTK module not detected" overlay flapping every ~5 s.
+        pinMode(LORA_M0_PIN, INPUT);
+        pinMode(LORA_M1_PIN, INPUT);
+        loraSerial.end();
     }
     return g_moduleReady;
 }
