@@ -49,6 +49,7 @@
 
 #include "index_html.h"
 #include "walker_api.h"
+#include "walker_lora.h"
 #include "walker_ota.h"
 #include "session.h"
 #include "recording.h"
@@ -2390,6 +2391,12 @@ void setup() {
   weblogf("[lora] UART2 + pins initialised (RX=%d TX=%d M0=%d M1=%d)\n",
           LORA_RX_PIN, LORA_TX_PIN, LORA_M0_PIN, LORA_M1_PIN);
 #endif
+#ifdef LORA_PRESENT
+  // Module-default LoRa config until Task 4 wires up NVS-loaded values.
+  // After Task 4 this block reads from `cfg` instead.
+  WalkerLoraConfig lcfg = { 718, 17, 20, 14 };
+  walkerLoraSetup(lcfg);
+#endif
 
   if (!LittleFS.begin(true)) {
     weblogf("[fs] mount failed\n");
@@ -2619,6 +2626,7 @@ void loop() {
   server.handleClient();
   ntripPump();
   gnssPump();
+  walkerLoraPump();
   buttonPump();
   batteryPump();
   tftTick();
