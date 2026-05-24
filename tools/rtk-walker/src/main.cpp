@@ -114,6 +114,14 @@ struct Config {
   // OTA runs against a public LAN-only binary endpoint, so neither value
   // serves any purpose anymore. Keys are also dropped from NVS below.
 
+  // LoRa RTK relay (Task 4). Defaults match the Novabot factory pair
+  // so most users never need to configure: charger broadcasts on
+  // addr=718 ch=17 hc=20 lc=14, walker listens on the same.
+  uint16_t loraAddr    = 718;
+  uint8_t  loraChannel = 17;
+  uint8_t  loraHc      = 20;
+  uint8_t  loraLc      = 14;
+
   // OTA auto-check on boot. Default true — walker pulls the manifest from
   // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
   // applies + reboots if newer. Settable from the TFT Settings tab so a
@@ -381,6 +389,10 @@ static void loadConfig() {
   // Legacy keys ("msn", "atok") are silently removed below if present.
   cfg.otaAutoCheck = prefs.getBool("otaauto", true);
   cfg.authToken = prefs.getString("auth", "");
+  cfg.loraAddr    = prefs.getUShort("lora_addr", 718);
+  cfg.loraChannel = prefs.getUChar("lora_ch", 17);
+  cfg.loraHc      = prefs.getUChar("lora_hc", 20);
+  cfg.loraLc      = prefs.getUChar("lora_lc", 14);
 }
 
 static void saveConfig() {
@@ -397,6 +409,10 @@ static void saveConfig() {
   prefs.remove("atok");
   prefs.putBool("otaauto", cfg.otaAutoCheck);
   prefs.putString("auth", cfg.authToken);
+  prefs.putUShort("lora_addr", cfg.loraAddr);
+  prefs.putUChar("lora_ch",    cfg.loraChannel);
+  prefs.putUChar("lora_hc",    cfg.loraHc);
+  prefs.putUChar("lora_lc",    cfg.loraLc);
 }
 
 // Haversine distance between two lat/lng points in metres. Accurate to
@@ -2392,9 +2408,7 @@ void setup() {
           LORA_RX_PIN, LORA_TX_PIN, LORA_M0_PIN, LORA_M1_PIN);
 #endif
 #ifdef LORA_PRESENT
-  // Module-default LoRa config until Task 4 wires up NVS-loaded values.
-  // After Task 4 this block reads from `cfg` instead.
-  WalkerLoraConfig lcfg = { 718, 17, 20, 14 };
+  WalkerLoraConfig lcfg = { cfg.loraAddr, cfg.loraChannel, cfg.loraHc, cfg.loraLc };
   walkerLoraSetup(lcfg);
 #endif
 
