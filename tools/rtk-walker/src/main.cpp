@@ -940,7 +940,12 @@ static void ntripPump() {
     uint8_t chunk[512];
     int n = ntrip.read(chunk, sizeof(chunk));
     if (n <= 0) break;
-    gnssSerial.write(chunk, n);
+    if (!walkerLoraActive()) {
+      gnssSerial.write(chunk, n);
+    }
+    // st.ntripBytes counts bytes received from the socket regardless of
+    // whether we forwarded them — keeps the "NTRIP up" metric honest even
+    // when LoRa is the active source.
     coreLock();
     st.ntripBytes += n;
     coreUnlock();
@@ -2774,6 +2779,12 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   out.areaM2   = (float) lastAreaM2;
   out.wifiSsid   = cfg.ssid;
   out.authConfigured = cfg.authToken.length() > 0;
+  WalkerLoraStats lstats;
+  walkerLoraGetStats(lstats);
+  out.loraActive          = lstats.active;
+  out.loraModuleReady     = lstats.moduleReady;
+  out.loraBytesForwarded  = lstats.bytesForwarded;
+  out.loraFramesReceived  = lstats.framesReceived;
   coreUnlock();
   if (out.wifiUp)        out.wifiIp = WiFi.localIP().toString();
   else if (out.apMode)   out.wifiIp = WiFi.softAPIP().toString();
@@ -2792,6 +2803,10 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.serverUrl       = cfg.serverUrl;
   out.otaAutoCheck    = cfg.otaAutoCheck;
   out.authConfigured  = cfg.authToken.length() > 0;
+  out.loraAddr     = cfg.loraAddr;
+  out.loraChannel  = cfg.loraChannel;
+  out.loraHc       = cfg.loraHc;
+  out.loraLc       = cfg.loraLc;
   coreUnlock();
 }
 
@@ -2815,6 +2830,11 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
           upd.ntripUserSet  ? "set" : "kept",
           upd.ntripPassSet  ? "set" : "kept (blank in form)");
 
+  bool needsReboot = upd.wifiSsidSet || upd.wifiPassSet ||
+                     upd.ntripHostSet || upd.ntripPortSet ||
+                     upd.ntripMountSet || upd.ntripUserSet ||
+                     upd.ntripPassSet;
+
   coreLock();
   if (upd.wifiSsidSet)  { cfg.ssid       = upd.wifiSsid;  }
   if (upd.wifiPassSet)  { cfg.pass       = upd.wifiPass;  }
@@ -2824,12 +2844,30 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   if (upd.ntripUserSet) { cfg.ntripUser  = upd.ntripUser; }
   if (upd.ntripPassSet) { cfg.ntripPass  = upd.ntripPass; }
   if (upd.otaAutoCheckSet) { cfg.otaAutoCheck = upd.otaAutoCheck; }
+  bool loraChanged = false;
+  if (upd.loraAddrSet)    { cfg.loraAddr    = upd.loraAddr;    loraChanged = true; }
+  if (upd.loraChannelSet) { cfg.loraChannel = upd.loraChannel; loraChanged = true; }
+  if (upd.loraHcSet)      { cfg.loraHc      = upd.loraHc;      loraChanged = true; }
+  if (upd.loraLcSet)      { cfg.loraLc      = upd.loraLc;      loraChanged = true; }
   saveConfig();
-  weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
-          (unsigned) cfg.pass.length());
+  if (needsReboot) {
+    weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
+            (unsigned) cfg.pass.length());
+  } else {
+    weblogf("[cfg] saved via TFT (no WiFi/NTRIP changes; no reboot)\n");
+  }
+  // Snapshot LoRa config under the lock so walkerLoraReconfigure gets a
+  // consistent copy even if another task writes cfg immediately after unlock.
+  WalkerLoraConfig newLoraCfg = { cfg.loraAddr, cfg.loraChannel, cfg.loraHc, cfg.loraLc };
   coreUnlock();
-  delay(500);
-  ESP.restart();
+
+  if (loraChanged) {
+    walkerLoraReconfigure(newLoraCfg);
+  }
+  if (needsReboot) {
+    delay(500);
+    ESP.restart();
+  }
 }
 
 bool walkerToggleRecording() {

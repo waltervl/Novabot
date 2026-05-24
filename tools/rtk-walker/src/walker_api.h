@@ -37,6 +37,11 @@ struct WalkerSnapshot {
   float    closingM;           // distance from current position to the first recorded point
   float    areaM2;             // Shoelace area of the closed polygon - only meaningful after stopRecording
   bool     authConfigured;      // true once protected HTTP endpoints require a token
+  // LoRa RTCM source state.
+  bool     loraActive;          // valid frames in last 10 s
+  bool     loraModuleReady;     // EBYTE config acked at boot
+  uint32_t loraBytesForwarded;  // total RTCM bytes pushed to LC29HDA from LoRa
+  uint32_t loraFramesReceived;  // valid LoRa frames seen (any cmd)
 };
 
 struct WalkerConfigView {
@@ -52,6 +57,11 @@ struct WalkerConfigView {
   String   serverUrl;
   bool     otaAutoCheck = true;
   bool     authConfigured = false;
+  // LoRa pair settings (mirror the four NVS keys lora_addr/ch/hc/lc).
+  uint16_t loraAddr      = 718;
+  uint8_t  loraChannel   = 17;
+  uint8_t  loraHc        = 20;
+  uint8_t  loraLc        = 14;
 };
 
 struct WalkerConfigUpdate {
@@ -65,6 +75,10 @@ struct WalkerConfigUpdate {
   bool ntripUserSet = false; String ntripUser;
   bool ntripPassSet = false; String ntripPass;
   bool otaAutoCheckSet = false; bool otaAutoCheck = true;
+  bool loraAddrSet    = false; uint16_t loraAddr    = 0;
+  bool loraChannelSet = false; uint8_t  loraChannel = 0;
+  bool loraHcSet      = false; uint8_t  loraHc      = 0;
+  bool loraLcSet      = false; uint8_t  loraLc      = 0;
 };
 
 void walkerGetSnapshot(WalkerSnapshot& out);
