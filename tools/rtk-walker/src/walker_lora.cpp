@@ -148,10 +148,10 @@ bool walkerLoraSetup(const WalkerLoraConfig& cfg) {
         // No module ACK. Stop driving the mode pins (back to high-Z
         // input) and close UART2 so a walker WITHOUT the E22 wired
         // behaves exactly like the pre-LoRa firmware: no held GPIOs,
-        // no open UART. Leaving M0/M1 driven HIGH or UART2 open was
-        // disturbing the LC29HDA on the JC3248W535 (one of GPIO
-        // 11/41/42/44 collides with a board net), which surfaced as
-        // the "RTK module not detected" overlay flapping every ~5 s.
+        // no open UART. The LoRa pins now live on the JC3248W535 P2
+        // header (IO16/15/7/14, all free GPIOs), so they no longer
+        // fight the SD MOSI (IO11) or U0RXD (IO44) nets that earlier
+        // made the "RTK module not detected" overlay flap every ~5 s.
         pinMode(LORA_M0_PIN, INPUT);
         pinMode(LORA_M1_PIN, INPUT);
         loraSerial.end();
