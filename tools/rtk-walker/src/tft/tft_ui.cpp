@@ -82,6 +82,14 @@ static lv_obj_t* map_line = nullptr;
 static lv_obj_t* map_cursor = nullptr;
 static lv_obj_t* map_empty_label = nullptr;
 static lv_obj_t* map_north_label = nullptr;
+// Floating action: "Discard" — sits beside Save-as-area after a stop
+// so the operator can throw away a bad walk (lost RTK, wrong shape)
+// without it cluttering the Maps tab. Same visibility rules as the
+// save button.
+static lv_obj_t* btn_discard_track = nullptr;
+static lv_obj_t* lbl_discard_track = nullptr;
+static void on_discard_track_clicked(lv_event_t* e);
+
 // Floating action: "Save as area" — overlays the map panel only when a
 // just-stopped track has enough points to become a work map. Tap shows
 // a confirm screen, then imports the CSV rows into the next free
@@ -491,8 +499,8 @@ static void build_main_screen() {
   // Centered horizontally so it's the obvious next step once the user
   // sees the closed polygon on screen.
   btn_save_area = lv_btn_create(map_panel);
-  lv_obj_set_size(btn_save_area, 170, 36);
-  lv_obj_align(btn_save_area, LV_ALIGN_BOTTOM_MID, 0, -4);
+  lv_obj_set_size(btn_save_area, 150, 36);
+  lv_obj_align(btn_save_area, LV_ALIGN_BOTTOM_MID, -82, -4);
   lv_obj_set_style_bg_color(btn_save_area, COL_BLUE, 0);
   lv_obj_set_style_radius(btn_save_area, 8, 0);
   lv_obj_set_style_border_width(btn_save_area, 0, 0);
@@ -506,6 +514,24 @@ static void build_main_screen() {
   // Hidden by default; refresh tick reveals it once the previous
   // recording completed and produced at least 5 captured points.
   lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+
+  // Discard companion — right of Save, reuses the same visibility
+  // rules (both shown only when there's a stopped track sitting in
+  // the trail buffer). Red so the destructive action is obvious.
+  btn_discard_track = lv_btn_create(map_panel);
+  lv_obj_set_size(btn_discard_track, 140, 36);
+  lv_obj_align(btn_discard_track, LV_ALIGN_BOTTOM_MID, 80, -4);
+  lv_obj_set_style_bg_color(btn_discard_track, COL_RED, 0);
+  lv_obj_set_style_radius(btn_discard_track, 8, 0);
+  lv_obj_set_style_border_width(btn_discard_track, 0, 0);
+  lv_obj_set_style_shadow_width(btn_discard_track, 0, 0);
+  lv_obj_add_event_cb(btn_discard_track, on_discard_track_clicked, LV_EVENT_CLICKED, NULL);
+  lbl_discard_track = lv_label_create(btn_discard_track);
+  lv_label_set_text(lbl_discard_track, LV_SYMBOL_TRASH "  Discard");
+  lv_obj_set_style_text_color(lbl_discard_track, lv_color_white(), 0);
+  lv_obj_set_style_text_font(lbl_discard_track, &lv_font_montserrat_14, 0);
+  lv_obj_center(lbl_discard_track);
+  lv_obj_add_flag(btn_discard_track, LV_OBJ_FLAG_HIDDEN);
 
   // +Channel / +Obstacle floating buttons. Icon-only square tiles anchored
   // in the top-left corner of the map panel so they don't compete with the
@@ -1684,12 +1710,20 @@ static bool tftRtkUsable(int fix) {
 // the visibility tracks live recording state and the most recent stop.
 // Centralised so the toggle logic is in exactly one place.
 static void update_save_area_button(const WalkerSnapshot& snap) {
-  if (!btn_save_area) return;
-  bool show = !snap.recording &&
-              walkerLastTrackPath().length() > 0 &&
-              walkerLastTrackPoints() >= SAVE_AREA_MIN_POINTS;
-  if (show) lv_obj_clear_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
-  else      lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+  bool hasTrack = !snap.recording && walkerLastTrackPath().length() > 0;
+  // Save is gated on >= MIN_POINTS so a one-tap walk doesn't end up
+  // as a degenerate area. Discard is gated only on "track exists" so
+  // a bad walk (no RTK FIX, wrong shape) can ALWAYS be thrown away.
+  bool showSave    = hasTrack && walkerLastTrackPoints() >= SAVE_AREA_MIN_POINTS;
+  bool showDiscard = hasTrack;
+  if (btn_save_area) {
+    if (showSave) lv_obj_clear_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+    else          lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (btn_discard_track) {
+    if (showDiscard) lv_obj_clear_flag(btn_discard_track, LV_OBJ_FLAG_HIDDEN);
+    else             lv_obj_add_flag(btn_discard_track, LV_OBJ_FLAG_HIDDEN);
+  }
 }
 
 // Reveal/hide the +Chan / +Obs floating buttons. Visible only when a saved
@@ -1945,6 +1979,25 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
 static void onSaveResultDismissed(lv_event_t* e) {
   lv_obj_t* mbox = lv_event_get_current_target(e);
   if (mbox) lv_msgbox_close(mbox);
+}
+
+// Discard the just-stopped track. Removes the file on flash (so it
+// doesn't linger and show up in the legacy /tracks list) and clears
+// the walkerLastTrack snapshot so both Save + Discard buttons
+// disappear on the next refresh tick. No confirmation modal — the
+// red button + Trash icon are explicit enough.
+static void on_discard_track_clicked(lv_event_t* /*e*/) {
+  String path = walkerLastTrackPath();
+  if (path.length() > 0 && LittleFS.exists(path)) {
+    LittleFS.remove(path);
+  }
+  walkerSetLastTrack(String(""), 0);
+  // Clear the live polyline too so the trail disappears from the map
+  // immediately — same effect as starting a fresh recording, just
+  // without arming the recorder.
+  walkerResetTrail();
+  if (btn_save_area)     lv_obj_add_flag(btn_save_area, LV_OBJ_FLAG_HIDDEN);
+  if (btn_discard_track) lv_obj_add_flag(btn_discard_track, LV_OBJ_FLAG_HIDDEN);
 }
 
 // ── Live map rendering ───────────────────────────────────────────────────
