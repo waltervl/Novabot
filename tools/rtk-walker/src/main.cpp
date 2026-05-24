@@ -2091,15 +2091,23 @@ static void handleMapView() {
     return;
   }
   if (slot < 0) {
+    // Exit is cheap (just zeroes a few state vars) so we do it inline.
     tft_ui_exit_view_map();
     server.send(200, "application/json", "{\"ok\":true,\"viewingSlot\":-1}");
     return;
   }
-  if (!tft_ui_view_map_slot(slot)) {
-    server.send(409, "application/json",
-                "{\"ok\":false,\"error\":\"map not loadable (no origin or missing)\"}");
-    return;
-  }
+  // Load is expensive — load_saved_map_polygon + load_saved_map_obstacles
+  // do 500+ ms of LittleFS reads + per-point lat/lng conversion. Doing
+  // that inside the HTTP handler starves gnssPump() and the GNSS module
+  // reports "module not found" within ~25 ms. Defer to the main loop;
+  // the response goes out immediately, the TFT catches up ~1 main-loop
+  // iter later.
+  //
+  // We can't pre-validate the slot here without doing the same expensive
+  // work, so the response is optimistically 200 OK. If the slot is
+  // missing-on-disk the on-device side just silently keeps its previous
+  // viewing state — same outcome as a manual TFT tap on a missing row.
+  g_pendingViewRefreshSlot = slot;
   JsonDocument resp;
   resp["ok"] = true;
   resp["viewingSlot"] = slot;

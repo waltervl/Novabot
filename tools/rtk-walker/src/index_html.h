@@ -705,23 +705,20 @@ function renderObstacleManager(slot, obstacleRecs) {
   countEl.textContent = ' (' + obstacleRecs.length + ')';
 
   // Sort by extracted index so the user sees them in capture order.
-  // Filename format: mapN_<i>_obstacle.csv — pull the <i> out so we
-  // can highlight the newest one (highest index) too.
+  // Filename format: mapN_<i>_obstacle.csv.
   obstacleRecs.forEach(function(ob) {
     const m = (ob.name || '').match(/^map\d+_(\d+)_obstacle\.csv$/);
     ob._idx = m ? parseInt(m[1], 10) : 0;
   });
   obstacleRecs.sort(function(a, b) { return a._idx - b._idx; });
-  const newestIdx = obstacleRecs[obstacleRecs.length - 1]._idx;
 
   obstacleRecs.forEach(function(ob) {
     const row = document.createElement('div');
     row.className = 'track';
     const left = document.createElement('div');
     const title = document.createElement('div');
-    const isNewest = ob._idx === newestIdx;
-    title.textContent = (isNewest ? 'newest · ' : '') + 'obstacle ' + ob._idx;
-    title.style.color = isNewest ? 'var(--emerald)' : '#cbd5f5';
+    title.textContent = 'obstacle ' + ob._idx;
+    title.style.color = '#cbd5f5';
     title.style.fontWeight = '600';
     const meta = document.createElement('div');
     meta.className = 'meta';
