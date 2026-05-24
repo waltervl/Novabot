@@ -1339,6 +1339,13 @@ static bool load_saved_map_polygon(int slot) {
     // as fix=4 keeps the render cursor green for the loaded view.
     viewing_buffer[viewing_count].fix = 4;
     viewing_count++;
+
+    // Drain the GNSS UART every 32 lines so a 300-point map load
+    // doesn't starve the FIFO for the >5 sec that trips the
+    // "RTK module not detected" overlay. ~22 ms FIFO budget at
+    // 115200 baud, 32 lines × ~1.5 ms = ~50 ms — well within margin
+    // even with LittleFS variance.
+    if ((viewing_count & 0x1F) == 0) walkerPumpGnss();
   }
   f.close();
   return viewing_count > 0;
@@ -1400,6 +1407,7 @@ static void load_saved_map_obstacles(int slot) {
       viewing_obstacle_buf[slot_idx][outCount].lng = lng;
       viewing_obstacle_buf[slot_idx][outCount].fix = 4;
       outCount++;
+      if ((outCount & 0x1F) == 0) walkerPumpGnss();
     }
     f.close();
     if (outCount >= 2) viewing_obstacles_loaded++;

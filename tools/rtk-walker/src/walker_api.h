@@ -101,6 +101,13 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount);
 // whatever the home-screen polygon left behind.
 void walkerResetTrail();
 
+// Drain the GNSS UART RX FIFO immediately. Long-running TFT operations
+// (saved-map polygon load, obstacle reload) call this every few dozen
+// LittleFS reads so the 256 B UART FIFO doesn't overrun and trigger the
+// "RTK module not detected" overlay. Safe to call at any time; no-op
+// when there are no pending bytes.
+void walkerPumpGnss();
+
 // Upload the current /session/ bundle to the configured Novabot server.
 // Synchronous: blocks the calling task for the full POST (typically a
 // few seconds over WiFi). `outMsg` receives a short user-facing status

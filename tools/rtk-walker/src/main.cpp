@@ -1805,15 +1805,52 @@ static void handleMapsList() {
 // user space. A single big String + server.send() is slower per-byte
 // but doesn't trigger that bug, so we eat the latency and stay
 // reachable. Hard cap on points keeps the worst case bounded.
+// Count newline-terminated rows in a LittleFS file. Used to compute
+// an even decimation stride before emitting JSON — otherwise the
+// "first N points" cap would visually truncate the polygon (e.g. a
+// 364-point garden with a 200 cap would lose the last 45% of the
+// shape entirely). Bulk read so this is cheap even on large files.
+static int countCsvRows(const String& path) {
+  if (!LittleFS.exists(path)) return 0;
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) return 0;
+  uint8_t buf[256];
+  int rows = 0;
+  while (f.available()) {
+    int n = f.read(buf, sizeof(buf));
+    if (n <= 0) break;
+    for (int i = 0; i < n; i++) {
+      if (buf[i] == '\n') rows++;
+    }
+  }
+  f.close();
+  return rows;
+}
+
 static int polygonToJsonAppend(const String& path, size_t maxPoints,
                                String& out, bool& firstPoint) {
   if (!LittleFS.exists(path)) return -1;
+
+  // Even decimation: if the file has more rows than maxPoints, sample
+  // every Nth row so the resulting polygon preserves the overall
+  // shape. Stride==1 means "keep every row" for files <= maxPoints.
+  int totalRows = countCsvRows(path);
+  if (totalRows <= 0) return 0;
+  size_t stride = 1;
+  if ((size_t) totalRows > maxPoints) {
+    stride = (totalRows + maxPoints - 1) / maxPoints;
+  }
+
   File f = LittleFS.open(path, FILE_READ);
   if (!f) return -1;
   size_t written = 0;
+  size_t lineIdx = 0;
   char buf[80];
-  while (f.available() && written < maxPoints) {
+  while (f.available()) {
     String line = f.readStringUntil('\n');
+    bool keep = ((lineIdx % stride) == 0);
+    lineIdx++;
+    if (!keep) continue;
     if (line.endsWith("\r")) line.remove(line.length() - 1);
     if (line.length() == 0) continue;
     int c1 = line.indexOf(',');
@@ -1831,12 +1868,9 @@ static int polygonToJsonAppend(const String& path, size_t maxPoints,
     written++;
 
     // Drain the GNSS UART + yield to the scheduler every 32 points.
-    // We're not streaming the response (the previous chunked path
-    // broke ICMP), but we can still keep the rest of the firmware
-    // alive WHILE the response is being built in memory. The 256 B
-    // UART RX FIFO fills in ~22 ms at 115200 baud, and 32 points of
-    // String concat + LittleFS read is well under that — so the
-    // GNSS module never reports "module not found" mid-request.
+    // Keeps the 256 B UART FIFO from overrunning while we build the
+    // response in memory; without this an 8 KB body builds for >5 s
+    // and the "RTK module not detected" overlay trips.
     if ((written & 0x1F) == 0) {
       gnssPump();
       yield();
@@ -2820,6 +2854,13 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
   }
   livePointsUnlock();
   return result;
+}
+
+void walkerPumpGnss() {
+  // Wraps gnssPump() so external compilation units (the TFT loaders in
+  // tft_ui.cpp) can drain the UART RX FIFO without sharing the .cpp's
+  // static globals. Safe to call from anywhere on the main thread.
+  gnssPump();
 }
 
 void walkerResetTrail() {
