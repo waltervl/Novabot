@@ -2227,6 +2227,28 @@ static void handleConfigLoraPost() {
   sendJson(200, resp);
 }
 
+static void handleRtcmLog() {
+  // Snapshot the last 2 KB of the ring (4 KB raw → 8 KB hex string).
+  // 2 KB is a good balance: covers 5-10 RTCM3 messages of typical
+  // size, fits in a single HTTP response without bloating poll cost.
+  const size_t WANT = 2048;
+  static char hexbuf[2 * WANT + 1];
+  uint32_t seq = 0;
+  RtcmLogSource src = RTCM_SRC_NONE;
+  size_t n = rtcmLogSnapshot(hexbuf, WANT, &seq, &src);
+
+  JsonDocument doc;
+  doc["bytesAvailable"] = (uint32_t) n;
+  doc["seq"]            = seq;
+  const char* srcStr = "none";
+  if (src == RTCM_SRC_LORA)  srcStr = "lora";
+  if (src == RTCM_SRC_NTRIP) srcStr = "ntrip";
+  doc["source"] = srcStr;
+  doc["hex"]    = hexbuf;
+
+  sendJson(200, doc);
+}
+
 static void handleConfigGet() {
   JsonDocument doc;
   coreLock();
@@ -2584,6 +2606,7 @@ void setup() {
   server.on("/api/config/server", HTTP_POST, handleConfigServerPost);
   server.on("/api/config/lora", HTTP_GET,  handleConfigLoraGet);
   server.on("/api/config/lora", HTTP_POST, handleConfigLoraPost);
+  server.on("/api/rtcm/log",    HTTP_GET,  handleRtcmLog);
   // Trigger an upload to the configured server. POSTs the freshly-built
   // .novabundle to /api/admin-status/walker-bundles (SN-agnostic library).
   server.on("/api/upload", HTTP_POST, handleUploadPost);
