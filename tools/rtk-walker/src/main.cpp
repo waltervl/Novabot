@@ -2173,6 +2173,51 @@ static void handleMapView() {
   sendJson(200, resp);
 }
 
+static void handleConfigLoraGet() {
+  JsonDocument doc;
+  coreLock();
+  doc["addr"]    = cfg.loraAddr;
+  doc["channel"] = cfg.loraChannel;
+  doc["hc"]      = cfg.loraHc;
+  doc["lc"]      = cfg.loraLc;
+  coreUnlock();
+  sendJson(200, doc);
+}
+
+static void handleConfigLoraPost() {
+  if (!requireAuth()) return;
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  WalkerConfigUpdate upd;
+  if (body["addr"].is<int>()) {
+    int v = body["addr"];
+    if (v < 1 || v > 65535) { server.send(400, "text/plain", "addr 1..65535"); return; }
+    upd.loraAddrSet = true; upd.loraAddr = (uint16_t) v;
+  }
+  if (body["channel"].is<int>()) {
+    int v = body["channel"];
+    if (v < 0 || v > 83) { server.send(400, "text/plain", "channel 0..83"); return; }
+    upd.loraChannelSet = true; upd.loraChannel = (uint8_t) v;
+  }
+  if (body["hc"].is<int>()) {
+    int v = body["hc"];
+    if (v < 0 || v > 83) { server.send(400, "text/plain", "hc 0..83"); return; }
+    upd.loraHcSet = true; upd.loraHc = (uint8_t) v;
+  }
+  if (body["lc"].is<int>()) {
+    int v = body["lc"];
+    if (v < 0 || v > 83) { server.send(400, "text/plain", "lc 0..83"); return; }
+    upd.loraLcSet = true; upd.loraLc = (uint8_t) v;
+  }
+  walkerApplyConfig(upd);
+  JsonDocument resp;
+  resp["ok"] = true;
+  sendJson(200, resp);
+}
+
 static void handleConfigGet() {
   JsonDocument doc;
   coreLock();
@@ -2528,6 +2573,8 @@ void setup() {
   // Server upload target (separate from WiFi/NTRIP — no reboot on save).
   server.on("/api/config/server", HTTP_GET,  handleConfigServerGet);
   server.on("/api/config/server", HTTP_POST, handleConfigServerPost);
+  server.on("/api/config/lora", HTTP_GET,  handleConfigLoraGet);
+  server.on("/api/config/lora", HTTP_POST, handleConfigLoraPost);
   // Trigger an upload to the configured server. POSTs the freshly-built
   // .novabundle to /api/admin-status/walker-bundles (SN-agnostic library).
   server.on("/api/upload", HTTP_POST, handleUploadPost);
