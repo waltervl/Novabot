@@ -916,8 +916,8 @@ static void build_settings_screen() {
   lv_obj_set_flex_align(tab_lora, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
   make_field(tab_lora, "Address (1-65535)", &ta_lora_addr,    false, "718");
   make_field(tab_lora, "Channel (0-83)",    &ta_lora_channel, false, "17");
-  make_field(tab_lora, "HC (scan upper)",   &ta_lora_hc,      false, "20");
-  make_field(tab_lora, "LC (scan lower)",   &ta_lora_lc,      false, "14");
+  make_field(tab_lora, "HC (charger scan upper)", &ta_lora_hc,  false, "20");
+  make_field(tab_lora, "LC (charger scan lower)", &ta_lora_lc,  false, "14");
 
   // ── Firmware tab ────────────────────────────────────────────────────
   // Flex column with: section header, current-version label, Check +
@@ -1289,12 +1289,18 @@ static void on_save_settings(lv_event_t* e) {
     upd.loraLcSet = true; upd.loraLc = (uint8_t) lcVal;
   }
 
+  bool willReboot = upd.wifiSsidSet || upd.wifiPassSet ||
+                    upd.ntripHostSet || upd.ntripPortSet || upd.ntripMountSet ||
+                    upd.ntripUserSet || upd.ntripPassSet;
   if (lbl_save_status) {
-    lv_label_set_text(lbl_save_status, LV_SYMBOL_REFRESH "  Saving and rebooting...");
+    lv_label_set_text(lbl_save_status,
+      willReboot ? LV_SYMBOL_REFRESH "  Saving and rebooting..."
+                 : LV_SYMBOL_OK "  Saving LoRa config...");
     lv_obj_set_style_text_color(lbl_save_status, COL_EMERALD, 0);
   }
 
-  // walkerApplyConfig reboots — so we hand off and stop the timer.
+  // walkerApplyConfig reboots on WiFi/NTRIP changes; LoRa-only saves
+  // reconfigure the module in-place without rebooting.
   walkerApplyConfig(upd);
 }
 

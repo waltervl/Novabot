@@ -114,6 +114,7 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
       <span class="label">Fix</span>
       <span class="value"><span id="fix" class="fix-pill fix-0"><span class="dot"></span> <span id="fixLabel">NO FIX</span></span></span>
     </div>
+    <div class="row"><span class="label">RTK source</span><span class="value" id="rtkSource">-</span></div>
     <div class="row"><span class="label">Satellites</span><span class="value" id="sats">-</span></div>
     <div class="row"><span class="label">HDOP</span><span class="value" id="hdop">-</span></div>
     <div class="row"><span class="label">Latitude</span><span class="value" id="lat">-</span></div>
@@ -213,14 +214,15 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
       Pair with the Novabot charger so the walker gets RTK corrections
       over LoRa instead of WiFi/NTRIP. Defaults match the factory pair
-      (addr=718, ch=17). Change only if your charger is on a different
-      pair.
+      (addr=718, ch=17). The walker is a passive listener — only
+      <strong>channel</strong> controls what it tunes to. <strong>HC/LC</strong>
+      are kept here for reference (they describe the charger's scan range).
     </p>
     <form id="loraForm">
       <label>Address<input id="lora_addr" type="number" min="1" max="65535" placeholder="718"></label>
       <label>Channel<input id="lora_channel" type="number" min="0" max="83" placeholder="17"></label>
-      <label>HC (scan upper)<input id="lora_hc" type="number" min="0" max="83" placeholder="20"></label>
-      <label>LC (scan lower)<input id="lora_lc" type="number" min="0" max="83" placeholder="14"></label>
+      <label>HC (charger scan upper)<input id="lora_hc" type="number" min="0" max="83" placeholder="20"></label>
+      <label>LC (charger scan lower)<input id="lora_lc" type="number" min="0" max="83" placeholder="14"></label>
       <button type="submit" style="margin-top:12px">Save LoRa config</button>
       <div id="loraStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
     </form>
@@ -365,6 +367,14 @@ async function refresh() {
     const fixCode = d.fix != null ? d.fix : 0;
     fixPill.className = 'fix-pill fix-' + fixCode;
     setText('fixLabel', FIX_LABELS[fixCode] || ('FIX ' + fixCode));
+
+    // RTK source — derived from lora.active + ntripUp
+    const lora = d.lora || {};
+    let rtkSrc = 'none';
+    if (lora.active) rtkSrc = 'LoRa';
+    else if (d.ntripUp) rtkSrc = 'NTRIP';
+    else if (lora.moduleReady) rtkSrc = 'LoRa quiet';
+    setText('rtkSource', rtkSrc);
 
     // The walker may have loaded (or exited) a saved map on its own
     // (TFT tap, BLE, anything). Mirror that into the web UI so the

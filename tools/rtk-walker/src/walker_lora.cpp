@@ -1,6 +1,7 @@
 // walker_lora.cpp — EBYTE E22-900T22S configuration sequence + (Task 3)
 // frame parsing. We're a passive listener; never transmit user data.
 #include "walker_lora.h"
+#include "walker_api.h"
 #include "rtcm_log.h"
 
 #ifdef LORA_PRESENT
@@ -50,12 +51,18 @@ static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
     // Make sure module is in config mode.
     digitalWrite(LORA_M0_PIN, HIGH);
     digitalWrite(LORA_M1_PIN, HIGH);
-    delay(50);   // EBYTE datasheet: ≥ 40 ms settle after mode change
+    // Pump GNSS UART during the 50 ms settle so we don't drop NMEA bytes.
+    walkerPumpGnss();
+    delay(25);
+    walkerPumpGnss();
+    delay(25);
+    walkerPumpGnss();
 
     // Flush any stale RX bytes before sending.
     while (loraSerial.available()) loraSerial.read();
     loraSerial.write(pkt, sizeof(pkt));
     loraSerial.flush();
+    walkerPumpGnss();  // drain anything that built up during the UART write
 
     // Expect 12-byte echo starting with 0xC1.
     uint8_t resp[12] = {0};
@@ -121,7 +128,12 @@ bool walkerLoraSetup(const WalkerLoraConfig& cfg) {
         // Drop into transparent data mode.
         digitalWrite(LORA_M0_PIN, LOW);
         digitalWrite(LORA_M1_PIN, LOW);
-        delay(50);
+        // Pump GNSS UART during the 50 ms settle so we don't drop NMEA bytes.
+        walkerPumpGnss();
+        delay(25);
+        walkerPumpGnss();
+        delay(25);
+        walkerPumpGnss();
     } else {
         loraLogf("config FAILED — module wiring or band mismatch?\n");
     }
