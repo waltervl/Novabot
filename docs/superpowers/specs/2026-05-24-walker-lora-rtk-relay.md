@@ -150,11 +150,13 @@ Loaded in `loadConfig()`, saved in `saveConfig()`.
 |---|---|
 | State machine state | ~32 B |
 | Payload accumulator buffer | 256 B (max E22 frame) |
+| RTCM debug ring buffer (raw) | 4096 B |
+| RTCM debug ring buffer (msg metadata, ~32 entries) | ~512 B |
 | Stats | ~32 B |
 | Strings / config | ~32 B |
-| Total | ~360 B |
+| Total | ~5 KB |
 
-Comfortably under 75 % RAM (currently 73.3 %).
+Walker currently at 73.3 % RAM = 240 KB used / 320 KB total. 5 KB extra puts us at ~74.8 %, still comfortably under the 80 % danger line.
 
 ## UI
 
@@ -170,13 +172,13 @@ Same tabview pattern as WiFi/NTRIP. Four numeric textareas (soft keyboard) + Sav
 
 Save writes NVS + immediately re-runs `walkerLoraReconfigure()` (no reboot).
 
-### TFT topbar — LoRa indicator
-New small icon between WiFi and battery: `📡` symbol (or `LV_SYMBOL_BARS` as glyph fallback). Color coding:
-- Emerald: `loraActive == true` (frames in last 10 s)
-- Amber: `loraModuleReady == true && loraActive == false` (module up but charger silent / out of range)
-- Dim: module not initialised or init failed
+### TFT topbar — RTK source indicator
+The existing NTRIP indicator becomes a **single "RTK source" indicator** that swaps its glyph based on which source is currently feeding the LC29HDA:
+- `LoRa` label / `LV_SYMBOL_BARS` glyph, emerald = LoRa active (frames in last 10 s)
+- `NTRIP` label / `LV_SYMBOL_UPLOAD` glyph, emerald = NTRIP socket streaming AND LoRa inactive
+- `RTK off` / dim = neither active
 
-NTRIP indicator stays where it is and reflects only NTRIP socket state, independent of source arbitration. User can read at a glance: both colored = both alive (LoRa wins), only NTRIP colored = NTRIP serving, neither = no RTCM source.
+Only ever one of the two is shown at a time — matches the actual source arbitration. Same widget slot, just swaps glyph + label. No extra topbar real estate consumed.
 
 ### Web UI — new section + status
 - New collapsible card "LoRa" with the same four fields + Save (POSTs `/api/config/lora`)
@@ -190,6 +192,33 @@ NTRIP indicator stays where it is and reflects only NTRIP socket state, independ
   ```json
   "lora": { "active": true, "moduleReady": true, "frames": 142, "bytes": 28144 }
   ```
+- `GET /api/rtcm/log` → ring-buffered raw bytes from the active RTCM source, with framing metadata. Returns:
+  ```json
+  {
+    "source": "lora" | "ntrip" | "none",
+    "seq": 14823,                // monotonic byte offset of the newest entry
+    "bytes": "d3001a4c20...",    // hex string, last N bytes (e.g. 2048)
+    "messages": [
+      { "offset": 0,   "type": 1077, "len": 200 },
+      { "offset": 204, "type": 1087, "len": 184 },
+      { "offset": 392, "type": 1097, "len": 192 }
+    ]
+  }
+  ```
+
+### RTCM3 debug console (Web UI)
+
+New collapsible card below the LoRa config: **"RTCM debug"**. Shows incoming RTCM3 stream in real time. Two panes:
+
+1. **Hex dump** — last ~2 KB of raw bytes as space-separated hex (32 bytes per line, ASCII gutter on the right). Auto-scrolls.
+2. **Message decoder** — list of detected RTCM3 messages, one per line:
+   `T+12.4s · MSM7 GPS (1077) · 200 B`. Decoded from the first 12 bits of each RTCM3 frame (preamble 0xD3 → length → message number).
+
+Polled every 1 s via `/api/rtcm/log`. Toggle button: "Pause / Resume" for when the user wants to read a specific frame.
+
+Ring buffer on the walker side: ~4 KB raw + ~1 KB metadata. Updates from BOTH LoRa and NTRIP paths, so the console works regardless of which source is active. Each entry tagged with source so the user can verify "yes, this came from LoRa".
+
+This console is the user's main field-debugging tool. If RTK FIX fails, they can open the web UI on a phone, watch RTCM messages flow in (or not), and immediately see whether the problem is upstream (no bytes arriving) or downstream (bytes arrive but LC29HDA isn't locking).
 
 ## Testing
 
@@ -211,7 +240,7 @@ NTRIP indicator stays where it is and reflects only NTRIP socket state, independ
 
 ## Risks and open questions
 
-- **Air-rate match.** EBYTE modules have a configurable air rate (1.2k - 62.5k bps). The charger uses some setting we don't know. We'll need to dump our own LoRa pair config or experiment to find it. Wrong air rate = silent receiver. **Mitigation:** start with EBYTE default (2.4 kbps), bench-test, iterate.
+- **Air-rate match.** EBYTE modules have a configurable air rate (1.2k - 62.5k bps). The charger uses some setting we don't know yet. Ghidra decomp of `charger_v0.4.0` shows the config command pad but the actual default config blob (`PTR_DAT_42000cdc`) is in a data section the C decompiler doesn't expand; we'd need a hex inspection of the binary to read it directly. **Two-step plan:** (a) start with EBYTE default (UART 9600, air 2.4 kbps) — most likely match, OEMs rarely change these; (b) if no frames arrive, physically read the working mower's E22 config via `M0/M1=1,1` + `0xC1 0x00 0x09` query — that's the definitive source of truth.
 - **Strap pin conflicts.** GPIO 11 (M1) — verify this isn't pulled at boot by something else on the JC3248W535 PCB. If conflict, swap to another free GPIO.
 - **PSRAM / OPI conflict.** GPIO 33-37 are reserved by octal PSRAM. None of our picks use those, but verify before final layout.
 - **Frame size.** E22 max single-transmission payload is 240 bytes (configurable up to 256). Our parser must handle frames split across UART reads — state machine already does this byte-by-byte.
