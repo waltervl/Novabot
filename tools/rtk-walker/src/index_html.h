@@ -209,6 +209,37 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   </details>
 
   <details class="card config">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">LoRa RTK relay</summary>
+    <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
+      Pair with the Novabot charger so the walker gets RTK corrections
+      over LoRa instead of WiFi/NTRIP. Defaults match the factory pair
+      (addr=718, ch=17). Change only if your charger is on a different
+      pair.
+    </p>
+    <form id="loraForm">
+      <label>Address<input id="lora_addr" type="number" min="1" max="65535" placeholder="718"></label>
+      <label>Channel<input id="lora_channel" type="number" min="0" max="83" placeholder="17"></label>
+      <label>HC (scan upper)<input id="lora_hc" type="number" min="0" max="83" placeholder="20"></label>
+      <label>LC (scan lower)<input id="lora_lc" type="number" min="0" max="83" placeholder="14"></label>
+      <button type="submit" style="margin-top:12px">Save LoRa config</button>
+      <div id="loraStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
+    </form>
+  </details>
+
+  <details class="card log-card">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">RTCM debug</summary>
+    <div class="log-toolbar">
+      <label><input id="rtcmFollow" type="checkbox" checked> follow tail</label>
+      <span class="grow"></span>
+      <span style="font-size:11px;color:var(--text-dim)" id="rtcmSrc">source: -</span>
+      <button type="button" id="rtcmClear">clear view</button>
+    </div>
+    <pre id="rtcmHex" style="font-size:10px;max-height:160px"></pre>
+    <div style="margin-top:8px;font-size:11px;color:var(--text-dim)">Decoded messages</div>
+    <pre id="rtcmMsgs" style="font-size:11px;max-height:160px"></pre>
+  </details>
+
+  <details class="card config">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">OpenNova server setup</summary>
     <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
       Server URL is the only thing the walker needs. Bundle upload and OTA firmware
@@ -442,6 +473,150 @@ async function loadConfig() {
     if (el && c[k] != null) el.value = c[k];
   }
 }
+
+async function loadLora() {
+  try {
+    const r = await fetch('/api/config/lora');
+    const c = await r.json();
+    for (const k of ['addr', 'channel', 'hc', 'lc']) {
+      const el = document.getElementById('lora_' + k);
+      if (el && c[k] != null) el.value = c[k];
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function saveLora(ev) {
+  ev.preventDefault();
+  const status = document.getElementById('loraStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Saving...';
+  const body = {
+    addr:    parseInt(document.getElementById('lora_addr').value, 10),
+    channel: parseInt(document.getElementById('lora_channel').value, 10),
+    hc:      parseInt(document.getElementById('lora_hc').value, 10),
+    lc:      parseInt(document.getElementById('lora_lc').value, 10),
+  };
+  try {
+    const r = await authFetch('/api/config/lora', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401 || r.status === 403) { showAuthNeeded('loraStatus'); return; }
+    const d = await r.json();
+    if (d.ok) {
+      status.style.color = 'var(--emerald)';
+      status.textContent = 'Saved + reconfigured.';
+    } else {
+      status.style.color = 'var(--red)';
+      status.textContent = 'Save failed.';
+    }
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Save error: ' + (e && e.message ? e.message : e);
+  }
+}
+document.getElementById('loraForm').addEventListener('submit', saveLora);
+
+let rtcmLastSeq = 0;
+let rtcmLastHex = '';
+let rtcmFollow = true;
+
+// Decode RTCM3 message types from a Uint8Array. Each message starts
+// with 0xD3, followed by 6 reserved bits + 10 length bits, then
+// payload, then 24-bit CRC. Message number = first 12 bits of payload.
+function decodeRtcm3(bytes) {
+  const out = [];
+  let i = 0;
+  while (i < bytes.length) {
+    if (bytes[i] !== 0xD3) { i++; continue; }
+    if (i + 5 >= bytes.length) break;
+    const lenHi = bytes[i + 1] & 0x03;
+    const lenLo = bytes[i + 2];
+    const payloadLen = (lenHi << 8) | lenLo;
+    if (payloadLen === 0 || i + 3 + payloadLen + 3 > bytes.length) {
+      i++;
+      continue;
+    }
+    // Message number = first 12 bits of payload.
+    const msgType = (bytes[i + 3] << 4) | (bytes[i + 4] >> 4);
+    out.push({ type: msgType, len: payloadLen + 6, offset: i });
+    i += 3 + payloadLen + 3;
+  }
+  return out;
+}
+
+function rtcmTypeName(t) {
+  // Common observation message types. The user can look up the rest
+  // in the RTCM3 spec; we only label what we expect to see.
+  const names = {
+    1004: 'GPS L1/L2',
+    1005: 'Station ARP (no height)',
+    1006: 'Station ARP + height',
+    1019: 'GPS ephemeris',
+    1020: 'GLONASS ephemeris',
+    1033: 'Receiver descriptor',
+    1042: 'BeiDou ephemeris',
+    1046: 'Galileo ephemeris',
+    1074: 'MSM4 GPS',
+    1075: 'MSM5 GPS',
+    1077: 'MSM7 GPS',
+    1084: 'MSM4 GLONASS',
+    1085: 'MSM5 GLONASS',
+    1087: 'MSM7 GLONASS',
+    1094: 'MSM4 Galileo',
+    1095: 'MSM5 Galileo',
+    1097: 'MSM7 Galileo',
+    1124: 'MSM4 BeiDou',
+    1127: 'MSM7 BeiDou',
+    1230: 'GLONASS code-phase bias',
+  };
+  return names[t] || ('type ' + t);
+}
+
+function hexToBytes(hex) {
+  const len = hex.length >> 1;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return out;
+}
+
+function formatHexDump(hex) {
+  let out = '';
+  for (let i = 0; i < hex.length; i += 64) {
+    out += hex.substr(i, 64) + '\n';
+  }
+  return out;
+}
+
+async function refreshRtcm() {
+  if (!rtcmFollow) return;
+  try {
+    const r = await fetch('/api/rtcm/log');
+    const d = await r.json();
+    if (d.seq === rtcmLastSeq) return;  // no new bytes
+    rtcmLastSeq = d.seq;
+    rtcmLastHex = d.hex || '';
+    document.getElementById('rtcmHex').textContent = formatHexDump(rtcmLastHex);
+    document.getElementById('rtcmSrc').textContent = 'source: ' + (d.source || '-');
+    const bytes = hexToBytes(rtcmLastHex);
+    const msgs = decodeRtcm3(bytes);
+    const lines = msgs.map(m => 'T-' + ((bytes.length - m.offset) | 0) + 'B · '
+                                + rtcmTypeName(m.type) + ' (' + m.type + ') · '
+                                + m.len + ' B');
+    document.getElementById('rtcmMsgs').textContent = lines.join('\n');
+  } catch (e) { /* ignore */ }
+}
+document.getElementById('rtcmFollow').addEventListener('change', function(e) {
+  rtcmFollow = e.target.checked;
+});
+document.getElementById('rtcmClear').addEventListener('click', function() {
+  document.getElementById('rtcmHex').textContent = '';
+  document.getElementById('rtcmMsgs').textContent = '';
+  rtcmLastSeq = 0;
+});
 
 async function saveConfig() {
   const status = document.getElementById('cfgStatus');
@@ -1033,13 +1208,16 @@ setInterval(refreshLog, 1000);
 // Maps list refresh every 3 s so a recording finished on the walker
 // appears in the web list without the operator having to reload.
 setInterval(loadMaps, 3000);
+setInterval(refreshRtcm, 1000);
 refresh();
 refreshMap();
 refreshLog();
 loadMaps();
 loadConfig();
+loadLora();
 loadAuthStatus();
 otaLoadCurrent();
+refreshRtcm();
 </script>
 </body>
 </html>
