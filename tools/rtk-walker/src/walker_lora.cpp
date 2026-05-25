@@ -57,8 +57,14 @@ static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
     pinMode(LORA_M1_PIN, OUTPUT);
     loraSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
 
-    // Make sure module is in config mode.
-    digitalWrite(LORA_M0_PIN, HIGH);
+    // Enter configuration mode. Per E22-T datasheet section 5.1 the four
+    // modes are selected by M1,M0:
+    //   Mode 0 transparent = 0,0   Mode 1 WOR        = 0,1
+    //   Mode 2 CONFIG      = 1,0   Mode 3 deep sleep = 1,1
+    // Registers are only writable (0xC0 accepted) in Mode 2 = M1 HIGH, M0
+    // LOW. Driving both HIGH lands in Mode 3 (deep sleep) where the module
+    // ignores 0xC0 and returns nothing — the "short echo (0 bytes)" bug.
+    digitalWrite(LORA_M0_PIN, LOW);
     digitalWrite(LORA_M1_PIN, HIGH);
     // Pump GNSS UART during the 50 ms settle so we don't drop NMEA bytes.
     walkerPumpGnss();

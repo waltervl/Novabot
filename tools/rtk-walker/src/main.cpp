@@ -1094,6 +1094,25 @@ static void gnssPump() {
     lastNmeaStatsMs = nowMs;
   }
 #endif
+#ifdef LORA_PRESENT
+  // LoRa RTCM-relay heartbeat: every 2 s show whether we're hearing the
+  // charger. During bench bring-up the walker's web UI / RTCM console may
+  // sit on an isolated IoT VLAN, so the serial console is the only way to
+  // confirm frame reception. Only prints once the module ACK'd at boot.
+  static uint32_t lastLoraStatsMs = 0;
+  uint32_t nowLora = millis();
+  if (nowLora - lastLoraStatsMs >= 2000) {
+    WalkerLoraStats ls;
+    walkerLoraGetStats(ls);
+    if (ls.moduleReady) {
+      weblogf("[lora] frames=%lu rejected=%lu bytesFwd=%lu active=%d lastFrameAgo=%ldms\n",
+              (unsigned long) ls.framesReceived, (unsigned long) ls.framesRejected,
+              (unsigned long) ls.bytesForwarded, (int) ls.active,
+              ls.lastFrameMsAgo == UINT32_MAX ? -1L : (long) ls.lastFrameMsAgo);
+    }
+    lastLoraStatsMs = nowLora;
+  }
+#endif
   // GGA fix quality custom field updates whenever a new GGA sentence
   // is parsed. We mirror it into Status only when we have a full new
   // sentence, otherwise we'd race against half-parsed values.

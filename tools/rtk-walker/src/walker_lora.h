@@ -25,8 +25,8 @@ struct WalkerLoraStats {
 };
 
 // Called once from setup() after Serial.begin / WiFi associated.
-// Reads config from NVS (Task 4) and writes it to the E22 via M0/M1=1,1
-// command sequence. Returns true if the module ACK'd.
+// Reads config from NVS (Task 4) and writes it to the E22 in config mode
+// (M1=1, M0=0) via the 0xC0 command. Returns true if the module ACK'd.
 bool walkerLoraSetup(const WalkerLoraConfig& cfg);
 
 // Called from main loop every iteration. Drains UART2 RX, parses
