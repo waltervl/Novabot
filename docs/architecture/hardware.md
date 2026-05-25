@@ -4,13 +4,13 @@
 
 **Model**: N1000 (TÜV rapport CN23XAMH 001)
 **Serial**: `LFIC1230700XXX`
-**PCB text**: "LFi Charging Station 20230228", "Little Little World, Big Big Novabot"
+**PCB text**: "LFI Charging Station VerC PLUS" (date `202302281`), "Little Little World, Big Big Novabot"
 
 | Component | Type | Details |
 |-----------|------|---------|
 | **MCU** | ESP32-S3-WROOM (QFN56 rev v0.2) | Dual Core + LP Core, 240MHz, 2MB PSRAM |
 | **Flash** | 8MB SPI (GigaDevice GD25Q64) | Manufacturer 0xC8, Device 0x4017 |
-| **GPS/RTK** | UM960 | Top-right on PCB, with SMA antenna |
+| **GPS/RTK** | UM980 | Top-right on PCB, with SMA antenna |
 | **LoRa** | EBYTE E32/E22 series | SMA antenna, UART1 (TX=GPIO17, RX=GPIO18) |
 | **UART** | Header "UART0" on PCB | Pins: 3V3, RX, TX, GND (115200 baud) |
 | **Power** | DC24-30V | Via connector at top of PCB |
@@ -61,8 +61,8 @@ The mower has **two PCBs**:
 
 | Component | Type | Details |
 |-----------|------|---------|
-| **MCU** | STM32F407 | Motor/chassis control (fw: `novabot_stm32f407_v3_5_8`) |
-| **GPS** | GPS Module (with shielding) | Top-right on PCB |
+| **MCU** | STM32F407 | Motor/chassis control (fw: `v3.6.0` stock) |
+| **RF module** | Shielded module, top-right on PCB | Likely LoRa + IMU; **not an RTK GPS** (the charger is the GPS reference). Verify with photo before relabeling. |
 | **LoRa** | LoRa Receiver Module | SMA antenna connector |
 | **Relays** | 2x blue relays | Motor drive |
 | **Connectors** | Red JST headers | Motors, sensors, power |

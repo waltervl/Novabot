@@ -103,7 +103,7 @@ The charger's LoRa link with the mower is working but its WiFi/MQTT link to the 
 
 Most likely the STM32 (the secondary microcontroller that runs the blades) got into PIN-lock mode. Symptoms: motors work, drive works, but blades never spin and the dashboard shows `error_status=151`.
 
-Power-cycle the mower (not just reboot — full power off, wait 10 s, power on). The PIN lock clears at cold boot. If it comes back, your STM32 firmware probably got rolled forward to a stock version that doesn't have the NOP patch.
+Power-cycle the mower (not just reboot, full power off, wait 10 s, power on). The PIN lock clears at cold boot. Current stock STM32 `v3.6.0` does not have the PIN-lock bug, so if blades still refuse to spin after a cold boot the cause is elsewhere (look at the mower log for the actual error rather than chasing the STM32).
 
 ## "Localization not initialized" before the first mow of the day
 
@@ -117,11 +117,12 @@ Not a bug. The mower drives back ~1 m on startup to acquire GPS heading. Once it
 Two recovery levers:
 
 1. **Ethernet fallback**. The custom firmware sets `eth0` to `192.168.1.10/24` every boot. Plug an Ethernet cable into the mower, set your laptop to `192.168.1.20/24`, and SSH to `192.168.1.10`.
-2. **Factory `.deb`**. The mower's factory firmware sits at `/userdata/ota/factory.deb`. Reinstall with:
+2. **Reinstall a known-good `.deb`**. Either re-flash via the ESP32 OTA tool (puts a `.deb` on the SD card and pushes it over MQTT), or SSH in and `dpkg -i` a manually-uploaded firmware package:
    ```
-   dpkg -i /userdata/ota/factory.deb
+   scp mower_firmware_v6.0.2-custom-NN.deb root@<mower-ip>:/tmp/
+   ssh root@<mower-ip> 'dpkg -i /tmp/mower_firmware_v6.0.2-custom-NN.deb'
    ```
-   This loses your custom mqtt_node patches but gets you back to a working mower.
+   The mower keeps no built-in factory backup, so always hold onto a working `.deb` somewhere off the device.
 
 If neither works: open an issue with the symptoms and `dmesg | tail -100`. Don't reflash blindly — the wrong firmware on the wrong hardware (LFIN1 vs LFIN2 platforms) can semi-brick the unit.
 

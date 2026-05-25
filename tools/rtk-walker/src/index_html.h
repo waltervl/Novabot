@@ -100,11 +100,21 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
 <body>
   <h1>RTK Walker</h1>
 
+  <details class="card config" id="authCard">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">API auth</summary>
+    <form id="authForm">
+      <label>API token<input id="auth_token" type="password" placeholder="8+ characters"></label>
+      <button type="submit" style="margin-top:12px">Save token</button>
+      <div id="authStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
+    </form>
+  </details>
+
   <div class="card">
     <div class="row">
       <span class="label">Fix</span>
       <span class="value"><span id="fix" class="fix-pill fix-0"><span class="dot"></span> <span id="fixLabel">NO FIX</span></span></span>
     </div>
+    <div class="row"><span class="label">RTK source</span><span class="value" id="rtkSource">-</span></div>
     <div class="row"><span class="label">Satellites</span><span class="value" id="sats">-</span></div>
     <div class="row"><span class="label">HDOP</span><span class="value" id="hdop">-</span></div>
     <div class="row"><span class="label">Latitude</span><span class="value" id="lat">-</span></div>
@@ -134,6 +144,20 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     </div>
   </div>
 
+  <!-- Obstacle management for the currently-viewed saved map. Hidden
+       unless the user is actually viewing a map AND that map has at
+       least one obstacle ring on disk. Lists each ring with its file
+       name + point count + a delete button, plus a one-click "Keep
+       only newest" convenience when there are 2+ rings. -->
+  <div id="obstacleManager" class="card" style="display:none">
+    <h3 style="margin:0 0 8px;font-size:14px;letter-spacing:-0.01em">
+      Obstacles
+      <span id="obstacleCount" style="font-weight:400;color:var(--text-dim);font-size:12px"></span>
+    </h3>
+    <div id="obstacleList"></div>
+    <div id="obstacleStatus" style="margin-top:8px;font-size:12px;color:var(--text-dim);min-height:16px"></div>
+  </div>
+
   <details class="card log-card">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">Console log</summary>
     <div class="log-toolbar">
@@ -160,8 +184,14 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   </details>
 
   <div class="tracks">
-    <h1>Saved tracks</h1>
-    <div id="trackList"></div>
+    <h1>Saved maps</h1>
+    <div style="font-size:11px;color:var(--text-dim);margin:-6px 0 8px;line-height:1.4">
+      Maps captured on the walker via the +Channel / +Obstacle flow.
+      Tapping a row loads that map on the TFT too — useful for verifying
+      a freshly walked boundary against the live cursor before recording
+      obstacles inside it.
+    </div>
+    <div id="mapList"></div>
   </div>
 
   <details class="card config">
@@ -179,16 +209,138 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     </form>
   </details>
 
+  <details class="card config">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">LoRa RTK relay</summary>
+    <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
+      Pair with the Novabot charger so the walker gets RTK corrections
+      over LoRa instead of WiFi/NTRIP. Defaults match the factory pair
+      (addr=718, ch=17). The walker is a passive listener — only
+      <strong>channel</strong> controls what it tunes to. <strong>HC/LC</strong>
+      are kept here for reference (they describe the charger's scan range).
+    </p>
+    <form id="loraForm">
+      <label>Address<input id="lora_addr" type="number" min="1" max="65535" placeholder="718"></label>
+      <label>Channel<input id="lora_channel" type="number" min="0" max="83" placeholder="17"></label>
+      <label>HC (charger scan upper)<input id="lora_hc" type="number" min="0" max="83" placeholder="20"></label>
+      <label>LC (charger scan lower)<input id="lora_lc" type="number" min="0" max="83" placeholder="14"></label>
+      <button type="submit" style="margin-top:12px">Save LoRa config</button>
+      <div id="loraStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
+    </form>
+  </details>
+
+  <details class="card log-card">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">RTCM debug</summary>
+    <div class="log-toolbar">
+      <label><input id="rtcmFollow" type="checkbox" checked> follow tail</label>
+      <span class="grow"></span>
+      <span style="font-size:11px;color:var(--text-dim)" id="rtcmSrc">source: -</span>
+      <button type="button" id="rtcmClear">clear view</button>
+    </div>
+    <pre id="rtcmHex" style="font-size:10px;max-height:160px"></pre>
+    <div style="margin-top:8px;font-size:11px;color:var(--text-dim)">Decoded messages</div>
+    <pre id="rtcmMsgs" style="font-size:11px;max-height:160px"></pre>
+  </details>
+
+  <details class="card config">
+    <summary style="cursor:pointer;font-weight:600;color:var(--text)">OpenNova server setup</summary>
+    <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
+      Server URL is the only thing the walker needs. Bundle upload and OTA firmware
+      download both run against public LAN-only endpoints, so no JWT or mower SN to
+      paste here.
+    </p>
+    <form id="srvForm">
+      <label>Server URL<input id="srv_url" type="text" placeholder="http://192.168.0.247:8080"></label>
+      <button type="submit" style="margin-top:12px">Save server config</button>
+      <div id="srvStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
+    </form>
+  </details>
+
+  <div class="card">
+    <h3 style="margin:0 0 10px;font-size:14px;letter-spacing:-0.01em">Firmware</h3>
+    <div class="row"><span class="label">Current</span><span class="value" id="ota-current">loading...</span></div>
+    <div class="row"><span class="label">Latest</span><span class="value" id="ota-latest">-</span></div>
+    <button type="button" id="ota-check" style="margin-top:8px">Check for update</button>
+    <button type="button" id="ota-apply" disabled style="margin-top:6px">Update now</button>
+    <div id="ota-status" style="margin-top:8px;font-size:12px;color:var(--text-dim);min-height:16px"></div>
+  </div>
+
 <script>
 let recording = false;
 const FIX_LABELS = { 0: 'NO FIX', 1: 'GPS', 2: 'DGPS', 4: 'RTK FIX', 5: 'RTK FLOAT' };
+let authToken = localStorage.getItem('rtkWalkerAuthToken') || '';
 
 function setText(id, v) {
   const el = document.getElementById(id);
   if (el) el.textContent = v;
 }
 
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (authToken) h['X-Auth-Token'] = authToken;
+  return h;
+}
+
+function authFetch(url, opts) {
+  const o = Object.assign({}, opts || {});
+  o.headers = authHeaders(o.headers);
+  return fetch(url, o);
+}
+
+function showAuthNeeded(targetId) {
+  const msg = 'Auth required. Enter the API token above.';
+  if (targetId) {
+    const el = document.getElementById(targetId);
+    if (el) { el.style.color = 'var(--red)'; el.textContent = msg; return; }
+  }
+  alert(msg);
+}
+
+async function loadAuthStatus() {
+  try {
+    const r = await fetch('/api/auth');
+    const d = await r.json();
+    const el = document.getElementById('authStatus');
+    if (!el) return;
+    el.style.color = d.configured ? 'var(--emerald)' : 'var(--amber)';
+    el.textContent = d.configured ? 'Token configured on device.' : 'No token configured; protected endpoints only work unauthenticated on the setup AP.';
+  } catch (e) { /* ignore */ }
+}
+
+async function saveAuthToken() {
+  const status = document.getElementById('authStatus');
+  const nextToken = document.getElementById('auth_token').value.trim();
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Saving...';
+  if (nextToken.length < 8) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Token must be at least 8 characters.';
+    return;
+  }
+  try {
+    const r = await authFetch('/api/auth', {
+      method: 'POST',
+      body: JSON.stringify({ token: nextToken }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!r.ok) {
+      status.style.color = 'var(--red)';
+      status.textContent = r.status === 401 ? 'Current token required to change it.' : ('Save failed: HTTP ' + r.status);
+      return;
+    }
+    authToken = nextToken;
+    localStorage.setItem('rtkWalkerAuthToken', authToken);
+    document.getElementById('auth_token').value = '';
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Token saved.';
+    loadMaps();
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Save failed: ' + (e && e.message ? e.message : e);
+  }
+}
+
 async function refresh() {
+  if (mapLoading) return;  // single-threaded WebServer — don't queue behind the polygon stream
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
@@ -215,67 +367,112 @@ async function refresh() {
     const fixCode = d.fix != null ? d.fix : 0;
     fixPill.className = 'fix-pill fix-' + fixCode;
     setText('fixLabel', FIX_LABELS[fixCode] || ('FIX ' + fixCode));
+
+    // RTK source — derived from lora.active + ntripUp
+    const lora = d.lora || {};
+    let rtkSrc = 'none';
+    if (lora.active) rtkSrc = 'LoRa';
+    else if (d.ntripUp) rtkSrc = 'NTRIP';
+    else if (lora.moduleReady) rtkSrc = 'LoRa quiet';
+    setText('rtkSource', rtkSrc);
+
+    // The walker may have loaded (or exited) a saved map on its own
+    // (TFT tap, BLE, anything). Mirror that into the web UI so the
+    // canvas + map list stay in sync without a manual refresh.
+    const dSlot = (d.viewingSlot != null) ? d.viewingSlot : -1;
+    if (dSlot >= 0 && viewingSavedMap !== dSlot) {
+      // Device picked a different slot — render that one. viewSavedMap
+      // re-POSTs the slot but the server short-circuits when it's
+      // already viewing, so this is cheap.
+      viewSavedMap(dSlot);
+    } else if (dSlot < 0 && viewingSavedMap != null) {
+      // Device exited viewing mode — drop our overlay too.
+      backToLiveSavedMap();
+    }
   } catch (e) { /* ignore */ }
 }
 
 async function toggleRecord() {
-  await fetch('/api/record', {
+  await authFetch('/api/record', {
     method: 'POST',
     body: JSON.stringify({ recording: !recording }),
     headers: { 'Content-Type': 'application/json' }
   });
   refresh();
-  loadTracks();
+  loadMaps();
 }
 
-function makeTrackRow(t) {
+// ── Saved maps (Recording-screen output) ───────────────────────────
+// Mirrors what the on-device Maps tab shows. Each row has an alias,
+// a metadata line (boundary / obstacle / channel counts) and a click
+// handler that asks the walker to load that map (POST /api/maps/view)
+// and pulls the polygon data down for the Leaflet canvas.
+let lastViewingSlot = -1;
+
+function makeMapRow(m, active) {
   const wrap = document.createElement('div');
   wrap.className = 'track';
+  if (active) {
+    wrap.style.borderLeft = '3px solid var(--emerald)';
+    wrap.style.background = 'rgba(0,212,170,0.06)';
+  }
 
   const left = document.createElement('div');
   const name = document.createElement('div');
-  name.textContent = t.name;
-  // Click the track name to load it onto the map. Cheaper than a
-  // separate "View" button; the .meta line below tells the user how
-  // many points are in there before they pull the trigger.
+  name.textContent = m.alias || ('map' + m.slot);
   name.style.cursor = 'pointer';
-  name.style.color = 'var(--emerald)';
+  name.style.color = active ? 'var(--emerald)' : '#cbd5f5';
   name.style.fontWeight = '600';
-  name.addEventListener('click', function() { viewTrack(t.name); });
+  name.addEventListener('click', function() { viewSavedMap(m.slot); });
   const meta = document.createElement('div');
   meta.className = 'meta';
-  meta.textContent = (t.points != null ? t.points : 0) + ' pts · ' + (t.size != null ? t.size : 0) + ' bytes';
+  meta.textContent = (m.boundaryPoints || 0) + ' pts boundary · ' +
+                     (m.obstacleCount || 0) + ' obstacles · ' +
+                     (m.channelCount || 0) + ' channels';
   left.appendChild(name);
   left.appendChild(meta);
 
   const actions = document.createElement('div');
   actions.className = 'track-actions';
 
-  const csv = document.createElement('a');
-  csv.href = '/track/' + encodeURIComponent(t.name);
-  csv.setAttribute('download', '');
-  csv.textContent = 'Download CSV';
-
-  const poly = document.createElement('a');
-  poly.href = '/track/' + encodeURIComponent(t.name) + '.polygon';
-  poly.setAttribute('download', '');
-  poly.textContent = 'Novabot polygon';
-  poly.title = 'lat,lng pairs only, deduped — drop into OpenNova polygon import';
-
-  actions.appendChild(csv);
-  actions.appendChild(poly);
+  const view = document.createElement('a');
+  view.href = '#';
+  view.textContent = active ? 'Viewing' : 'View on walker';
+  view.style.color = active ? 'var(--emerald)' : 'var(--text)';
+  view.addEventListener('click', function(e) {
+    e.preventDefault();
+    if (active) backToLiveSavedMap();
+    else viewSavedMap(m.slot);
+  });
+  actions.appendChild(view);
 
   wrap.appendChild(left);
   wrap.appendChild(actions);
   return wrap;
 }
 
-async function loadTracks() {
-  const r = await fetch('/api/tracks');
-  const list = await r.json();
-  const container = document.getElementById('trackList');
-  while (container.firstChild) container.removeChild(container.firstChild);
-  for (const t of list) container.appendChild(makeTrackRow(t));
+async function loadMaps() {
+  if (mapLoading) return;
+  try {
+    const r = await fetch('/api/maps');
+    if (!r.ok) return;
+    const d = await r.json();
+    lastViewingSlot = (d.viewingSlot != null) ? d.viewingSlot : -1;
+    const container = document.getElementById('mapList');
+    while (container.firstChild) container.removeChild(container.firstChild);
+    const maps = d.maps || [];
+    if (maps.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'meta';
+      empty.style.padding = '12px 0';
+      empty.textContent = 'No saved maps yet. Walk a boundary on the walker and tap Save as area.';
+      container.appendChild(empty);
+      return;
+    }
+    for (const m of maps) {
+      container.appendChild(makeMapRow(m, m.slot === lastViewingSlot));
+    }
+  } catch (e) { /* ignore */ }
 }
 
 async function loadConfig() {
@@ -286,6 +483,150 @@ async function loadConfig() {
     if (el && c[k] != null) el.value = c[k];
   }
 }
+
+async function loadLora() {
+  try {
+    const r = await fetch('/api/config/lora');
+    const c = await r.json();
+    for (const k of ['addr', 'channel', 'hc', 'lc']) {
+      const el = document.getElementById('lora_' + k);
+      if (el && c[k] != null) el.value = c[k];
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function saveLora(ev) {
+  ev.preventDefault();
+  const status = document.getElementById('loraStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Saving...';
+  const body = {
+    addr:    parseInt(document.getElementById('lora_addr').value, 10),
+    channel: parseInt(document.getElementById('lora_channel').value, 10),
+    hc:      parseInt(document.getElementById('lora_hc').value, 10),
+    lc:      parseInt(document.getElementById('lora_lc').value, 10),
+  };
+  try {
+    const r = await authFetch('/api/config/lora', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401 || r.status === 403) { showAuthNeeded('loraStatus'); return; }
+    const d = await r.json();
+    if (d.ok) {
+      status.style.color = 'var(--emerald)';
+      status.textContent = 'Saved + reconfigured.';
+    } else {
+      status.style.color = 'var(--red)';
+      status.textContent = 'Save failed.';
+    }
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Save error: ' + (e && e.message ? e.message : e);
+  }
+}
+document.getElementById('loraForm').addEventListener('submit', saveLora);
+
+let rtcmLastSeq = 0;
+let rtcmLastHex = '';
+let rtcmFollow = true;
+
+// Decode RTCM3 message types from a Uint8Array. Each message starts
+// with 0xD3, followed by 6 reserved bits + 10 length bits, then
+// payload, then 24-bit CRC. Message number = first 12 bits of payload.
+function decodeRtcm3(bytes) {
+  const out = [];
+  let i = 0;
+  while (i < bytes.length) {
+    if (bytes[i] !== 0xD3) { i++; continue; }
+    if (i + 5 >= bytes.length) break;
+    const lenHi = bytes[i + 1] & 0x03;
+    const lenLo = bytes[i + 2];
+    const payloadLen = (lenHi << 8) | lenLo;
+    if (payloadLen === 0 || i + 3 + payloadLen + 3 > bytes.length) {
+      i++;
+      continue;
+    }
+    // Message number = first 12 bits of payload.
+    const msgType = (bytes[i + 3] << 4) | (bytes[i + 4] >> 4);
+    out.push({ type: msgType, len: payloadLen + 6, offset: i });
+    i += 3 + payloadLen + 3;
+  }
+  return out;
+}
+
+function rtcmTypeName(t) {
+  // Common observation message types. The user can look up the rest
+  // in the RTCM3 spec; we only label what we expect to see.
+  const names = {
+    1004: 'GPS L1/L2',
+    1005: 'Station ARP (no height)',
+    1006: 'Station ARP + height',
+    1019: 'GPS ephemeris',
+    1020: 'GLONASS ephemeris',
+    1033: 'Receiver descriptor',
+    1042: 'BeiDou ephemeris',
+    1046: 'Galileo ephemeris',
+    1074: 'MSM4 GPS',
+    1075: 'MSM5 GPS',
+    1077: 'MSM7 GPS',
+    1084: 'MSM4 GLONASS',
+    1085: 'MSM5 GLONASS',
+    1087: 'MSM7 GLONASS',
+    1094: 'MSM4 Galileo',
+    1095: 'MSM5 Galileo',
+    1097: 'MSM7 Galileo',
+    1124: 'MSM4 BeiDou',
+    1127: 'MSM7 BeiDou',
+    1230: 'GLONASS code-phase bias',
+  };
+  return names[t] || ('type ' + t);
+}
+
+function hexToBytes(hex) {
+  const len = hex.length >> 1;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return out;
+}
+
+function formatHexDump(hex) {
+  let out = '';
+  for (let i = 0; i < hex.length; i += 64) {
+    out += hex.substr(i, 64) + '\n';
+  }
+  return out;
+}
+
+async function refreshRtcm() {
+  if (!rtcmFollow) return;
+  try {
+    const r = await fetch('/api/rtcm/log');
+    const d = await r.json();
+    if (d.seq === rtcmLastSeq) return;  // no new bytes
+    rtcmLastSeq = d.seq;
+    rtcmLastHex = d.hex || '';
+    document.getElementById('rtcmHex').textContent = formatHexDump(rtcmLastHex);
+    document.getElementById('rtcmSrc').textContent = 'source: ' + (d.source || '-');
+    const bytes = hexToBytes(rtcmLastHex);
+    const msgs = decodeRtcm3(bytes);
+    const lines = msgs.map(m => 'T-' + ((bytes.length - m.offset) | 0) + 'B · '
+                                + rtcmTypeName(m.type) + ' (' + m.type + ') · '
+                                + m.len + ' B');
+    document.getElementById('rtcmMsgs').textContent = lines.join('\n');
+  } catch (e) { /* ignore */ }
+}
+document.getElementById('rtcmFollow').addEventListener('change', function(e) {
+  rtcmFollow = e.target.checked;
+});
+document.getElementById('rtcmClear').addEventListener('click', function() {
+  document.getElementById('rtcmHex').textContent = '';
+  document.getElementById('rtcmMsgs').textContent = '';
+  rtcmLastSeq = 0;
+});
 
 async function saveConfig() {
   const status = document.getElementById('cfgStatus');
@@ -301,14 +642,14 @@ async function saveConfig() {
     npass: document.getElementById('cfg_npass').value,
   };
   try {
-    const r = await fetch('/api/config', {
+    const r = await authFetch('/api/config', {
       method: 'POST',
       body: JSON.stringify(body),
       headers: { 'Content-Type': 'application/json' },
     });
     if (!r.ok) {
       status.style.color = 'var(--red)';
-      status.textContent = 'Save failed: HTTP ' + r.status;
+      status.textContent = r.status === 401 ? 'Auth required.' : ('Save failed: HTTP ' + r.status);
       return;
     }
     status.style.color = 'var(--emerald)';
@@ -329,6 +670,57 @@ document.getElementById('cfgForm').addEventListener('submit', function(e) {
   saveConfig();
 });
 
+// Server config (separate form because saving doesn't reboot the
+// device — adopting a new server URL should take effect on the next
+// upload or OTA check without losing the active recording.)
+async function loadServerConfig() {
+  try {
+    const r = await fetch('/api/config/server');
+    if (!r.ok) return;
+    const c = await r.json();
+    const urlEl = document.getElementById('srv_url');
+    if (urlEl && c.serverUrl) urlEl.value = c.serverUrl;
+  } catch (e) { /* keep silent — settings UI just stays blank */ }
+}
+
+async function saveServerConfig() {
+  const status = document.getElementById('srvStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Saving...';
+  const body = {
+    serverUrl: document.getElementById('srv_url').value.trim(),
+  };
+  try {
+    const r = await authFetch('/api/config/server', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!r.ok) {
+      status.style.color = 'var(--red)';
+      status.textContent = r.status === 401 ? 'Auth required.' : ('Save failed: HTTP ' + r.status);
+      return;
+    }
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Saved. Upload + OTA can use the server immediately.';
+    loadServerConfig();
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Save failed: ' + (e && e.message ? e.message : e);
+  }
+}
+
+document.getElementById('srvForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  saveServerConfig();
+});
+document.getElementById('authForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  saveAuthToken();
+});
+
+loadServerConfig();
+
 // ── Live map ──────────────────────────────────────────────────────
 // Default centre is somewhere on land; the first incoming fix or
 // track point shifts it to the real location and we never recenter
@@ -342,6 +734,12 @@ let mapInitialised = false;
 let mapAutoFitDone = false;
 let lastPointCount = 0;
 
+// Layer group holding everything that belongs to the saved-map view
+// (boundary polygon, obstacle rings, channel polylines). Created on
+// initMap, populated by viewSavedMap, cleared by backToLiveSavedMap.
+let savedMapLayer = null;
+let viewingSavedMap = null;  // slot number, or null when in live mode
+
 function initMap() {
   if (mapInitialised) return;
   map = L.map('map', {
@@ -354,6 +752,7 @@ function initMap() {
     crossOrigin: true,
   }).addTo(map);
   trackLine = L.polyline([], { color: '#00d4aa', weight: 4 }).addTo(map);
+  savedMapLayer = L.layerGroup().addTo(map);
   mapInitialised = true;
 }
 
@@ -362,50 +761,226 @@ function setOverlay(text) {
   if (el) el.textContent = text;
 }
 
-// Viewing a saved track from the list pauses the live polyline poll
-// and renders the loaded points instead. null = live mode (default).
-let viewingTrack = null;
+// Tracks whether a saved-map fetch is in flight. Live status / log /
+// map / maps-list polls all short-circuit while this is true so the
+// ESP32 WebServer (single-threaded — only one request at a time) can
+// focus on streaming the polygon response. Without this every poll
+// fires from the browser in parallel and stacks up behind the slow
+// GET, making the user-visible load time 5-10x worse than it has to
+// be.
+let mapLoading = false;
 
-async function viewTrack(name) {
+async function viewSavedMap(slot) {
+  if (mapLoading) return;  // ignore double-clicks while one is in flight
+  mapLoading = true;
   try {
-    const r = await fetch('/track/' + encodeURIComponent(name) + '.json');
-    if (!r.ok) { alert('Could not load ' + name); return; }
-    const d = await r.json();
-    const pts = (d.points || []).map(function(p){ return [p[0], p[1]]; });
-    viewingTrack = name;
-    if (trackLine) trackLine.setLatLngs(pts);
-    if (pts.length >= 2) {
-      map.fitBounds(trackLine.getBounds(), { padding: [30, 30], maxZoom: 21 });
+    setOverlay('loading map ' + slot + '...');
+
+    // First: tell the walker which map to load on its TFT. This must
+    // complete BEFORE the polygon GET so the walker's HTTP handler can
+    // start the LittleFS scan in parallel with our request — and it's
+    // a tiny POST, single-digit-ms on the wire. Auth-gated; if no
+    // token is set the device just won't follow along (the canvas
+    // still renders).
+    try {
+      await authFetch('/api/maps/view', {
+        method: 'POST',
+        body: JSON.stringify({ slot: slot }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (e) { /* best-effort */ }
+
+    const r = await fetch('/api/maps/' + slot);
+    if (!r.ok) {
+      setOverlay('map ' + slot + ' load failed');
+      return;
     }
+    const d = await r.json();
+
+    // Wipe any previous saved-map render + the live track polyline.
+    if (savedMapLayer) savedMapLayer.clearLayers();
+    if (trackLine) trackLine.setLatLngs([]);
+
+    const work = (d.work || []).map(function(p){ return [p.lat, p.lng]; });
+    if (work.length >= 2) {
+      // Boundary as a closed emerald polygon. Polygon (not Polyline) so
+      // Leaflet auto-closes the ring + we can tint the fill lightly.
+      L.polygon(work, {
+        color: '#00d4aa', weight: 3, fillColor: '#00d4aa', fillOpacity: 0.08,
+      }).addTo(savedMapLayer);
+    }
+
+    // Obstacles — red, semi-transparent fill so the operator can see
+    // the work polygon through them.
+    (d.obstacles || []).forEach(function(ob) {
+      const pts = (ob.points || []).map(function(p){ return [p.lat, p.lng]; });
+      if (pts.length >= 2) {
+        L.polygon(pts, {
+          color: '#ef4444', weight: 2, fillColor: '#ef4444', fillOpacity: 0.15,
+        }).addTo(savedMapLayer);
+      }
+    });
+
+    // Channels — blue lines (not polygons; channels are routes, not
+    // areas). Dashed so they don't get confused with the boundary.
+    (d.channels || []).forEach(function(ch) {
+      const pts = (ch.points || []).map(function(p){ return [p.lat, p.lng]; });
+      if (pts.length >= 2) {
+        L.polyline(pts, {
+          color: '#a5b4fc', weight: 3, dashArray: '6,4',
+        }).addTo(savedMapLayer);
+      }
+    });
+
+    // Fit to the boundary (or the obstacle if no boundary somehow).
+    if (work.length >= 2) {
+      const bounds = L.polygon(work).getBounds();
+      map.fitBounds(bounds, { padding: [30, 30], maxZoom: 21 });
+    }
+
+    viewingSavedMap = slot;
     mapAutoFitDone = true;
-    setOverlay('viewing ' + name + ' · ' + pts.length + ' pts');
-    // Slip a back-to-live button into the overlay container.
+    const alias = d.alias || ('map' + slot);
+    setOverlay('viewing ' + alias + ' · ' + (d.boundaryPoints || 0) + ' pts · '
+               + (d.obstacleCount || 0) + ' obs');
+
+    // Same "back to live" affordance the legacy track viewer uses.
     const ov = document.getElementById('mapOverlay');
     if (ov && !document.getElementById('backToLive')) {
       const btn = document.createElement('button');
       btn.id = 'backToLive';
       btn.textContent = 'Back to live';
       btn.style.cssText = 'margin-left:8px;padding:2px 8px;font-size:11px;border:0;border-radius:4px;background:rgba(0,212,170,0.2);color:var(--emerald);cursor:pointer';
-      btn.addEventListener('click', backToLive);
+      btn.addEventListener('click', backToLiveSavedMap);
       ov.appendChild(btn);
     }
-  } catch (e) { alert('Failed to load track: ' + e); }
+
+    // Populate the Obstacles card so the user can prune duplicates
+    // ("I walked it twice, only the last one is real").
+    renderObstacleManager(slot, d.obstacles || []);
+
+    // Refresh the maps list so the active row highlights.
+    loadMaps();
+  } catch (e) {
+    setOverlay('viewSavedMap failed: ' + (e && e.message ? e.message : e));
+  } finally {
+    mapLoading = false;
+  }
 }
 
-function backToLive() {
-  viewingTrack = null;
+// Populate the Obstacles card with one row per loaded ring. Each row
+// has its own Delete link. obstacleRecs comes straight from
+// /api/maps/N — each entry has {name, points: [...]}.
+function renderObstacleManager(slot, obstacleRecs) {
+  const card = document.getElementById('obstacleManager');
+  const list = document.getElementById('obstacleList');
+  const countEl = document.getElementById('obstacleCount');
+  const status = document.getElementById('obstacleStatus');
+  if (!card || !list) return;
+
+  // Reset state
+  while (list.firstChild) list.removeChild(list.firstChild);
+  status.textContent = '';
+  status.style.color = 'var(--text-dim)';
+  if (obstacleRecs.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  countEl.textContent = ' (' + obstacleRecs.length + ')';
+
+  // Sort by extracted index so the user sees them in capture order.
+  // Filename format: mapN_<i>_obstacle.csv.
+  obstacleRecs.forEach(function(ob) {
+    const m = (ob.name || '').match(/^map\d+_(\d+)_obstacle\.csv$/);
+    ob._idx = m ? parseInt(m[1], 10) : 0;
+  });
+  obstacleRecs.sort(function(a, b) { return a._idx - b._idx; });
+
+  obstacleRecs.forEach(function(ob) {
+    const row = document.createElement('div');
+    row.className = 'track';
+    const left = document.createElement('div');
+    const title = document.createElement('div');
+    title.textContent = 'obstacle ' + ob._idx;
+    title.style.color = '#cbd5f5';
+    title.style.fontWeight = '600';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = (ob.points || []).length + ' pts · ' + ob.name;
+    left.appendChild(title);
+    left.appendChild(meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'track-actions';
+    const del = document.createElement('a');
+    del.href = '#';
+    del.textContent = 'Delete';
+    del.style.color = 'var(--red)';
+    del.addEventListener('click', function(e) {
+      e.preventDefault();
+      deleteObstacle(slot, ob.name);
+    });
+    actions.appendChild(del);
+
+    row.appendChild(left);
+    row.appendChild(actions);
+    list.appendChild(row);
+  });
+}
+
+async function deleteObstacle(slot, name) {
+  const status = document.getElementById('obstacleStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Deleting ' + name + '...';
+  try {
+    const r = await authFetch('/api/maps/obstacles/delete?name=' + encodeURIComponent(name), {
+      method: 'POST',
+    });
+    if (r.status === 401 || r.status === 403) {
+      showAuthNeeded('obstacleStatus');
+      return;
+    }
+    if (!r.ok) {
+      const txt = await r.text();
+      status.style.color = 'var(--red)';
+      status.textContent = 'Delete failed: ' + txt;
+      return;
+    }
+    status.style.color = 'var(--emerald)';
+    status.textContent = 'Deleted. Reloading...';
+    // Re-fetch the map so the canvas + obstacle list reflect reality.
+    await viewSavedMap(slot);
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Delete error: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function backToLiveSavedMap() {
+  viewingSavedMap = null;
   mapAutoFitDone = false;
-  if (trackLine) trackLine.setLatLngs([]);
+  if (savedMapLayer) savedMapLayer.clearLayers();
   const btn = document.getElementById('backToLive');
   if (btn) btn.remove();
+  const om = document.getElementById('obstacleManager');
+  if (om) om.style.display = 'none';
+  // Tell the walker to exit viewing too. Auth-gated; fail silently.
+  authFetch('/api/maps/view', {
+    method: 'POST',
+    body: JSON.stringify({ slot: -1 }),
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(function() {});
+  loadMaps();
 }
 
 async function refreshMap() {
   if (!mapInitialised) return;
-  // While viewing a saved track, don't overwrite its polyline with the
-  // live recording's. The cursor still moves so the user can see where
-  // they are vs the loaded track.
-  if (viewingTrack) {
+  if (mapLoading) return;  // wait for the polygon stream to finish
+  // While viewing a saved session map, don't overwrite its polyline with
+  // the live recording's. The cursor still moves so the user can see
+  // where they are vs the loaded geometry.
+  if (viewingSavedMap != null) {
     try {
       const sresp = await fetch('/api/status');
       const s = await sresp.json();
@@ -430,7 +1005,8 @@ async function refreshMap() {
     // Polyline from the active recording (server keeps it in RAM
     // capped at LIVE_POINTS_MAX). We also drop a "cursor" marker on
     // the latest known live position regardless of recording state.
-    const r = await fetch('/api/track/current');
+    const r = await authFetch('/api/track/current');
+    if (r.status === 401) { setOverlay('auth required'); return; }
     const d = await r.json();
     const pts = (d.points || []).map(function(p){ return [p[0], p[1]]; });
 
@@ -486,8 +1062,8 @@ async function refreshMap() {
 const origToggleRecord = toggleRecord;
 toggleRecord = async function() {
   // Starting a recording always drops you back into live mode - it'd
-  // be weird if Start Recording left a saved track on the map.
-  if (viewingTrack) backToLive();
+  // be weird if Start Recording left a saved session map on the canvas.
+  if (viewingSavedMap != null) backToLiveSavedMap();
   await origToggleRecord();
   mapAutoFitDone = false;
   if (trackLine) trackLine.setLatLngs([]);
@@ -503,8 +1079,10 @@ toggleRecord = async function() {
 let lastSeenSeq = 0;
 
 async function refreshLog() {
+  if (mapLoading) return;
   try {
-    const r = await fetch('/api/log');
+    const r = await authFetch('/api/log');
+    if (r.status === 401 || r.status === 403) { showAuthNeeded('logView'); return; }
     const d = await r.json();
     const view = document.getElementById('logView');
     if (!view) return;
@@ -536,11 +1114,12 @@ document.getElementById('logClear').addEventListener('click', function() {
 // ── GNSS command sender ─────────────────────────────────────────
 async function sendGnssCmd(cmd) {
   if (!cmd) return;
-  await fetch('/api/gnss/send', {
+  const r = await authFetch('/api/gnss/send', {
     method: 'POST',
     body: JSON.stringify({ cmd: cmd }),
     headers: { 'Content-Type': 'application/json' },
   });
+  if (r.status === 401) { showAuthNeeded(); return; }
   // Immediate poll so the [gnss-tx] line shows up without 1 s lag.
   setTimeout(refreshLog, 100);
 }
@@ -570,15 +1149,85 @@ for (let i = 0; i < quickButtons.length; i++) {
   });
 }
 
+async function otaLoadCurrent() {
+  try {
+    const r = await (await fetch('/api/ota/check')).json();
+    setText('ota-current', r.currentVersion || 'unknown');
+    if (r.ok && r.latestVersion) setText('ota-latest', r.latestVersion);
+    if (r.ok && r.updateAvailable) {
+      const btn = document.getElementById('ota-apply');
+      if (btn) btn.disabled = false;
+    }
+  } catch (e) {
+    setText('ota-current', 'error');
+  }
+}
+
+async function otaCheck() {
+  setText('ota-status', 'Checking...');
+  const applyBtn = document.getElementById('ota-apply');
+  if (applyBtn) applyBtn.disabled = true;
+  try {
+    const r = await (await fetch('/api/ota/check')).json();
+    setText('ota-current', r.currentVersion || 'unknown');
+    setText('ota-latest', r.latestVersion || '-');
+    if (!r.ok) {
+      setText('ota-status', 'Error: ' + (r.error || 'check failed'));
+      return;
+    }
+    if (!r.updateAvailable) {
+      setText('ota-status', 'Up to date');
+      return;
+    }
+    setText('ota-status', 'New version available: ' + (r.latestVersion || '?'));
+    if (applyBtn) applyBtn.disabled = false;
+  } catch (e) {
+    setText('ota-status', 'Network error');
+  }
+}
+
+async function otaApply() {
+  setText('ota-status', 'Updating, walker will reboot...');
+  const applyBtn = document.getElementById('ota-apply');
+  if (applyBtn) applyBtn.disabled = true;
+  try {
+    const res = await authFetch('/api/ota/apply', { method: 'POST' });
+    // If the request returned, the apply failed before reboot.
+    try {
+      const r = await res.json();
+      if (r && r.ok === false) {
+        setText('ota-status', 'Update failed: ' + (r.error || 'unknown'));
+      }
+    } catch (parseErr) {
+      setText('ota-status', 'Update failed (no response)');
+    }
+  } catch (e) {
+    // Connection drop is expected on a successful reboot.
+  }
+}
+
+const otaCheckBtn = document.getElementById('ota-check');
+if (otaCheckBtn) otaCheckBtn.addEventListener('click', otaCheck);
+const otaApplyBtn = document.getElementById('ota-apply');
+if (otaApplyBtn) otaApplyBtn.addEventListener('click', otaApply);
+
 initMap();
 setInterval(refresh, 500);
 setInterval(refreshMap, 1000);
 setInterval(refreshLog, 1000);
+// Maps list refresh every 3 s so a recording finished on the walker
+// appears in the web list without the operator having to reload.
+setInterval(loadMaps, 3000);
+setInterval(refreshRtcm, 1000);
 refresh();
 refreshMap();
 refreshLog();
-loadTracks();
+loadMaps();
 loadConfig();
+loadLora();
+loadAuthStatus();
+otaLoadCurrent();
+refreshRtcm();
 </script>
 </body>
 </html>

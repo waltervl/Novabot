@@ -328,7 +328,15 @@ static lv_disp_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
         .sw_rotate = cfg->rotate,
         .hres = hres,
         .vres = vres,
-        .trans_size = hres * vres / 10,
+        // hres*vres/20 keeps each DMA-capable transport buffer at ~15 KB.
+        // Was /10 (30 KB each, 60 KB total in internal SRAM); after the OTA
+        // module + Update.h linkage landed, the internal SRAM left after
+        // WiFi + HTTP init was no longer enough to satisfy two 30 KB
+        // contiguous DMA allocations and lvgl_port_add_disp failed at boot
+        // with "Not enough memory for buffer(transport) allocation".
+        // Halving the buffer doubles DMA bursts per frame but works fine
+        // for our static-content UI.
+        .trans_size = hres * vres / 20,
         .draw_wait_cb = bsp_display_sync_cb,
         .flags = {
             .buff_dma = false,

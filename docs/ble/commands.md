@@ -57,6 +57,9 @@ Configure WiFi networks.
 
     The charger gets **both** `sta` (connect to home router) and `ap` (own access point).
 
+    !!! note "AP SSID fallback"
+        The provisioner sets `ssid = targetSn || 'CHARGER_PILE'`. If the SN is unknown at provisioning time the AP name falls back to the literal `CHARGER_PILE` (known bug, see `charger-ap-name-bug` in project memory).
+
 === "Mower (AP only)"
 
     ```json
@@ -124,6 +127,9 @@ Configure LoRa communication parameters.
 | `hc` | High channel limit (for scanning) |
 | `lc` | Low channel limit (for scanning) |
 
+!!! info "After scan, identical pair"
+    After the channel scan the firmware picks an actual channel; charger and mower end up on identical `addr` AND identical `channel` (per the 2026-04-23 working-pair rule). The older "mower = charger - 1" convention is obsolete.
+
 === "Charger Response"
 
     ```json
@@ -150,8 +156,11 @@ Configure LoRa communication parameters.
 
     Mower returns `null` (channel assigned by charger).
 
+!!! warning "`result:1` is NOT an error"
+    Both `result:0` and `result:1` mean "acknowledged" on these responses. Only specific non-zero codes indicate failure. Do NOT treat `result:1` as a failure (see `docs/reference/BLE.md` and the BLE provisioning section in `CLAUDE.md`).
+
 !!! important "chargerChannel in bindingEquipment"
-    The app uses the `value` from `set_lora_info_respond` (the assigned channel) as `chargerChannel` when calling `bindingEquipment`, NOT the originally requested channel.
+    The cloud stores the requested `channel` (e.g. 16) on the charger record server-side. `bindingEquipment` does NOT carry a `chargerChannel` field; see `docs/reference/BLE.md` (lines 66-77) for the actual binding payload shape.
 
 ---
 
@@ -210,10 +219,12 @@ After `set_cfg_info`, the device disconnects from BLE and reconnects to WiFi + M
 
 ## Error Handling
 
-If `set_wifi_info_respond` or `set_mqtt_info_respond` returns a non-zero `result`:
+The app treats specific error codes (NOT `result:1`, which means "acknowledged") as configuration failures:
 
 > **"Network configuration error. Please retry."**
 
-If `set_lora_info_respond` or `set_rtk_info_respond` returns a non-zero `result`:
+is shown when `set_wifi_info_respond` or `set_mqtt_info_respond` returns a recognised error code, and:
 
 > **"Network configuration error. Please ensure the antenna is connected properly and try again."**
+
+is shown when `set_lora_info_respond` or `set_rtk_info_respond` returns a recognised error code. `result:1` is acknowledged and is NOT one of these failure codes.

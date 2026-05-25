@@ -42,11 +42,17 @@ import { startMqttBroker } from './mqtt/broker.js';
 import { cloudHttpProxy } from './proxy/httpProxy.js';
 import { mountCloudApi } from './cloud-api/index.js';
 import { initDashboardSocket, pushMqttLog } from './dashboard/socketHandler.js';
-import { adminStatusRouter } from './routes/adminStatus.js';
+import {
+  adminStatusRouter,
+  walkerBundleUploadMulter,
+  handleWalkerBundleUpload,
+  handleWalkerFirmwareBinary,
+} from './routes/adminStatus.js';
 import { adminPageHtml } from './routes/adminPage.js';
 import { authMiddleware, adminMiddleware, dashboardMiddleware, verifyAuthToken } from './middleware/auth.js';
 import { userRepo } from './db/repositories/users.js';
-import { dashboardRouter, initFirmwareSync } from './routes/dashboard.js';
+import { dashboardRouter, initFirmwareSync, getOtaBaseUrl } from './routes/dashboard.js';
+import { buildWalkerFirmwareLatestResponse } from './routes/walkerFirmware.js';
 import { eventsRouter } from './notifications/route.js';
 import { pushRegisterRouter } from './notifications/registerRoute.js';
 import { renderRouter } from './render/route.js';
@@ -302,6 +308,29 @@ if (PROXY_MODE === 'cloud') {
 
   // Rendered mower map SVG (used by HA's MQTT image entity + manual viewers)
   app.use('/api/render', renderRouter);
+
+  // ── Walker firmware OTA check (public, LAN-only) ────────────────────────────
+  // The RTK walker polls this endpoint to discover newer firmware. It has no
+  // admin credentials at check-time; the binary endpoint below
+  // (/api/admin-status/walker-firmware/binary/:filename) is bearer-protected
+  // and the walker stores the admin token in NVS.
+  // Version strings use the `YYYY.MMDD.HHMM` date format — lexicographic
+  // comparison is correct.
+  // Walker bundle upload (SN-agnostic library). Mounted publicly, no
+  // auth — the walker has no good way to hold a Bearer token and the
+  // threat model is LAN-only. Assign-to-mower (the dangerous step) is
+  // still admin-auth on the adminStatusRouter side.
+  app.post('/api/walker-bundles', walkerBundleUploadMulter, handleWalkerBundleUpload);
+
+  // Public OTA binary download — same LAN-only reasoning as bundle upload.
+  // Walker no longer carries an admin token, so the firmware path it gets
+  // back from /api/walker-firmware/latest has to be reachable without auth.
+  app.get('/api/walker-firmware/binary/:filename', handleWalkerFirmwareBinary);
+
+  app.get('/api/walker-firmware/latest', (req: express.Request, res: express.Response) => {
+    const currentVersion = String(req.query.currentVersion ?? '');
+    res.json(buildWalkerFirmwareLatestResponse(currentVersion, getOtaBaseUrl()));
+  });
 
   // App self-update flow lives entirely client-side now: the app polls the
   // central NAS host (downloads.ramonvanbruggen.nl) directly. No server

@@ -4,15 +4,18 @@
  */
 
 import { Router, Response } from 'express';
+import express from 'express';
 import os from 'os';
 import dns from 'dns';
 import crypto from 'crypto';
 import path from 'path';
+import fs from 'fs';
 import { execSync } from 'child_process';
 import { db } from '../db/database.js';
 import { isDeviceOnline, banishSn, unbanSn, listBannedSns } from '../mqtt/broker.js';
 import { awaitCommand, publishToDevice, publishToExtended, onExtendedResponse, offExtendedResponse } from '../mqtt/mapSync.js';
-import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo } from '../db/repositories/index.js';
+import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo, walkerBundleRepo } from '../db/repositories/index.js';
+import type { WalkerBundleRow } from '../db/repositories/index.js';
 import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
 import { parseMapZip, MapArea } from '../mqtt/mapConverter.js';
@@ -20,6 +23,7 @@ import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from 
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
 import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase } from '../services/portableMap.js';
+import { synthesizePortableFromWalker } from '../maps/walkerBundleImporter.js';
 import { ImportStagingStore } from '../services/importStaging.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
 import { classifyBundle, type ClassifyResult } from '../services/bundleClassifier.js';
@@ -35,8 +39,24 @@ import { gpsToLocal, metersPerDegLat, metersPerDegLng } from '../mqtt/mapConvert
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import https from 'https';
+import unzipper from 'unzipper';
 
 export const MANIFEST_URL = 'https://downloads.ramonvanbruggen.nl/opennova-manifest.json';
+
+interface FirmwareManifestEntry {
+  version: string;
+  device_type: string;
+  url: string;
+  md5?: string;
+  sha256?: string;
+  size?: number;
+  signature?: string;
+  signing_key_id?: string;
+  signingKeyId?: string;
+  keyId?: string;
+  description?: string;
+  filename?: string;
+}
 
 /**
  * Issue #26: the published manifest still references the legacy host
@@ -68,9 +88,26 @@ const importStaging = new ImportStagingStore(
 );
 const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
+// Multer middleware exposed so index.ts can mount the same handler on a
+// public (no-auth) path for the walker upload. Walker has no good way to
+// hold a Bearer token, and the threat model is LAN-only — anyone on the
+// LAN can already reach the walker's own HTTP server. Assign-to-mower
+// downstream STILL requires admin auth, so a stray upload can't actually
+// reach a mower without operator confirmation.
+export const walkerBundleUploadMulter = bundleUpload.single('bundle');
+
+// Walker bundle library — SN-agnostic store on disk. The walker uploads here
+// once; the operator assigns the bundle to a specific mower later via the
+// admin UI. Directory is created on first use so a fresh install doesn't
+// need an extra bootstrap step.
+const walkerBundlesDir = process.env.WALKER_BUNDLES_PATH ?? path.resolve(
+  process.env.STORAGE_PATH ?? './storage',
+  'walker-bundles',
+);
+try { fs.mkdirSync(walkerBundlesDir, { recursive: true }); } catch { /* ignore — handler will throw on write */ }
+
 
 // Read version once at startup
-import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 const __dirname_admin = dirname(fileURLToPath(import.meta.url));
@@ -606,7 +643,7 @@ function getLocalIp(): string {
 // GET /api/admin-status/check-firmware-updates — compare remote manifest with local versions
 adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: Response) => {
   try {
-    const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: Array<{ version: string; device_type: string; url: string; md5: string; description: string; filename?: string }> };
+    const manifest = await fetchJson(MANIFEST_URL) as { firmwares?: FirmwareManifestEntry[] };
     const remoteFirmwares = manifest.firmwares || [];
 
     // Get locally installed versions
@@ -654,7 +691,15 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
 
     res.json({
       available,
-      installed: localVersions.map(v => ({ version: v.version, device_type: v.device_type, md5: v.md5 })),
+      installed: localVersions.map(v => ({
+        version: v.version,
+        device_type: v.device_type,
+        md5: v.md5,
+        sha256: v.sha256,
+        size: v.size,
+        signature: v.signature,
+        keyId: v.signing_key_id,
+      })),
     });
   } catch (err) {
     console.error('[Admin] Failed to check firmware updates:', err);
@@ -664,9 +709,31 @@ adminStatusRouter.get('/check-firmware-updates', async (_req: AuthRequest, res: 
 
 // POST /api/admin-status/download-firmware — download firmware from remote URL and register locally
 adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Response) => {
-  const { url: rawUrl, filename, version, device_type, md5, description } = req.body as {
-    url?: string; filename?: string; version?: string; device_type?: string; md5?: string; description?: string;
+  const {
+    url: rawUrl,
+    filename,
+    version,
+    device_type,
+    md5,
+    sha256,
+    size,
+    signature,
+    description,
+  } = req.body as {
+    url?: string;
+    filename?: string;
+    version?: string;
+    device_type?: string;
+    md5?: string;
+    sha256?: string;
+    size?: number;
+    signature?: string;
+    description?: string;
   };
+  const signingKeyId = (req.body as { signing_key_id?: string; signingKeyId?: string; keyId?: string }).signing_key_id
+    ?? (req.body as { signingKeyId?: string }).signingKeyId
+    ?? (req.body as { keyId?: string }).keyId
+    ?? null;
 
   if (!rawUrl || !filename || !version || !device_type) {
     res.status(400).json({ error: 'url, filename, version, and device_type are required' });
@@ -690,11 +757,23 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
     // Verify MD5
     const fileBuffer = fs.readFileSync(filePath);
     const fileMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    const fileSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    const fileSize = fileBuffer.length;
 
     if (md5 && fileMd5 !== md5) {
       // Clean up failed download
       try { fs.unlinkSync(filePath); } catch { /* ignore */ }
       res.status(400).json({ error: `MD5 mismatch: expected ${md5}, got ${fileMd5}` });
+      return;
+    }
+    if (sha256 && fileSha256 !== sha256) {
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      res.status(400).json({ error: `SHA256 mismatch: expected ${sha256}, got ${fileSha256}` });
+      return;
+    }
+    if (size && fileSize !== size) {
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      res.status(400).json({ error: `Size mismatch: expected ${size}, got ${fileSize}` });
       return;
     }
 
@@ -710,6 +789,11 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
       device_type,
       filename,
       md5: fileMd5,
+      sha256: fileSha256,
+      size: fileSize,
+      signature: signature || '',
+      signing_key_id: signingKeyId,
+      keyId: signingKeyId,
       description: description || '',
     }, null, 2));
 
@@ -719,6 +803,10 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
       otaVersionRepo.updateById(existing.id, {
         download_url: localUrl,
         md5: fileMd5,
+        sha256: fileSha256,
+        size: fileSize,
+        signature: signature || null,
+        signing_key_id: signingKeyId,
         release_notes: description || existing.release_notes,
       });
     } else {
@@ -727,12 +815,25 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
         device_type,
         download_url: localUrl,
         md5: fileMd5,
+        sha256: fileSha256,
+        size: fileSize,
+        signature: signature || null,
+        signing_key_id: signingKeyId,
         release_notes: description || null,
       });
     }
 
-    console.log(`[Admin] Firmware ${version} downloaded and registered (${(fileBuffer.length / 1024 / 1024).toFixed(1)} MB)`);
-    res.json({ ok: true, version, localPath: filePath, md5: fileMd5, size: fileBuffer.length });
+    console.log(`[Admin] Firmware ${version} downloaded and registered (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+    res.json({
+      ok: true,
+      version,
+      localPath: filePath,
+      md5: fileMd5,
+      sha256: fileSha256,
+      size: fileSize,
+      signature: signature || null,
+      keyId: signingKeyId,
+    });
   } catch (err) {
     // Clean up on error
     try { fs.unlinkSync(filePath); } catch { /* ignore */ }
@@ -740,6 +841,33 @@ adminStatusRouter.post('/download-firmware', async (req: AuthRequest, res: Respo
     res.status(500).json({ error: err instanceof Error ? err.message : 'Download failed' });
   }
 });
+
+// Shared handler so the walker firmware binary is reachable both via the
+// admin-router (legacy, bearer-auth) and via a public path mounted in
+// index.ts. Firmware is already published openly on downloads.* and the
+// threat model is LAN-only, so making OTA install auth-free matches the
+// same logic applied to the walker-bundles upload — no point making
+// users paste a JWT to download a publicly-available binary.
+export function handleWalkerFirmwareBinary(req: express.Request, res: express.Response): void {
+  const safe = path.basename(req.params.filename);
+  if (!safe || safe.includes('..') || safe.startsWith('.') || safe.includes('/') || safe.includes('\\')) {
+    res.status(400).json({ ok: false, error: 'invalid filename' });
+    return;
+  }
+  const firmwareDir = process.env.FIRMWARE_PATH ?? path.resolve(process.cwd(), 'firmware');
+  const filePath = path.join(firmwareDir, safe);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ ok: false, error: 'not found' });
+    return;
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+  fs.createReadStream(filePath).pipe(res);
+}
+
+// GET /api/admin-status/walker-firmware/binary/:filename — legacy admin-auth
+// path; kept for backwards compatibility with any operator-side tooling.
+adminStatusRouter.get('/walker-firmware/binary/:filename', handleWalkerFirmwareBinary);
 
 // ── Server self-update check ─────────────────────────────────────────────────
 
@@ -1438,6 +1566,25 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
   res.send(zip);
 });
 
+// Peek at metadata.json in a buffered ZIP to detect a walker-exported
+// .novabundle. Walker bundles need a server-side Δ-rotate + rasterize
+// pass before parseBundle accepts them, while regular mower exports
+// (.novabotmap) flow straight through. We do this so the admin page
+// can have ONE "Import bundle..." button instead of forcing operators
+// to remember which device a file came from.
+async function isWalkerBundleBuffer(buf: Buffer): Promise<boolean> {
+  try {
+    const dir = await unzipper.Open.buffer(buf);
+    const meta = dir.files.find((f) => f.type === 'File' && f.path === 'metadata.json');
+    if (!meta) return false;
+    const raw = (await meta.buffer()).toString('utf8');
+    const j = JSON.parse(raw) as Record<string, unknown>;
+    return j.sourceType === 'walker';
+  } catch {
+    return false;
+  }
+}
+
 // POST /api/admin-status/maps/:sn/import-portable
 adminStatusRouter.post(
   '/maps/:sn/import-portable',
@@ -1450,8 +1597,41 @@ adminStatusRouter.post(
       res.status(409).json({ ok: false, error: 'active import already in progress', stagingId: active.stagingId });
       return;
     }
+
+    // Auto-detect walker bundles + transform them to a parseBundle-shaped
+    // portable bundle on the fly. From here on the rest of the pipeline
+    // (importStaging.create, apply-verbatim, dock-anchor refresh) treats
+    // both bundle types identically.
+    let bufferToParse: Buffer = req.file.buffer;
+    let walkerSynth = false;
+    if (await isWalkerBundleBuffer(req.file.buffer)) {
+      const sensors = deviceCache.get(sn);
+      const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+      const my = parseFloat(sensors?.get('map_position_y') ?? '');
+      const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+      if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
+        res.status(409).json({
+          ok: false,
+          error: 'walker bundle requires a live map_position from the mower (online + docked)',
+        });
+        return;
+      }
+      try {
+        const synth = await synthesizePortableFromWalker(req.file.buffer, {
+          currentDockPose: { x: mx, y: my, orientation: mo },
+          resolution: 0.05,
+          marginM: 1.0,
+        });
+        bufferToParse = synth.portableZip;
+        walkerSynth = true;
+      } catch (err) {
+        res.status(400).json({ ok: false, error: `walker bundle synth failed: ${(err as Error).message}` });
+        return;
+      }
+    }
+
     let parsed;
-    try { parsed = await parseBundle(req.file.buffer); }
+    try { parsed = await parseBundle(bufferToParse); }
     catch (e) {
       if (e instanceof BundleValidationError) { res.status(400).json({ ok: false, error: e.message }); return; }
       throw e;
@@ -1463,7 +1643,13 @@ adminStatusRouter.post(
     // Persist the parsed bundle alongside state.json for later steps
     const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, session.stagingId);
     fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
-    importAuditRepo.append({ sn, staging_id: session.stagingId, from_state: '_NONE_', to_state: 'UPLOADED', reason: null });
+    importAuditRepo.append({
+      sn,
+      staging_id: session.stagingId,
+      from_state: '_NONE_',
+      to_state: 'UPLOADED',
+      reason: walkerSynth ? 'walker bundle synthesized' : null,
+    });
     // Exact-restore = bundle ships verbatim mower files + valid charging_pose.
     // Verbatim-restore = full mower state ALSO ships (pos.json + map.yaml/pgm).
     const exactRestore = !!(parsed.mowerFiles && parsed.metadata?.originalChargingPose
@@ -1482,6 +1668,452 @@ adminStatusRouter.post(
       verbatimRestore,
       sourceSn: parsed.metadata?.sourceSn ?? null,
       sourceSnMatches,
+      walkerSynth,
+    });
+  },
+);
+
+// POST /api/admin-status/maps/:sn/import-walker-bundle
+//
+// Accepts a `.novabundle` exported by the RTK Walker. The walker captured
+// polygons in its own session-local frame (origin = session start, +X = East,
+// +Y = North). We need to align them with the mower's CURRENT local frame
+// before handing the data off to the existing portable-bundle pipeline.
+//
+// Pipeline:
+//   1. Read mower's live map_position from deviceCache (dock pose).
+//   2. synthesizePortableFromWalker Δ-rotates + translates every walker point
+//      against that pose and rasterizes a fresh map.pgm/map.yaml.
+//   3. Pipe the synthetic ZIP through parseBundle and create a staging
+//      session — identical shape to /import-portable so apply-verbatim
+//      consumes it without modification.
+adminStatusRouter.post(
+  '/maps/:sn/import-walker-bundle',
+  bundleUpload.single('bundle'),
+  async (req: AuthRequest, res: Response) => {
+    const sn = req.params.sn;
+    if (!req.file) {
+      res.status(400).json({ ok: false, error: 'bundle file required' });
+      return;
+    }
+    const active = importStaging.getActive(sn);
+    if (active) {
+      res.status(409).json({
+        ok: false,
+        error: 'active import already in progress',
+        stagingId: active.stagingId,
+      });
+      return;
+    }
+
+    // Read mower's live map_position from sensor cache.
+    const sensors = deviceCache.get(sn);
+    const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+    const my = parseFloat(sensors?.get('map_position_y') ?? '');
+    const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+    if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
+      res.status(409).json({
+        ok: false,
+        error: 'no live map_position in sensor cache; is the mower online and docked?',
+      });
+      return;
+    }
+    const currentDockPose = { x: mx, y: my, orientation: mo };
+
+    let synth;
+    try {
+      synth = await synthesizePortableFromWalker(req.file.buffer, {
+        currentDockPose,
+        resolution: 0.05,
+        marginM: 1.0,
+      });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+      return;
+    }
+
+    // Pipe the synthetic bundle through the existing portable-bundle pipeline
+    // so apply-verbatim sees it as just another .novabotmap.
+    let parsed;
+    try {
+      parsed = await parseBundle(synth.portableZip);
+    } catch (e) {
+      if (e instanceof BundleValidationError) {
+        res.status(400).json({ ok: false, error: e.message });
+        return;
+      }
+      throw e;
+    }
+    const session = importStaging.create(sn, {
+      sourceSn: `walker-${Date.now()}`,
+      polygonAreaM2: parsed.polygon.areaM2,
+    });
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, session.stagingId);
+    fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
+    importAuditRepo.append({
+      sn,
+      staging_id: session.stagingId,
+      from_state: '_NONE_',
+      to_state: 'UPLOADED',
+      reason: 'walker bundle synthesized',
+    });
+
+    res.json({
+      ok: true,
+      stagingId: session.stagingId,
+      state: session.state,
+      verbatimRestore: true,
+      exactRestore: true,
+      sourceSn: sn,
+      sourceSnMatches: true,
+      note: 'walker bundle synthesized into portable bundle. POST /apply-verbatim next.',
+      polygons: synth.transformedPolygons.map((p) => ({
+        name: p.name,
+        alias: p.alias,
+        pointCount: p.points.length,
+      })),
+      transformedTo: currentDockPose,
+    });
+  },
+);
+
+// ── Walker bundle library — SN-agnostic store + assign-to-mower ────────────
+//
+// Flow: walker POSTs a `.novabundle` to /walker-bundles without knowing the
+// target mower. The bundle lives on disk + a metadata row in `walker_bundles`.
+// The admin UI lists everything and lets the operator pick a target mower,
+// which feeds the bundle through the existing synthesizePortableFromWalker
+// pipeline — same shape as /maps/:sn/import-walker-bundle, just without the
+// walker having to know the SN at upload time.
+
+interface WalkerBundleSummary {
+  walkerId: string | null;
+  polygons: number;
+  obstacles: number;
+  unicom: number;
+  bounds: { minX: number; maxX: number; minY: number; maxY: number } | null;
+}
+
+async function inspectWalkerBundle(buf: Buffer): Promise<WalkerBundleSummary> {
+  let dir;
+  try {
+    dir = await unzipper.Open.buffer(buf);
+  } catch (err) {
+    throw new Error(`not a valid ZIP: ${(err as Error).message}`);
+  }
+  const fileMap = new Map<string, string>();
+  for (const f of dir.files) {
+    if (f.type !== 'File') continue;
+    if (!f.path.endsWith('.json')) continue;
+    const raw = await f.buffer();
+    fileMap.set(f.path, raw.toString('utf8'));
+  }
+
+  function parseArr(name: string): unknown[] {
+    const raw = fileMap.get(name);
+    if (raw == null) return [];
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v : [];
+    } catch { return []; }
+  }
+
+  const polygons = parseArr('polygons.json');
+  const obstacles = parseArr('obstacles.json');
+  const unicom = parseArr('unicom.json');
+
+  let walkerId: string | null = null;
+  let bounds: WalkerBundleSummary['bounds'] = null;
+  const metaRaw = fileMap.get('metadata.json');
+  if (metaRaw) {
+    try {
+      const meta = JSON.parse(metaRaw) as Record<string, unknown>;
+      if (typeof meta.walkerId === 'string') walkerId = meta.walkerId;
+      const b = meta.boundsM as Record<string, unknown> | undefined;
+      if (b && typeof b === 'object') {
+        const minX = Number(b.minX);
+        const maxX = Number(b.maxX);
+        const minY = Number(b.minY);
+        const maxY = Number(b.maxY);
+        if ([minX, maxX, minY, maxY].every(Number.isFinite)) {
+          bounds = { minX, maxX, minY, maxY };
+        }
+      }
+    } catch { /* ignore — bundle without metadata.json still uploads */ }
+  }
+
+  return {
+    walkerId,
+    polygons: polygons.length,
+    obstacles: obstacles.length,
+    unicom: unicom.length,
+    bounds,
+  };
+}
+
+function walkerBundleToDto(row: WalkerBundleRow) {
+  return {
+    id: row.id,
+    filename: row.filename,
+    uploadedAt: row.uploaded_at,
+    walkerId: row.walker_id,
+    sizeBytes: row.size_bytes,
+    polygons: row.polygon_count,
+    obstacles: row.obstacle_count,
+    unicom: row.unicom_count,
+    bounds:
+      row.bounds_min_x != null &&
+      row.bounds_max_x != null &&
+      row.bounds_min_y != null &&
+      row.bounds_max_y != null
+        ? {
+            minX: row.bounds_min_x,
+            maxX: row.bounds_max_x,
+            minY: row.bounds_min_y,
+            maxY: row.bounds_max_y,
+          }
+        : null,
+    lastAssignedSn: row.last_assigned_sn,
+    lastAssignedAt: row.last_assigned_at,
+  };
+}
+
+// Walker bundle upload handler. Exposed so index.ts can mount this on a
+// public path (no admin auth) for the walker. The previous admin-router
+// mount stays disabled — uploads from the admin UI are not a real flow.
+// Note: walker request hits multer first via walkerBundleUploadMulter.
+export async function handleWalkerBundleUpload(req: express.Request, res: express.Response): Promise<void> {
+  const upload = (req as express.Request & { file?: Express.Multer.File }).file;
+  if (!upload) {
+    res.status(400).json({ ok: false, error: 'bundle file required' });
+    return;
+  }
+
+  let summary: WalkerBundleSummary;
+  try {
+    summary = await inspectWalkerBundle(upload.buffer);
+  } catch (err) {
+    res.status(400).json({ ok: false, error: (err as Error).message });
+    return;
+  }
+
+  // Unique filename = timestamp + 4-byte random hex; readable + collision-safe.
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const rnd = crypto.randomBytes(3).toString('hex');
+  const safeWalker = summary.walkerId
+    ? summary.walkerId.replace(/[^A-Za-z0-9_-]/g, '')
+    : 'walker';
+  const filename = `${stamp}_${safeWalker}_${rnd}.novabundle`;
+  const filePath = path.join(walkerBundlesDir, filename);
+
+  try {
+    fs.mkdirSync(walkerBundlesDir, { recursive: true });
+    fs.writeFileSync(filePath, upload.buffer);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: `failed to persist bundle: ${(err as Error).message}` });
+    return;
+  }
+
+  const id = walkerBundleRepo.create({
+    filename,
+    uploaded_at: new Date().toISOString(),
+    walker_id: summary.walkerId,
+    size_bytes: upload.size,
+    polygon_count: summary.polygons,
+    obstacle_count: summary.obstacles,
+    unicom_count: summary.unicom,
+    bounds_min_x: summary.bounds?.minX ?? null,
+    bounds_max_x: summary.bounds?.maxX ?? null,
+    bounds_min_y: summary.bounds?.minY ?? null,
+    bounds_max_y: summary.bounds?.maxY ?? null,
+  });
+
+  const row = walkerBundleRepo.findById(id);
+  res.json({
+    ok: true,
+    id,
+    filename,
+    size: upload.size,
+    polygons: summary.polygons,
+    obstacles: summary.obstacles,
+    unicom: summary.unicom,
+    walkerId: summary.walkerId,
+    bundle: row ? walkerBundleToDto(row) : null,
+  });
+}
+
+// GET /api/admin-status/walker-bundles — list every uploaded bundle.
+adminStatusRouter.get('/walker-bundles', (_req: AuthRequest, res: Response) => {
+  const rows = walkerBundleRepo.listAll();
+  res.json({ bundles: rows.map(walkerBundleToDto) });
+});
+
+// GET /api/admin-status/walker-bundles/:id — stream the raw .novabundle.
+adminStatusRouter.get('/walker-bundles/:id', (req: AuthRequest, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ ok: false, error: 'invalid id' });
+    return;
+  }
+  const row = walkerBundleRepo.findById(id);
+  if (!row) {
+    res.status(404).json({ ok: false, error: 'bundle not found' });
+    return;
+  }
+  const safe = path.basename(row.filename);
+  const filePath = path.join(walkerBundlesDir, safe);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ ok: false, error: 'bundle file missing on disk' });
+    return;
+  }
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
+// DELETE /api/admin-status/walker-bundles/:id — remove disk file + DB row.
+adminStatusRouter.delete('/walker-bundles/:id', (req: AuthRequest, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ ok: false, error: 'invalid id' });
+    return;
+  }
+  const row = walkerBundleRepo.findById(id);
+  if (!row) {
+    res.status(404).json({ ok: false, error: 'bundle not found' });
+    return;
+  }
+  const safe = path.basename(row.filename);
+  const filePath = path.join(walkerBundlesDir, safe);
+  try { fs.unlinkSync(filePath); } catch { /* file already gone is fine */ }
+  const removed = walkerBundleRepo.delete(id);
+  res.json({ ok: removed });
+});
+
+// POST /api/admin-status/walker-bundles/:id/apply — pick the target mower for a
+// stored bundle. Reads the file off disk, runs the same synthesize +
+// parseBundle + create-staging pipeline the per-SN endpoint uses, and marks
+// the DB row as assigned. Returns the staging shape so the admin page can
+// continue straight into apply-verbatim.
+adminStatusRouter.post(
+  '/walker-bundles/:id/apply',
+  async (req: AuthRequest, res: Response) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      res.status(400).json({ ok: false, error: 'invalid id' });
+      return;
+    }
+    const sn = typeof req.body?.sn === 'string' ? req.body.sn.trim() : '';
+    if (!sn) {
+      res.status(400).json({ ok: false, error: 'sn required in body' });
+      return;
+    }
+    const row = walkerBundleRepo.findById(id);
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'bundle not found' });
+      return;
+    }
+
+    // Target mower must be a real device on this server.
+    const equipment = equipmentRepo.findBySn(sn);
+    if (!equipment) {
+      res.status(404).json({ ok: false, error: `mower ${sn} not bound on this server` });
+      return;
+    }
+
+    const active = importStaging.getActive(sn);
+    if (active) {
+      res.status(409).json({
+        ok: false,
+        error: 'active import already in progress for that mower',
+        stagingId: active.stagingId,
+      });
+      return;
+    }
+
+    const sensors = deviceCache.get(sn);
+    const mx = parseFloat(sensors?.get('map_position_x') ?? '');
+    const my = parseFloat(sensors?.get('map_position_y') ?? '');
+    const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
+    if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
+      res.status(409).json({
+        ok: false,
+        error: 'no live map_position in sensor cache; is the mower online and docked?',
+      });
+      return;
+    }
+    const currentDockPose = { x: mx, y: my, orientation: mo };
+
+    const safe = path.basename(row.filename);
+    const filePath = path.join(walkerBundlesDir, safe);
+    let buf: Buffer;
+    try {
+      buf = fs.readFileSync(filePath);
+    } catch {
+      res.status(404).json({ ok: false, error: 'bundle file missing on disk' });
+      return;
+    }
+
+    let synth;
+    try {
+      synth = await synthesizePortableFromWalker(buf, {
+        currentDockPose,
+        resolution: 0.05,
+        marginM: 1.0,
+      });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = await parseBundle(synth.portableZip);
+    } catch (e) {
+      if (e instanceof BundleValidationError) {
+        res.status(400).json({ ok: false, error: e.message });
+        return;
+      }
+      throw e;
+    }
+
+    const session = importStaging.create(sn, {
+      sourceSn: `walker-${row.id}`,
+      polygonAreaM2: parsed.polygon.areaM2,
+    });
+    const stagingDir = path.join(
+      process.env.STORAGE_PATH ?? './storage',
+      'imports',
+      sn,
+      session.stagingId,
+    );
+    fs.writeFileSync(path.join(stagingDir, 'bundle.json'), JSON.stringify(parsed));
+    importAuditRepo.append({
+      sn,
+      staging_id: session.stagingId,
+      from_state: '_NONE_',
+      to_state: 'UPLOADED',
+      reason: `walker bundle library id=${row.id}`,
+    });
+
+    walkerBundleRepo.markAssigned(row.id, sn, new Date().toISOString());
+
+    res.json({
+      ok: true,
+      stagingId: session.stagingId,
+      state: session.state,
+      verbatimRestore: true,
+      exactRestore: true,
+      sourceSn: sn,
+      sourceSnMatches: true,
+      note: 'walker bundle synthesized into portable bundle. POST /apply-verbatim next.',
+      polygons: synth.transformedPolygons.map((p) => ({
+        name: p.name,
+        alias: p.alias,
+        pointCount: p.points.length,
+      })),
+      transformedTo: currentDockPose,
+      bundle: walkerBundleToDto({ ...row, last_assigned_sn: sn, last_assigned_at: new Date().toISOString() }),
     });
   },
 );

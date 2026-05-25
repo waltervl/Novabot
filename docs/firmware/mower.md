@@ -7,8 +7,8 @@
 | SoC | Horizon Robotics X3 (Sunrise X3) — ARM Cortex-A53 quad-core |
 | AI | BPU (Brain Processing Unit) — dedicated DNN accelerator |
 | OS | Ubuntu/Debian ARM64, ROS 2 Galactic |
-| Firmware | v6.0.2-custom-16 (Debian package, 35MB, 7570 files) |
-| MCU (motor board) | STM32F407 (v3.6.6) |
+| Firmware | v6.0.2-custom-NN (currently v6.0.2-custom-24, Debian package, 35MB, 7570 files) |
+| MCU (motor board) | STM32F407 (v3.6.0 stock). Custom STM32 patches (v3.6.10-v3.6.12) are not deployed; they broke blade calibration. |
 
 The mower runs a full Linux system with ROS 2 — fundamentally different from the charger (ESP32-S3 microcontroller).
 
@@ -335,7 +335,7 @@ uint8 request_type            # 11=app normal, 12=scheduled, etc.
 
 !!! info "Remote access via custom firmware"
     Stock firmware has no SSH — it must be installed via UART or HDMI+USB console first.
-    Custom firmware (v6.0.2-custom-16) installs openssh-server automatically at first boot and
+    Custom firmware (v6.0.2-custom-NN, currently custom-24) installs openssh-server automatically at first boot and
     enables an MJPEG camera stream on port 8000.
 
 ## Coordinate System
@@ -401,6 +401,9 @@ Filename format: `novabot_stm32f407_v{X}_{Y}_{Z}_NewMotor25082301.bin`
 
 ### PIN Lock System (error_status=151)
 
+!!! note "Historical / not active in production"
+    Stock STM32 v3.6.0 is currently deployed on production mowers. The v3.6.x custom PIN-lock patches below are historical and not active. They are retained here for reference and for users who choose to re-enable them.
+
 The PIN lock error (151) involves three layers:
 
 | Layer | Component | Issue | Fix |
@@ -409,7 +412,7 @@ The PIN lock error (151) involves three layers:
 | 2 | `chassis_control_node` | Sets `error_no_pin_code` flag, only clears on action result status=0 | v3.6.6: verify returns status=0 |
 | 3 | `mqtt_node` action client | ChassisPinCodeSet action client never finds server (21s timeout) | Workaround: Python ROS2 client |
 
-Current fix (v3.6.6): STM32 returns status=0 for verify success → chassis_control_node calls `set_pincode_flag(false)` → error_no_pin_code cleared at boot.
+Historical fix (v3.6.6, not deployed): STM32 returns status=0 for verify success → chassis_control_node calls `set_pincode_flag(false)` → error_no_pin_code cleared at boot.
 
 ### ROS2 ChassisPinCodeSet Action
 

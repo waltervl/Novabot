@@ -36,17 +36,25 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <TinyGPS++.h>
 #include <ArduinoJson.h>
 #include <time.h>
 #include <base64.h>
+#include <esp_heap_caps.h>
 
 #include <vector>
 
 #include "index_html.h"
 #include "walker_api.h"
+#include "walker_lora.h"
+#include "walker_ota.h"
+#include "rtcm_log.h"
+#include "session.h"
+#include "recording.h"
+#include "bundle.h"
 #include "tft/tft_ui.h"
 
 // ── Pins / hardware ─────────────────────────────────────────────────
@@ -56,6 +64,18 @@
 #define BUTTON_PIN    0    // BOOT
 #define BUTTON_DEBOUNCE_MS 60
 #define NTRIP_RECONNECT_MS 5000
+#define NTRIP_TCP_CONNECT_TIMEOUT_MS 500
+#define NTRIP_HANDSHAKE_TIMEOUT_MS 900
+#define NTRIP_HEADER_MAX 4096
+#define NTRIP_HEADER_BYTES_PER_PUMP 512
+
+// How often to push the latest GGA back to the NTRIP caster. VRS / NEAREST
+// mountpoints (Centipede NLDB, RTK2go VRS, NetR9, etc.) need a periodic
+// GGA from the rover so they can generate a virtual base or pick the
+// closest physical station. RTCM3 spec recommends every 5–30 s; 10 s is
+// a safe middle ground that keeps us responsive when walking but doesn't
+// flood the caster.
+#define NTRIP_GGA_INTERVAL_MS 10000
 
 // When DEBUG_NMEA_ECHO is set, every byte coming back from the LC29HDA
 // gets mirrored to the USB serial console. Handy once for verifying
@@ -68,10 +88,15 @@
 
 // ── Globals ─────────────────────────────────────────────────────────
 HardwareSerial gnssSerial(1);
+#ifdef LORA_PRESENT
+HardwareSerial loraSerial(2);
+#endif
 TinyGPSPlus    gps;
 WebServer      server(80);
 WiFiClient     ntrip;
 Preferences    prefs;
+SessionStore   sessionStore;
+Recorder       recorder(sessionStore);
 
 struct Config {
   String ssid;
@@ -81,6 +106,32 @@ struct Config {
   String ntripMount;          // mountpoint, e.g. "CT3F00FRA0"
   String ntripUser = "centipede";
   String ntripPass = "centipede";
+
+  // Server upload target — used by /api/upload, OTA manifest checks, and the
+  // TFT "Upload to server" button. Empty until the user fills the new section
+  // in /api/config/server.
+  String serverUrl;           // e.g. "http://192.168.0.247:8080"
+  // mowerSn + adminToken removed: walker is SN-agnostic for uploads and
+  // OTA runs against a public LAN-only binary endpoint, so neither value
+  // serves any purpose anymore. Keys are also dropped from NVS below.
+
+  // LoRa RTK relay (Task 4). Defaults match the Novabot factory pair
+  // so most users never need to configure: charger broadcasts on
+  // addr=718 ch=17 hc=20 lc=14, walker listens on the same.
+  uint16_t loraAddr    = 718;
+  uint8_t  loraChannel = 17;
+  uint8_t  loraHc      = 20;
+  uint8_t  loraLc      = 14;
+
+  // OTA auto-check on boot. Default true — walker pulls the manifest from
+  // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
+  // applies + reboots if newer. Settable from the TFT Settings tab so a
+  // bricked-firmware scenario can be recovered by toggling this off and
+  // flashing manually over USB.
+  bool   otaAutoCheck = true;
+  // Local web/API guard for dangerous endpoints. NVS key is "auth" to stay
+  // within the 15-char Preferences key budget.
+  String authToken;
 } cfg;
 
 struct Status {
@@ -97,6 +148,13 @@ struct Status {
 static File          trackFile;
 static String        currentTrackName;
 
+// Snapshot of the most recently completed track. Captured at the end of
+// stopRecording() so the TFT "Save as area" flow can find the CSV after
+// the live state has cleared. Stays valid across screen refreshes until
+// the next startRecording().
+static String        lastTrackPath;
+static uint32_t      lastTrackPoints = 0;
+
 // Survey metrics - computed in appendPoint() and stopRecording() so
 // they always reflect what's actually in the track buffer rather than
 // being recomputed from scratch on each snapshot call.
@@ -104,9 +162,32 @@ static double        firstLat = 0, firstLng = 0;  // first point of current trac
 static double        prevLat  = 0, prevLng  = 0;  // last point appended (for incremental length)
 static double        walkedM  = 0;                // running path length while recording
 static double        lastAreaM2 = 0;              // Shoelace area, computed at stopRecording()
-static unsigned long ntripLastConnectAttemptMs = 0;
-static bool          ntripConnecting = false;
-static String        ntripRecvBuf;
+enum NtripState : uint8_t {
+  NTRIP_IDLE,
+  NTRIP_TCP_CONNECTING,
+  NTRIP_SEND_REQUEST,
+  NTRIP_WAIT_HEADER,
+  NTRIP_STREAMING,
+  NTRIP_BACKOFF
+};
+enum NtripHeaderResult : uint8_t {
+  NTRIP_HEADER_STREAM,
+  NTRIP_HEADER_SOURCETABLE,
+  NTRIP_HEADER_REJECT
+};
+static uint32_t      ntripLastConnectAttemptMs = 0;
+static uint32_t      ntripGgaLastSentMs        = 0;
+static bool          ntripGgaUploadLogged      = false;
+static NtripState    ntripState                = NTRIP_IDLE;
+static uint32_t      ntripBackoffUntilMs       = 0;
+static uint32_t      ntripHandshakeDeadlineMs  = 0;
+static char          ntripHeader[NTRIP_HEADER_MAX + 1] = {0};
+static size_t        ntripHeaderLen            = 0;
+static String        ntripRequestHost;
+static String        ntripRequestMount;
+static String        ntripRequestUser;
+static String        ntripRequestPass;
+static uint16_t      ntripRequestPort          = 0;
 static int           lastButtonRead = HIGH;
 static unsigned long lastButtonChangeMs = 0;
 
@@ -124,6 +205,14 @@ static unsigned long lastButtonChangeMs = 0;
 struct LivePoint { double lat, lng; uint8_t fix; };
 static std::vector<LivePoint> livePoints;
 
+// Deferred on-device view refresh. HTTP handlers that modify the
+// session (obstacle delete, etc.) can't safely re-load the polygon /
+// obstacles inline — those operations are 500+ ms of LittleFS work
+// and would starve gnssPump(). Instead the handler sets this slot and
+// the main loop picks it up between gnssPump() ticks. -1 = no refresh
+// pending; 0..2 = refresh that slot's on-device view.
+static int g_pendingViewRefreshSlot = -1;
+
 // Guards every access to `livePoints` so the main task (push_back +
 // erase) and the LVGL task on the other core (walkerCopyLivePoints +
 // /api/track/current serialise) don't trample each other. Standard
@@ -133,6 +222,11 @@ static SemaphoreHandle_t livePointsMux = nullptr;
 static void livePointsLock()   { if (livePointsMux) xSemaphoreTakeRecursive(livePointsMux, portMAX_DELAY); }
 static void livePointsUnlock() { if (livePointsMux) xSemaphoreGiveRecursive(livePointsMux); }
 
+// Guards legacy track globals, Status, WiFi-failure text and config snapshots.
+static SemaphoreHandle_t coreMux = nullptr;
+static void coreLock()   { if (coreMux) xSemaphoreTakeRecursive(coreMux, portMAX_DELAY); }
+static void coreUnlock() { if (coreMux) xSemaphoreGiveRecursive(coreMux); }
+
 // Web-log ring buffer. Anything sent through weblogf() lands here in
 // addition to Serial, so the phone can tail it via /api/log after the
 // USB-C cable is disconnected. Buffer is bounded at WEB_LOG_MAX bytes;
@@ -141,6 +235,9 @@ static void livePointsUnlock() { if (livePointsMux) xSemaphoreGiveRecursive(live
 #define WEB_LOG_MAX 8192
 static String  webLogBuf;
 static uint32_t webLogSeq = 0;
+static SemaphoreHandle_t webLogMux = nullptr;
+static void webLogLock()   { if (webLogMux) xSemaphoreTakeRecursive(webLogMux, portMAX_DELAY); }
+static void webLogUnlock() { if (webLogMux) xSemaphoreGiveRecursive(webLogMux); }
 
 static void weblogf(const char* fmt, ...) {
   char buf[256];
@@ -150,11 +247,13 @@ static void weblogf(const char* fmt, ...) {
   va_end(args);
   if (n <= 0) return;
   Serial.print(buf);
+  webLogLock();
   webLogBuf += buf;
   webLogSeq += (uint32_t) strlen(buf);
   while (webLogBuf.length() > WEB_LOG_MAX) {
     webLogBuf.remove(0, WEB_LOG_MAX / 4);
   }
+  webLogUnlock();
 }
 
 // ── GNSS command + response watcher ─────────────────────────────────
@@ -170,8 +269,20 @@ static void weblogf(const char* fmt, ...) {
 static char nmeaLineBuf[180];
 static size_t nmeaLineLen = 0;
 
+// Last full $GxGGA sentence seen from the LC29HDA, including the leading
+// `$` and trailing `*HH` checksum but NOT the CRLF. Updated in
+// gnssLineFeed() every time a GGA line completes. ntripPump() reads it
+// out and forwards it to the caster every NTRIP_GGA_INTERVAL_MS — VRS /
+// NEAREST mountpoints (Centipede NLDB, etc.) require this to generate
+// the virtual base for the rover's position. Without it the caster
+// streams corrections from some fixed default location and the rover
+// gets RTK FLOAT but never resolves to FIX.
+static char     lastGgaLine[180] = {0};
+static size_t   lastGgaLen      = 0;
+static uint32_t lastGgaAtMs     = 0;
+
 // Tracks the most recent PAIR001 ACK so the post-detect command flow
-// can verify that PAIR050 (5 Hz) was actually accepted. The LC29HDA
+// can verify that PAIR050 (rate config) was actually accepted. The LC29HDA
 // silently drops PAIR commands if its parser is busy, so we have to
 // look for `$PAIR001,050,0*XX` (cmd=050, result=0 → success).
 static int      lastPair001Cmd = -1;
@@ -197,6 +308,34 @@ static void gnssLineFeed(char c) {
       // Surface any proprietary response (firmware version, ack, error)
       // so the diagnostic flow shows the module's reply alongside our
       // request in the same web console.
+      // Snapshot the latest GGA line so ntripPump() can forward it back
+      // to the caster. Accept both GNGGA (combined) and GPGGA (GPS-only)
+      // talker IDs — Quectel emits GNGGA in multi-constellation mode but
+      // older receivers fall back to GPGGA. Skip while no fix is parsed
+      // (field 6 = '0') because casters reject zero-fix GGAs.
+      if (nmeaLineLen >= 6 && nmeaLineBuf[0] == '$' &&
+          (strncmp(nmeaLineBuf, "$GNGGA,", 7) == 0 ||
+           strncmp(nmeaLineBuf, "$GPGGA,", 7) == 0)) {
+        int commaCount = 0;
+        bool hasFix = false;
+        for (size_t i = 0; i < nmeaLineLen; i++) {
+          if (nmeaLineBuf[i] != ',') continue;
+          commaCount++;
+          if (commaCount == 6) {
+            char q = (i + 1 < nmeaLineLen) ? nmeaLineBuf[i + 1] : '\0';
+            hasFix = (q != '0' && q != ',' && q != '*' && q != '\0');
+            break;
+          }
+        }
+        if (!hasFix) {
+          lastGgaLen = 0;
+        } else if (nmeaLineLen < sizeof(lastGgaLine) - 1) {
+          memcpy(lastGgaLine, nmeaLineBuf, nmeaLineLen);
+          lastGgaLine[nmeaLineLen] = '\0';
+          lastGgaLen = nmeaLineLen;
+          lastGgaAtMs = millis();
+        }
+      }
       if (nmeaLineLen >= 3 && nmeaLineBuf[0] == '$' && nmeaLineBuf[1] == 'P') {
         weblogf("[gnss-rx] %s\n", nmeaLineBuf);
         // PAIR001 ACK: "$PAIR001,<cmd>,<result>*HH" — cmd matches the
@@ -245,6 +384,16 @@ static void loadConfig() {
   cfg.ntripMount = prefs.getString("nmount", "");
   cfg.ntripUser  = prefs.getString("nuser", "centipede");
   cfg.ntripPass  = prefs.getString("npass", "centipede");
+  // Server upload target (Task 10). NVS key budget: 15 chars, so we use
+  // short keys ("surl", "msn", "atok").
+  cfg.serverUrl   = prefs.getString("surl", "");
+  // Legacy keys ("msn", "atok") are silently removed below if present.
+  cfg.otaAutoCheck = prefs.getBool("otaauto", true);
+  cfg.authToken = prefs.getString("auth", "");
+  cfg.loraAddr    = prefs.getUShort("lora_addr", 718);
+  cfg.loraChannel = prefs.getUChar("lora_ch", 17);
+  cfg.loraHc      = prefs.getUChar("lora_hc", 20);
+  cfg.loraLc      = prefs.getUChar("lora_lc", 14);
 }
 
 static void saveConfig() {
@@ -255,6 +404,16 @@ static void saveConfig() {
   prefs.putString("nmount", cfg.ntripMount);
   prefs.putString("nuser", cfg.ntripUser);
   prefs.putString("npass", cfg.ntripPass);
+  prefs.putString("surl", cfg.serverUrl);
+  // Drop legacy keys that older firmware wrote.
+  prefs.remove("msn");
+  prefs.remove("atok");
+  prefs.putBool("otaauto", cfg.otaAutoCheck);
+  prefs.putString("auth", cfg.authToken);
+  prefs.putUShort("lora_addr", cfg.loraAddr);
+  prefs.putUChar("lora_ch",    cfg.loraChannel);
+  prefs.putUChar("lora_hc",    cfg.loraHc);
+  prefs.putUChar("lora_lc",    cfg.loraLc);
 }
 
 // Haversine distance between two lat/lng points in metres. Accurate to
@@ -267,6 +426,65 @@ static double haversineM(double lat1, double lon1, double lat2, double lon2) {
              cos(lat1 * (M_PI / 180.0)) * cos(lat2 * (M_PI / 180.0)) *
              sin(dLon / 2) * sin(dLon / 2);
   return R * 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+}
+
+static bool isRtkUsableFix(int fix) {
+  return fix == 4 || fix == 5;
+}
+
+static bool isSafeLeafName(const String& name) {
+  if (name.length() == 0 || name.indexOf("..") >= 0) return false;
+  for (size_t i = 0; i < name.length(); i++) {
+    char c = name.charAt(i);
+    bool ok = (c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+static String makeUniqueTrackPath() {
+  time_t now;
+  time(&now);
+  uint32_t ms = millis();
+  for (uint8_t i = 0; i < 100; i++) {
+    char nameBuf[64];
+    if (i == 0) {
+      snprintf(nameBuf, sizeof(nameBuf), "/tracks/track-%lu-%08lx.csv",
+               (unsigned long) now, (unsigned long) ms);
+    } else {
+      snprintf(nameBuf, sizeof(nameBuf), "/tracks/track-%lu-%08lx-%u.csv",
+               (unsigned long) now, (unsigned long) ms, (unsigned) i);
+    }
+    if (!LittleFS.exists(nameBuf)) return String(nameBuf);
+  }
+  return String();
+}
+
+static String setupApSsid() {
+  uint32_t suffix = (uint32_t) (ESP.getEfuseMac() & 0xFFFFFFFFu);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "rtk-walker-%08lX", (unsigned long) suffix);
+  return String(buf);
+}
+
+static String setupApPassword() {
+  // Device-specific WPA2 password: "rtk" + the 8 hex chars in the setup SSID.
+  // This avoids one global hardcoded password while keeping setup recoverable.
+  uint32_t suffix = (uint32_t) (ESP.getEfuseMac() & 0xFFFFFFFFu);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "rtk%08lX", (unsigned long) suffix);
+  return String(buf);
+}
+
+static void startSetupAp() {
+  String ssid = setupApSsid();
+  String pass = setupApPassword();
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid.c_str(), pass.c_str());
+  weblogf("[wifi] setup AP ssid=%s (device-specific password)\n", ssid.c_str());
 }
 
 // Shoelace area on an equirectangular projection anchored at the first
@@ -290,22 +508,29 @@ static double polygonAreaM2() {
 
 // ── Track recording ─────────────────────────────────────────────────
 static void startRecording() {
-  if (st.recording) return;
+  coreLock();
+  if (st.recording) { coreUnlock(); return; }
   if (!LittleFS.exists("/tracks")) LittleFS.mkdir("/tracks");
 
-  time_t now;
-  time(&now);
-  char nameBuf[48];
-  snprintf(nameBuf, sizeof(nameBuf), "/tracks/track-%lu.csv", (unsigned long) now);
-  currentTrackName = String(nameBuf);
+  currentTrackName = makeUniqueTrackPath();
+  if (currentTrackName.length() == 0) {
+    weblogf("[rec] failed to allocate unique track name\n");
+    coreUnlock();
+    return;
+  }
 
   trackFile = LittleFS.open(currentTrackName, FILE_WRITE);
   if (!trackFile) {
     weblogf("[rec] failed to open %s\n", currentTrackName.c_str());
+    coreUnlock();
     return;
   }
   trackFile.println("timestamp_unix,lat,lng,alt_m,fix,sats,hdop");
   trackFile.flush();
+  // A fresh recording invalidates the "last completed track" snapshot —
+  // the TFT Save-as-area button must require a NEW stop before re-firing.
+  lastTrackPath = "";
+  lastTrackPoints = 0;
   st.recording = true;
   st.recPoints = 0;
   livePointsLock();
@@ -320,10 +545,12 @@ static void startRecording() {
   walkedM = 0;
   lastAreaM2 = 0;
   weblogf("[rec] started %s\n", currentTrackName.c_str());
+  coreUnlock();
 }
 
 static void stopRecording() {
-  if (!st.recording) return;
+  coreLock();
+  if (!st.recording) { coreUnlock(); return; }
   if (trackFile) {
     trackFile.flush();
     trackFile.close();
@@ -334,56 +561,73 @@ static void stopRecording() {
   livePointsLock();
   lastAreaM2 = polygonAreaM2();
   livePointsUnlock();
+  // Publish the just-closed track to the "last completed" snapshot so the
+  // TFT Save-as-area flow can re-read its CSV without racing the live
+  // recording state. Cleared on startRecording() above.
+  lastTrackPath = currentTrackName;
+  lastTrackPoints = st.recPoints;
   weblogf("[rec] stopped (%u points, %.1f m walked, area %.1f m2)\n",
           st.recPoints, walkedM, lastAreaM2);
+  coreUnlock();
 }
 
 // Quality and motion filters that decide whether a fresh fix gets
 // written to the track. Tunable from the top of the file.
-//   MIN_FIX_QUALITY  - drop anything worse than RTK FIX (4). Setting
-//                      to 5 also accepts RTK FLOAT (decimeter-grade,
-//                      good enough for a lawn boundary if RTK FIX
-//                      momentarily drops). Lower values let in plain
-//                      GPS / DGPS which adds metres of noise.
+//   RTK quality     - only GGA fix 4 (RTK fixed) and 5 (RTK float) are
+//                     accepted. Estimated/manual/simulation fixes (6/7/8)
+//                     are explicit non-RTK modes and must not be recorded.
 //   MIN_DISPLACEMENT_M - skip fixes that haven't moved at least N cm
 //                      from the previous accepted point. Cleans up
 //                      standstill jitter, but set too high and slow
-//                      walks lose samples — at 0.3 m/s × 200 ms = 6 cm
+//                      walks lose samples - at 0.3 m/s x 200 ms = 6 cm
 //                      so a 5 cm filter dropped ~half the points. 2 cm
-//                      keeps enough margin against RTK FIX cm-noise
-//                      without starving the polygon on a slow lap.
-#define MIN_FIX_QUALITY     4
-#define MIN_DISPLACEMENT_M  0.02
+//                      kept enough margin against RTK FIX cm-noise.
+//                      Tightened to 1 cm because the DA chip is locked
+//                      to 1 Hz RTK (Quectel hardware limit, see PAIR050
+//                      comment near gnssPump). At 1 Hz we need every
+//                      real-movement sample to keep polygon density
+//                      reasonable. RTK FIX noise is ~1 cm too so this
+//                      sits at the edge but standstill jitter still
+//                      filters because cm-level noise stays in place.
+#define MIN_DISPLACEMENT_M  0.01
 
 static void appendPoint() {
-  if (!st.recording || !trackFile) return;
+  coreLock();
+  // Accept points when EITHER the legacy track recorder is active OR the
+  // new session recorder (obstacle/channel/work) is. Track-file write
+  // below is still gated on the legacy state, but the live-points ring
+  // and walked-metres counters update for both so the obstacle/channel
+  // recording screen sees a real trail with running distance + closure.
+  bool legacyActive  = st.recording && trackFile;
+  bool sessionActive = recorder.isRecording();
+  if (!legacyActive && !sessionActive) { coreUnlock(); return; }
   // Only record actual GPS solutions. fix=0 means we have no usable
   // position; logging that would pollute the trail with zeros.
-  if (st.fix == 0 || st.lat == 0 || st.lng == 0) return;
-  // Quality filter: drop everything below RTK FIX. Accepts FLOAT (5)
-  // as well since FLOAT is decimeter-grade and still useful for a
-  // lawn outline. Plain GPS or DGPS are way too noisy for cm work.
-  if (st.fix < MIN_FIX_QUALITY) return;
-  // Motion filter: skip fixes within 5 cm of the last accepted point
-  // (standstill RTK jitter at 5 Hz looks like a zigzag without this).
+  if (st.fix == 0 || st.lat == 0 || st.lng == 0) { coreUnlock(); return; }
+  // Quality filter: only RTK fixed/float. Reject estimated/manual/simulated
+  // GGA modes even though their numeric values are higher than 5.
+  if (!isRtkUsableFix(st.fix)) { coreUnlock(); return; }
+  // Motion filter: skip fixes within MIN_DISPLACEMENT_M of the last
+  // accepted point (standstill RTK jitter looks like a zigzag without
+  // this).
   if (firstLat != 0 || firstLng != 0) {
     double d = haversineM(prevLat, prevLng, st.lat, st.lng);
-    if (d < MIN_DISPLACEMENT_M) return;
+    if (d < MIN_DISPLACEMENT_M) { coreUnlock(); return; }
   }
 
-  time_t now;
-  time(&now);
+  if (legacyActive) {
+    time_t now;
+    time(&now);
+    char line[160];
+    snprintf(line, sizeof(line), "%lu,%.8f,%.8f,%.2f,%d,%d,%.2f",
+             (unsigned long) now, st.lat, st.lng, st.alt, st.fix, st.sats, st.hdop);
+    trackFile.println(line);
+    st.recPoints++;
+  }
 
-  char line[160];
-  snprintf(line, sizeof(line), "%lu,%.8f,%.8f,%.2f,%d,%d,%.2f",
-           (unsigned long) now, st.lat, st.lng, st.alt, st.fix, st.sats, st.hdop);
-  trackFile.println(line);
-  st.recPoints++;
-
-  // Mirror into the live-points ring so the web UI's map polls a
-  // cheap JSON instead of re-reading the CSV every second. When we
-  // hit the cap, drop the oldest point so the most recent N stay
-  // visible — full trace still on flash.
+  // Mirror into the live-points ring so the UI polls a cheap JSON
+  // instead of re-reading the CSV every frame. When we hit the cap,
+  // drop the oldest point so the most recent N stay visible.
   livePointsLock();
   if (livePoints.size() >= LIVE_POINTS_MAX) {
     livePoints.erase(livePoints.begin());
@@ -407,110 +651,313 @@ static void appendPoint() {
 
   // Flush every 8 rows so an unexpected reset doesn't lose the entire
   // walk — but skip the flush most of the time to spare flash writes.
-  if ((st.recPoints & 0x07) == 0) trackFile.flush();
+  if (legacyActive && (st.recPoints & 0x07) == 0) trackFile.flush();
+  coreUnlock();
 }
 
 // ── NTRIP ───────────────────────────────────────────────────────────
-// Forward decls — the real owners live in the GNSS pump section below
-// but ntripConnect needs to gate on them.
+// Forward decls: the real owner lives in the GNSS pump section below,
+// but NTRIP gates correction streaming until the module is awake.
 extern bool     gnssDetected;
-extern uint32_t lastGnssByteMs;
+static bool ntripTimeReached(uint32_t nowMs, uint32_t deadlineMs) {
+  return (int32_t)(nowMs - deadlineMs) >= 0;
+}
 
-static void ntripConnect() {
-  if (cfg.ntripMount.length() == 0) return;
-  if (WiFi.status() != WL_CONNECTED) return;
-  // No GNSS module → no point fetching RTCM corrections, there's
-  // nothing on the other end of the UART to consume them. Skip
-  // until the first NMEA byte proves the module is awake.
-  if (!gnssDetected) return;
-  if (ntripConnecting) return;
-  unsigned long nowMs = millis();
-  if (nowMs - ntripLastConnectAttemptMs < NTRIP_RECONNECT_MS) return;
+static void ntripClearHeader() {
+  ntripHeaderLen = 0;
+  ntripHeader[0] = '\0';
+}
+
+static void ntripClearRequestSnapshot() {
+  ntripRequestHost = "";
+  ntripRequestMount = "";
+  ntripRequestUser = "";
+  ntripRequestPass = "";
+  ntripRequestPort = 0;
+}
+
+static bool ntripReadyToRun() {
+  coreLock();
+  bool haveHost = cfg.ntripHost.length() > 0;
+  bool haveMount = cfg.ntripMount.length() > 0;
+  bool havePort = cfg.ntripPort > 0;
+  coreUnlock();
+  if (!haveHost || !haveMount || !havePort) return false;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  // No GNSS module: no point fetching RTCM corrections, there is
+  // nothing on the other end of the UART to consume them. Skip until
+  // the first NMEA byte proves the module is awake.
+  if (!gnssDetected) return false;
+  return true;
+}
+
+static void ntripEnterIdle(bool stopSocket) {
+  if (stopSocket) ntrip.stop();
+  ntripClearHeader();
+  ntripClearRequestSnapshot();
+  ntripState = NTRIP_IDLE;
+}
+
+static void ntripEnterBackoff(bool stopSocket) {
+  if (stopSocket) ntrip.stop();
+  ntripClearHeader();
+  ntripClearRequestSnapshot();
+  uint32_t nowMs = millis();
+  uint32_t retryAtMs = ntripLastConnectAttemptMs + NTRIP_RECONNECT_MS;
+  ntripBackoffUntilMs = ntripTimeReached(nowMs, retryAtMs) ? nowMs : retryAtMs;
+  ntripState = NTRIP_BACKOFF;
+}
+
+static NtripHeaderResult ntripClassifyHeader(const char* header) {
+  // Centipede returns "SOURCETABLE 200 OK" (a 200 status!) when the
+  // mountpoint is unknown, followed by a 250 KB list of every base
+  // station as the body. Detect SOURCETABLE explicitly and bail out
+  // before any of the body can be forwarded as if it were RTCM.
+  if (strstr(header, "SOURCETABLE")) return NTRIP_HEADER_SOURCETABLE;
+  if (strstr(header, "ICY 200")
+      || strstr(header, "HTTP/1.0 200")
+      || strstr(header, "HTTP/1.1 200")) {
+    return NTRIP_HEADER_STREAM;
+  }
+  return NTRIP_HEADER_REJECT;
+}
+
+static bool ntripHeaderComplete() {
+  if (ntripHeaderLen >= 4
+      && memcmp(ntripHeader + ntripHeaderLen - 4, "\r\n\r\n", 4) == 0) {
+    return true;
+  }
+  if (ntripHeaderLen >= 2
+      && memcmp(ntripHeader + ntripHeaderLen - 2, "\n\n", 2) == 0) {
+    return true;
+  }
+  return false;
+}
+
+static void ntripStartTcpConnect() {
+  coreLock();
+  ntripRequestHost = cfg.ntripHost;
+  ntripRequestPort = cfg.ntripPort;
+  ntripRequestMount = cfg.ntripMount;
+  ntripRequestUser = cfg.ntripUser;
+  ntripRequestPass = cfg.ntripPass;
+  coreUnlock();
+
+  uint32_t nowMs = millis();
   ntripLastConnectAttemptMs = nowMs;
+  ntripState = NTRIP_TCP_CONNECTING;
 
-  ntripConnecting = true;
   weblogf("[ntrip] connecting %s:%u/%s\n",
-          cfg.ntripHost.c_str(), cfg.ntripPort, cfg.ntripMount.c_str());
+          ntripRequestHost.c_str(), ntripRequestPort, ntripRequestMount.c_str());
 
-  if (!ntrip.connect(cfg.ntripHost.c_str(), cfg.ntripPort)) {
+  // Arduino ESP32 WiFiClient exposes only a synchronous TCP connect.
+  // Keep this as the single bounded wait in the NTRIP path; header
+  // waiting/parsing is handled incrementally by ntripPump().
+  if (!ntrip.connect(ntripRequestHost.c_str(), ntripRequestPort, NTRIP_TCP_CONNECT_TIMEOUT_MS)) {
     weblogf("[ntrip] tcp connect failed\n");
-    ntripConnecting = false;
+    ntripEnterBackoff(false);
     return;
   }
-  String auth = base64::encode(cfg.ntripUser + ":" + cfg.ntripPass);
-  ntrip.printf("GET /%s HTTP/1.0\r\n", cfg.ntripMount.c_str());
+  ntripState = NTRIP_SEND_REQUEST;
+}
+
+static void ntripSendRequest() {
+  if (!ntrip.connected()) {
+    weblogf("[ntrip] tcp disconnected before request\n");
+    ntripEnterBackoff(false);
+    return;
+  }
+
+  String credentials = ntripRequestUser + ":" + ntripRequestPass;
+  String auth = base64::encode(credentials);
+  ntrip.printf("GET /%s HTTP/1.0\r\n", ntripRequestMount.c_str());
   ntrip.printf("User-Agent: NTRIP rtk-walker/1.0\r\n");
   ntrip.printf("Authorization: Basic %s\r\n", auth.c_str());
   ntrip.printf("Accept: */*\r\n");
   ntrip.printf("Connection: close\r\n\r\n");
+  ntripClearRequestSnapshot();
+  ntripClearHeader();
+  ntripHandshakeDeadlineMs = millis() + NTRIP_HANDSHAKE_TIMEOUT_MS;
+  ntripState = NTRIP_WAIT_HEADER;
+}
 
-  // Wait briefly for the 200 OK / ICY 200 OK line.
-  unsigned long deadline = millis() + 3000;
-  String header;
-  while (millis() < deadline) {
-    while (ntrip.available()) {
-      char c = ntrip.read();
-      header += c;
-      if (header.endsWith("\r\n\r\n") || header.endsWith("\n\n")) {
-        // Centipede returns "SOURCETABLE 200 OK" (a 200 status!) when the
-        // mountpoint is unknown, followed by a 250 KB list of every base
-        // station as the body. Our old check was just `indexOf("200")`,
-        // which matched the SOURCETABLE line too, so we'd happily forward
-        // the entire sourcetable as if it were RTCM — flooding the
-        // LC29HDA UART and starving the WebServer for tens of seconds.
-        // Detect SOURCETABLE explicitly and bail out before any of the
-        // body shows up.
-        bool isSourcetable = header.indexOf("SOURCETABLE") >= 0;
-        bool isStream      = header.indexOf("ICY 200") >= 0
-                          || header.indexOf("HTTP/1.0 200") >= 0
-                          || header.indexOf("HTTP/1.1 200") >= 0;
-        if (isSourcetable) {
-          weblogf("[ntrip] mountpoint unknown (SOURCETABLE response). Check the mountpoint config.\n");
-          ntrip.stop();
-        } else if (!isStream) {
-          weblogf("[ntrip] handshake failed: %s", header.c_str());
-          ntrip.stop();
-        } else {
-          weblogf("[ntrip] handshake OK\n");
-        }
-        ntripConnecting = false;
-        return;
-      }
-    }
-    delay(10);
+static void ntripFinishHandshake() {
+  switch (ntripClassifyHeader(ntripHeader)) {
+    case NTRIP_HEADER_SOURCETABLE:
+      weblogf("[ntrip] mountpoint unknown (SOURCETABLE response). Check the mountpoint config.\n");
+      ntripEnterBackoff(true);
+      return;
+    case NTRIP_HEADER_REJECT:
+      weblogf("[ntrip] handshake failed: %s", ntripHeader);
+      ntripEnterBackoff(true);
+      return;
+    case NTRIP_HEADER_STREAM:
+      weblogf("[ntrip] handshake OK\n");
+      // Force the first GGA push to land immediately rather than
+      // waiting a full NTRIP_GGA_INTERVAL_MS. VRS mountpoints stay
+      // in "no virtual base" mode until they see at least one GGA.
+      ntripGgaLastSentMs = millis() - NTRIP_GGA_INTERVAL_MS;
+      ntripGgaUploadLogged = false;
+      ntripClearHeader();
+      ntripState = NTRIP_STREAMING;
+      return;
   }
-  weblogf("[ntrip] handshake timeout\n");
-  ntrip.stop();
-  ntripConnecting = false;
+}
+
+static void ntripPumpHandshake() {
+  if (!ntrip.connected() && ntrip.available() <= 0) {
+    weblogf("[ntrip] disconnected during handshake\n");
+    ntripEnterBackoff(false);
+    return;
+  }
+
+  uint32_t nowMs = millis();
+  if (ntripTimeReached(nowMs, ntripHandshakeDeadlineMs)) {
+    weblogf("[ntrip] handshake timeout\n");
+    ntripEnterBackoff(true);
+    return;
+  }
+
+  size_t budget = NTRIP_HEADER_BYTES_PER_PUMP;
+  while (budget-- > 0 && ntrip.available()) {
+    int b = ntrip.read();
+    if (b < 0) break;
+    if (ntripHeaderLen >= NTRIP_HEADER_MAX) {
+      weblogf("[ntrip] handshake header too large; aborting\n");
+      ntripEnterBackoff(true);
+      return;
+    }
+    ntripHeader[ntripHeaderLen++] = (char) b;
+    ntripHeader[ntripHeaderLen] = '\0';
+    if (ntripHeaderComplete()) {
+      ntripFinishHandshake();
+      return;
+    }
+  }
+
+  nowMs = millis();
+  if (ntripTimeReached(nowMs, ntripHandshakeDeadlineMs)) {
+    weblogf("[ntrip] handshake timeout\n");
+    ntripEnterBackoff(true);
+    return;
+  }
+
+  if (!ntrip.connected() && ntrip.available() <= 0) {
+    weblogf("[ntrip] disconnected during handshake\n");
+    ntripEnterBackoff(false);
+  }
+}
+
+// Push the most recent GGA back up the NTRIP socket. Required by VRS and
+// NEAREST mountpoints so the caster knows where the rover is. Skipped
+// while we have no GGA yet (cold start) and rate-limited to one upload
+// per NTRIP_GGA_INTERVAL_MS regardless of how fast the LC29HDA emits.
+static void ntripPushGga() {
+  if (!ntrip.connected()) return;
+  if (lastGgaLen == 0) return;
+  uint32_t now = millis();
+  if (now - ntripGgaLastSentMs < NTRIP_GGA_INTERVAL_MS) return;
+  // First upload after handshake gets a single log line so a stuck-FLOAT
+  // user can confirm "yes, we are talking to the VRS". Subsequent pushes
+  // are silent.
+  if (!ntripGgaUploadLogged) {
+    weblogf("[ntrip] uploading GGA → caster (VRS / NEAREST support)\n");
+    ntripGgaUploadLogged = true;
+  }
+  ntripGgaLastSentMs = now;
+  // The buffered line has no trailing CRLF — NTRIP rev2 spec wants one,
+  // and most casters refuse the upload otherwise. Send as a single write
+  // to keep TCP segmentation tidy.
+  ntrip.write((const uint8_t*) lastGgaLine, lastGgaLen);
+  ntrip.write((const uint8_t*) "\r\n", 2);
 }
 
 static void ntripPump() {
-  if (!ntrip.connected()) {
-    if (cfg.ntripMount.length() > 0 && WiFi.status() == WL_CONNECTED) ntripConnect();
+  if (!ntripReadyToRun()) {
+    if (ntripState != NTRIP_IDLE || ntrip.connected()) {
+      ntripEnterIdle(true);
+    }
     return;
   }
-  // Hard ceiling per loop iter: at most 1 KB of RTCM goes from TCP to
-  // the LC29HDA UART before we yield back to the main loop. Real RTCM
-  // streams are ~1-2 KB/s so this still keeps up, but it prevents any
-  // single burst (e.g. a misrouted 250 KB sourcetable) from starving
-  // the WebServer for tens of seconds — the symptom we saw with the
-  // wrong mountpoint, where the UI took >60 s to respond.
-  uint16_t budget = 1024;
-  while (ntrip.available() && budget > 0) {
-    uint8_t chunk[256];
-    int want = budget < sizeof(chunk) ? budget : (int) sizeof(chunk);
-    int n = ntrip.read(chunk, want);
+
+  switch (ntripState) {
+    case NTRIP_IDLE:
+      if (!ntripTimeReached(millis(), ntripBackoffUntilMs)) {
+        ntripState = NTRIP_BACKOFF;
+        return;
+      }
+      ntripStartTcpConnect();
+      return;
+
+    case NTRIP_BACKOFF:
+      if (!ntripTimeReached(millis(), ntripBackoffUntilMs)) return;
+      ntripState = NTRIP_IDLE;
+      ntripStartTcpConnect();
+      return;
+
+    case NTRIP_TCP_CONNECTING:
+      // connect() is synchronous, so this state should only be visible
+      // inside ntripStartTcpConnect(). Recover defensively if observed.
+      if (ntrip.connected()) {
+        ntripState = NTRIP_SEND_REQUEST;
+      } else {
+        ntripEnterBackoff(false);
+      }
+      return;
+
+    case NTRIP_SEND_REQUEST:
+      ntripSendRequest();
+      return;
+
+    case NTRIP_WAIT_HEADER:
+      ntripPumpHandshake();
+      return;
+
+    case NTRIP_STREAMING:
+      break;
+  }
+
+  if (!ntrip.connected()) {
+    weblogf("[ntrip] stream disconnected\n");
+    ntripEnterBackoff(false);
+    return;
+  }
+
+  ntripPushGga();
+  // Drain everything the TCP socket has pending each loop iter. The old
+  // 1 KB-per-iter budget was added to defend against a 250 KB sourcetable
+  // response flooding the UART, but that's now caught one layer up in
+  // the handshake state (it aborts when it sees `SOURCETABLE`), so by
+  // the time we're here we know it's RTCM. Throttling becomes harmful:
+  // NL multi-constellation VRS streams (Centipede NLDB, MSM4/5 + 1019
+  // + 1005/1006 + 1230) burst at 2-3 KB/s. With tftTick + LVGL pushing
+  // each loop iter into the tens-of-ms range, 1 KB/iter falls behind and
+  // RTCM accumulates in the TCP buffer — corrections then arrive at the
+  // LC29HDA seconds late, which kills the carrier-phase ambiguity
+  // resolution. Field-observed regression: RTK FLOAT never resolves to
+  // FIX even with 30 sats / good HDOP, exactly the symptom the original
+  // (un-budgeted) loop did not have.
+  while (ntrip.available()) {
+    uint8_t chunk[512];
+    int n = ntrip.read(chunk, sizeof(chunk));
     if (n <= 0) break;
-    gnssSerial.write(chunk, n);
+    if (!walkerLoraActive()) {
+      gnssSerial.write(chunk, n);
+      rtcmLogAppend(chunk, n, RTCM_SRC_NTRIP);
+    }
+    // st.ntripBytes counts bytes received from the socket regardless of
+    // whether we forwarded them — keeps the "NTRIP up" metric honest even
+    // when LoRa is the active source.
+    coreLock();
     st.ntripBytes += n;
-    budget -= n;
+    coreUnlock();
   }
 }
 
 // ── GNSS pump ───────────────────────────────────────────────────────
 static uint32_t lastNmeaStatsMs = 0;
 static uint32_t nmeaBytesThisSec = 0;
-// Definitions for the forward-declared gating flags up by ntripConnect().
+// Definitions for the forward-declared gating flags up by the NTRIP pump.
 uint32_t lastGnssByteMs = 0;   // ms of the most recent byte from the LC29HDA — drives the "no GNSS" overlay
 bool     gnssDetected = false; // flips true on the first byte ever — gates PAIR command, heartbeat, NTRIP
 
@@ -555,7 +1002,8 @@ static bool     batteryCharging = false;
 
 static uint32_t gnssDetectedAtMs = 0; // millis() when first byte arrived (used to delay the post-detect PAIR queries)
 static bool     pair021Sent = false; // firmware version query
-// PAIR050,200 (5 Hz) retry state. The LC29HDA silently drops the cmd
+static bool     pair050_1HzSent = false; // force 1 Hz fix rate (override NV)
+// PAIR050 rate-config ACK state. The LC29HDA silently drops the cmd
 // if its serial parser is busy, so resend up to 4 times spaced 2 s
 // apart and stop once PAIR001,050,0 ACK is observed. Confirmation goes
 // into gnssRateHz so the UI can show the real measured fix rate.
@@ -592,17 +1040,39 @@ static void gnssPump() {
   // moment a single byte arrives we drop back into normal flow.
   if (!gnssDetected) return;
 
-  // Post-detect commands. Only PAIR021 (firmware-version query) is
-  // sent now — PAIR050,200 (5 Hz) was tried but it choked the LC29HDA
-  // RTCM correction pipeline: the module couldn't keep RTK FLOAT→FIX
-  // lock when its position engine was running 5x faster, and the user
-  // lost RTK fix entirely (31 sats, HDOP 0.49, no fix in 5 min). At
-  // default 1 Hz the same setup fixes inside a minute. So we stay at
-  // 1 Hz, and density comes from the 2 cm displacement filter instead.
+  // Post-detect commands. PAIR021 (firmware-version query) for diagnostics,
+  // plus PAIR050,1000 to force the LC29HDA back to 1 Hz fix rate every
+  // boot. The module persists its last PAIR050 setting in NV memory, so
+  // an older firmware that wrote 200 ms (5 Hz) keeps that rate across
+  // power cycles even after we strip the 5 Hz command from this code.
+  // PAIR050,200 (5 Hz) was tried but it choked the RTCM correction
+  // pipeline: the module couldn't keep RTK FLOAT->FIX lock when its
+  // position engine was running 5x faster, and the user lost RTK fix
+  // entirely (31 sats, HDOP 0.49, no fix in 5 min). At 1 Hz the same
+  // setup fixes inside a minute. So we stay at 1 Hz, and density comes
+  // from the 2 cm displacement filter instead.
   uint32_t sinceDetect = millis() - gnssDetectedAtMs;
   if (!pair021Sent && sinceDetect >= 500) {
     sendGnssCommand("PAIR021");
     pair021Sent = true;
+  }
+  if (!pair050_1HzSent && sinceDetect >= 700) {
+    // 1000 ms = 1 Hz. The LC29HDA *-DA* variant is hardware-locked to 1 Hz
+    // RTK regardless of what PAIR050 says (Quectel LC29H Hardware Design
+    // datasheet + DR&RTK App Note v1.2.0: "LC29H (DA) only supports RTK
+    // (Max update rate: 1 Hz)"). Sending a faster value makes the parser
+    // ACK but the RTK engine still runs at 1 Hz and interpolates PVT
+    // epochs between, which corrupts the FLOAT->FIX lock entirely. Our
+    // 5 Hz / 2 Hz attempts both fell back to FLOAT-only with 28+ sats.
+    // True 5 Hz RTK requires LC29HEA (different SKU, same footprint).
+    // Density at 1 Hz is recovered server-side via polygon densification
+    // + a tight displacement filter that keeps real-but-small movements.
+    sendGnssCommand("PAIR050,1000");
+    pair050_1HzSent = true;
+  }
+  if (!pair050Acked && lastPair001Cmd == 50 && lastPair001Result == 0) {
+    pair050Acked = true;
+    weblogf("[gnss] PAIR050 ACKed\n");
   }
 #if NMEA_HEARTBEAT
   // Periodic heartbeat so you can tell "no bytes" apart from "bytes
@@ -611,9 +1081,15 @@ static void gnssPump() {
   // so the phone keeps seeing it after USB is unplugged.
   uint32_t nowMs = millis();
   if (nowMs - lastNmeaStatsMs >= 2000) {
+    coreLock();
+    int satsLog = st.sats;
+    int fixLog = st.fix;
+    double hdopLog = st.hdop;
+    uint32_t lastFixLog = st.lastFixMs;
+    coreUnlock();
     weblogf("[nmea] rx=%u bytes / 2s, sats=%d, fix=%d, hdop=%.1f, lastFixAgo=%ldms\n",
-            nmeaBytesThisSec, st.sats, st.fix, st.hdop,
-            st.lastFixMs ? (long)(nowMs - st.lastFixMs) : -1L);
+            nmeaBytesThisSec, satsLog, fixLog, hdopLog,
+            lastFixLog ? (long)(nowMs - lastFixLog) : -1L);
     nmeaBytesThisSec = 0;
     lastNmeaStatsMs = nowMs;
   }
@@ -622,6 +1098,14 @@ static void gnssPump() {
   // is parsed. We mirror it into Status only when we have a full new
   // sentence, otherwise we'd race against half-parsed values.
   if (gps.location.isUpdated()) {
+    int fixNow;
+    int satsNow;
+    double latNow;
+    double lngNow;
+    double altNow;
+    double hdopNow;
+    uint32_t lastFixNow;
+    coreLock();
     st.lat  = gps.location.lat();
     st.lng  = gps.location.lng();
     st.alt  = gps.altitude.isValid() ? gps.altitude.meters() : st.alt;
@@ -633,6 +1117,13 @@ static void gnssPump() {
       st.fix = atoi(ggaFixQualityGP.value());
     }
     st.lastFixMs = millis();
+    latNow = st.lat;
+    lngNow = st.lng;
+    altNow = st.alt;
+    fixNow = st.fix;
+    satsNow = st.sats;
+    hdopNow = st.hdop;
+    lastFixNow = st.lastFixMs;
     // Rolling 1-second window counter so the UI can show the actual
     // fix rate. Window closes when 1000 ms elapses; final count gets
     // latched into gnssRateHz and the window restarts at the current
@@ -647,6 +1138,18 @@ static void gnssPump() {
       gnssRateWinStartMs = nowRate;
     }
     appendPoint();
+    coreUnlock();
+    // Feed the new session recorder. No-op when recorder is idle, so
+    // this costs essentially nothing when we're not actively capturing
+    // a work/obstacle/channel session. Uses the same NMEA-decoded fix
+    // quality the legacy track-* logger already filters on (st.fix
+    // from $GxGGA field 6) so quality gating stays consistent across
+    // the two pipelines until Task 11 retires the legacy logger.
+    recorder.onFix(
+        (unsigned long)(lastFixNow / 1000UL),
+        latNow, lngNow, altNow,
+        fixNow, satsNow, hdopNow
+    );
   }
 }
 
@@ -746,7 +1249,7 @@ static bool i2cProbe(uint8_t addr) {
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
   i2c_master_stop(cmd);
-  esp_err_t ret = i2c_master_cmd_begin(I2C_BUS_NUM, cmd, pdMS_TO_TICKS(50));
+  esp_err_t ret = i2c_master_cmd_begin(I2C_BUS_NUM, cmd, pdMS_TO_TICKS(8));
   i2c_cmd_link_delete(cmd);
   return ret == ESP_OK;
 #else
@@ -784,7 +1287,10 @@ static void buttonPump() {
   if (millis() - lastButtonChangeMs >= BUTTON_DEBOUNCE_MS && stable != raw) {
     stable = raw;
     if (raw == LOW) {            // press edge
-      if (st.recording) stopRecording(); else startRecording();
+      coreLock();
+      bool wasRecording = st.recording;
+      coreUnlock();
+      if (wasRecording) stopRecording(); else startRecording();
     }
   }
 }
@@ -796,12 +1302,110 @@ static void sendJson(int code, const JsonDocument& doc) {
   server.send(code, "application/json", out);
 }
 
+static String authTokenSnapshot() {
+  coreLock();
+  String token = cfg.authToken;
+  coreUnlock();
+  return token;
+}
+
+static bool secureEquals(const String& a, const String& b) {
+  if (a.length() != b.length()) return false;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < a.length(); i++) {
+    diff |= (uint8_t) a[i] ^ (uint8_t) b[i];
+  }
+  return diff == 0;
+}
+
+static String requestAuthToken() {
+  String token = server.header("X-Auth-Token");
+  token.trim();
+  if (token.length() > 0) return token;
+
+  String auth = server.header("Authorization");
+  auth.trim();
+  const String bearerPrefix = "Bearer ";
+  if (auth.startsWith(bearerPrefix)) {
+    token = auth.substring(bearerPrefix.length());
+    token.trim();
+    return token;
+  }
+  return String();
+}
+
+static bool requireAuth() {
+  String configured = authTokenSnapshot();
+  if (configured.length() == 0) {
+    // First-time recovery/setup must stay possible before a token exists.
+    // Only allow unauthenticated protected endpoints while the device is in
+    // its WPA2 setup AP. Once it joins the normal LAN, require the operator to
+    // create a token through /api/auth before config/OTA/upload endpoints work.
+    bool setupApMode = (WiFi.getMode() & WIFI_AP) != 0;
+    if (setupApMode) {
+      static uint32_t lastWarnMs = 0;
+      uint32_t now = millis();
+      if (lastWarnMs == 0 || now - lastWarnMs > 30000) {
+        weblogf("[auth] WARNING: no API token configured; protected endpoints are open only on setup AP\n");
+        lastWarnMs = now;
+      }
+      return true;
+    }
+
+    server.send(403, "application/json", "{\"ok\":false,\"error\":\"api token not configured; set one via /api/auth first\"}");
+    return false;
+  }
+
+  if (secureEquals(requestAuthToken(), configured)) return true;
+
+  server.sendHeader("WWW-Authenticate", "Bearer realm=\"rtk-walker\"");
+  server.send(401, "application/json", "{\"ok\":false,\"error\":\"auth required\"}");
+  return false;
+}
+
+static bool validNewAuthToken(const String& token) {
+  if (token.length() < 8 || token.length() > 96) return false;
+  for (size_t i = 0; i < token.length(); i++) {
+    unsigned char c = (unsigned char) token[i];
+    if (c < 0x21 || c > 0x7e) return false;
+  }
+  return true;
+}
+
+static void handleAuthGet() {
+  JsonDocument doc;
+  doc["configured"] = authTokenSnapshot().length() > 0;
+  sendJson(200, doc);
+}
+
+static void handleAuthPost() {
+  if (authTokenSnapshot().length() > 0 && !requireAuth()) return;
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  String token = body["token"].as<String>();
+  token.trim();
+  if (!validNewAuthToken(token)) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"token must be 8-96 printable ASCII chars\"}");
+    return;
+  }
+  coreLock();
+  cfg.authToken = token;
+  saveConfig();
+  coreUnlock();
+  weblogf("[auth] API token updated\n");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 static void handleRoot() {
   server.send_P(200, "text/html", INDEX_HTML);
 }
 
 static void handleStatus() {
   JsonDocument doc;
+  coreLock();
   doc["fix"]        = st.fix;
   doc["sats"]       = st.sats;
   doc["hdop"]       = st.hdop;
@@ -812,14 +1416,19 @@ static void handleStatus() {
   doc["points"]     = st.recPoints;
   doc["ntripBytes"] = st.ntripBytes;
   doc["wifiSsid"]   = cfg.ssid;
-  doc["ntripUp"]    = ntrip.connected();
+  doc["ntripUp"]    = (ntripState == NTRIP_STREAMING);
   doc["walkedM"]    = walkedM;
   if (firstLat != 0 || firstLng != 0) {
     doc["closingM"] = haversineM(st.lat, st.lng, firstLat, firstLng);
   }
   doc["areaM2"]     = lastAreaM2;
   doc["gnssHz"]     = gnssRateHz;
-  doc["gnss5HzAcked"] = pair050Acked && lastPair001Result == 0;
+  doc["gnss5HzAcked"] = pair050Acked;
+  doc["authConfigured"] = cfg.authToken.length() > 0;
+  // viewingSlot mirrors the on-device "currently loaded saved map" state
+  // so the web UI can highlight the active row in its Maps list without
+  // a separate poll.
+  doc["viewingSlot"] = tft_ui_current_view_slot();
 #ifdef BAT_ADC
   if (batteryReady) {
     doc["batteryVolts"]    = batteryVoltsEma;
@@ -827,10 +1436,19 @@ static void handleStatus() {
     doc["batteryCharging"] = batteryCharging;
   }
 #endif
+  coreUnlock();
+  WalkerLoraStats lstats;
+  walkerLoraGetStats(lstats);
+  JsonObject lora = doc["lora"].to<JsonObject>();
+  lora["active"]      = lstats.active;
+  lora["moduleReady"] = lstats.moduleReady;
+  lora["bytes"]       = lstats.bytesForwarded;
+  lora["frames"]      = lstats.framesReceived;
   sendJson(200, doc);
 }
 
 static void handleRecord() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
   JsonDocument body;
   if (deserializeJson(body, server.arg("plain"))) {
@@ -839,12 +1457,15 @@ static void handleRecord() {
   bool want = body["recording"] | false;
   if (want) startRecording(); else stopRecording();
   JsonDocument out;
+  coreLock();
   out["recording"] = st.recording;
   out["track"]     = currentTrackName;
+  coreUnlock();
   sendJson(200, out);
 }
 
 static void handleGnssSend() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
   JsonDocument body;
   if (deserializeJson(body, server.arg("plain"))) {
@@ -866,22 +1487,27 @@ static void handleGnssSend() {
 }
 
 static void handleLog() {
+  if (!requireAuth()) return;
   // Polling-friendly snapshot: returns the current buffer text + the
   // monotonic byte offset of the newest byte. Client should remember
   // `seq` between polls and skip the first (seq - prevSeq) chars on
   // subsequent fetches if it wants to append rather than replace.
-  uint32_t firstSeq = webLogSeq - (uint32_t) webLogBuf.length();
+  webLogLock();
+  String logCopy = webLogBuf;
+  uint32_t seqCopy = webLogSeq;
+  webLogUnlock();
+  uint32_t firstSeq = seqCopy - (uint32_t) logCopy.length();
   String out;
-  out.reserve(webLogBuf.length() + 64);
+  out.reserve(logCopy.length() + 64);
   out += "{\"seq\":";
-  out += webLogSeq;
+  out += seqCopy;
   out += ",\"firstSeq\":";
   out += firstSeq;
   out += ",\"buf\":";
   // JSON-escape the buffer content
   out += '\"';
-  for (size_t i = 0; i < webLogBuf.length(); i++) {
-    char c = webLogBuf[i];
+  for (size_t i = 0; i < logCopy.length(); i++) {
+    char c = logCopy[i];
     switch (c) {
       case '\"': out += "\\\""; break;
       case '\\': out += "\\\\"; break;
@@ -903,13 +1529,17 @@ static void handleLog() {
 }
 
 static void handleTrackCurrent() {
+  if (!requireAuth()) return;
   // Emit JSON as a streaming string to keep peak heap low on long
   // walks. Format: { recording: bool, points: [[lat,lng,fix], ...] }.
   String out;
+  coreLock();
+  bool recordingNow = st.recording;
+  coreUnlock();
   livePointsLock();
   out.reserve(64 + livePoints.size() * 32);
   out += "{\"recording\":";
-  out += (st.recording ? "true" : "false");
+  out += (recordingNow ? "true" : "false");
   out += ",\"count\":";
   out += (uint32_t) livePoints.size();
   out += ",\"points\":[";
@@ -929,6 +1559,7 @@ static void handleTrackCurrent() {
 }
 
 static void handleTracks() {
+  if (!requireAuth()) return;
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   if (LittleFS.exists("/tracks")) {
@@ -953,6 +1584,7 @@ static void handleTracks() {
 }
 
 static void handleTrackDownload() {
+  if (!requireAuth()) return;
   String uri = server.uri();
   // /track/<name>            → full raw CSV
   // /track/<name>.polygon    → reformatted to bare lat,lng pairs for
@@ -973,6 +1605,11 @@ static void handleTrackDownload() {
   const size_t jsonSuffixLen = strlen(jsonSuffix);
   bool jsonMode = !polygonMode && name.endsWith(jsonSuffix);
   if (jsonMode) name = name.substring(0, name.length() - jsonSuffixLen);
+
+  if (!isSafeLeafName(name)) {
+    server.send(400, "text/plain", "bad track name");
+    return;
+  }
 
   String path = String("/tracks/") + name;
   if (!LittleFS.exists(path)) { server.send(404, "text/plain", "no such track"); return; }
@@ -1074,14 +1711,22 @@ static void handleI2cScan() {
 #else
   JsonDocument doc;
   JsonArray arr = doc["found"].to<JsonArray>();
+  bool truncated = false;
+  uint32_t deadline = millis() + 750;
   // 7-bit addresses 0x03..0x77 are the valid scan window; 0x00..0x02
   // and 0x78..0x7F are reserved.
   for (uint8_t a = 0x03; a <= 0x77; a++) {
     if (i2cProbe(a)) arr.add((unsigned) a);
+    if ((a & 0x0F) == 0) gnssPump();
+    if ((int32_t)(millis() - deadline) >= 0) {
+      truncated = true;
+      break;
+    }
   }
   doc["sda"] = TOUCH_SDA;
   doc["scl"] = TOUCH_SCL;
   doc["bus"] = "IDF I2C_NUM_0 (touch bus)";
+  doc["truncated"] = truncated;
   sendJson(200, doc);
 #endif
 }
@@ -1144,17 +1789,480 @@ static void handleBatteryRaw() {
 #endif
 }
 
+// ── Saved-maps endpoints (web UI mirror of the TFT Maps tab) ──────────
+//
+// /api/maps         — list every saved map with metadata + which one (if
+//                     any) is currently being viewed on the TFT.
+// /api/maps/N       — full polygon + obstacle rings + channels for slot
+//                     N, in lat/lng so the web UI can render them on the
+//                     same canvas it uses for the live track.
+// /api/maps/view    — POST {slot:N} to drive the TFT into viewing slot
+//                     N; POST {slot:-1} to exit viewing mode. Mirrors a
+//                     row tap on the device.
+//
+// All three are unauthenticated reads / authenticated writes per the
+// pattern the rest of the API uses — listing maps is not sensitive,
+// changing what the operator sees on the screen is.
+static void handleMapsList() {
+  JsonDocument doc;
+  MapEntry entries[3];
+  size_t count = 0;
+  sessionStore.listMaps(entries, 3, count);
+  JsonArray arr = doc["maps"].to<JsonArray>();
+  for (size_t i = 0; i < count; i++) {
+    JsonObject m = arr.add<JsonObject>();
+    m["slot"]            = entries[i].slot;
+    m["alias"]           = entries[i].alias;
+    m["boundaryPoints"]  = entries[i].boundaryPoints;
+    m["obstacleCount"]   = entries[i].obstacleCount;
+    m["channelCount"]    = entries[i].channelCount;
+  }
+  doc["viewingSlot"] = tft_ui_current_view_slot();
+  sendJson(200, doc);
+}
+
+// Append one polygon CSV (local meters x,y) to a destination String as
+// JSON {"lat":..,"lng":..} objects. Caller passes the running String
+// by reference and a "is this the first point in the array?" flag so
+// commas land in the right places. Capped at maxPoints — a typical
+// garden polygon needs <200; we keep it low so the whole response
+// fits comfortably under a single server.send() call (no chunked
+// transfer, no streaming).
+//
+// Why not chunked? An earlier version used
+// server.setContentLength(CONTENT_LENGTH_UNKNOWN) + many
+// server.sendContent() calls so the response could be megabytes if it
+// wanted to. On this hardware the chunked path *also* broke inbound
+// networking: while a chunked GET was in flight, the device stopped
+// responding to ICMP and refused new TCP connections — likely an
+// lwIP RX-queue / WebServer state interaction we can't fix from
+// user space. A single big String + server.send() is slower per-byte
+// but doesn't trigger that bug, so we eat the latency and stay
+// reachable. Hard cap on points keeps the worst case bounded.
+// Count newline-terminated rows in a LittleFS file. Used to compute
+// an even decimation stride before emitting JSON — otherwise the
+// "first N points" cap would visually truncate the polygon (e.g. a
+// 364-point garden with a 200 cap would lose the last 45% of the
+// shape entirely). Bulk read so this is cheap even on large files.
+static int countCsvRows(const String& path) {
+  if (!LittleFS.exists(path)) return 0;
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) return 0;
+  uint8_t buf[256];
+  int rows = 0;
+  while (f.available()) {
+    int n = f.read(buf, sizeof(buf));
+    if (n <= 0) break;
+    for (int i = 0; i < n; i++) {
+      if (buf[i] == '\n') rows++;
+    }
+  }
+  f.close();
+  return rows;
+}
+
+static int polygonToJsonAppend(const String& path, size_t maxPoints,
+                               String& out, bool& firstPoint) {
+  if (!LittleFS.exists(path)) return -1;
+
+  // Even decimation: if the file has more rows than maxPoints, sample
+  // every Nth row so the resulting polygon preserves the overall
+  // shape. Stride==1 means "keep every row" for files <= maxPoints.
+  int totalRows = countCsvRows(path);
+  if (totalRows <= 0) return 0;
+  size_t stride = 1;
+  if ((size_t) totalRows > maxPoints) {
+    stride = (totalRows + maxPoints - 1) / maxPoints;
+  }
+
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) return -1;
+  size_t written = 0;
+  size_t lineIdx = 0;
+  char buf[80];
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    bool keep = ((lineIdx % stride) == 0);
+    lineIdx++;
+    if (!keep) continue;
+    if (line.endsWith("\r")) line.remove(line.length() - 1);
+    if (line.length() == 0) continue;
+    int c1 = line.indexOf(',');
+    if (c1 < 0) continue;
+    double x = line.substring(0, c1).toDouble();
+    double y = line.substring(c1 + 1).toDouble();
+    double lat = 0, lng = 0;
+    if (!sessionStore.localToGps(x, y, lat, lng)) continue;
+
+    int n = snprintf(buf, sizeof(buf),
+                     "%s{\"lat\":%.7f,\"lng\":%.7f}",
+                     firstPoint ? "" : ",", lat, lng);
+    if (n > 0 && n < (int) sizeof(buf)) out += buf;
+    firstPoint = false;
+    written++;
+
+    // Drain the GNSS UART + yield to the scheduler every 32 points.
+    // Keeps the 256 B UART FIFO from overrunning while we build the
+    // response in memory; without this an 8 KB body builds for >5 s
+    // and the "RTK module not detected" overlay trips.
+    if ((written & 0x1F) == 0) {
+      gnssPump();
+      yield();
+    }
+  }
+  f.close();
+  return (int) written;
+}
+
+// JSON-escape a filesystem-derived string (alias, channel target, file
+// name). Quotes, backslashes and control characters get escaped — the
+// rest passes through. Defensive against names containing weird chars
+// that would break the response otherwise.
+static String jsonEscape(const String& s) {
+  String out;
+  out.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if ((uint8_t) c < 0x20) {
+          char esc[8];
+          snprintf(esc, sizeof(esc), "\\u%04x", (uint8_t) c);
+          out += esc;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
+}
+
+static void handleMapDetail() {
+  String uri = server.uri();
+  String suffix = uri.substring(strlen("/api/maps/"));
+  if (suffix.length() != 1 || suffix[0] < '0' || suffix[0] > '2') {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid slot\"}");
+    return;
+  }
+  int slot = suffix[0] - '0';
+
+  String workPath = String("/session/map") + slot + "_work.csv";
+  if (!LittleFS.exists(workPath)) {
+    server.send(404, "application/json", "{\"ok\":false,\"error\":\"map not found\"}");
+    return;
+  }
+  double oLat = 0, oLng = 0;
+  if (!sessionStore.getOrigin(oLat, oLng)) {
+    server.send(409, "application/json", "{\"ok\":false,\"error\":\"map has no origin\"}");
+    return;
+  }
+
+  MapEntry entries[3];
+  size_t cnt = 0;
+  sessionStore.listMaps(entries, 3, cnt);
+  String alias = String("map") + slot;
+  int obstacleCount = 0, channelCount = 0, boundaryPoints = 0;
+  for (size_t i = 0; i < cnt; i++) {
+    if (entries[i].slot == slot) {
+      alias          = entries[i].alias;
+      obstacleCount  = entries[i].obstacleCount;
+      channelCount   = entries[i].channelCount;
+      boundaryPoints = entries[i].boundaryPoints;
+      break;
+    }
+  }
+
+  // Build the whole response into a single String, then send it in one
+  // server.send() call. Hard caps everywhere — a polygon with thousands
+  // of points isn't useful on a 480x320 panel or a small browser
+  // anyway. Caps:
+  //   boundary: 300 points  (typical garden walks land at 50-150)
+  //   obstacle: 100 points  (rings are tiny by nature)
+  //   channel : 300 points  (long routes)
+  // Pre-reserve so the String doesn't constantly realloc.
+  String body;
+  body.reserve(12288);
+  {
+    char hdr[256];
+    snprintf(hdr, sizeof(hdr),
+             "{\"ok\":true,\"slot\":%d,\"alias\":\"%s\","
+             "\"boundaryPoints\":%d,\"obstacleCount\":%d,\"channelCount\":%d,"
+             "\"work\":[",
+             slot, jsonEscape(alias).c_str(),
+             boundaryPoints, obstacleCount, channelCount);
+    body += hdr;
+  }
+  {
+    bool first = true;
+    polygonToJsonAppend(workPath, 200, body, first);
+  }
+  body += "],\"obstacles\":[";
+
+  String prefix = String("map") + slot + "_";
+  String chPrefix = String("map") + slot + "to";
+  {
+    bool firstObs = true;
+    File dir = LittleFS.open("/session");
+    if (dir && dir.isDirectory()) {
+      File entry = dir.openNextFile();
+      while (entry) {
+        String name = entry.name();
+        int sl = name.lastIndexOf('/');
+        if (sl >= 0) name = name.substring(sl + 1);
+        if (name.startsWith(prefix) && name.endsWith("_obstacle.csv")) {
+          String full = String("/session/") + name;
+          entry.close();
+          if (!firstObs) body += ',';
+          firstObs = false;
+          body += "{\"name\":\"";
+          body += jsonEscape(name);
+          body += "\",\"points\":[";
+          bool firstPt = true;
+          polygonToJsonAppend(full, 60, body, firstPt);
+          body += "]}";
+        } else {
+          entry.close();
+        }
+        entry = dir.openNextFile();
+      }
+      dir.close();
+    }
+  }
+  body += "],\"channels\":[";
+  {
+    bool firstCh = true;
+    File dir2 = LittleFS.open("/session");
+    if (dir2 && dir2.isDirectory()) {
+      File entry = dir2.openNextFile();
+      while (entry) {
+        String name = entry.name();
+        int sl = name.lastIndexOf('/');
+        if (sl >= 0) name = name.substring(sl + 1);
+        if (name.startsWith(chPrefix) && name.endsWith("_unicom.csv")) {
+          int afterTo = chPrefix.length();
+          int beforeSuffix = name.length() - strlen("_unicom.csv");
+          String target = (beforeSuffix > afterTo)
+                            ? name.substring(afterTo, beforeSuffix) : String("?");
+          String full = String("/session/") + name;
+          entry.close();
+          if (!firstCh) body += ',';
+          firstCh = false;
+          body += "{\"target\":\"";
+          body += jsonEscape(target);
+          body += "\",\"points\":[";
+          bool firstPt = true;
+          polygonToJsonAppend(full, 200, body, firstPt);
+          body += "]}";
+        } else {
+          entry.close();
+        }
+        entry = dir2.openNextFile();
+      }
+      dir2.close();
+    }
+  }
+  body += "]}";
+
+  // One Content-Length response, no chunked transfer. ESP32 WebServer
+  // emits proper headers + body and closes the socket cleanly. The
+  // device stays pingable through this whole call (was the bug we hit
+  // with the previous streaming code).
+  server.send(200, "application/json", body);
+}
+
+// Delete one obstacle CSV by its filesystem name. Auth-required. The
+// filename ships in as a query parameter (not the path) so we don't
+// have to wrestle with WebServer's lack of path params; the body
+// would also work but auth-headers + query is simpler client-side.
+//
+// Safety: name MUST match the expected `mapN_<i>_obstacle.csv` pattern
+// AND live under /session/. Anything else (path traversal, deletion
+// of work polygons or unrelated files) is rejected with 400.
+static void handleObstacleDelete() {
+  if (!requireAuth()) return;
+  String name;
+  if (server.hasArg("name")) name = server.arg("name");
+  name.trim();
+
+  // Length-bounded sanity check before we even hit the regex-ish test.
+  if (name.length() < 18 || name.length() > 40) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad name length\"}");
+    return;
+  }
+  // No path separators / parent dirs / hidden files.
+  if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.startsWith(".")) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"path not allowed\"}");
+    return;
+  }
+  // Must look like mapN_<i>_obstacle.csv (N: 0..2, i: 0..31). Cheap
+  // hand-rolled match — sscanf is too lenient and accepts negatives.
+  if (!name.startsWith("map") || !name.endsWith("_obstacle.csv")) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"not an obstacle file\"}");
+    return;
+  }
+  if (name.length() < 5 || name[4] != '_') {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad map slot\"}");
+    return;
+  }
+  char slotChar = name[3];
+  if (slotChar < '0' || slotChar > '2') {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad map slot\"}");
+    return;
+  }
+
+  String fullPath = String("/session/") + name;
+  if (!LittleFS.exists(fullPath)) {
+    server.send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
+    return;
+  }
+  if (!LittleFS.remove(fullPath)) {
+    server.send(500, "application/json", "{\"ok\":false,\"error\":\"remove failed\"}");
+    return;
+  }
+  weblogf("[obstacle] deleted %s\n", name.c_str());
+
+  // DON'T refresh the on-device view inline — tft_ui_view_map_slot
+  // does multiple LittleFS reads + a per-point lat/lng conversion
+  // which can block the main loop for hundreds of ms. While we're
+  // blocked the 256 B UART RX FIFO overruns and the GNSS module
+  // reports "RTK module not found" within ~25 ms. Instead, defer the
+  // refresh to the main loop: it'll pick up the flag on the next
+  // iteration and do the work outside the HTTP critical section.
+  int viewing = tft_ui_current_view_slot();
+  if (viewing >= 0 && (slotChar - '0') == viewing) {
+    g_pendingViewRefreshSlot = viewing;
+  }
+
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["deleted"] = name;
+  sendJson(200, resp);
+}
+
+static void handleMapView() {
+  if (!requireAuth()) return;
+  if (!server.hasArg("plain")) {
+    server.send(400, "text/plain", "no body"); return;
+  }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  int slot = body["slot"] | -2;
+  if (slot < -1 || slot >= 3) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"slot must be -1..2\"}");
+    return;
+  }
+  if (slot < 0) {
+    // Exit is cheap (just zeroes a few state vars) so we do it inline.
+    tft_ui_exit_view_map();
+    server.send(200, "application/json", "{\"ok\":true,\"viewingSlot\":-1}");
+    return;
+  }
+  // Load is expensive — load_saved_map_polygon + load_saved_map_obstacles
+  // do 500+ ms of LittleFS reads + per-point lat/lng conversion. Doing
+  // that inside the HTTP handler starves gnssPump() and the GNSS module
+  // reports "module not found" within ~25 ms. Defer to the main loop;
+  // the response goes out immediately, the TFT catches up ~1 main-loop
+  // iter later.
+  //
+  // We can't pre-validate the slot here without doing the same expensive
+  // work, so the response is optimistically 200 OK. If the slot is
+  // missing-on-disk the on-device side just silently keeps its previous
+  // viewing state — same outcome as a manual TFT tap on a missing row.
+  g_pendingViewRefreshSlot = slot;
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["viewingSlot"] = slot;
+  sendJson(200, resp);
+}
+
+static void handleConfigLoraGet() {
+  JsonDocument doc;
+  coreLock();
+  doc["addr"]    = cfg.loraAddr;
+  doc["channel"] = cfg.loraChannel;
+  doc["hc"]      = cfg.loraHc;
+  doc["lc"]      = cfg.loraLc;
+  coreUnlock();
+  sendJson(200, doc);
+}
+
+static void handleConfigLoraPost() {
+  if (!requireAuth()) return;
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  WalkerConfigUpdate upd;
+  if (body["addr"].is<int>()) {
+    int v = body["addr"];
+    if (v < 1 || v > 65535) { server.send(400, "text/plain", "addr 1..65535"); return; }
+    upd.loraAddrSet = true; upd.loraAddr = (uint16_t) v;
+  }
+  if (body["channel"].is<int>()) {
+    int v = body["channel"];
+    if (v < 0 || v > 83) { server.send(400, "text/plain", "channel 0..83"); return; }
+    upd.loraChannelSet = true; upd.loraChannel = (uint8_t) v;
+  }
+  if (body["hc"].is<int>()) {
+    int v = body["hc"];
+    if (v < 0 || v > 83) { server.send(400, "text/plain", "hc 0..83"); return; }
+    upd.loraHcSet = true; upd.loraHc = (uint8_t) v;
+  }
+  if (body["lc"].is<int>()) {
+    int v = body["lc"];
+    if (v < 0 || v > 83) { server.send(400, "text/plain", "lc 0..83"); return; }
+    upd.loraLcSet = true; upd.loraLc = (uint8_t) v;
+  }
+  walkerApplyConfig(upd);
+  JsonDocument resp;
+  resp["ok"] = true;
+  sendJson(200, resp);
+}
+
+static void handleRtcmLog() {
+  // Snapshot the last 2 KB of the ring (4 KB raw → 8 KB hex string).
+  // 2 KB is a good balance: covers 5-10 RTCM3 messages of typical
+  // size, fits in a single HTTP response without bloating poll cost.
+  const size_t WANT = 2048;
+  static char hexbuf[2 * WANT + 1];
+  uint32_t seq = 0;
+  RtcmLogSource src = RTCM_SRC_NONE;
+  size_t n = rtcmLogSnapshot(hexbuf, WANT, &seq, &src);
+
+  JsonDocument doc;
+  doc["bytesAvailable"] = (uint32_t) n;
+  doc["seq"]            = seq;
+  const char* srcStr = "none";
+  if (src == RTCM_SRC_LORA)  srcStr = "lora";
+  if (src == RTCM_SRC_NTRIP) srcStr = "ntrip";
+  doc["source"] = srcStr;
+  doc["hex"]    = hexbuf;
+
+  sendJson(200, doc);
+}
+
 static void handleConfigGet() {
   JsonDocument doc;
+  coreLock();
   doc["ssid"]  = cfg.ssid;
   doc["host"]  = cfg.ntripHost;
   doc["port"]  = cfg.ntripPort;
   doc["mount"] = cfg.ntripMount;
   doc["user"]  = cfg.ntripUser;
+  coreUnlock();
   sendJson(200, doc);
 }
 
 static void handleConfigPost() {
+  if (!requireAuth()) return;
   if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
   JsonDocument body;
   if (deserializeJson(body, server.arg("plain"))) {
@@ -1171,23 +2279,191 @@ static void handleConfigPost() {
     if (v.length() == 0) return;
     target = v;
   };
+  coreLock();
   if (body["ssid"].is<const char*>())  cfg.ssid       = String((const char*) body["ssid"]);
   maybeSetString("pass",  cfg.pass);
   if (body["host"].is<const char*>())  cfg.ntripHost  = String((const char*) body["host"]);
-  if (body["port"].is<int>())          cfg.ntripPort  = (uint16_t) (int) body["port"];
+  if (body["port"].is<int>()) {
+    int port = (int) body["port"];
+    if (port < 1 || port > 65535) {
+      coreUnlock();
+      server.send(400, "application/json", "{\"ok\":false,\"error\":\"port out of range\"}");
+      return;
+    }
+    cfg.ntripPort = (uint16_t) port;
+  }
   if (body["mount"].is<const char*>()) cfg.ntripMount = String((const char*) body["mount"]);
   if (body["user"].is<const char*>())  cfg.ntripUser  = String((const char*) body["user"]);
   maybeSetString("npass", cfg.ntripPass);
   saveConfig();
+  coreUnlock();
   server.send(200, "application/json", "{\"ok\":true}");
   delay(500);
   ESP.restart();
+}
+
+// ── Server upload target config (Task 10) ────────────────────────────
+// Separate endpoint from /api/config so the WiFi/NTRIP form can be saved
+// (with a reboot) independently from the upload target (no reboot needed
+// — the values are read fresh on every upload).
+static void handleConfigServerGet() {
+  JsonDocument doc;
+  coreLock();
+  doc["serverUrl"] = cfg.serverUrl;
+  coreUnlock();
+  sendJson(200, doc);
+}
+
+static void handleConfigServerPost() {
+  if (!requireAuth()) return;
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
+  JsonDocument body;
+  if (deserializeJson(body, server.arg("plain"))) {
+    server.send(400, "text/plain", "bad json"); return;
+  }
+  // Empty value means "leave existing alone". serverUrl is the only
+  // field; mowerSn + adminToken were removed because the server-side
+  // walker-bundles upload + walker-firmware binary download are both
+  // public LAN-only endpoints now.
+  coreLock();
+  if (body["serverUrl"].is<const char*>()) {
+    String v = String((const char*) body["serverUrl"]);
+    if (v.length() > 0) cfg.serverUrl = v;
+  }
+  saveConfig();
+  coreUnlock();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// uploadBundleToServer — build a fresh .novabundle from the current
+// /session/ state and POST it as multipart/form-data to the admin-import
+// endpoint. Synchronous: caller (HTTP handler or LVGL button) blocks for
+// the whole upload. ESP32-S3 N16R8 has 8 MB PSRAM; typical bundles are
+// <1 MB so we load the whole thing into PSRAM and ship it in one write.
+//
+// On non-PSRAM builds we fall back to internal heap with a 256 KB cap —
+// both walker targets currently have BOARD_HAS_PSRAM set so the fallback
+// is just safety net.
+bool uploadBundleToServer(String& outMsg) {
+  // Walker is now SN-agnostic for uploads — the server stores the bundle in
+  // a shared library and the operator assigns it to a specific mower later
+  // via the admin UI. Upload is mounted publicly on the server (LAN-only
+  // threat model), so the walker no longer needs any auth token at all.
+  coreLock();
+  String serverUrl = cfg.serverUrl;
+  coreUnlock();
+
+  if (serverUrl.isEmpty()) {
+    outMsg = "Server URL not set";
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    outMsg = "WiFi not connected";
+    return false;
+  }
+
+  BundleBuilder bb(sessionStore);
+  String path = bb.build();
+  if (path.isEmpty()) { outMsg = "Bundle build failed"; return false; }
+
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) { outMsg = "Cannot open bundle"; return false; }
+  size_t fileSize = f.size();
+  if (fileSize == 0) { f.close(); outMsg = "Bundle is empty"; return false; }
+
+  // Helper that prefers PSRAM but falls back to internal heap when no
+  // SPIRAM is available. ps_malloc() returns NULL on non-PSRAM boards
+  // since v2 of arduino-esp32, so explicit MALLOC_CAP_SPIRAM check.
+  auto allocBuf = [](size_t n) -> uint8_t* {
+    void* p = nullptr;
+    if (psramFound()) {
+      p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+    }
+    if (!p) {
+      // Non-PSRAM fallback. Cap at 256 KB to avoid OOM on a 320 KB SRAM
+      // device — anything beyond that should not exist as a single
+      // upload anyway.
+      if (n > 256 * 1024) return nullptr;
+      p = malloc(n);
+    }
+    return (uint8_t*) p;
+  };
+
+  String boundary = "----RtkWalkerBoundary7K9zQp";
+  String head = "--" + boundary + "\r\n"
+                "Content-Disposition: form-data; name=\"bundle\"; filename=\"walker.novabundle\"\r\n"
+                "Content-Type: application/zip\r\n\r\n";
+  String tail = "\r\n--" + boundary + "--\r\n";
+
+  size_t totalLen = head.length() + fileSize + tail.length();
+  uint8_t* body = allocBuf(totalLen);
+  if (!body) {
+    f.close();
+    outMsg = "Body alloc failed (" + String((unsigned) totalLen) + " B)";
+    return false;
+  }
+  memcpy(body, head.c_str(), head.length());
+  size_t got = f.read(body + head.length(), fileSize);
+  f.close();
+  if (got != fileSize) {
+    free(body);
+    outMsg = "Short read";
+    return false;
+  }
+  memcpy(body + head.length() + fileSize, tail.c_str(), tail.length());
+
+  String url = serverUrl;
+  // Allow user to enter the host with or without a trailing slash.
+  if (url.endsWith("/")) url.remove(url.length() - 1);
+  // Public LAN-only upload endpoint — no Authorization header required.
+  url += "/api/walker-bundles";
+  weblogf("[upload] POST %s (%u B)\n", url.c_str(), (unsigned) totalLen);
+
+  HTTPClient http;
+  if (!http.begin(url)) {
+    free(body);
+    outMsg = "HTTPClient begin failed";
+    return false;
+  }
+  http.addHeader("Content-Type", String("multipart/form-data; boundary=") + boundary);
+  http.setTimeout(30000);
+
+  int code = http.POST(body, totalLen);
+  String resp = http.getString();
+  http.end();
+  free(body);
+
+  // NOTE: we deliberately do not echo the request headers in the log —
+  // that would print the Authorization header (full Bearer token) to
+  // both Serial and the web log buffer. Keep the JWT off the wire log.
+  weblogf("[upload] HTTP %d, %u B reply\n", code, (unsigned) resp.length());
+
+  if (code < 200 || code >= 300) {
+    outMsg = "HTTP " + String(code) + ": " + resp.substring(0, 100);
+    return false;
+  }
+  outMsg = "Uploaded to library (" + String((unsigned) fileSize) + " B): " + resp.substring(0, 80);
+  return true;
+}
+
+// HTTP wrapper around uploadBundleToServer() for the web UI / curl tests.
+static void handleUploadPost() {
+  if (!requireAuth()) return;
+  String msg;
+  bool ok = uploadBundleToServer(msg);
+  JsonDocument doc;
+  doc["ok"] = ok;
+  doc["msg"] = msg;
+  sendJson(ok ? 200 : 500, doc);
 }
 
 // ── Setup ───────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
   delay(200);
+  webLogMux = xSemaphoreCreateRecursiveMutex();
+  coreMux = xSemaphoreCreateRecursiveMutex();
+  livePointsMux = xSemaphoreCreateRecursiveMutex();
   weblogf("[rtk-walker] boot\n");
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -1200,34 +2476,41 @@ void setup() {
   // and crashed the board on boot. Leaving the buffer alone keeps the
   // memory map LVGL needs intact.
   gnssSerial.begin(GNSS_BAUD, SERIAL_8N1, GNSS_RX_PIN, GNSS_TX_PIN);
+#ifdef LORA_PRESENT
+  // EBYTE E22-900T22S default UART is 9600 8N1. Mode pins start in
+  // config mode (1,1); walker_lora.cpp lowers M0+M1 to data mode
+  // (0,0) after the module config command ACKs.
+  pinMode(LORA_M0_PIN, OUTPUT);
+  pinMode(LORA_M1_PIN, OUTPUT);
+  digitalWrite(LORA_M0_PIN, HIGH);
+  digitalWrite(LORA_M1_PIN, HIGH);
+  loraSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
+  weblogf("[lora] UART2 + pins initialised (RX=%d TX=%d M0=%d M1=%d)\n",
+          LORA_RX_PIN, LORA_TX_PIN, LORA_M0_PIN, LORA_M1_PIN);
+#endif
+#ifdef LORA_PRESENT
+  WalkerLoraConfig lcfg = { cfg.loraAddr, cfg.loraChannel, cfg.loraHc, cfg.loraLc };
+  walkerLoraSetup(lcfg);
+#endif
 
   if (!LittleFS.begin(true)) {
     weblogf("[fs] mount failed\n");
   }
 
-  livePointsMux = xSemaphoreCreateRecursiveMutex();
+  // SessionStore mounts LittleFS too (idempotent — second begin() is a no-op
+  // when already mounted) and ensures /session/ + metadata.json exist. We
+  // leave the explicit LittleFS.begin() above untouched so any error logging
+  // around the legacy /tracks flow continues to work.
+  if (!sessionStore.begin()) {
+    weblogf("[session] init failed\n");
+  }
 
   loadConfig();
+  if (cfg.authToken.length() == 0) {
+    weblogf("[auth] WARNING: no API token configured; setup endpoints remain open until a token is set\n");
+  }
 
   if (cfg.ssid.length() > 0) {
-    // TEMP debug: dump stored creds so we can verify the keyboard
-    // didn't sneak hidden chars (tabs, CRs, smart quotes) into NVS.
-    // Remove this block once the no-connect cause is identified.
-    auto hexDump = [](const char* label, const String& s) {
-      if (s.length() == 0) {
-        weblogf("[wifi-dbg] %s hex= <EMPTY>\n", label);
-        return;
-      }
-      String hex;
-      hex.reserve(s.length() * 3 + 8);
-      for (size_t i = 0; i < s.length(); i++) {
-        char b[4];
-        snprintf(b, sizeof(b), "%02x ", (unsigned) (uint8_t) s[i]);
-        hex += b;
-      }
-      weblogf("[wifi-dbg] %s hex= %s\n", label, hex.c_str());
-    };
-
     static int lastDisconnectReason = 0;
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
       lastDisconnectReason = info.wifi_sta_disconnected.reason;
@@ -1235,7 +2518,9 @@ void setup() {
       // Stash for the snapshot so the TFT banner has the human-readable
       // reason to show. Each new disconnect overwrites — the most recent
       // failure is what the user wants to see.
+      coreLock();
       wifiFailReason = name ? String(name) : String("");
+      coreUnlock();
       weblogf("[wifi-evt] STA disconnected - reason=%d (%s)\n",
               (int) lastDisconnectReason, name ? name : "?");
     }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
@@ -1251,22 +2536,10 @@ void setup() {
     }
     WiFi.scanDelete();
 
-    // Creds dump immediately before WiFi.begin so it sits at the bottom
-    // of the terminal scrollback, impossible to lose. Build stamp pinpoints
-    // which firmware revision is actually running on the device.
-    weblogf("[creds] ##### build %s %s #####\n", __DATE__, __TIME__);
-    weblogf("[creds] ssid=\"%s\" (%u chars)\n",
-            cfg.ssid.c_str(), (unsigned) cfg.ssid.length());
-    hexDump("ssid", cfg.ssid);
-    if (cfg.pass.length() == 0) {
-      weblogf("[creds] !!!!! PASSWORD IS EMPTY IN NVS !!!!!\n");
-      weblogf("[creds] pass=\"\" (0 chars)\n");
-    } else {
-      weblogf("[creds] pass=\"%s\" (%u chars)\n",
-              cfg.pass.c_str(), (unsigned) cfg.pass.length());
-    }
-    hexDump("pass", cfg.pass);
-    weblogf("[creds] #################################\n");
+    weblogf("[creds] build %s %s, ssid=\"%s\" (%u chars), wifi pass length=%u\n",
+            __DATE__, __TIME__,
+            cfg.ssid.c_str(), (unsigned) cfg.ssid.length(),
+            (unsigned) cfg.pass.length());
 
     weblogf("[wifi] connecting to %s\n", cfg.ssid.c_str());
     WiFi.mode(WIFI_STA);
@@ -1279,6 +2552,11 @@ void setup() {
       weblogf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
       // Sync time so CSV timestamps are real wall-clock seconds.
       configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
+      // OTA boot-check used to run here, but a 30 s HTTP timeout on an
+      // unreachable server would block server.begin() and the user
+      // couldn't reach the web UI until the timeout fired. Deferred to
+      // the main loop now (see otaBootCheckDoneMs below) so the
+      // WebServer is listening on :80 before any OTA network I/O.
     } else {
       // status() : WL_NO_SSID_AVAIL (1) AP not seen, WL_CONNECT_FAILED (4)
       //            wrong password / auth reject, WL_DISCONNECTED (6) timeout.
@@ -1286,23 +2564,36 @@ void setup() {
       // (4_WAY_HANDSHAKE_TIMEOUT, AUTH_FAIL, NO_AP_FOUND, etc.).
       weblogf("[wifi] connect timeout — status=%d, falling back to AP\n",
               (int) WiFi.status());
+      coreLock();
       wifiConnectFailed = true;
       if (wifiFailReason.length() == 0) wifiFailReason = "TIMEOUT";
-      WiFi.mode(WIFI_AP);
-      WiFi.softAP("rtk-walker-setup", "rtkwalker");
+      coreUnlock();
+      startSetupAp();
     }
   } else {
     weblogf("[wifi] no SSID configured — running AP only\n");
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("rtk-walker-setup", "rtkwalker");
+    startSetupAp();
     weblogf("[wifi] AP ip=%s\n", WiFi.softAPIP().toString().c_str());
   }
 
+  static const char* authHeaderKeys[] = { "Authorization", "X-Auth-Token" };
+  server.collectHeaders(authHeaderKeys, 2);
+
   server.on("/",           HTTP_GET,  handleRoot);
   server.on("/api/status",        HTTP_GET,  handleStatus);
+  server.on("/api/auth",          HTTP_GET,  handleAuthGet);
+  server.on("/api/auth",          HTTP_POST, handleAuthPost);
   server.on("/api/record",        HTTP_POST, handleRecord);
   server.on("/api/tracks",        HTTP_GET,  handleTracks);
   server.on("/api/track/current", HTTP_GET,  handleTrackCurrent);
+  // Session maps (Recording-screen output) exposed for the web UI so it
+  // can mirror the Maps tab the operator sees on the device. List + per-
+  // slot detail are GET; view-control is POST.
+  server.on("/api/maps",          HTTP_GET,  handleMapsList);
+  server.on("/api/maps/view",     HTTP_POST, handleMapView);
+  // Per-obstacle delete. POST /api/maps/obstacles/delete?name=mapN_X_obstacle.csv
+  // wipes a single ring from /session/.
+  server.on("/api/maps/obstacles/delete", HTTP_POST, handleObstacleDelete);
   server.on("/api/log",           HTTP_GET,  handleLog);
   server.on("/api/gnss/send",     HTTP_POST, handleGnssSend);
   server.on("/api/i2c-scan",      HTTP_GET,  handleI2cScan);
@@ -1310,9 +2601,91 @@ void setup() {
   server.on("/api/battery/raw",   HTTP_GET,  handleBatteryRaw);
   server.on("/api/config", HTTP_GET,  handleConfigGet);
   server.on("/api/config", HTTP_POST, handleConfigPost);
+  // Server upload target (separate from WiFi/NTRIP — no reboot on save).
+  server.on("/api/config/server", HTTP_GET,  handleConfigServerGet);
+  server.on("/api/config/server", HTTP_POST, handleConfigServerPost);
+  server.on("/api/config/lora", HTTP_GET,  handleConfigLoraGet);
+  server.on("/api/config/lora", HTTP_POST, handleConfigLoraPost);
+  server.on("/api/rtcm/log",    HTTP_GET,  handleRtcmLog);
+  // Trigger an upload to the configured server. POSTs the freshly-built
+  // .novabundle to /api/admin-status/walker-bundles (SN-agnostic library).
+  server.on("/api/upload", HTTP_POST, handleUploadPost);
+  // OTA: ask the server whether a newer firmware is available, expose the
+  // result as JSON so the web UI can show the current/latest versions and
+  // an enable/disable state for the "Update now" button.
+  server.on("/api/ota/check", HTTP_GET, []() {
+    OtaCheckResult r = walkerOtaCheck();
+    StaticJsonDocument<512> doc;
+    doc["ok"] = r.ok;
+    doc["updateAvailable"] = r.updateAvailable;
+    doc["currentVersion"] = r.currentVersion;
+    doc["latestVersion"] = r.latestVersion;
+    doc["hasMd5"] = r.md5.length() == 32;
+    doc["hasSha256"] = r.sha256.length() == 64;
+    doc["hasSignature"] = r.signature.length() > 0;
+    doc["size"] = r.size;
+    doc["keyId"] = r.keyId;
+    doc["error"] = r.error;
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+  });
+
+  // OTA: trigger the actual update. Re-checks first so a stale browser tab
+  // can't apply a payload that has since been superseded. walkerOtaApply
+  // reboots on success and never returns; if we get here, it failed.
+  server.on("/api/ota/apply", HTTP_POST, []() {
+    if (!requireAuth()) return;
+    OtaCheckResult r = walkerOtaCheck();
+    if (!r.ok || !r.updateAvailable) {
+      server.send(200, "application/json", "{\"ok\":false,\"error\":\"no update\"}");
+      return;
+    }
+    String err;
+    bool ok = walkerOtaApply(r.url, r.md5, r.sha256, r.size,
+                             r.latestVersion, r.signature, r.keyId,
+                             nullptr, err);
+    StaticJsonDocument<256> doc;
+    doc["ok"] = ok;
+    doc["error"] = err;
+    String out;
+    serializeJson(doc, out);
+    server.send(ok ? 200 : 500, "application/json", out);
+  });
+
+  // Walker bundle export — produces a .novabundle zip and streams it back.
+  // Server-side (Task 8) consumes the same file to materialise a portable
+  // mower bundle. Always rebuilds on request so the latest /session/ state
+  // is reflected; the build cost is ~hundreds of ms for typical sessions.
+  server.on("/bundle.novabundle", HTTP_GET, []() {
+    if (!requireAuth()) return;
+    BundleBuilder bb(sessionStore);
+    String path = bb.build();
+    if (path.isEmpty()) {
+      server.send(500, "text/plain", "bundle build failed");
+      return;
+    }
+    File f = LittleFS.open(path, FILE_READ);
+    if (!f) {
+      server.send(500, "text/plain", "bundle open failed");
+      return;
+    }
+    server.sendHeader("Content-Disposition",
+                      "attachment; filename=\"walker.novabundle\"");
+    server.streamFile(f, "application/zip");
+    f.close();
+  });
   server.onNotFound([]() {
     if (server.uri().startsWith("/track/")) {
       handleTrackDownload();
+      return;
+    }
+    // /api/maps/<slot> is a dynamic path that ESP32 WebServer's static
+    // `server.on(...)` can't match, so route it through here. The list
+    // endpoint /api/maps is registered explicitly below and takes
+    // precedence over this fallback.
+    if (server.uri().startsWith("/api/maps/") && server.method() == HTTP_GET) {
+      handleMapDetail();
       return;
     }
     server.send(404, "text/plain", "not found");
@@ -1333,7 +2706,14 @@ void setup() {
 
 // ── Loop ────────────────────────────────────────────────────────────
 static uint32_t mainTickCount = 0;
-static uint32_t mainLastBeatMs = 0;
+
+// Deferred OTA boot-check: runs *once*, ~3 s after the WebServer comes
+// up. Putting this in setup() before server.begin() means a slow or
+// dead manifest endpoint blocks setup() for up to 30 s (the HTTPClient
+// default timeout) — and during those 30 s the user can't load the
+// web UI. Running it from the main loop instead lets server.handleClient()
+// answer requests immediately while OTA still checks on its own.
+static bool otaBootCheckDone = false;
 
 void loop() {
   // gnssPump() drains the UART RX buffer first — bytes flowing at
@@ -1344,41 +2724,90 @@ void loop() {
   server.handleClient();
   ntripPump();
   gnssPump();
+  walkerLoraPump();
   buttonPump();
   batteryPump();
   tftTick();
 
-  // Diagnostic heartbeat — paired with the LVGL task heartbeat printed
-  // every 5 s from refresh_status_cb. If one disappears we know exactly
-  // which task is stuck.
+  // Deferred OTA boot-check. Wait 3 s after boot so WiFi + WebServer
+  // are firmly up + the first user request (if any) lands fast. After
+  // that one tick we're done — manual checks via /api/ota/check or the
+  // TFT button take over.
+  if (!otaBootCheckDone && millis() > 3000 && WiFi.status() == WL_CONNECTED) {
+    otaBootCheckDone = true;
+    walkerOtaAutoTick(false);
+  }
+
+  // Drain a deferred on-device view refresh requested by an HTTP
+  // handler (e.g. /api/maps/obstacles/delete). Runs OUTSIDE the
+  // HTTP critical section so the few hundred ms of LittleFS work
+  // doesn't starve gnssPump(). gnssPump() ran two lines up already
+  // and runs again right after this, so even the worst-case UART
+  // pause stays under the FIFO depth.
+  if (g_pendingViewRefreshSlot >= 0) {
+    int slot = g_pendingViewRefreshSlot;
+    g_pendingViewRefreshSlot = -1;
+    tft_ui_view_map_slot(slot);
+    gnssPump();
+  }
+
+  // Diagnostic heartbeats were noisy on the serial console after the UI
+  // refactor — both [main-tick] and [lvgl-tick] are removed. If a future
+  // hang investigation needs them back, the previous block recorded a
+  // per-task counter + heap + LVGL checkpoint every 5 s.
   mainTickCount++;
-  uint32_t nowMs = millis();
-  if (nowMs - mainLastBeatMs >= 5000) {
-#ifdef HAS_TFT_DISPLAY
-    // Pull the LVGL task's latest checkpoint into this print so when
-    // the [lvgl-tick] stream stops we still know where it died. The
-    // age (ms since last LVGL refresh callback fired) confirms whether
-    // it's truly stuck or just slow.
-    extern volatile uint8_t  g_lvgl_checkpoint;
-    extern volatile uint32_t g_lvgl_last_tick_ms;
-    uint32_t lvglAgeMs = nowMs - g_lvgl_last_tick_ms;
-    Serial.printf("[main-tick] count=%u heap=%u min=%u uptime=%lus core=%d lvgl_cp=%u lvgl_age=%ums\n",
-                  (unsigned) mainTickCount,
-                  (unsigned) ESP.getFreeHeap(),
-                  (unsigned) ESP.getMinFreeHeap(),
-                  (unsigned long) (nowMs / 1000),
-                  xPortGetCoreID(),
-                  (unsigned) g_lvgl_checkpoint,
-                  (unsigned) lvglAgeMs);
-#else
-    Serial.printf("[main-tick] count=%u heap=%u min=%u uptime=%lus core=%d\n",
-                  (unsigned) mainTickCount,
-                  (unsigned) ESP.getFreeHeap(),
-                  (unsigned) ESP.getMinFreeHeap(),
-                  (unsigned long) (nowMs / 1000),
-                  xPortGetCoreID());
-#endif
-    mainLastBeatMs = nowMs;
+
+  // Temporary session debug shell — remove in Task 5 cleanup
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd == "session-list") {
+      MapEntry entries[3];
+      size_t count = 0;
+      sessionStore.listMaps(entries, 3, count);
+      Serial.printf("Maps: %d\n", count);
+      for (size_t i = 0; i < count; i++) {
+        Serial.printf("  slot=%d alias=%s pts=%d obs=%d ch=%d\n",
+                      entries[i].slot, entries[i].alias.c_str(),
+                      entries[i].boundaryPoints, entries[i].obstacleCount,
+                      entries[i].channelCount);
+      }
+    } else if (cmd == "session-reset") {
+      sessionStore.reset();
+      Serial.println("session reset");
+    }
+    else if (cmd == "rec-work") {
+      int s = -1;
+      if (recorder.startWork(s)) Serial.printf("started work slot=%d\n", s);
+      else Serial.println("startWork failed (max slots reached?)");
+    }
+    else if (cmd.startsWith("rec-obs")) {
+      String rest = cmd.substring(7); rest.trim();
+      int slot = rest.toInt();
+      if (recorder.startObstacle(slot)) Serial.printf("started obstacle for parent=%d\n", slot);
+      else Serial.println("startObstacle failed");
+    }
+    else if (cmd.startsWith("rec-ch ")) {
+      int sp = cmd.indexOf(' ', 7);
+      int slot = cmd.substring(7, sp).toInt();
+      String target = cmd.substring(sp + 1); target.trim();
+      if (recorder.startChannel(slot, target)) Serial.printf("started channel %d->%s\n", slot, target.c_str());
+      else Serial.println("startChannel failed");
+    }
+    else if (cmd == "rec-stop") {
+      recorder.stop(false);
+      Serial.println("stopped (saved)");
+    }
+    else if (cmd == "rec-cancel") {
+      recorder.stop(true);
+      Serial.println("stopped (discarded)");
+    }
+    else if (cmd == "rec-status") {
+      const auto& s = recorder.state();
+      Serial.printf("mode=%d parent=%d obsIdx=%d target=%s captured=%lu dropped=%lu fixQ=%d\n",
+          (int)s.mode, s.parentSlot, s.obstacleIdx, s.channelTarget.c_str(),
+          s.pointsCaptured, s.pointsDropped, (int)s.lastFixQuality);
+    }
   }
 
   delay(1);
@@ -1389,6 +2818,7 @@ void loop() {
 // uses these via tft_ui.cpp; the headless target compiles them too
 // (they're cheap) but nothing calls them.
 void walkerGetSnapshot(WalkerSnapshot& out) {
+  coreLock();
   out.lat        = st.lat;
   out.lng        = st.lng;
   out.alt        = st.alt;
@@ -1400,11 +2830,11 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   out.ntripBytes = st.ntripBytes;
   out.wifiUp     = (WiFi.status() == WL_CONNECTED);
   out.apMode     = !out.wifiUp && WiFi.getMode() == WIFI_AP;
-  out.ntripUp    = ntrip.connected();
+  out.ntripUp    = (ntripState == NTRIP_STREAMING);
   out.gnssAlive  = (lastGnssByteMs != 0);
   out.msSinceGnssByte = lastGnssByteMs ? (millis() - lastGnssByteMs) : (uint32_t) 0xFFFFFFFF;
   out.gnssRateHz   = gnssRateHz;
-  out.gnss5HzAcked = pair050Acked && lastPair001Result == 0;
+  out.gnss5HzAcked = pair050Acked;
   out.wifiConnectFailed = wifiConnectFailed;
   out.wifiFailReason    = wifiFailReason;
 #ifdef BAT_ADC
@@ -1427,12 +2857,21 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   }
   out.areaM2   = (float) lastAreaM2;
   out.wifiSsid   = cfg.ssid;
+  out.authConfigured = cfg.authToken.length() > 0;
+  WalkerLoraStats lstats;
+  walkerLoraGetStats(lstats);
+  out.loraActive          = lstats.active;
+  out.loraModuleReady     = lstats.moduleReady;
+  out.loraBytesForwarded  = lstats.bytesForwarded;
+  out.loraFramesReceived  = lstats.framesReceived;
+  coreUnlock();
   if (out.wifiUp)        out.wifiIp = WiFi.localIP().toString();
   else if (out.apMode)   out.wifiIp = WiFi.softAPIP().toString();
   else                   out.wifiIp = "";
 }
 
 void walkerGetConfig(WalkerConfigView& out) {
+  coreLock();
   out.wifiSsid        = cfg.ssid;
   out.wifiPassMasked  = cfg.pass.length() ? "********" : "";
   out.ntripHost       = cfg.ntripHost;
@@ -1440,6 +2879,14 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.ntripMount      = cfg.ntripMount;
   out.ntripUser       = cfg.ntripUser;
   out.ntripPassMasked = cfg.ntripPass.length() ? "********" : "";
+  out.serverUrl       = cfg.serverUrl;
+  out.otaAutoCheck    = cfg.otaAutoCheck;
+  out.authConfigured  = cfg.authToken.length() > 0;
+  out.loraAddr     = cfg.loraAddr;
+  out.loraChannel  = cfg.loraChannel;
+  out.loraHc       = cfg.loraHc;
+  out.loraLc       = cfg.loraLc;
+  coreUnlock();
 }
 
 void walkerApplyConfig(const WalkerConfigUpdate& upd) {
@@ -1462,6 +2909,12 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
           upd.ntripUserSet  ? "set" : "kept",
           upd.ntripPassSet  ? "set" : "kept (blank in form)");
 
+  bool needsReboot = upd.wifiSsidSet || upd.wifiPassSet ||
+                     upd.ntripHostSet || upd.ntripPortSet ||
+                     upd.ntripMountSet || upd.ntripUserSet ||
+                     upd.ntripPassSet;
+
+  coreLock();
   if (upd.wifiSsidSet)  { cfg.ssid       = upd.wifiSsid;  }
   if (upd.wifiPassSet)  { cfg.pass       = upd.wifiPass;  }
   if (upd.ntripHostSet) { cfg.ntripHost  = upd.ntripHost; }
@@ -1469,17 +2922,64 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   if (upd.ntripMountSet){ cfg.ntripMount = upd.ntripMount;}
   if (upd.ntripUserSet) { cfg.ntripUser  = upd.ntripUser; }
   if (upd.ntripPassSet) { cfg.ntripPass  = upd.ntripPass; }
+  if (upd.otaAutoCheckSet) { cfg.otaAutoCheck = upd.otaAutoCheck; }
+  bool loraChanged = false;
+  if (upd.loraAddrSet)    { cfg.loraAddr    = upd.loraAddr;    loraChanged = true; }
+  if (upd.loraChannelSet) { cfg.loraChannel = upd.loraChannel; loraChanged = true; }
+  if (upd.loraHcSet)      { cfg.loraHc      = upd.loraHc;      loraChanged = true; }
+  if (upd.loraLcSet)      { cfg.loraLc      = upd.loraLc;      loraChanged = true; }
   saveConfig();
-  weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
-          (unsigned) cfg.pass.length());
-  delay(500);
-  ESP.restart();
+  if (needsReboot) {
+    weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
+            (unsigned) cfg.pass.length());
+  } else {
+    weblogf("[cfg] saved via TFT (no WiFi/NTRIP changes; no reboot)\n");
+  }
+  // Snapshot LoRa config under the lock so walkerLoraReconfigure gets a
+  // consistent copy even if another task writes cfg immediately after unlock.
+  WalkerLoraConfig newLoraCfg = { cfg.loraAddr, cfg.loraChannel, cfg.loraHc, cfg.loraLc };
+  coreUnlock();
+
+  if (loraChanged) {
+    walkerLoraReconfigure(newLoraCfg);
+  }
+  if (needsReboot) {
+    delay(500);
+    ESP.restart();
+  }
 }
 
 bool walkerToggleRecording() {
-  if (st.recording) stopRecording();
+  coreLock();
+  bool wasRecording = st.recording;
+  coreUnlock();
+  if (wasRecording) stopRecording();
   else              startRecording();
-  return st.recording;
+  coreLock();
+  bool nowRecording = st.recording;
+  coreUnlock();
+  return nowRecording;
+}
+
+String walkerLastTrackPath() {
+  coreLock();
+  String path = lastTrackPath;
+  coreUnlock();
+  return path;
+}
+
+uint32_t walkerLastTrackPoints() {
+  coreLock();
+  uint32_t points = lastTrackPoints;
+  coreUnlock();
+  return points;
+}
+
+void walkerSetLastTrack(const String& path, uint32_t points) {
+  coreLock();
+  lastTrackPath = path;
+  lastTrackPoints = points;
+  coreUnlock();
 }
 
 size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
@@ -1508,4 +3008,24 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
   }
   livePointsUnlock();
   return result;
+}
+
+void walkerPumpGnss() {
+  // Wraps gnssPump() so external compilation units (the TFT loaders in
+  // tft_ui.cpp) can drain the UART RX FIFO without sharing the .cpp's
+  // static globals. Safe to call from anywhere on the main thread.
+  gnssPump();
+}
+
+void walkerResetTrail() {
+  livePointsLock();
+  livePoints.clear();
+  livePointsUnlock();
+  coreLock();
+  firstLat = 0;
+  firstLng = 0;
+  prevLat  = 0;
+  prevLng  = 0;
+  walkedM  = 0;
+  coreUnlock();
 }

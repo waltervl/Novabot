@@ -37,12 +37,17 @@ All MQTT messages are JSON objects. The **command name is the root key**:
 
 ```json title="Command (app → device)"
 {
-  "start_run": {
-    "mapName": "map0",
-    "cutGrassHeight": 5
+  "start_navigation": {
+    "mapName": "test",
+    "area": 1,
+    "cutterhigh": 2,
+    "cmd_num": 12345
   }
 }
 ```
+
+!!! note "About `mapName` and `area`"
+    `mapName` is a hardcoded literal string `"test"` in the app, NOT the real map name. The active map is selected by the `area` bitfield: `1` = map0, `10` = map1, `200` = map2. The `cutterhigh` value is the 0..7 enum (see [Mowing Commands](mowing-commands.md#cutterhigh-cutting-height)).
 
 ```json title="Response (device → app)"
 {
@@ -67,11 +72,13 @@ All MQTT messages are JSON objects. The **command name is the root key**:
 
 ## Encryption
 
-| Device | Encryption | Details |
-|--------|-----------|---------|
-| Charger | **None** (plain JSON) | Published to `Dart/Receive_mqtt/LFIC...` |
+| Device | Firmware | Encryption | Details |
+|--------|----------|-----------|---------|
+| Charger | v0.3.6 | **None** (plain JSON) | Published to `Dart/Receive_mqtt/LFIC...` |
+| Charger | v0.4.0+ | **AES-128-CBC** | Same scheme as mower v6+ |
+| Mower | v5.x | **None** (plain JSON) | Pre-AES firmware |
 <!-- PRIVATE -->
-| Mower | **AES-128-CBC** | Key = `"abcdabcd1234" + SN[-4:]`, IV = `"abcd1234abcd1234"` |
+| Mower | v6.x+ | **AES-128-CBC** | Key = `"abcdabcd1234" + SN[-4:]`, IV = `"abcd1234abcd1234"` |
 <!-- /PRIVATE -->
 
 See [Encryption](encryption.md) for full details.
@@ -80,7 +87,7 @@ See [Encryption](encryption.md) for full details.
 
 | Category | Commands | Page |
 |----------|----------|------|
-| Mowing | `start_run`, `stop_run`, `pause_run`, `resume_run`, `stop_time_run`, `timer_task`, `timer_task_active`, `timer_task_stop` | [Mowing](mowing-commands.md) |
+| Mowing | `start_navigation`, `pause_navigation`, `resume_navigation`, `stop_navigation` (v6.x active path); `start_run`, `stop_run`, `pause_run`, `resume_run`, `stop_time_run` (legacy charger-relay path); `timer_task`, `timer_task_active`, `timer_task_stop` | [Mowing](mowing-commands.md) |
 | Navigation | `start_navigation`, `stop_navigation`, `navigate_to_position`, `go_to_charge`, `go_pile`, `start_patrol`, `stop_patrol`, `set_navigation_max_speed` | [Navigation](navigation-commands.md) |
 | Mapping | `start_scan_map`, `save_map`, `area_set`, `delete_map`, `rename_map`, `get_mapping_path2d` | [Mapping](mapping-commands.md) |
 | Device Management | `get_para_info`, `set_para_info`, `ota_upgrade_cmd`, `get_current_pose`, `get_vel_odom`, `set_control_mode`, `get_control_mode` | [Device Management](device-management.md) |
@@ -120,4 +127,4 @@ graph TB
 ## Command Routing
 
 !!! important "Not all commands go through the charger"
-    Only **6 basic mowing commands** are relayed via the charger's LoRa bridge (`start_run`, `pause_run`, `resume_run`, `stop_run`, `stop_time_run`, `go_pile`). All other commands (mapping, navigation, patrol, diagnostics, etc.) go **directly to the mower via WiFi MQTT**, bypassing the charger entirely.
+    Only the **6 legacy mowing commands** are relayed via the charger's LoRa bridge (`start_run`, `pause_run`, `resume_run`, `stop_run`, `stop_time_run`, `go_pile`). This applies to the legacy `*_run` flow only. The new `*_navigation` protocol used by v6.x firmware goes **directly to the mower via WiFi MQTT**, bypassing the charger entirely. All other commands (mapping, navigation, patrol, diagnostics, etc.) also go direct to the mower.

@@ -7,8 +7,8 @@
 | MCU | ESP32-S3-WROOM (Xtensa LX7, dual core, 240MHz) |
 | Flash | 8MB (GigaDevice GD25Q64) |
 | ESP-IDF | v4.4.2-dirty |
-| Active firmware | v0.3.6 (ota_0) |
-| Inactive firmware | v0.4.0 (ota_1) |
+| Example charger seen | ota_0=v0.3.6 active, ota_1=v0.4.0 |
+| Production reference | v0.4.0 |
 | Architecture | **MQTT ↔ LoRa bridge** |
 
 The charger does NOT execute mowing commands itself — it translates MQTT JSON to binary LoRa packets and vice versa.
@@ -22,13 +22,13 @@ The charger does NOT execute mowing commands itself — it translates MQTT JSON 
 | log_status | data | 0x19000 | 16KB | Log status |
 | otadata | data | 0x1D000 | 8KB | OTA boot selection |
 | phy_init | data | 0x1F000 | 4KB | PHY calibration |
-| **ota_0** | app | 0x20000 | 1856KB | **v0.3.6 (ACTIVE)** |
-| ota_1 | app | 0x1F0000 | 1856KB | v0.4.0 (inactive) |
+| **ota_0** | app | 0x20000 | 1856KB | example: v0.3.6 (active on test unit) |
+| ota_1 | app | 0x1F0000 | 1856KB | example: v0.4.0 (inactive on test unit) |
 | coredump | data | 0x3C0000 | 64KB | Core dump |
 | log_info | data | 0x3D0000 | 64KB | Log info |
 | reserved | data | 0x3E0000 | 128KB | Reserved |
 
-OTA boot state: `ota_seq = 7` → `(7-1) % 2 = 0` → **ota_0 is active**.
+OTA boot state on the example unit: `ota_seq = 7` → `(7-1) % 2 = 0` → ota_0 was active. Production reference is v0.4.0.
 
 ## NVS Storage
 
@@ -68,7 +68,7 @@ OTA boot state: `ota_seq = 7` → `(7-1) % 2 = 0` → **ota_0 is active**.
 <!-- /PRIVATE -->
 | Port | 1883 |
 | Client ID | Serial number |
-| **No username/password** | Charger v0.3.6 sends no credentials |
+| Credentials | v0.3.6 connects without sending credentials; v0.4.0+ uses static cloud-provided MQTT creds (`li9hep19` / `jzd4wac6`) |
 | Publish topic | `Dart/Receive_mqtt/<SN>` (QoS 0) |
 | Subscribe topic | `Dart/Send_mqtt/<SN>` (QoS 1) |
 | Publish interval | ~2 seconds (`up_status_info`) |

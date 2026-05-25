@@ -97,7 +97,7 @@ Tap a row to see the path the mower took during that session, plotted on the map
 
 ## Messages
 
-Robot messages + alerts: low battery, blade stuck, lifted off ground, lost localization, recharge requested. Unread count shows as a badge on the tab.
+Robot messages + alerts: low battery, blade stuck, lifted off ground, lost localization, recharge requested. The Messages tab is a **poll-based inbox** (the app fetches the server's stored `robot_messages` queue on open / refresh); it is not a push channel. For real-time push (the OS-level pop-up while the app is closed), see the Notifications section below and the [Notifications setup](../guide/notifications.md) page.
 
 Tap a message to see full detail. Swipe to delete. "Mark all read" button at the top.
 
@@ -114,7 +114,7 @@ Lose connection mid-control and the mower auto-stops within a couple of seconds 
 
 ## Camera
 
-Live camera feed from the mower's onboard camera. Only available on hardware revisions that have a camera (newer LFIN2 + LFIN3 boards).
+Live camera feed from the mower's onboard camera. Only available on hardware revisions that have a camera fitted.
 
 ## OTA
 
@@ -147,7 +147,7 @@ Changes save instantly via MQTT — no separate "Save" button.
 
 ## App updates
 
-The Android app polls `downloads.ramonvanbruggen.nl` every time it opens (and every 12 h in background) for new releases. When one is available, you get a one-tap install prompt with the changelog.
+The Android app polls `downloads.ramonvanbruggen.nl` every time it foregrounds and every 12 hours in the background for new releases. When one is available, you get a one-tap install prompt with the changelog.
 
 iOS users get the same prompt but it links to TestFlight / the GitHub release page — Apple doesn't allow auto-install from outside the App Store.
 

@@ -18,19 +18,40 @@ export function adminPageHtml(): string {
 <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 <style>
   @font-face {
+    font-family:'Departure Mono';
+    src:url('/fonts/DepartureMono-Regular.woff2') format('woff2'),
+        url('/fonts/DepartureMono-Regular.woff') format('woff');
+    font-weight:normal;font-style:normal;font-display:swap;
+  }
+  /* Roboto Mono for console/log areas. Same font honcho.dev uses on
+     their dashboard. Variable weight 100-700; the .woff2 is the Latin
+     subset shipped via Next.js Font Optimization on app.honcho.dev. */
+  @font-face {
+    font-family:'Roboto Mono';
+    src:url('/fonts/RobotoMono-Variable.woff2') format('woff2');
+    font-weight:100 700;font-style:normal;font-display:swap;
+    unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+  }
+  /* Legacy Posterama kept for any inline overrides that still reference
+     it. New work should use Departure Mono. */
+  @font-face {
     font-family:'Posterama 1919';
     src:url('/fonts/Posterama1919.woff2') format('woff2'),
         url('/fonts/Posterama1919.ttf') format('truetype');
     font-weight:normal;font-style:normal;font-display:swap;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:system-ui,-apple-system,sans-serif;background:#030712;color:#e0e0e0;min-height:100vh}
-  /* Display font for headers, tabs, chips, badges, buttons — body stays system-ui */
-  h1,h2,h3,.tab,.chip,.badge,.btn,button{font-family:'Posterama 1919',system-ui,sans-serif;letter-spacing:0.08em}
-  h1{letter-spacing:0.18em;text-transform:uppercase}
-  h2{letter-spacing:0.16em}
-  .tab{letter-spacing:0.12em;text-transform:uppercase}
-  .badge{letter-spacing:0.08em;text-transform:uppercase}
+  /* Departure Mono throughout, in honcho.dev style. The pixel monospace
+     feel matches the OpenNova terminal aesthetic. Fallback chain ends in
+     system monospace so the page stays readable if the font fails to
+     load. Letter-spacing slightly relaxed since Departure Mono is wider
+     than Posterama; the old 0.08em looked stretched. */
+  body{font-family:'Departure Mono',ui-monospace,SFMono-Regular,Monaco,Consolas,Liberation Mono,Menlo,monospace;background:#030712;color:#e0e0e0;min-height:100vh}
+  h1,h2,h3,.tab,.chip,.badge,.btn,button{font-family:'Departure Mono',ui-monospace,SFMono-Regular,monospace;letter-spacing:0.04em}
+  h1{letter-spacing:0.12em;text-transform:uppercase}
+  h2{letter-spacing:0.10em}
+  .tab{letter-spacing:0.08em;text-transform:uppercase}
+  .badge{letter-spacing:0.06em;text-transform:uppercase}
   .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:1000;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s}
   .modal-overlay.show{opacity:1}
   .modal-box{background:#1a1a2e;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:24px;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
@@ -55,7 +76,7 @@ export function adminPageHtml(): string {
   .on{color:#00d4aa}
   .off{color:#ef4444}
   .warn{color:#f59e0b}
-  .sn{color:#a78bfa;font-family:monospace;font-size:12px;word-break:break-all}
+  .sn{color:#a78bfa;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;word-break:break-all}
   .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
   table{width:100%;border-collapse:collapse;font-size:13px;min-width:400px}
   th{text-align:left;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.1);white-space:nowrap}
@@ -283,7 +304,7 @@ export function adminPageHtml(): string {
       <div style="padding:6px 12px;border-bottom:1px solid rgba(255,255,255,.06)">
         <input id="f_search" type="text" placeholder="Search (e.g. start_run, error, LFIN...)" oninput="renderLogs()" style="width:100%;padding:6px 10px;font-size:12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff">
       </div>
-      <div id="mqttConsole" style="height:calc(100vh - 320px);min-height:300px;overflow-y:auto;font-family:monospace;font-size:11px;padding:8px;background:#0a0a1a;line-height:1.6;word-break:break-all"></div>
+      <div id="mqttConsole" style="height:calc(100vh - 320px);min-height:300px;overflow-y:auto;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;padding:8px;background:#0a0a1a;line-height:1.6;word-break:break-all"></div>
     </div>
   </div>
 
@@ -354,7 +375,7 @@ export function adminPageHtml(): string {
         <button onclick="mdCopyOutput()" style="padding:6px 12px;background:rgba(59,130,246,.15);color:#60a5fa;border:1px solid rgba(59,130,246,.2);border-radius:6px;font-size:11px;cursor:pointer">Copy visible</button>
         <button onclick="mdOutputLines=[];mdRenderOutput()" style="padding:6px 12px;background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.2);border-radius:6px;font-size:11px;cursor:pointer">Clear</button>
       </div>
-      <div id="mdOutput" style="height:calc(100vh - 460px);min-height:260px;overflow-y:auto;font-family:monospace;font-size:11px;padding:10px;background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;line-height:1.55;word-break:break-all;color:#ccc"></div>
+      <div id="mdOutput" style="height:calc(100vh - 460px);min-height:260px;overflow-y:auto;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;padding:10px;background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;line-height:1.55;word-break:break-all;color:#ccc"></div>
     </div>
   </div>
 
@@ -396,7 +417,7 @@ export function adminPageHtml(): string {
             <button class="cal-arrow" onclick="nudgePolygonOffset(0, 0.01, event)" title="North (Shift = 10 cm)">&uarr;</button>
             <span></span>
             <button class="cal-arrow" onclick="nudgePolygonOffset(-0.01, 0, event)" title="West (Shift = 10 cm)">&larr;</button>
-            <div id="polygonCalDisplay" style="background:#0d0d20;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:monospace;color:#9ca3af;padding:2px">+0.00, +0.00 m</div>
+            <div id="polygonCalDisplay" style="background:#0d0d20;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#9ca3af;padding:2px">+0.00, +0.00 m</div>
             <button class="cal-arrow" onclick="nudgePolygonOffset(0.01, 0, event)" title="East (Shift = 10 cm)">&rarr;</button>
             <span></span>
             <button class="cal-arrow" onclick="nudgePolygonOffset(0, -0.01, event)" title="South (Shift = 10 cm)">&darr;</button>
@@ -438,8 +459,8 @@ export function adminPageHtml(): string {
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <button onclick="exportPortableBundle()" style="padding:7px 18px;background:rgba(34,211,238,.2);color:#67e8f9;border:1px solid rgba(34,211,238,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Export bundle</button>
-          <input id="portableImportFile" type="file" accept=".novabotmap,.zip" style="display:none" onchange="startPortableImport()">
-          <button onclick="document.getElementById('portableImportFile').click()" style="padding:7px 18px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import bundle...</button>
+          <input id="portableImportFile" type="file" accept=".novabotmap,.novabundle,.zip" style="display:none" onchange="startPortableImport()">
+          <button onclick="document.getElementById('portableImportFile').click()" title="Accepts .novabotmap (mower export) and .novabundle (RTK walker export). Walker bundles are auto-rotated against the mower's live dock pose + rasterized server-side." style="padding:7px 18px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import bundle...</button>
           <button onclick="manualPortableBackup()" style="padding:7px 18px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Snapshot now</button>
           <button onclick="loadPortableBackups()" style="padding:7px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">&#x21BB; Refresh</button>
         </div>
@@ -450,84 +471,14 @@ export function adminPageHtml(): string {
         </div>
       </div>
 
-      <details style="padding:8px 12px;background:rgba(124,58,237,.04);border:1px solid rgba(124,58,237,.15);border-radius:8px;margin-top:16px">
-        <summary style="font-size:12px;font-weight:600;color:#a78bfa;cursor:pointer;list-style:none">Legacy Map Recovery (server-side ZIP backups) <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">LEGACY</span></summary>
-        <div style="font-size:10px;color:#94a3b8;margin:6px 0">DB→sync_map flow with same drift-bug history as legacy import. Use Portable Map Bundle above instead. Kept for cross-device debug + emergency restore.</div>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-          <select id="mapBackupSelect" onchange="loadBackupContents();previewBackupGhost()" style="flex:1;min-width:200px;padding:6px 10px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
-            <option value="">Select a backup snapshot...</option>
-          </select>
-          <button onclick="loadMapBackups(document.getElementById('mapMowerSelect').value)" style="padding:6px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">&#x21BB; Refresh</button>
-        </div>
-        <div id="mapBackupTree" style="margin-bottom:8px"></div>
-        <div id="conflictHelpers" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:6px">
-          <span style="font-size:11px;color:#fca5a5;font-weight:600">Conflicts found — choose default action:</span>
-          <button onclick="setAllConflicts(true)" style="padding:5px 12px;background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Overwrite all</button>
-          <button onclick="setAllConflicts(false)" style="padding:5px 12px;background:rgba(100,116,139,.12);color:#94a3b8;border:1px solid rgba(100,116,139,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Skip all</button>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button onclick="restoreBackup()" style="padding:7px 18px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Restore Backup</button>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1;cursor:pointer" title="Push restored maps to mower (sync_map MQTT + reload nav stack). Uncheck to update DB only.">
-            <input type="checkbox" id="restoreRealignChk" checked style="cursor:pointer">
-            Also push to mower (realign)
-          </label>
-          <a href="javascript:void(0)" onclick="document.getElementById('infoRestore').style.display=document.getElementById('infoRestore').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
-        </div>
-        <div id="infoRestore" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
-          <div><b style="color:#86efac">Without "push to mower" — DB-only restore:</b><br>
-            Replaces the selected polygon rows in the server DB. Mower keeps whatever it already has on disk until something else triggers a sync.</div>
-          <div style="margin-top:8px"><b style="color:#fca5a5">With "push to mower" — full realign:</b><br>
-            1) DB restore (overwrites all polygon rows from this backup ZIP)<br>
-            2) <code>map_calibration.charger_lat/lng</code> updated from mower's live RTK GPS<br>
-            3) <code>_latest.zip</code> regenerated with embedded charger pose<br>
-            4) Mower wipes <code>csv_file/</code> + <code>x3_csv_file/</code>, downloads fresh ZIP, rewrites <code>charging_station.yaml</code> and 4 mirror copies of <code>map_info.json</code> (5 files total)<br>
-            5) Mower restarts <code>novabot_mapping</code>, <code>coverage_planner_server</code>, and <code>auto_recharge_server</code></div>
-          <div style="margin-top:8px"><b style="color:#93c5fd">Use when:</b> polygon corruption, post-mapping rollback, or after admin map edits that need to land on the mower.</div>
-          <div style="margin-top:8px"><b style="color:#fbbf24">Required for realign:</b> mower online + RTK FIX + on dock (for the GPS update step).</div>
-        </div>
-      </details>
+    </div>
 
-      <details style="padding:8px 12px;background:rgba(239,68,68,.04);border:1px solid rgba(239,68,68,.15);border-radius:8px;margin-top:12px">
-        <summary style="font-size:12px;font-weight:600;color:#fca5a5;cursor:pointer;list-style:none">Debug — manual recalibrate charging pose <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">DEBUG</span></summary>
-        <div style="font-size:10px;color:#94a3b8;margin:6px 0">Use only when polygon shape is correct but dock pose drifted. Portable Map Bundle handles this automatically — only fall back here if exact-restore is unavailable.</div>
-        <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-top:8px">
-          <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
-            <b style="color:#fca5a5">Recovery — wrong charger pose causes mower to drive off target.</b><br>
-            Stock firmware needs a drive-back cycle to initialize localization
-            before the reported pose is trustworthy. While docked at boot,
-            <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
-            <b>Workflow:</b>
-            <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
-              <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1–2 m)</li>
-              <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
-              <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
-              <li>Then press <b>Recalibrate Charging Pose</b></li>
-            </ol>
-          </div>
-          <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:monospace">
-            <span style="color:#888">Loading localization status...</span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
-            <a href="javascript:void(0)" onclick="document.getElementById('infoRecal').style.display=document.getElementById('infoRecal').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
-          </div>
-          <div id="infoRecal" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
-            <div><b>Snaps the dock pose to where the mower currently sits.</b></div>
-            <div style="margin-top:6px"><b style="color:#86efac">Updates:</b> <code>charging_station.yaml</code> + <code>map_info.json</code> in <code>csv_file/</code> and <code>x3_csv_file/</code> on the mower (3 files). Saves the new theta in DB so subsequent <code>sync_map</code> calls reuse it.</div>
-            <div style="margin-top:6px"><b style="color:#fca5a5">Does NOT touch:</b> polygon CSVs, the <code>_latest.zip</code>, charger GPS, or the mower's coverage planner state.</div>
-            <div style="margin-top:6px"><b style="color:#93c5fd">Use when:</b> mower drifted after heading discovery or theta is wrong but the polygon shape itself is fine.</div>
-            <div style="margin-top:6px"><b style="color:#fbbf24">Required:</b> mower on dock + <code>battery_state == CHARGING</code> + RTK FIX + non-zero <code>map_position</code>.</div>
-          </div>
-          <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
-        </div>
-        <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
-          <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
-          <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">Live dual-trail diagnose during mow: cyan = firmware <code>map_position</code>, lime = RTK GPS via charger anchor. Δ between them flags drift or frame-rotation issues. Read-only — no apply button (use Portable Map Bundle exact-restore instead).</div>
-          <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:monospace">
-            <span style="color:#888">Select a mower to start validation polling.</span>
-          </div>
-        </div>
-      </details>
+    <div class="card">
+      <h2>Walker Maps <span class="refresh-btn" onclick="loadWalkerBundles()">&#x21BB;</span></h2>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;line-height:1.55">
+        Library of <code>.novabundle</code> files uploaded by the RTK walker. Each row is one survey session. Pick "Assign to mower..." to run the apply-verbatim pipeline against that mower's live charging pose. Uploads are SN-agnostic, so you can walk once and decide which mower gets the map later.
+      </div>
+      <div id="walkerBundleList" style="font-size:12px;color:#cbd5e1">Loading...</div>
     </div>
   </div>
 
@@ -551,6 +502,13 @@ export function adminPageHtml(): string {
           <tbody id="fwTableBody"><tr><td colspan="5" style="color:#aaa">Loading...</td></tr></tbody>
         </table>
       </div>
+
+      <details id="walkerFwDetails" style="padding:8px 12px;background:rgba(0,212,170,.04);border:1px solid rgba(0,212,170,.15);border-radius:8px;margin-top:16px">
+        <summary style="font-size:12px;font-weight:600;color:#5eead4;cursor:pointer;list-style:none">Walker firmware</summary>
+        <div style="font-size:10px;color:#94a3b8;margin:6px 0">RTK boundary walker (ESP32-S3) OTA binaries. The walker polls /api/walker-firmware/latest and downloads via the admin token stored in NVS. Use Refresh from manifest to pull a freshly published .bin from downloads.ramonvanbruggen.nl, or scp the .bin into the firmware directory and reload this list.</div>
+        <div id="walker-fw-list" style="margin-bottom:8px"><span style="color:#888;font-size:11px">Not loaded. Click Refresh to fetch the manifest.</span></div>
+        <button onclick="checkWalkerFirmware()" class="btn" style="padding:6px 14px;font-size:12px">Refresh from manifest</button>
+      </details>
     </div>
 
     <div class="card">
@@ -821,6 +779,50 @@ export function adminPageHtml(): string {
       </div>
     </div>
 
+    <div class="card">
+      <details style="padding:8px 12px;background:rgba(239,68,68,.04);border:1px solid rgba(239,68,68,.15);border-radius:8px">
+        <summary style="font-size:12px;font-weight:600;color:#fca5a5;cursor:pointer;list-style:none">Debug &mdash; manual recalibrate charging pose <span style="font-size:10px;background:rgba(148,163,184,.15);color:#94a3b8;padding:2px 6px;border-radius:4px;margin-left:6px">DEBUG</span></summary>
+        <div style="font-size:10px;color:#94a3b8;margin:6px 0">Use only when polygon shape is correct but dock pose drifted. Portable Map Bundle handles this automatically. Only fall back here if exact-restore is unavailable.</div>
+        <div style="padding:10px 12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;margin-top:8px">
+          <div style="font-size:11px;color:#aaa;margin-bottom:10px;line-height:1.5">
+            <b style="color:#fca5a5">Recovery: wrong charger pose causes mower to drive off target.</b><br>
+            Stock firmware needs a drive-back cycle to initialize localization
+            before the reported pose is trustworthy. While docked at boot,
+            <code>map_position</code> is always <code>(0, 0, 0)</code> placeholder.<br>
+            <b>Workflow:</b>
+            <ol style="margin:6px 0 0 18px;padding:0;color:#aaa;font-size:11px">
+              <li>Drive the mower a short distance off the dock (e.g. start a 10s mowing task or push it manually 1-2 m)</li>
+              <li>Let it return to dock so battery state shows <code>CHARGING</code></li>
+              <li>Wait until <code>localization_state</code> below shows <b>Localized</b> and <code>map_position</code> is non-zero</li>
+              <li>Then press <b>Recalibrate Charging Pose</b></li>
+            </ol>
+          </div>
+          <div id="mapLocalizationStatus" style="font-size:11px;color:#ccc;background:#0d0d20;border:1px solid #2a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+            <span style="color:#888">Loading localization status...</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button onclick="recalibrateChargingPose()" id="mapRecalBtn" style="padding:8px 16px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Recalibrate Charging Pose</button>
+            <a href="javascript:void(0)" onclick="document.getElementById('infoRecal').style.display=document.getElementById('infoRecal').style.display==='block'?'none':'block'" style="font-size:11px;color:#94a3b8;text-decoration:underline;cursor:pointer">What does this do?</a>
+          </div>
+          <div id="infoRecal" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:11px;color:#cbd5e1;line-height:1.55">
+            <div><b>Snaps the dock pose to where the mower currently sits.</b></div>
+            <div style="margin-top:6px"><b style="color:#86efac">Updates:</b> <code>charging_station.yaml</code> + <code>map_info.json</code> in <code>csv_file/</code> and <code>x3_csv_file/</code> on the mower (3 files). Saves the new theta in DB so subsequent <code>sync_map</code> calls reuse it.</div>
+            <div style="margin-top:6px"><b style="color:#fca5a5">Does NOT touch:</b> polygon CSVs, the <code>_latest.zip</code>, charger GPS, or the mower's coverage planner state.</div>
+            <div style="margin-top:6px"><b style="color:#93c5fd">Use when:</b> mower drifted after heading discovery or theta is wrong but the polygon shape itself is fine.</div>
+            <div style="margin-top:6px"><b style="color:#fbbf24">Required:</b> mower on dock + <code>battery_state == CHARGING</code> + RTK FIX + non-zero <code>map_position</code>.</div>
+          </div>
+          <div id="mapRecalStatus" style="font-size:12px;margin-top:8px;display:none"></div>
+        </div>
+        <div style="margin-top:10px;padding:10px 12px;background:rgba(34,211,238,.05);border:1px solid rgba(34,211,238,.18);border-radius:8px">
+          <div style="font-size:11px;font-weight:600;color:#67e8f9;margin-bottom:6px">Position Validation (RTK FIX only)</div>
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:6px">Live dual-trail diagnose during mow: cyan = firmware <code>map_position</code>, lime = RTK GPS via charger anchor. Delta between them flags drift or frame-rotation issues. Read-only (use Portable Map Bundle exact-restore instead).</div>
+          <div id="positionValidationPanel" style="font-size:11px;color:#ccc;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+            <span style="color:#888">Select a mower to start validation polling.</span>
+          </div>
+        </div>
+      </details>
+    </div>
+
     <div class="card" style="border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.04)">
       <h2 style="color:#ef4444">Danger Zone</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">Permanently delete all data and start fresh. This removes your account, all devices, maps, and settings. This action cannot be undone.</p>
@@ -886,8 +888,22 @@ function switchTab(name) {
   if (name === 'settings') { checkDns(); checkDnsmasqStatus(); }
   if (name === 'mowerdebug') { mdPopulateDropdown(); }
   // Load maps when switching to maps tab
-  if (name === 'maps') { populateMowerDropdown(); }
-  if (name === 'firmware') { loadFirmwareVersions(); populateOtaDeviceDropdown(); }
+  if (name === 'maps') { populateMowerDropdown(); loadWalkerBundles(); }
+  if (name === 'firmware') { loadFirmwareVersions(); populateOtaDeviceDropdown(); wireWalkerFwToggle(); }
+}
+
+// Lazy-load walker firmware list the first time the operator expands the
+// "Walker firmware" details panel. Mirrors how other sections defer fetch
+// until visible — avoids hammering the remote manifest on every tab open.
+var _walkerFwWired = false;
+function wireWalkerFwToggle() {
+  if (_walkerFwWired) return;
+  var el = document.getElementById('walkerFwDetails');
+  if (!el) return;
+  _walkerFwWired = true;
+  el.addEventListener('toggle', function() {
+    if (el.open) checkWalkerFirmware();
+  });
 }
 
 // ── MQTT Console ──────────────────────────────────────────────────
@@ -1548,7 +1564,7 @@ function showServerUpdateHint() {
   appModal({
     title: 'How to update',
     bodyHtml: 'Pull + restart the OpenNova container on your host:'
-      + '<pre style="margin:10px 0;padding:10px 12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#86efac;font-family:monospace;font-size:12px;overflow-x:auto">docker compose pull\\ndocker compose up -d</pre>'
+      + '<pre style="margin:10px 0;padding:10px 12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#86efac;font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;overflow-x:auto">docker compose pull\\ndocker compose up -d</pre>'
       + '<div style="font-size:12px;color:#cbd5e1;margin-top:8px">Or if running on a NAS Portainer / Synology setup, trigger an image refresh from the UI.</div>',
     accent: 'info',
     buttons: [{ text: 'OK', primary: true }],
@@ -2827,7 +2843,7 @@ async function loadPortableBackups() {
       var b = backups[i];
       var dt = new Date(b.createdAt).toLocaleString('nl-NL');
       var kb = (b.bytes / 1024).toFixed(1);
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:4px;font-family:monospace;font-size:11px">';
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:4px;font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">';
       html += '<span><span style="color:#cbd5e1">' + dt + '</span> · <span style="color:#67e8f9">' + b.reason + '</span> · <span style="color:#888">' + kb + ' KB</span></span>';
       html += '<span style="display:flex;gap:4px">';
       html += '<button onclick="restorePortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(16,185,129,.15);color:#86efac;border:1px solid rgba(16,185,129,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">Restore</button>';
@@ -2923,6 +2939,357 @@ async function startPortableImport() {
   portableSourceSn = j.sourceSn || null;
   portableSourceSnMatches = !!j.sourceSnMatches;
   renderPortableImportWizard(sn, 'UPLOADED');
+}
+
+// startWalkerImport removed: the "Import bundle..." button now accepts
+// .novabotmap AND .novabundle. Server inspects metadata.json on upload
+// and auto-synthesizes walker bundles via synthesizePortableFromWalker
+// before staging. One unified flow for the operator.
+
+// ── Walker bundle library — SN-agnostic uploads + assign-to-mower ─────────
+// The walker POSTs .novabundle files to /walker-bundles. The list below lets
+// the operator inspect each upload and pick a target mower to run the
+// apply-verbatim pipeline against. DOM is built with createElement /
+// textContent only — no innerHTML with computed content — so a malicious
+// filename or walker id can never inject markup.
+
+function fmtBytes(n) {
+  if (n == null || !isFinite(n)) return '?';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function fmtWalkerDate(iso) {
+  if (!iso) return '?';
+  try {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  } catch (e) { return iso; }
+}
+
+async function loadWalkerBundles() {
+  var host = document.getElementById('walkerBundleList');
+  if (!host) return;
+  host.textContent = 'Loading...';
+  try {
+    var d = await api('/walker-bundles');
+    var bundles = d.bundles || [];
+    host.textContent = '';
+    if (bundles.length === 0) {
+      var empty = document.createElement('div');
+      empty.style.color = '#888';
+      empty.style.fontStyle = 'italic';
+      empty.textContent = 'No walker bundles yet. Hit "Upload to server" on the walker once a survey is finished.';
+      host.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < bundles.length; i++) {
+      host.appendChild(renderWalkerBundleRow(bundles[i]));
+    }
+  } catch (e) {
+    host.textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+function renderWalkerBundleRow(b) {
+  var row = document.createElement('div');
+  row.style.padding = '10px 12px';
+  row.style.background = 'rgba(168,139,250,.06)';
+  row.style.border = '1px solid rgba(168,139,250,.25)';
+  row.style.borderRadius = '8px';
+  row.style.marginBottom = '8px';
+  row.style.display = 'flex';
+  row.style.flexWrap = 'wrap';
+  row.style.gap = '12px';
+  row.style.alignItems = 'center';
+
+  var left = document.createElement('div');
+  left.style.flex = '1 1 360px';
+  left.style.minWidth = '0';
+
+  var name = document.createElement('div');
+  name.style.fontWeight = '600';
+  name.style.color = '#e9d5ff';
+  name.style.fontFamily = 'monospace';
+  name.style.fontSize = '12px';
+  name.style.wordBreak = 'break-all';
+  name.textContent = b.filename;
+  left.appendChild(name);
+
+  var meta = document.createElement('div');
+  meta.style.fontSize = '11px';
+  meta.style.color = '#94a3b8';
+  meta.style.marginTop = '4px';
+  var parts = [
+    'Uploaded ' + fmtWalkerDate(b.uploadedAt),
+    'Walker ' + (b.walkerId || 'unknown'),
+    fmtBytes(b.sizeBytes),
+    (b.polygons || 0) + ' polygon(s)',
+    (b.obstacles || 0) + ' obstacle(s)',
+    (b.unicom || 0) + ' channel(s)',
+  ];
+  meta.textContent = parts.join(' · ');
+  left.appendChild(meta);
+
+  if (b.lastAssignedSn) {
+    var assigned = document.createElement('div');
+    assigned.style.fontSize = '11px';
+    assigned.style.color = '#86efac';
+    assigned.style.marginTop = '4px';
+    assigned.textContent = 'Last assigned to ' + b.lastAssignedSn + ' at ' + fmtWalkerDate(b.lastAssignedAt);
+    left.appendChild(assigned);
+  }
+
+  row.appendChild(left);
+
+  var actions = document.createElement('div');
+  actions.style.display = 'flex';
+  actions.style.gap = '6px';
+  actions.style.flexWrap = 'wrap';
+
+  var assignBtn = document.createElement('button');
+  assignBtn.textContent = 'Assign to mower...';
+  assignBtn.style.padding = '6px 12px';
+  assignBtn.style.background = 'rgba(16,185,129,.18)';
+  assignBtn.style.color = '#86efac';
+  assignBtn.style.border = '1px solid rgba(16,185,129,.45)';
+  assignBtn.style.borderRadius = '6px';
+  assignBtn.style.fontSize = '11px';
+  assignBtn.style.fontWeight = '600';
+  assignBtn.style.cursor = 'pointer';
+  assignBtn.onclick = function() { assignWalkerBundle(b); };
+  actions.appendChild(assignBtn);
+
+  var downloadBtn = document.createElement('a');
+  downloadBtn.textContent = 'Download';
+  downloadBtn.href = 'javascript:void(0)';
+  downloadBtn.style.padding = '6px 12px';
+  downloadBtn.style.background = 'rgba(99,102,241,.15)';
+  downloadBtn.style.color = '#a5b4fc';
+  downloadBtn.style.border = '1px solid rgba(99,102,241,.4)';
+  downloadBtn.style.borderRadius = '6px';
+  downloadBtn.style.fontSize = '11px';
+  downloadBtn.style.fontWeight = '600';
+  downloadBtn.style.cursor = 'pointer';
+  downloadBtn.style.textDecoration = 'none';
+  downloadBtn.onclick = function() { downloadWalkerBundle(b); };
+  actions.appendChild(downloadBtn);
+
+  var deleteBtn = document.createElement('button');
+  deleteBtn.textContent = 'Delete';
+  deleteBtn.style.padding = '6px 12px';
+  deleteBtn.style.background = 'rgba(239,68,68,.12)';
+  deleteBtn.style.color = '#fca5a5';
+  deleteBtn.style.border = '1px solid rgba(239,68,68,.35)';
+  deleteBtn.style.borderRadius = '6px';
+  deleteBtn.style.fontSize = '11px';
+  deleteBtn.style.fontWeight = '600';
+  deleteBtn.style.cursor = 'pointer';
+  deleteBtn.onclick = function() { deleteWalkerBundle(b); };
+  actions.appendChild(deleteBtn);
+
+  row.appendChild(actions);
+  return row;
+}
+
+async function downloadWalkerBundle(b) {
+  try {
+    var r = await fetch('/api/admin-status/walker-bundles/' + b.id, {
+      headers: { 'Authorization': token },
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var blob = await r.blob();
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = b.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    await appAlert('Download failed: ' + e.message, { accent: 'danger' });
+  }
+}
+
+async function deleteWalkerBundle(b) {
+  if (!(await appConfirm('Delete walker bundle ' + b.filename + '?', { okText: 'Delete', accent: 'danger' }))) return;
+  try {
+    var r = await fetch('/api/admin-status/walker-bundles/' + b.id, {
+      method: 'DELETE',
+      headers: { 'Authorization': token },
+    });
+    var j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'delete failed');
+    loadWalkerBundles();
+  } catch (e) {
+    await appAlert('Delete failed: ' + e.message, { accent: 'danger' });
+  }
+}
+
+async function assignWalkerBundle(b) {
+  // Fetch the list of mowers (devices) and let the operator pick one.
+  var devices;
+  try {
+    var r = await fetch('/api/admin-status/devices', { headers: { 'Authorization': token } });
+    var jd = await r.json();
+    devices = (jd.devices || []).filter(function(d) { return d.device_type === 'mower'; });
+  } catch (e) {
+    await appAlert('Failed to load mowers: ' + e.message, { accent: 'danger' });
+    return;
+  }
+  if (!devices.length) {
+    await appAlert('No mowers bound on this server. Bind one first via the Devices tab.', { accent: 'danger' });
+    return;
+  }
+
+  var picked = await pickMowerForBundle(b, devices);
+  if (!picked) return;
+
+  // Run the apply step against the picked SN.
+  var resp;
+  try {
+    var r2 = await fetch('/api/admin-status/walker-bundles/' + b.id + '/apply', {
+      method: 'POST',
+      headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sn: picked }),
+    });
+    resp = await r2.json();
+  } catch (e) {
+    await appAlert('Apply request failed: ' + e.message, { accent: 'danger' });
+    return;
+  }
+  if (!resp.ok) {
+    await appAlert('Apply failed: ' + (resp.error || 'unknown'), { accent: 'danger' });
+    return;
+  }
+
+  // Sync the rest of the import wizard state so portableApplyVerbatim picks
+  // up the freshly created staging session. mapMowerSelect MUST be set to
+  // the same SN — that's the input portableApplyVerbatim reads.
+  var sel = document.getElementById('mapMowerSelect');
+  if (sel) {
+    if (!sel.querySelector('option[value="' + picked + '"]')) {
+      var opt = document.createElement('option');
+      opt.value = picked;
+      opt.textContent = picked;
+      sel.appendChild(opt);
+    }
+    sel.value = picked;
+  }
+  portableStagingId = resp.stagingId;
+  portableVerbatimRestore = !!resp.verbatimRestore;
+  portableExactRestore = !!resp.exactRestore;
+  portableSourceSnMatches = true;
+  portableSourceSn = resp.sourceSn || null;
+
+  var polygonSummary = (resp.polygons || [])
+    .map(function(p) { return '· ' + (p.alias || p.name) + ' (' + p.pointCount + ' pts)'; })
+    .join('\\n');
+  var msg = 'Walker bundle staged for ' + picked + '.\\n\\n' +
+            (polygonSummary || '(no polygon details returned)') + '\\n\\n' +
+            'Apply verbatim now? The dock-anchor refresh modal will follow.';
+  if (!(await appConfirm(msg, { okText: 'Apply' }))) {
+    loadWalkerBundles();
+    return;
+  }
+  await portableApplyVerbatim();
+  loadWalkerBundles();
+}
+
+function pickMowerForBundle(b, devices) {
+  return new Promise(function(resolve) {
+    var overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.background = 'rgba(0,0,0,0.6)';
+    overlay.style.zIndex = '5000';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+
+    var box = document.createElement('div');
+    box.style.background = '#0d0d20';
+    box.style.border = '1px solid rgba(168,139,250,.4)';
+    box.style.borderRadius = '12px';
+    box.style.padding = '20px';
+    box.style.maxWidth = '440px';
+    box.style.width = '90%';
+    box.style.color = '#fff';
+    box.style.boxShadow = '0 8px 40px rgba(0,0,0,0.5)';
+
+    var title = document.createElement('div');
+    title.style.fontWeight = '600';
+    title.style.fontSize = '15px';
+    title.style.marginBottom = '6px';
+    title.textContent = 'Assign walker bundle';
+    box.appendChild(title);
+
+    var sub = document.createElement('div');
+    sub.style.fontSize = '12px';
+    sub.style.color = '#94a3b8';
+    sub.style.marginBottom = '12px';
+    sub.textContent = b.filename;
+    box.appendChild(sub);
+
+    var info = document.createElement('div');
+    info.style.fontSize = '11px';
+    info.style.color = '#cbd5e1';
+    info.style.marginBottom = '12px';
+    info.style.lineHeight = '1.55';
+    info.textContent = 'Pick the mower that this bundle should be staged for. The server reads the mower live charging pose, rotates + translates the polygons into its frame, then runs apply-verbatim. The mower must be online and docked with a non-zero map_position.';
+    box.appendChild(info);
+
+    var list = document.createElement('div');
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '6px';
+    list.style.maxHeight = '300px';
+    list.style.overflowY = 'auto';
+    list.style.marginBottom = '12px';
+    for (var i = 0; i < devices.length; i++) {
+      (function(dev) {
+        var btn = document.createElement('button');
+        btn.style.padding = '10px 12px';
+        btn.style.background = 'rgba(99,102,241,.12)';
+        btn.style.border = '1px solid rgba(99,102,241,.35)';
+        btn.style.borderRadius = '8px';
+        btn.style.color = '#e0e7ff';
+        btn.style.fontSize = '12px';
+        btn.style.fontWeight = '600';
+        btn.style.cursor = 'pointer';
+        btn.style.textAlign = 'left';
+        btn.textContent = dev.sn + (dev.is_online ? ' (online)' : ' (offline)');
+        btn.onclick = function() {
+          document.body.removeChild(overlay);
+          resolve(dev.sn);
+        };
+        list.appendChild(btn);
+      })(devices[i]);
+    }
+    box.appendChild(list);
+
+    var cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.style.padding = '8px 14px';
+    cancel.style.background = 'rgba(239,68,68,.12)';
+    cancel.style.color = '#fca5a5';
+    cancel.style.border = '1px solid rgba(239,68,68,.35)';
+    cancel.style.borderRadius = '6px';
+    cancel.style.fontSize = '12px';
+    cancel.style.fontWeight = '600';
+    cancel.style.cursor = 'pointer';
+    cancel.onclick = function() {
+      document.body.removeChild(overlay);
+      resolve(null);
+    };
+    box.appendChild(cancel);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  });
 }
 
 function renderPortableImportWizard(sn, state) {
@@ -3037,7 +3404,7 @@ async function portableShowSelective() {
           opts += '<option value="' + mowerWorkSlots[k] + '">' + mowerWorkSlots[k] + '</option>';
         }
       }
-      remapHtml += '<span style="font-family:monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
+      remapHtml += '<span style="font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
       remapHtml += '<select data-remap-source="' + o.filename + '" style="background:#161628;color:#fff;border:1px solid #333;border-radius:4px;padding:3px 6px;font-size:10px">' + opts + '</select>';
     }
     remapHtml += '</div></details>';
@@ -4265,7 +4632,7 @@ async function loadFirmwareVersions() {
       html += '<tr>' +
         '<td style="color:#fff;font-weight:600;white-space:nowrap">' + (v.version || '?') + '</td>' +
         '<td><span style="color:' + (devType === 'charger' ? '#f59e0b' : '#00d4aa') + '">' + devType + '</span></td>' +
-        '<td style="color:#888;font-family:monospace;font-size:11px">' + md5 + (v.md5 && v.md5.length > 10 ? '...' : '') + '</td>' +
+        '<td style="color:#888;font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px">' + md5 + (v.md5 && v.md5.length > 10 ? '...' : '') + '</td>' +
         '<td style="color:#aaa;font-size:11px;line-height:1.6">' + notesHtml + '</td>' +
         '<td><button class="btn btn-sm btn-red" onclick="deleteFirmwareVersion(' + (v.id || v.ID) + ')">Delete</button></td>' +
         '</tr>';
@@ -4477,6 +4844,184 @@ async function downloadFirmware(fw, btnIdx) {
   } catch(e) {
     modalAlert('Download Failed', e.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Download'; btn.style.opacity = '1'; }
+  }
+}
+
+// Walker firmware section — lists walker entries from the remote manifest +
+// already-installed local versions. Mirrors checkFirmwareUpdates() but lives
+// in its own collapsible so operators can find walker builds without scrolling
+// the mower/charger update list. Safe DOM helpers only (no innerHTML with
+// dynamic content — admin page CSP/security hook rejects it).
+async function checkWalkerFirmware() {
+  var list = document.getElementById('walker-fw-list');
+  if (!list) return;
+  while (list.firstChild) list.removeChild(list.firstChild);
+  var loading = document.createElement('span');
+  loading.style.color = '#888';
+  loading.style.fontSize = '11px';
+  loading.textContent = 'Loading manifest...';
+  list.appendChild(loading);
+
+  var d;
+  try {
+    d = await api('/check-firmware-updates');
+  } catch (e) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var err = document.createElement('span');
+    err.style.color = '#ef4444';
+    err.style.fontSize = '11px';
+    err.textContent = 'Failed to fetch manifest: ' + (e && e.message ? e.message : 'unknown error');
+    list.appendChild(err);
+    return;
+  }
+
+  while (list.firstChild) list.removeChild(list.firstChild);
+  var all = (d && d.available) ? d.available : [];
+  var walkers = all.filter(function(fw) { return fw.device_type === 'walker'; });
+  var installedAll = (d && d.installed) ? d.installed : [];
+  var walkersInstalled = installedAll.filter(function(v) { return v.device_type === 'walker'; });
+
+  if (walkers.length === 0 && walkersInstalled.length === 0) {
+    var p = document.createElement('span');
+    p.style.color = '#aaa';
+    p.style.fontSize = '11px';
+    p.textContent = 'No walker firmware in manifest or local DB. Publish a build via the release script or scp the .bin into the firmware directory and click Refresh.';
+    list.appendChild(p);
+    return;
+  }
+
+  if (walkersInstalled.length > 0) {
+    var head = document.createElement('div');
+    head.style.color = '#94a3b8';
+    head.style.fontSize = '10px';
+    head.style.textTransform = 'uppercase';
+    head.style.letterSpacing = '0.5px';
+    head.style.margin = '4px 0';
+    head.textContent = 'Installed locally';
+    list.appendChild(head);
+    walkersInstalled.forEach(function(v) {
+      var row = document.createElement('div');
+      row.style.margin = '2px 0';
+      row.style.fontSize = '12px';
+      var verSpan = document.createElement('span');
+      verSpan.style.color = '#fff';
+      verSpan.style.fontWeight = '600';
+      verSpan.textContent = v.version;
+      var md5Span = document.createElement('span');
+      md5Span.style.color = '#666';
+      md5Span.style.fontFamily = 'monospace';
+      md5Span.style.fontSize = '10px';
+      md5Span.style.marginLeft = '8px';
+      md5Span.textContent = v.md5 ? (v.md5.substring(0, 10) + '...') : '';
+      row.appendChild(verSpan);
+      row.appendChild(md5Span);
+      list.appendChild(row);
+    });
+  }
+
+  var pendingHead = document.createElement('div');
+  pendingHead.style.color = '#94a3b8';
+  pendingHead.style.fontSize = '10px';
+  pendingHead.style.textTransform = 'uppercase';
+  pendingHead.style.letterSpacing = '0.5px';
+  pendingHead.style.margin = '8px 0 4px 0';
+  pendingHead.textContent = 'In manifest';
+  list.appendChild(pendingHead);
+
+  if (walkers.length === 0) {
+    var none = document.createElement('span');
+    none.style.color = '#888';
+    none.style.fontSize = '11px';
+    none.textContent = 'No walker entries in remote manifest.';
+    list.appendChild(none);
+    return;
+  }
+
+  walkers.forEach(function(fw) {
+    var row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.alignItems = 'center';
+    row.style.padding = '6px 0';
+    row.style.borderTop = '1px solid rgba(255,255,255,.04)';
+
+    var left = document.createElement('div');
+    var verSpan = document.createElement('span');
+    verSpan.style.color = '#fff';
+    verSpan.style.fontWeight = '600';
+    verSpan.textContent = fw.version;
+    left.appendChild(verSpan);
+
+    var sizeSpan = document.createElement('span');
+    sizeSpan.style.color = '#94a3b8';
+    sizeSpan.style.fontSize = '11px';
+    sizeSpan.style.marginLeft = '8px';
+    sizeSpan.textContent = '(' + (fw.size ? Math.round(fw.size / 1024) + ' KB' : '?') + ')';
+    left.appendChild(sizeSpan);
+
+    if (fw.installed) {
+      var tag = document.createElement('span');
+      tag.style.marginLeft = '8px';
+      tag.style.fontSize = '10px';
+      tag.style.color = '#00d4aa';
+      tag.textContent = 'installed';
+      left.appendChild(tag);
+    }
+    if (fw.description) {
+      var desc = document.createElement('div');
+      desc.style.fontSize = '11px';
+      desc.style.color = '#888';
+      desc.style.marginTop = '2px';
+      desc.textContent = fw.description;
+      left.appendChild(desc);
+    }
+
+    row.appendChild(left);
+
+    var btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.style.padding = '4px 12px';
+    btn.style.fontSize = '12px';
+    btn.textContent = fw.installed ? 'Re-download' : 'Download to server';
+    btn.onclick = function() { downloadWalkerFw(fw, btn); };
+    row.appendChild(btn);
+
+    list.appendChild(row);
+  });
+}
+
+async function downloadWalkerFw(fw, btn) {
+  var ok = await modalConfirm('Download walker firmware', 'Download walker firmware ' + fw.version + ' to the server? This fetches the .bin from the manifest URL and registers it locally.');
+  if (!ok) return;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Downloading...';
+    btn.style.opacity = '0.8';
+  }
+  try {
+    var d = await api('/download-firmware', 'POST', {
+      url: fw.url,
+      filename: fw.filename,
+      version: fw.version,
+      device_type: 'walker',
+      md5: fw.md5,
+      sha256: fw.sha256,
+      size: fw.size,
+      signature: fw.signature,
+      keyId: fw.keyId || fw.signingKeyId || fw.signing_key_id,
+      description: fw.description || '',
+    });
+    if (d && d.ok) {
+      showToast('Walker firmware ' + fw.version + ' downloaded (' + ((d.size || 0) / 1024).toFixed(1) + ' KB)', 'green');
+      loadFirmwareVersions();
+      checkWalkerFirmware();
+    } else {
+      modalAlert('Download Failed', (d && d.error) ? d.error : 'Unknown error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Download to server'; btn.style.opacity = '1'; }
+    }
+  } catch (e) {
+    modalAlert('Download Failed', e && e.message ? e.message : 'Unknown error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Download to server'; btn.style.opacity = '1'; }
   }
 }
 

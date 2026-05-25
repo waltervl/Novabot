@@ -88,8 +88,8 @@ const signature = crypto.createHash('sha256')
 
 | Device | Username | Password | Client ID |
 |--------|----------|----------|-----------|
-| Charger | `LFIC1230700XXX` | _(none in fw v0.3.6)_ | `ESP32_XXXXXX` |
-| Mower | `LFIN2230700XXX` | _(unknown)_ | `LFIN2230700XXX_6688` |
+| Charger | `li9hep19` | `jzd4wac6` | `ESP32_<last-6-hex-of-BLE-MAC>` (e.g. `ESP32_1bA408` for MAC `48:27:E2:1B:A4:08`) |
+| Mower | `null` | `null` | `LFIN2230700XXX_6688` |
 
 !!! info "Local broker accepts all credentials"
     Our Aedes broker accepts any username/password. The charger firmware v0.3.6 does not send MQTT credentials at all.
@@ -113,3 +113,16 @@ The Novabot app sends an MQTT CONNECT packet with **Will QoS=1** while **Will Fl
 This violates MQTT 3.1.1 spec section 3.1.2.6.
 
 **Fix**: `sanitizeConnectFlags()` in `broker.ts` patches the raw TCP bytes before Aedes parses them.
+
+### MQTT Payload Encryption
+
+All `LFI*` devices on charger firmware v0.4.0+ and mower firmware v6.x+ encrypt their MQTT payloads.
+
+| Property | Value |
+|----------|-------|
+| Algorithm | AES-128-CBC |
+| Key | `"abcdabcd1234" + SN[-4:]` (e.g. `"abcdabcd12340238"` for `LFIN2230700238`) |
+| IV | `"abcd1234abcd1234"` (static) |
+| Padding | Null bytes to next 16-byte boundary (NOT PKCS7) |
+
+Charger firmware below v0.4.0 and mower firmware v5.x send plain JSON (no AES). See [MQTT Protocol](../mqtt/encryption.md) for full details and reference code.

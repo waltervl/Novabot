@@ -6,12 +6,12 @@ Short answer: the OpenNova app works for everyday mowing on a stock-firmware mow
 
 ## Three flavours of "stock"
 
-When this page says "stock" it means the **factory LFI firmware** the mower shipped with — typically `mower_firmware_v6.0.2.deb` (or `v5.7.1` for older units). The factory image talks to `mqtt.lfibot.com` and `app.lfibot.com`. For the app to reach the mower at all, you also need DNS rewrites on your LAN so those hostnames resolve to your OpenNova server.
+When this page says "stock" it means the **factory LFI firmware** the mower shipped with. Stock main firmware versions look like `v6.0.2` (no suffix); custom builds add a `-custom-NN` suffix (currently `v6.0.2-custom-24`). The factory image is typically `mower_firmware_v6.0.2.deb` (or `v5.7.1` for older units). The factory image talks to `mqtt.lfibot.com` and `app.lfibot.com`. For the app to reach the mower at all, you also need DNS rewrites on your LAN so those hostnames resolve to your OpenNova server.
 
 Two other firmware layers come up:
 
-- **STM32 secondary firmware** — runs on the small microcontroller that drives the blades and reads encoders. Stock STM32 PIN-locks after boot, which blocks several remote commands. The custom STM32 build (`v3.6.11+`) NOPs out the lock check so the mower accepts joystick and blade commands without manual unlock.
-- **Charger firmware** — separate ESP32 microcontroller in the charging station. Not addressed here; both stock and custom versions speak the same MQTT/LoRa surface.
+- **STM32 secondary firmware** - runs on the small microcontroller that drives the blades and reads encoders. Stock STM32 `v3.6.0` is the working baseline today on shipped units: blade calibration runs at boot and the historical PIN-lock bug from earlier 3.6.x builds is no longer present. (Earlier custom NOP'd builds existed to work around that old bug, but they are no longer required.)
+- **Charger firmware** - separate ESP32 microcontroller in the charging station. Not addressed here; both stock and custom versions speak the same MQTT/LoRa surface.
 
 ## Works on stock (with DNS rewrites)
 
@@ -62,14 +62,11 @@ The custom firmware build installs `/root/novabot/scripts/extended_commands.py`,
 | **Set pos origin** | Map fix tooling | Forces `pos.json` origin to a known point |
 | **Reboot mower** | Admin → reboot | `handle_reboot` reboots cleanly through the daemon-node hook |
 
-### Requires custom STM32 firmware (v3.6.11 or later)
+### Legacy STM32 lockup notes
 
-| Feature | Problem on stock STM32 |
-|---------|------------------------|
-| Manual joystick (`start_move` + `mst`) | Stock STM32 PIN-locks shortly after boot and refuses motor commands. `v3.6.11` NOPs the lock check |
-| Blade calibration after boot | Stock STM32 (v3.6.0, v3.6.10) locks blades until the user enters the unlock password — fine for hands-on use, hostile for app-driven control |
+Some older 3.6.x STM32 builds shipped with a PIN-lock that fired shortly after boot and refused motor / blade commands until the user typed an unlock code. That bug is gone on the current stock `v3.6.0` line, which is what every shipped unit runs today: joystick (`start_move` + `mst`), blade calibration, and the manual blade on/off path all work without a NOP'd build. If you happen to be sitting on one of those old 3.6.x images, the symptom was motors going dead a few seconds after boot with `error_status=151`; flashing the current stock 3.6.0 clears it.
 
-The mower's main firmware (the Ubuntu image) and the STM32 firmware are independent. You can run stock STM32 with custom main firmware (or vice versa) but the joystick and blade commands need both to be cooperative.
+The mower's main firmware (the Ubuntu image) and the STM32 firmware are independent. You can mix stock and custom on either side.
 
 ### Requires the custom server-pointing hooks
 
@@ -96,7 +93,7 @@ From the dashboard:
 
 > Devices → click your mower → check the Firmware row.
 
-`v6.0.2` (no `-custom-N`) suffix = stock main firmware. `v6.0.2-custom-32` (or similar) = custom. The STM32 version is on the same panel — anything below `v3.6.11` is stock-locked.
+`v6.0.2` (no `-custom-N` suffix) = stock main firmware. `v6.0.2-custom-24` (or similar) = custom. The STM32 version is on the same panel; current stock builds report `v3.6.0` and work fine. If you see a 3.6.x build older than that on an unflashed unit, that is the legacy PIN-lock window described above.
 
 From the mower itself:
 

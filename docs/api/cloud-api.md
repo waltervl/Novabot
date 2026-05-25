@@ -30,19 +30,24 @@ Login with email and password.
 
 ```json title="Response → value"
 {
-  "appUserId": "uuid-string",
+  "appUserId": 1,
   "email": "user@example.com",
-  "phone": null,
-  "firstName": null,
-  "lastName": null,
+  "username": "name",
+  "phone": "",
+  "firstName": "name",
+  "lastName": "",
   "accessToken": "jwt-token",
+  "machineToken": "fcm-push-token-or-empty",
   "newUserFlag": 0,
-  "country": null,
-  "city": null,
-  "address": null,
-  "coordinates": null
+  "country": "",
+  "city": "",
+  "address": "",
+  "coordinates": ""
 }
 ```
+
+!!! warning "`appUserId` is an integer, not a UUID"
+    The Dart app casts `appUserId` to `int`. Returning a UUID string here causes a `CastError` and login fails. The server returns the SQLite `users.id` integer; see `server/src/cloud-api/routes/appUser.ts`.
 
 ---
 
@@ -274,6 +279,9 @@ List all bound equipment for user.
     `chargerSn`, `chargerVersion`, `equipmentId`, `equipmentNickName`, `equipmentTypeH`,
     `macAddress`, `mowerVersion`, `online`, `status`, `chargerAddress`, `chargerChannel`, `userId`
 
+!!! note "`userId` semantics"
+    `userId` reflects the DB `equipment.user_id` column. It is `0` when the device row exists (imported / factory) but is not yet bound to any user account, which signals the app to run BLE provisioning. Once bound, it is the integer user id.
+
 ---
 
 ### POST `/api/nova-user/equipment/getEquipmentBySN`
@@ -434,7 +442,10 @@ null
 ```
 
 !!! warning "Cloud ignores SN parameter"
-    The cloud OTA API returns the **same firmware version for ALL serial numbers** of a given equipment type. The `sn` parameter is ignored — there is no per-device versioning via this endpoint. Firmware v6.0.3 (seen pushed to select users) was likely delivered via direct MQTT `ota_upgrade_cmd`, not through this API.
+    The cloud OTA API returns the **same firmware version for ALL serial numbers** of a given equipment type. The `sn` parameter is ignored, there is no per-device versioning via this endpoint.
+
+!!! info "Firmware v6.0.3 is a charger-only rollback"
+    v6.0.3 ships a charger firmware downgrade (v0.4.1 -> v0.4.0); the mower binaries are byte-identical to v6.0.2. Don't chase it as a mower update.
 
 **Known firmware versions per equipment type:**
 
@@ -445,6 +456,9 @@ null
 | `LFIC1` | v0.3.6 | Charger (ESP32-S3, 1.4MB) |
 | `LFIC2` | v0.3.6 | Charger (variant) |
 | `LFIN3`, `LFIC3`, `LFI01`, `N1000`, `N2000` | v0.3.6 | Various equipment types |
+
+!!! note "OpenNova users run custom firmware"
+    The versions above are what the LFI cloud serves. OpenNova users typically run custom firmware `v6.0.2-custom-NN` on the mower (currently `custom-24`) and `v3.6.0` stock on the STM32 motor board.
 
 ---
 
@@ -573,19 +587,50 @@ Get all maps for equipment.
 | `sn` | string | Serial number |
 
 ```json title="Response → value"
-[
-  {
-    "mapId": "uuid",
-    "mowerSn": "LFIN2230700XXX",
-    "mapName": "Garden",
-    "mapArea": [[52.141, 6.231], [52.142, 6.232]],
-    "mapMaxMin": null,
-    "fileSize": 1024,
-    "createdAt": "2026-02-21T18:32:12Z",
-    "updatedAt": "2026-02-21T18:32:12Z"
+{
+  "data": {
+    "work": [
+      {
+        "fileName": "map0.csv",
+        "alias": "Garden",
+        "type": "work",
+        "url": "http://<server>/api/nova-file-server/map/downloadMapFile?sn=LFIN2230700XXX&fileName=map0.csv",
+        "fileHash": "<md5-of-csv>",
+        "mapArea": "6.22",
+        "obstacle": [
+          { "fileName": "map0_0_obstacle.csv", "url": "http://<server>/api/nova-file-server/map/downloadMapFile?sn=LFIN2230700XXX&fileName=map0_0_obstacle.csv" }
+        ]
+      }
+    ],
+    "unicom": []
+  },
+  "md5": "<bundle-md5>",
+  "machineExtendedField": {
+    "chargingPose": { "x": "0.00", "y": "0.00", "orientation": "0.00" }
   }
-]
+}
 ```
+
+!!! warning "`mapArea` is area in m2 as a STRING"
+    `mapArea` is the surface area in square meters, formatted as a string (e.g. `"6.22"`). The app calls `double.parse(mapArea)` on it. Returning GPS coordinate pairs here crashes the app and the polygon never renders.
+
+!!! info "How the app uses the response"
+    The app reads each `url` from the `data.work[]` / `data.unicom[]` entries, downloads the CSV via `downloadMapFile`, and feeds the local x,y coordinates into `MapPainter._drawPath()` to render the polygon. `chargingPose` fields are strings (the app calls `double.parse()` on each). When there are no maps the server returns `data: null` and the app shows "No map!".
+
+---
+
+### GET `/api/nova-file-server/map/downloadMapFile`
+
+Download a single map CSV referenced by `queryEquipmentMap`.
+
+**Auth**: JWT
+
+| Query Param | Type | Description |
+|-------------|------|-------------|
+| `sn` | string | Mower serial number |
+| `fileName` | string | CSV filename from the `url` field (e.g. `map0.csv`, `map0_0_obstacle.csv`) |
+
+Returns the raw CSV body. Lines are comma-separated local x,y coordinates in meters (charger = 0,0 origin). The server reads the CSV from the most recent mower-uploaded ZIP for that SN; if no ZIP exists, it generates the CSV on-the-fly from the polygon stored in the `maps` table.
 
 ---
 

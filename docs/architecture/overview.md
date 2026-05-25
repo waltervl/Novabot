@@ -49,12 +49,12 @@ graph TB
 ```mermaid
 graph LR
     subgraph "App <-> Server"
-        A1[HTTP REST<br/>Port 3000]
+        A1[HTTP REST<br/>Port 80]
         A2[MQTT<br/>Port 1883]
     end
 
     subgraph "App <-> Server"
-        B1[HTTP REST<br/>Port 3000]
+        B1[HTTP REST<br/>Port 80]
         B2[Socket.io<br/>WebSocket]
     end
 
@@ -64,7 +64,7 @@ graph LR
 
     subgraph "Mower <-> Server"
         D1[MQTT AES-128-CBC<br/>Port 1883]
-        D2[HTTP Uploads<br/>Port 3000]
+        D2[HTTP Uploads<br/>Port 80]
     end
 
     subgraph "Charger <-> Mower"
@@ -72,6 +72,9 @@ graph LR
         E2[RTK GPS Relay<br/>NMEA via LoRa]
     end
 ```
+
+!!! note "Port 3000 is dev-only"
+    The server binds both port 80 (production-facing, what the mower firmware and `app.lfibot.com` rewrites talk to) and port 3000 (LAN dev bypass, used by `npm run dev` and direct LAN testing). In production deployments behind NGINX Proxy Manager, all traffic terminates on port 80.
 
 ## Technology Stack
 
@@ -105,13 +108,17 @@ graph LR
 | mDNS | Bonjour/Avahi advertisement |
 | Purpose | First-time firmware patching, BLE provisioning, mDNS `opennovabot.local` |
 
-### DNS (inside Docker container)
+### DNS redirect (optional)
 
-| Layer | Technology |
-|-------|-----------|
-| Container | Alpine Linux (~8MB image) |
-| DNS | dnsmasq |
-| Purpose | Redirect `*.lfibot.com` to local server IP |
+The container bundles `dnsmasq` but it is **OFF by default** (only started when `ENABLE_DNS=true` and `TARGET_IP` are set in `docker-compose.yml`). Most deployments use an external resolver instead.
+
+| Option | Recommended for |
+|--------|-----------------|
+| External AdGuard Home / Pi-hole rewrite | Self-hosted networks, multi-device LANs |
+| NGINX Proxy Manager + LAN DNS | Reverse-proxy setups, TLS termination for iOS |
+| Bundled `dnsmasq` (set `ENABLE_DNS=true`) | Single-host quick start, no external resolver available |
+
+See [guide/dns-setup.md](../guide/dns-setup.md) for setup instructions.
 
 ## Distribution Model
 
@@ -137,10 +144,12 @@ The project uses a Docker-based distribution where the server runs on the user's
 
 The mower finds the local server via a fallback cascade (custom firmware v6.0.2-custom-16+):
 
-1. **mDNS query** for `opennovabot.local` (8 second timeout)
-2. **Last-known IP** from previous successful connection
-3. **Fallback host** (hardcoded during firmware build)
-4. **Skip** -- mower continues without server connection
+1. **WiFi wait** for STA connection to complete
+2. **mDNS query** for `opennovabot.local` (8 second timeout)
+3. **DNS query** for `mqtt.lfibot.com` (resolves to LAN IP via AdGuard / dnsmasq rewrite)
+4. **Last-known IP** from previous successful connection
+5. **Fallback host** (hardcoded during firmware build)
+6. **Skip** -- mower continues without server connection
 
 !!! info "mDNS runs on the host, not in Docker"
     The bootstrap wizard advertises `opennovabot.local` via mDNS on the host machine. Docker bridge networking blocks multicast on macOS, so mDNS runs natively in the bootstrap tool, not inside Docker.
@@ -152,14 +161,22 @@ The mower finds the local server via a fallback cascade (custom firmware v6.0.2-
 | `users` | User accounts (email, bcrypt password, machine_token) |
 | `email_codes` | Temporary verification codes |
 | `equipment` | Bound devices (mower_sn PK, charger_sn, mac_address) |
-| `device_registry` | Auto-learned via MQTT CONNECT (sn, mac, last_seen) |
 | `maps` | Map metadata (polygons stored as JSON) |
 | `map_uploads` | Fragmented map upload tracking |
 | `cut_grass_plans` | Mowing schedules per device |
-| `robot_messages` | Device to user messages |
+| `robot_messages` | Device-to-user messages |
 | `work_records` | Mowing session history |
-| `equipment_lora_cache` | Cached LoRa parameters (survives unbind) |
 | `ota_versions` | OTA firmware versions |
-| `map_calibration` | Manual map offset/rotation/scale per mower |
+| `device_registry` | Auto-learned via MQTT CONNECT (sn, mac, last_seen) |
+| `device_factory` | Factory inventory imported from LFI account (sn, mac, type) |
+| `equipment_lora_cache` | Cached LoRa parameters (survives unbind) |
 | `dashboard_schedules` | Dashboard mowing schedules (CRUD + MQTT push) |
+| `signal_history` | Time-series WiFi / LoRa / RTK signal samples |
+| `map_calibration` | Manual map offset/rotation/scale per mower |
+| `device_settings` | Per-device preference flags (rain delay, LED, etc.) |
+| `push_tokens` | Expo push notification tokens per user/device |
+| `remote_support_identities` | Remote-support tunnel identity + token per instance |
+| `import_audit` | Audit log of LFI cloud imports (device pulls, dedup) |
+| `rain_sessions` | Detected rain events (rain sensor history) |
+| `rain_settings` | Per-mower rain delay configuration |
 | `virtual_walls` | No-go zones / virtual boundaries per mower |

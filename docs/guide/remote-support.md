@@ -60,6 +60,9 @@ on the previous one — don't skip ahead.
 
 ### 1. Two-container local smoke
 
+!!! warning "Dev mode only"
+    The PORT 3000 / 3001 split below is for local development only. Production deployments run the server on port 80 inside the container.
+
 Goal: confirm a relay instance and an agent instance running on a single
 machine can complete a full session.
 

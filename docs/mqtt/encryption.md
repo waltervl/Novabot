@@ -5,12 +5,13 @@
 | Device | Firmware | Encryption | Direction |
 |--------|----------|-----------|-----------|
 | Charger | v0.3.6 | **None** (plain JSON) | Both directions |
-| Charger | **v0.4.0** | **AES-128-CBC** | Both directions |
-| Mower | All versions | **AES-128-CBC** | Both directions |
+| Charger | **v0.4.0+** | **AES-128-CBC** | Both directions |
+| Mower | v5.x | **None** (plain JSON) | Both directions |
+| Mower | **v6.x+** | **AES-128-CBC** | Both directions |
 
 The charger firmware v0.3.6 sends and receives plain JSON.
-Charger firmware **v0.4.0 adds AES-128-CBC encryption** — identical key scheme as the mower.
-The mower encrypts all MQTT messages with AES-128-CBC.
+Charger firmware **v0.4.0 adds AES-128-CBC encryption**, identical key scheme as the mower v6.x+.
+Mower firmware v5.x sends and receives plain JSON; v6.x+ encrypts all MQTT messages with AES-128-CBC.
 
 ---
 
@@ -25,9 +26,9 @@ Discovered via Blutter decompilation of APK v2.4.0 (`encrypt_utils.dart`).
 |----------|-------|
 | **Algorithm** | AES-128-CBC |
 | **Key formula** | `"abcdabcd1234" + SN.substring(SN.length - 4)` |
-| **Key example** | `abcdabcd12340238` (for mower `LFIN2230700XXX`) |
+| **Key example** | `abcdabcd12340238` (for mower `LFIN2230700238`) |
 | **IV** | `abcd1234abcd1234` (static, hardcoded) |
-| **Padding** | Null-byte padding to 64-byte boundary (NOT PKCS7) |
+| **Padding** | Null-byte padding to 16-byte boundary (AES block size, NOT PKCS7) |
 | **Encoding** | UTF-8 for key and IV |
 
 ### Step-by-Step Key Construction

@@ -12,13 +12,14 @@ sequenceDiagram
     participant Mower
     participant ROS as Mower ROS 2
 
-    App->>Broker: MQTT: {"start_run": {mapName, cutGrassHeight, workArea, startWay: "app"}}
+    App->>Broker: MQTT: {"start_run": {"mapName": null, "area": 1, "cutterhigh": 2, "targetIsMower": false}}
+    Note over App,Broker: cutterhigh is a 0..7 enum (NOT mm).<br/>Formula: cutterhigh = user_cm - 2.<br/>Physical height in mm = (cutterhigh + 2) * 10.<br/>Example: user picks 4 cm -> cutterhigh:2 -> 40 mm blades.
     Broker->>Charger: Forward on Dart/Send_mqtt/LFIC...
 
     rect rgb(255, 248, 240)
-        Note over Charger,Mower: LoRa Relay
-        Charger->>Charger: Parse JSON → build LoRa packet
-        Charger->>Mower: LoRa [0x35, 0x01, mapName, area, height]
+        Note over Charger,Mower: LoRa Relay (illustrative, "mapName" is not a literal LoRa keyword)
+        Charger->>Charger: Parse JSON -> build LoRa packet
+        Charger->>Mower: LoRa [0x35, 0x01, map ref, area, height]
         Note over Charger: Wait max 3s for ACK
         Mower-->>Charger: LoRa ACK
     end
@@ -98,6 +99,29 @@ sequenceDiagram
     Mower->>Mower: Auto-start coverage task
     Mower->>Charger: LoRa: status updates
     Charger->>Server: MQTT: up_status_info {mower working}
+```
+
+## Manual Control (Joystick)
+
+Manual joystick control bypasses path planning and drives the wheels directly via MQTT.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Broker
+    participant Mower
+
+    App->>Broker: MQTT: {"start_move": 3}
+    Note over App: start_move MUST be an integer.<br/>1=left, 2=right, 3=forward, 4=back.<br/>Empty object {} is ignored by firmware.
+    Broker->>Mower: start_move (enter manual mode)
+
+    loop Every 200ms while held
+        App->>Broker: MQTT: {"mst": {"x_w": <speed>, "y_v": <angular>, "z_g": 0}}
+        Broker->>Mower: velocity command
+    end
+
+    App->>Broker: MQTT: {"stop_move": {}}
+    Broker->>Mower: stop_move (exit manual mode)
 ```
 
 ## Low Battery Return

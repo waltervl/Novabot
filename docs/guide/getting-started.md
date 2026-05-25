@@ -10,7 +10,7 @@ This guide walks you through setting up OpenNova with your Novabot mower and the
 
 ## Step 1: Start the Container
 
-Make sure your `docker-compose.yml` includes **port 443** and **ENABLE_TLS**. The official Novabot app connects via HTTPS — without this, the app will show "network connection is abnormal":
+Make sure your `docker-compose.yml` includes **port 443** and **ENABLE_TLS**. The official Novabot app connects via HTTPS, without this the app will show "network connection is abnormal":
 
 ```yaml
 services:
@@ -23,14 +23,21 @@ services:
       - "443:443"     # HTTPS (required for Novabot app)
       - "1883:1883"   # MQTT broker
     environment:
+      TZ: "Europe/Amsterdam"
       PORT: 80
+      DB_PATH: /data/novabot.db
+      STORAGE_PATH: /data/storage
+      FIRMWARE_PATH: /data/firmware
       ENABLE_TLS: "true"
+      ENABLE_DASHBOARD: "true"
+      # MUST be your server's LAN IP. Without TARGET_IP the entrypoint skips
+      # TLS cert generation entirely (see docker-entrypoint.sh).
+      TARGET_IP: "192.168.0.50"
     volumes:
-      - novabot-data:/data
-
-volumes:
-  novabot-data:
+      - ./data:/data
 ```
+
+See the [Docker Guide](docker.md) for the full environment-variable reference (DNS, Home Assistant bridge, ntfy, remote support).
 
 Start the container:
 
@@ -160,6 +167,7 @@ The mower will navigate from the charger to the work area and begin coverage mow
 - Check that the mower is connected to WiFi
 - Verify MQTT traffic in the admin Console tab
 - The mower needs `mqtt.lfibot.com` to resolve to your server
+- Custom-firmware mowers prefer mDNS `opennovabot.local` first, see [auto-discovery](auto-discovery.md).
 
 ### Map doesn't show in the app
 - The map polygon is served via HTTP from the `queryEquipmentMap` endpoint

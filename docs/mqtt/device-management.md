@@ -19,7 +19,7 @@ Get advanced device settings.
     "result": 0,
     "value": {
       "obstacle_avoidance_sensitivity": 3,
-      "target_height": 50,
+      "target_height": 3,
       "defaultCuttingHeight": 5,
       "path_direction": 90,
       "cutGrassHeight": 5
@@ -31,7 +31,7 @@ Get advanced device settings.
 | Parameter | Description |
 |-----------|-------------|
 | `obstacle_avoidance_sensitivity` | Obstacle detection sensitivity (1-5) |
-| `target_height` | Target mowing height (mm) |
+| `target_height` | Target cutting height as 0..7 enum. Physical cm = `target_height + 2`, mm = `(target_height + 2) * 10` |
 | `defaultCuttingHeight` | Default blade height level (0-7) |
 | `path_direction` | Mowing path direction (0-180°) |
 | `cutGrassHeight` | Current cutting height setting |
@@ -151,17 +151,25 @@ Start an OTA firmware upgrade. The command contains the download URL, target ver
 ```json title="Command (full firmware upgrade)"
 {
   "ota_upgrade_cmd": {
+    "cmd": "upgrade",
     "type": "full",
-    "content": {
-      "upgradeApp": {
-        "version": "v5.7.1",
-        "downloadUrl": "https://<oss-host>/novabot-file/<firmware-file>.deb",
-        "md5": "<md5-checksum>"
-      }
-    }
+    "content": "app",
+    "url": "http://<host>/novabot-file/<firmware-file>.deb",
+    "version": "v6.0.2-custom-24",
+    "md5": "<md5-checksum>"
   }
 }
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `cmd` | Yes | Must be `"upgrade"`. `mqtt_node` ignores commands without this field |
+| `type` | Yes | `"full"` is the only verified working value for mower. `"increment"` does NOT download |
+| `content` | Yes | The string `"app"` (NOT a nested object). `mqtt_node` ignores commands without this field |
+| `url` | Yes | Download URL. MUST be `http://` - the mower does NOT support HTTPS for OTA |
+| `version` | Yes | Target version string |
+| `md5` | Yes | MD5 checksum of the firmware file |
+| `tz` | **Must be absent** | If present, `mqtt_node` mangles `type` into `"increment"` and the upgrade silently fails |
 
 ```json title="Response"
 {
@@ -173,15 +181,18 @@ Start an OTA firmware upgrade. The command contains the download URL, target ver
 }
 ```
 
+!!! danger "Broker-level `tz` strip is mandatory"
+    The Novabot app ALWAYS sends `tz: "Europe/Amsterdam"` inside `ota_upgrade_cmd`. The local server's broker (`server/src/mqtt/broker.ts`, `authorizePublish`) intercepts app-to-mower messages, decrypts the payload, removes `tz`, forces `type:"full"`, and re-encrypts before delivery. Without this interceptor, OTA via the app fails silently. Do NOT remove this fix.
+
 **Upgrade types:**
 
 | Type | Description |
 |------|-------------|
-| `full` | Full firmware replacement (.deb for mower, .bin for charger) |
-| `increment` | Incremental app update |
+| `full` | Full firmware replacement. Only verified working value for mower OTA on this server |
+| `increment` | Incremental app update (broken in practice - do not use) |
 | `file_update` | Individual file updates (.zip with `check.json` manifest) |
 <!-- PRIVATE -->
-| `system` | System upgrade via `apt full-upgrade && reboot` |
+| `system` | System upgrade via `apt full-upgrade && reboot` (charger only, if supported) |
 <!-- /PRIVATE -->
 
 <!-- PRIVATE -->
@@ -359,20 +370,9 @@ Unknown diagnostic command (short name suggests debug/factory command).
 
 ### mst
 
-Unknown diagnostic command (short name suggests debug/factory command).
+Joystick velocity command, NOT a diagnostic. Sent repeatedly at 200 ms cadence after `start_move` to drive the wheels.
 
-```json title="Command"
-{
-  "mst": {}
-}
-```
-
-```json title="Response"
-{
-  "type": "mst_respond",
-  "message": { "result": 0, "value": null }
-}
-```
+See [Navigation Commands - mst](navigation-commands.md#mst-joystick-velocity) for the full payload (`x_w`, `y_v`, `z_g`) and the `start_move` / `mst` / `stop_move` sequence.
 
 ---
 
@@ -657,7 +657,7 @@ Get LoRa module configuration. Handled locally by charger (no LoRa relay).
 | `get_dev_info` | `get_dev_info_respond` | Device info |
 | `get_wifi_rssi` | `get_wifi_rssi_respond` | WiFi signal strength |
 | `gbf` | `gbf_respond` | Unknown (debug/factory) |
-| `mst` | `mst_respond` | Unknown (debug/factory) |
+| `mst` | - | Joystick velocity (see [Navigation Commands](navigation-commands.md#mst-joystick-velocity)) |
 
 ### Control Mode (mower only)
 

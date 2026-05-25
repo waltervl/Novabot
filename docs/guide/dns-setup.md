@@ -18,7 +18,7 @@ Without DNS redirect:
   Mower asks: "Where is mqtt.lfibot.com?" → Internet: "47.253.145.99" (Novabot cloud)
 
 With DNS redirect:
-  Mower asks: "Where is mqtt.lfibot.com?" → Your DNS: "192.168.0.100" (your server!)
+  Mower asks: "Where is mqtt.lfibot.com?" → Your DNS: "192.168.0.50" (your server!)
 ```
 
 ## Before You Start
@@ -34,7 +34,7 @@ This is the IP of the machine running the Docker container. Find it:
     ```
     ipconfig
     ```
-    Look for `IPv4 Address` under your WiFi or Ethernet adapter (e.g., `192.168.0.100`).
+    Look for `IPv4 Address` under your WiFi or Ethernet adapter (e.g., `192.168.0.50`).
 
 === "macOS"
     Open Terminal and type:
@@ -75,8 +75,8 @@ The simplest method — change your router settings so ALL devices on your netwo
 4. Add an exception: `lfibot.com`
 5. Go to **Internet → DNS Server**
 6. Under **Local DNS entries**, add:
-   - Host: `mqtt.lfibot.com` → IP: `192.168.0.100` (your server)
-   - Host: `app.lfibot.com` → IP: `192.168.0.100` (your server)
+   - Host: `mqtt.lfibot.com` → IP: `192.168.0.50` (your server)
+   - Host: `app.lfibot.com` → IP: `192.168.0.50` (your server)
 7. Click **Apply**
 
 ### Ubiquiti UniFi (UDM / USG)
@@ -92,7 +92,7 @@ Or use the built-in DNS features:
 1. SSH into your UDM: `ssh root@192.168.1.1`
 2. Edit `/run/dnsmasq.conf.d/custom.conf`:
    ```
-   address=/lfibot.com/192.168.0.100
+   address=/lfibot.com/192.168.0.50
    ```
 3. Restart dnsmasq: `killall dnsmasq`
 
@@ -122,8 +122,8 @@ Like TP-Link, most Netgear routers need Pi-hole/AdGuard for custom DNS records.
 1. Open **http://router.asus.com** or **http://192.168.1.1**
 2. Go to **LAN → DNS Director**
 3. Add a rule:
-   - Domain: `mqtt.lfibot.com` → IP: `192.168.0.100`
-   - Domain: `app.lfibot.com` → IP: `192.168.0.100`
+   - Domain: `mqtt.lfibot.com` → IP: `192.168.0.50`
+   - Domain: `app.lfibot.com` → IP: `192.168.0.50`
 4. **Apply**
 
 !!! tip "Not all routers support custom DNS"
@@ -174,10 +174,10 @@ Like TP-Link, most Netgear routers need Pi-hole/AdGuard for custom DNS records.
 
     | Domain | IP Address |
     |--------|-----------|
-    | `mqtt.lfibot.com` | `192.168.0.100` |
-    | `app.lfibot.com` | `192.168.0.100` |
+    | `mqtt.lfibot.com` | `192.168.0.50` |
+    | `app.lfibot.com` | `192.168.0.50` |
 
-    (Replace `192.168.0.100` with YOUR server IP)
+    (Replace `192.168.0.50` with YOUR server IP)
 
 5. Click **Add** for each
 
@@ -232,8 +232,8 @@ Now all devices on your network use Pi-hole for DNS, and `mqtt.lfibot.com` resol
 
     | Domain | Answer |
     |--------|--------|
-    | `mqtt.lfibot.com` | `192.168.0.100` |
-    | `app.lfibot.com` | `192.168.0.100` |
+    | `mqtt.lfibot.com` | `192.168.0.50` |
+    | `app.lfibot.com` | `192.168.0.50` |
 
 5. Click **Save** for each
 
@@ -250,19 +250,20 @@ The OpenNova Docker container includes a built-in DNS server. This is the easies
 ### Enable in docker-compose.yml
 
 ```yaml
+# Minimal subset for DNS setup, see docker.md for the full compose file
 services:
   opennova:
     ports:
       - "80:80"
       - "443:443"       # HTTPS (required for Novabot app)
       - "1883:1883"     # MQTT broker
-      - "53:53/udp"     # ← Add this for built-in DNS
+      - "53:53/udp"     # Add this for built-in DNS
     environment:
       PORT: 80
-      ENABLE_TLS: "true"               # ← Required for Novabot app
-      ENABLE_DNS: "true"               # ← Add this
-      TARGET_IP: "192.168.0.100"       # ← Your server IP
-      UPSTREAM_DNS: "8.8.8.8"          # ← Fallback DNS (Google)
+      ENABLE_TLS: "true"               # Required for Novabot app
+      ENABLE_DNS: "true"               # Add this
+      TARGET_IP: "192.168.0.50"        # Your server IP
+      UPSTREAM_DNS: "8.8.8.8"          # Fallback DNS (Google)
 ```
 
 Then restart:
@@ -273,7 +274,7 @@ docker compose down && docker compose up -d
 
 ### Point Your Router to OpenNova
 
-Change your router's DHCP DNS server to your OpenNova server IP (`192.168.0.100`).
+Change your router's DHCP DNS server to your OpenNova server IP (`192.168.0.50`).
 
 !!! note
     This means ALL DNS queries from your network go through OpenNova. Only `*.lfibot.com` is redirected — everything else is forwarded to Google DNS (or your configured upstream).
@@ -297,7 +298,7 @@ After setting up DNS, test from any device on your network:
 === "Phone"
     Open a browser and go to: `http://mqtt.lfibot.com`
 
-**Expected result**: Your OpenNova server IP (e.g., `192.168.0.100`).
+**Expected result**: Your OpenNova server IP (e.g., `192.168.0.50`).
 
 If you see `47.253.145.99` or a timeout, DNS is not working yet.
 
