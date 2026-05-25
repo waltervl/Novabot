@@ -39,8 +39,8 @@ const char* kWalkerOtaSigningKeyId = "walker-p256-2026-01";
 // with the production public key before shipping signed public releases.
 const char kWalkerOtaPublicKeyPem[] =
 "-----BEGIN PUBLIC KEY-----\n"
-"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENZscH37tN3r/cf4xyJ8roAY+ovPM\n"
-"ESuuZldCF568dhoZ7/VzyFpCYI9nbcrYgCMnNIR0uBwMKC655hP08WD81Q==\n"
+"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEK9Ai3S7OilT7tfCmofsoJJ/98+Qp\n"
+"XZzHfmDpAXkxBpnC8+Z7b+Xlxszwr3rqMb89ZifgR225Qzd0mJvW9ElMrw==\n"
 "-----END PUBLIC KEY-----\n";
 
 bool isHexDigest(const String& s, size_t len) {
