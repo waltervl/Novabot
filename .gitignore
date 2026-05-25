@@ -40,6 +40,7 @@ research/*
 !research/datasheets/
 !research/ros2_msg_definitions/
 !research/*.py
+!research/*.java
 !research/*.md
 !research/ghidra_output/
 research/ghidra_output/*.rep
