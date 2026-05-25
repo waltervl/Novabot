@@ -1,0 +1,5 @@
+captured Tue May 26 01:30:46 CEST 2026 from LFIN1231000211 (192.168.0.100), firmware v6.0.2-custom
+format: standard ROS map_saver (P5 + '# CREATOR: map_generator.cpp' comment, yaml 6-decimal)
+map.pgm: P5 # CREATOR: map_generator.cpp 0.050 m/pix 539 444 
+map0.pgm: P5 # CREATOR: map_generator.cpp 0.050 m/pix 539 444 
+csv:  map0_0_obstacle.csv  map0_1_obstacle.csv  map0_2_obstacle.csv  map0_3_obstacle.csv  map0_4_obstacle.csv  map0_5_obstacle.csv  map0_work.csv  map0tocharge_unicom.csv  map_info.json 
