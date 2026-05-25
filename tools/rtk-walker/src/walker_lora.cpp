@@ -130,6 +130,13 @@ static uint32_t g_framesReceived = 0;
 static uint32_t g_framesRejected = 0;
 static uint32_t g_bytesForwarded = 0;
 static uint32_t g_lastValidMs    = 0;
+static uint32_t g_rawBytesIn     = 0;
+
+// Ring of the most recent raw UART2 bytes (pre-framing) for the serial
+// diagnostic dump. 32 bytes is enough to eyeball a frame header / noise.
+static uint8_t  g_rawTail[32]    = {0};
+static uint8_t  g_rawTailPos     = 0;   // next write index
+static uint8_t  g_rawTailLen     = 0;   // valid bytes (<= sizeof(g_rawTail))
 
 #define LORA_ACTIVE_WINDOW_MS 10000
 
@@ -170,6 +177,10 @@ void walkerLoraPump() {
 
     while (loraSerial.available()) {
         uint8_t b = (uint8_t) loraSerial.read();
+        g_rawBytesIn++;
+        g_rawTail[g_rawTailPos] = b;
+        g_rawTailPos = (g_rawTailPos + 1) % sizeof(g_rawTail);
+        if (g_rawTailLen < sizeof(g_rawTail)) g_rawTailLen++;
         switch (g_st) {
             case LP_WAIT_PRE1:
                 if (b == 0x02) g_st = LP_WAIT_PRE2;
@@ -252,7 +263,27 @@ void walkerLoraGetStats(WalkerLoraStats& out) {
     out.framesReceived = g_framesReceived;
     out.framesRejected = g_framesRejected;
     out.bytesForwarded = g_bytesForwarded;
+    out.rawBytesIn     = g_rawBytesIn;
     out.lastFrameMsAgo = g_lastValidMs ? (millis() - g_lastValidMs) : UINT32_MAX;
+}
+
+size_t walkerLoraGetRawTailHex(char* out, size_t outCap) {
+    if (!out || outCap == 0) return 0;
+    out[0] = '\0';
+    if (g_rawTailLen == 0) return 0;
+    static const char* hex = "0123456789abcdef";
+    // Oldest byte first: start = pos - len (mod size).
+    uint8_t start = (uint8_t) ((g_rawTailPos + sizeof(g_rawTail) - g_rawTailLen)
+                               % sizeof(g_rawTail));
+    size_t written = 0;
+    for (uint8_t i = 0; i < g_rawTailLen; i++) {
+        if (written + 2 >= outCap) break;   // leave room for NUL
+        uint8_t b = g_rawTail[(start + i) % sizeof(g_rawTail)];
+        out[written++] = hex[(b >> 4) & 0x0f];
+        out[written++] = hex[b & 0x0f];
+    }
+    out[written] = '\0';
+    return written;
 }
 
 #endif  // LORA_PRESENT

@@ -21,6 +21,7 @@ struct WalkerLoraStats {
     uint32_t framesReceived;     // valid frames (any cmd byte)
     uint32_t framesRejected;     // bad XOR or unknown cmd
     uint32_t bytesForwarded;     // 0x31 payload bytes pushed to gnssSerial
+    uint32_t rawBytesIn;         // every byte read off UART2, pre-framing
     uint32_t lastFrameMsAgo;     // ms since last valid 0x31 frame, UINT32_MAX if never
 };
 
@@ -44,13 +45,19 @@ bool walkerLoraReconfigure(const WalkerLoraConfig& cfg);
 // Stats snapshot for the UI / API.
 void walkerLoraGetStats(WalkerLoraStats& out);
 
+// Formats the most recent raw UART2 bytes (pre-framing) as a space-free
+// hex string into `out`. Returns the number of hex chars written (0 if no
+// bytes seen yet). Bench diagnostic: lets the serial console show whether
+// anything at all is arriving on the LoRa UART.
+size_t walkerLoraGetRawTailHex(char* out, size_t outCap);
+
 #else
 
 // Headless / no-LoRa builds: stubs so callers don't need #ifdef everywhere.
 struct WalkerLoraConfig { uint16_t addr; uint8_t channel; uint8_t hc; uint8_t lc; };
 struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived;
                           uint32_t framesRejected; uint32_t bytesForwarded;
-                          uint32_t lastFrameMsAgo; };
+                          uint32_t rawBytesIn; uint32_t lastFrameMsAgo; };
 inline bool walkerLoraSetup(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraPump() {}
 inline bool walkerLoraActive() { return false; }
@@ -58,7 +65,11 @@ inline bool walkerLoraReconfigure(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraGetStats(WalkerLoraStats& out) {
     out.moduleReady = false; out.active = false;
     out.framesReceived = 0; out.framesRejected = 0;
-    out.bytesForwarded = 0; out.lastFrameMsAgo = UINT32_MAX;
+    out.bytesForwarded = 0; out.rawBytesIn = 0; out.lastFrameMsAgo = UINT32_MAX;
+}
+inline size_t walkerLoraGetRawTailHex(char* out, size_t outCap) {
+    if (out && outCap) out[0] = '\0';
+    return 0;
 }
 
 #endif

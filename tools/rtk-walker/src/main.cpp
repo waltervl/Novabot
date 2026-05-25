@@ -1105,10 +1105,14 @@ static void gnssPump() {
     WalkerLoraStats ls;
     walkerLoraGetStats(ls);
     if (ls.moduleReady) {
-      weblogf("[lora] frames=%lu rejected=%lu bytesFwd=%lu active=%d lastFrameAgo=%ldms\n",
-              (unsigned long) ls.framesReceived, (unsigned long) ls.framesRejected,
-              (unsigned long) ls.bytesForwarded, (int) ls.active,
-              ls.lastFrameMsAgo == UINT32_MAX ? -1L : (long) ls.lastFrameMsAgo);
+      char rawHex[2 * 32 + 1];
+      walkerLoraGetRawTailHex(rawHex, sizeof(rawHex));
+      weblogf("[lora] raw=%lu frames=%lu rejected=%lu bytesFwd=%lu active=%d lastFrameAgo=%ldms tail=%s\n",
+              (unsigned long) ls.rawBytesIn, (unsigned long) ls.framesReceived,
+              (unsigned long) ls.framesRejected, (unsigned long) ls.bytesForwarded,
+              (int) ls.active,
+              ls.lastFrameMsAgo == UINT32_MAX ? -1L : (long) ls.lastFrameMsAgo,
+              rawHex);
     }
     lastLoraStatsMs = nowLora;
   }
@@ -2543,17 +2547,6 @@ void setup() {
       weblogf("[wifi-evt] STA disconnected - reason=%d (%s)\n",
               (int) lastDisconnectReason, name ? name : "?");
     }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-
-    // Scan first — surfaces neighbouring APs and confirms the target
-    // SSID is reachable on 2.4 GHz with non-Enterprise encryption.
-    weblogf("[wifi-dbg] scanning...\n");
-    int found = WiFi.scanNetworks(false, true, false, 200);
-    for (int i = 0; i < found && i < 20; i++) {
-      weblogf("[wifi-dbg]   %s  RSSI=%d  ch=%d  enc=%d\n",
-              WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i),
-              (int) WiFi.encryptionType(i));
-    }
-    WiFi.scanDelete();
 
     weblogf("[creds] build %s %s, ssid=\"%s\" (%u chars), wifi pass length=%u\n",
             __DATE__, __TIME__,
