@@ -189,7 +189,6 @@ static uint32_t g_rtcmMessages   = 0;
 static uint32_t g_rtcmCrcRejected = 0;
 static uint32_t g_rtcmLastValidMs = 0;
 static uint16_t g_rtcmLastType    = 0;
-static volatile bool g_forwardingEnabled = true;
 
 enum RtcmParseState : uint8_t {
     RTCM_WAIT_PREAMBLE,
@@ -220,7 +219,7 @@ static uint32_t rtcmCrc24q(const uint8_t* data, size_t len) {
     return crc & 0xFFFFFFUL;
 }
 
-static void forwardRtcmStreamBytes(const uint8_t* data, size_t len) {
+static void observeRtcmStreamBytes(const uint8_t* data, size_t len) {
     for (size_t i = 0; i < len; i++) {
         uint8_t b = data[i];
         switch (g_rtcmState) {
@@ -271,9 +270,6 @@ static void forwardRtcmStreamBytes(const uint8_t* data, size_t len) {
                                                  (((uint16_t) g_rtcmBuf[4]) >> 4));
                             msgType &= 0x0FFF;
                         }
-                        gnssSerial.write(g_rtcmBuf, g_rtcmExpectedLen);
-                        rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
-                        g_bytesForwarded += g_rtcmExpectedLen;
                         g_rtcmMessages++;
                         g_rtcmLastValidMs = millis();
                         g_rtcmLastType = msgType;
@@ -407,17 +403,17 @@ void walkerLoraPump() {
                 break;
             case LP_POST2:
                 if (b == 0x03) {
-                    // Valid LoRa frame. The charger emits a mixed UM980 stream
-                    // on 0x31: RTCM3 corrections plus NMEA/proprietary bytes.
-                    // LC29HDA treats non-RTCM ASCII on its RX line as PAIR
-                    // command noise and responds with `$PAIR001,000,4`, which
-                    // destabilizes carrier lock while walking. Forward only
-                    // CRC-valid RTCM3 frames and keep parser counters for
-                    // diagnosing correction gaps.
+                    // Valid frame! Forward 0x31 payloads to LC29HDA exactly as
+                    // the stable 8a5cd03 firmware did. The charger payload is a
+                    // mixed rover stream; filtering it down to CRC-valid RTCM3
+                    // fragments starved the LC29 on live LoRa frames.
                     g_framesReceived++;
                     g_lastValidMs = millis();
-                    if (g_lastCmd == 0x31 && g_payloadIdx > 0 && g_forwardingEnabled) {
-                        forwardRtcmStreamBytes(g_payloadBuf, g_payloadIdx);
+                    if (g_lastCmd == 0x31 && g_payloadIdx > 0) {
+                        gnssSerial.write(g_payloadBuf, g_payloadIdx);
+                        rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
+                        g_bytesForwarded += g_payloadIdx;
+                        observeRtcmStreamBytes(g_payloadBuf, g_payloadIdx);
                     }
                 } else {
                     g_framesRejected++;
@@ -426,15 +422,6 @@ void walkerLoraPump() {
                 break;
         }
     }
-}
-
-void walkerLoraSetForwardingEnabled(bool enabled) {
-    if (g_forwardingEnabled != enabled) rtcmResetParser();
-    g_forwardingEnabled = enabled;
-}
-
-bool walkerLoraForwardingEnabled() {
-    return g_forwardingEnabled;
 }
 
 bool walkerLoraActive() {

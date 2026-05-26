@@ -392,31 +392,12 @@ static void setGnssVariant(GnssVariant variant) {
   }
 }
 
-static uint32_t loraGnssCommandResumeAtMs = 0;
-static bool     loraGnssCommandResumeValue = false;
-
-static void pauseLoraForGnssCommand(uint32_t guardMs) {
-  loraGnssCommandResumeValue = walkerLoraForwardingEnabled();
-  walkerLoraSetForwardingEnabled(false);
-  loraGnssCommandResumeAtMs = millis() + guardMs;
-}
-
-static void serviceLoraCommandPause() {
-  if (loraGnssCommandResumeAtMs == 0) return;
-  if ((int32_t)(millis() - loraGnssCommandResumeAtMs) < 0) return;
-  loraGnssCommandResumeAtMs = 0;
-  walkerLoraSetForwardingEnabled(loraGnssCommandResumeValue);
-}
-
 static void sendGnssCommand(const String& payload) {
   uint8_t cs = 0;
   for (size_t i = 0; i < payload.length(); i++) cs ^= (uint8_t) payload[i];
   char out[200];
   snprintf(out, sizeof(out), "$%s*%02X\r\n", payload.c_str(), cs);
-  pauseLoraForGnssCommand(900);
-  gnssSerial.flush();
   gnssSerial.print(out);
-  gnssSerial.flush();
   // Trim trailing \r\n for log readability.
   size_t n = strlen(out);
   while (n > 0 && (out[n-1] == '\n' || out[n-1] == '\r')) out[--n] = '\0';
@@ -1235,8 +1216,6 @@ static bool     pair400RtkSent  = false;
 static bool     pair513SaveSent = false;
 static uint32_t lastRateReassertMs = 0;
 
-static void setLoraRtcmForwarding(bool enabled);
-
 static void gnssPump() {
   while (gnssSerial.available()) {
     char c = gnssSerial.read();
@@ -1321,20 +1300,6 @@ static void gnssPump() {
       pair050AckedAtMs != 0 && nowCfgMs - pair050AckedAtMs >= 1500) {
     sendGnssCommand("PAIR513");
     pair513SaveSent = true;
-  }
-  bool rtcmReadyForRover =
-      pair400RtkSent &&
-      (!enforceDa1Hz || pair050Acked);
-  static bool rtcmConfigTimeoutLogged = false;
-  if (!rtcmReadyForRover && pair400RtkSent && nowCfgMs - gnssDetectedAtMs >= 15000) {
-    rtcmReadyForRover = true;
-    if (!rtcmConfigTimeoutLogged) {
-      weblogf("[gnss] config not fully confirmed after 15s; allowing LoRa RTCM anyway\n");
-      rtcmConfigTimeoutLogged = true;
-    }
-  }
-  if (rtcmReadyForRover) {
-    setLoraRtcmForwarding(true);
   }
   if (enforceDa1Hz && gnssRateHz > 2 && sinceDetect >= 5000 &&
       (lastRateReassertMs == 0 || nowCfgMs - lastRateReassertMs >= 10000)) {
@@ -1465,9 +1430,7 @@ static TaskHandle_t webServerTaskHandle = nullptr;
 static void realtimePumpTask(void*) {
   for (;;) {
     gnssPump();
-    serviceLoraCommandPause();
     walkerLoraPump();
-    serviceLoraCommandPause();
     // Keep UART service cadence independent from WebServer/LVGL work.
     vTaskDelay(pdMS_TO_TICKS(2));
   }
@@ -1517,16 +1480,7 @@ static void startWebServerTask() {
 static void pumpRealtimeFallbackOnce() {
   if (realtimePumpTaskHandle) return;
   gnssPump();
-  serviceLoraCommandPause();
   walkerLoraPump();
-  serviceLoraCommandPause();
-}
-
-static void setLoraRtcmForwarding(bool enabled) {
-  bool wasEnabled = walkerLoraForwardingEnabled();
-  if (wasEnabled == enabled) return;
-  walkerLoraSetForwardingEnabled(enabled);
-  weblogf("[lora] RTCM forwarding %s\n", enabled ? "enabled" : "paused");
 }
 
 // ── Battery monitor ─────────────────────────────────────────────────
@@ -1984,7 +1938,6 @@ static void handleStatus() {
   JsonObject lora = doc["lora"].to<JsonObject>();
   lora["active"]      = lstats.active;
   lora["moduleReady"] = lstats.moduleReady;
-  lora["forwarding"]  = walkerLoraForwardingEnabled();
   lora["bytes"]       = lstats.bytesForwarded;
   lora["frames"]      = lstats.framesReceived;
   lora["rejected"]    = lstats.framesRejected;
@@ -3093,7 +3046,6 @@ void setup() {
   weblogf("[lora] UART2 + pins initialised (RX=%d TX=%d M0=%d M1=%d)\n",
           LORA_RX_PIN, LORA_TX_PIN, LORA_M0_PIN, LORA_M1_PIN);
 #endif
-  setLoraRtcmForwarding(false);
 #ifdef LORA_PRESENT
   WalkerLoraConfig lcfg = {
     cfg.loraAddr,

@@ -1,6 +1,6 @@
 // walker_lora.h — passive LoRa RTCM receiver for the Novabot charger
-// broadcast. Snoops 0x31 (RTK_RELAY) frames and writes the relay payload
-// to the LC29HDA UART so the GNSS chip can extract RTK corrections
+// broadcast. Snoops 0x31 (RTK_RELAY) frames and writes the payload
+// straight to the LC29HDA UART so the GNSS chip gets RTK corrections
 // without any internet / WiFi.
 #pragma once
 
@@ -22,7 +22,7 @@ struct WalkerLoraStats {
     bool     active;             // last valid frame in 10 s
     uint32_t framesReceived;     // valid frames (any cmd byte)
     uint32_t framesRejected;     // bad XOR or unknown cmd
-    uint32_t bytesForwarded;     // CRC-valid RTCM3 bytes pushed to gnssSerial
+    uint32_t bytesForwarded;     // 0x31 payload bytes pushed to gnssSerial
     uint32_t rawBytesIn;         // every byte read off UART2, pre-framing
     uint32_t lastFrameMsAgo;     // ms since last valid 0x31 frame, UINT32_MAX if never
     uint32_t rtcmMessages;       // complete CRC-valid RTCM3 messages observed
@@ -36,16 +36,9 @@ struct WalkerLoraStats {
 // (M1=1, M0=0) via the 0xC0 command. Returns true if the module ACK'd.
 bool walkerLoraSetup(const WalkerLoraConfig& cfg);
 
-// Called from main loop every iteration. Drains UART2 RX, parses charger
-// frames, and forwards 0x31 payloads to gnssSerial.
-// Non-blocking.
+// Called from main loop every iteration. Drains UART2 RX, parses
+// frames, forwards 0x31 payloads to gnssSerial. Non-blocking.
 void walkerLoraPump();
-
-// Temporarily gate RTCM forwarding while the GNSS module is receiving its
-// boot-time PAIR config. Frames still count as active; bytes are just not
-// pushed into the LC29 UART until the rover is ready for corrections.
-void walkerLoraSetForwardingEnabled(bool enabled);
-bool walkerLoraForwardingEnabled();
 
 // True if a valid 0x31 frame arrived within the last 10 s. Used by
 // ntripPump() to decide whether to push its own RTCM bytes.
@@ -82,8 +75,6 @@ struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived
                           uint32_t lastRtcmMsAgo; uint16_t lastRtcmType; };
 inline bool walkerLoraSetup(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraPump() {}
-inline void walkerLoraSetForwardingEnabled(bool) {}
-inline bool walkerLoraForwardingEnabled() { return false; }
 inline bool walkerLoraActive() { return false; }
 inline bool walkerLoraReconfigure(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraGetStats(WalkerLoraStats& out) {
