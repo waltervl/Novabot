@@ -65,7 +65,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 # `docker compose up -d` would silently reuse the STALE local image and run old
 # code. So pull the freshly-pushed image first.
 echo "Pulling freshly-pushed image into local store..."
-docker pull "rvbcrs/opennova:$NEW" 2>/dev/null || docker compose pull 2>/dev/null
+# docker-compose.yml runs rvbcrs/opennova:LATEST, so we MUST refresh the local
+# :latest tag (not just :$NEW) or `up -d` keeps running the stale local :latest.
+docker pull "rvbcrs/opennova:latest" 2>/dev/null || docker compose pull 2>/dev/null
+docker pull "rvbcrs/opennova:$NEW" 2>/dev/null || true
 echo "Restarting local container..."
 docker compose down 2>/dev/null
 docker compose up -d 2>/dev/null
