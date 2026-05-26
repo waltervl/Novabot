@@ -234,8 +234,28 @@ the raw polygon) is 99.49% pixel-identical but not byte-exact.
 `occupancyGrid.ts` vs the live `LFIN1231000211` `map.pgm` (md5 `30d0a371…`):
 **99.49 % pixel-identical** (239,316 px; freeBoth 79,823 / occBoth 158,273;
 1,220 px differ, almost all in the offset/dilate border band). The **dock
-approach-disc is FREE in both** — the Error-125 fix is reproduced. Remaining gap
-to byte-identity = the `expandPolygon` ClipperOffset pre-step (not yet ported).
+approach-disc is FREE in both** — the Error-125 fix is reproduced.
+
+### CONCLUSION: byte-identity is NOT achievable from the stored CSV (proven)
+`expandPolygon` was ported (`clipper-lib`, scale ×10000, miterLimit 2.0,
+arcTolerance 0.25, jtRound, etClosedPolygon) and swept against the real files
+(both `LFIN1231000211` and `LFIN2230700238`):
+- **work `0` (no offset):** dims 541×446 (2 cells over), shape best → 99.49 %.
+- **work `-0.05`:** dims become exactly 539×444 and `map.yaml` matches, BUT
+  `jtRound` rounds every corner → pixel agreement drops to **98.8 %**.
+- **work `+0.30`** (the real firmware delta): dims 553×458, far worse.
+
+So no uniform ClipperOffset of the stored csv reproduces the stored `map.pgm`
+byte-for-byte. The firmware rasterizes its **recorded (sensor-path) boundary +
+expandPolygon at save time**; the on-disk `map0_work.csv` is a *different* state
+(its mtime ≠ the `map.pgm` mtime on both mowers), differing by ~1 cell at the
+extremes. True byte-identity therefore requires capturing the **exact in-memory
+polygon** `saveMap` receives (live `ros2` capture during `save_map type:1`), not
+any transform of the stored csv. For the generator's real inputs (final
+cloud/restore boundaries) the correct delta is ~0, so `DEFAULT_OFFSETS = 0`;
+`OffsetOpts` remains available to apply the firmware deltas when the input is a
+raw recorded boundary. Practical fidelity = 99.49 % + correct dock disc, which
+fixes coverage Error 125.
 
 ### Original open-item notes (superseded by §8 above)
 

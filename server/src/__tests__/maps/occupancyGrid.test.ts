@@ -27,13 +27,15 @@ function loadInput(): MapInput {
   return { workMaps, obstacles, unicom, chargingPose: { x: cp.x, y: cp.y, orientation: cp.orientation } };
 }
 
-// SKIPPED pending a matched input fixture. The fixture map.pgm was rasterized
-// by the firmware from an in-memory ClipperLib-simplified boundary, NOT from the
-// stored csv_file/x3_csv_file (proven: csv_file->541x446, x3->529x434, target
-// map.pgm 539x444 matches neither). Byte-identity needs the post-simplify
-// polygon captured live (ros2 topic echo of the Polygon publisher during
-// save_map type:1) or ClipperLib replicated server-side. See
-// research/documents/mower-occupancy-grid-algorithm.md §7.
+// SKIPPED: byte-identity is not achievable from the stored csv. Proven against
+// the real LFIN1231000211 + LFIN2230700238 files: the firmware rasterizes a
+// boundary that differs from the stored csv by ~1 cell at the extremes (the
+// recorded boundary + expandPolygon ClipperOffset run at save time; the on-disk
+// csv is a different state — csv mtime != pgm mtime). The raw csv rasterizes to
+// 99.49% pixel-identity with the correct dock free-disc (Error-125 fix); a -0.05
+// ClipperOffset fixes the dims but rounds corners and drops agreement to 98.8%,
+// and the real +0.30 firmware offset is worse still. True byte-identity needs the
+// exact in-memory polygon captured live. See mower-occupancy-grid-algorithm.md §8.
 describe.skip('generateOccupancyGrid byte-identity vs firmware', () => {
   it('whole-area map.yaml matches', () => {
     const out = generateOccupancyGrid(loadInput());

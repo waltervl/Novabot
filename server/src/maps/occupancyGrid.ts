@@ -13,6 +13,8 @@
  *
  * Pure: inputs in, buffers out. No I/O.
  */
+import ClipperLib from 'clipper-lib';
+
 export interface XY { x: number; y: number; }
 
 export interface MapInput {
@@ -24,6 +26,14 @@ export interface MapInput {
 
 export interface GridFile { yaml: string; pgm: Buffer; png?: Buffer; }
 export interface GeneratedMap { whole: GridFile; perMap: { name: string; file: GridFile }[]; }
+
+/** ClipperOffset deltas (metres) applied to each polygon set before rasterizing,
+ * mirroring NovabotMapping::expandPolygon (work +offset, obstacle -obstacle_offset,
+ * unicom -obstacle_offset/2). The firmware applies these to the RECORDED (sensor)
+ * boundary; for already-final boundaries (cloud/restore CSVs) the correct delta is
+ * ~0, so default to no offset. See research/documents/mower-occupancy-grid-algorithm.md §8. */
+export interface OffsetOpts { work: number; obstacle: number; unicom: number; }
+const DEFAULT_OFFSETS: OffsetOpts = { work: 0, obstacle: 0, unicom: 0 };
 
 // ── Firmware constants (see algorithm doc §1) ───────────────────────────────
 const RES = 0.05;            // resolution_ (hardcoded; area const 0.0025 = RES^2)
@@ -63,6 +73,22 @@ function toPx(x: number, y: number, g: Geometry): { c: number; r: number } {
 
 function polyToPx(points: XY[], g: Geometry): { c: number; r: number }[] {
   return points.map((p) => toPx(Math.fround(p.x), Math.fround(p.y), g));
+}
+
+// NovabotMapping::expandPolygon — ClipperOffset(miterLimit=2.0, arcTolerance=0.25),
+// scale x10000, jtRound + etClosedPolygon. Returns offset rings (may be >1) in metres.
+const CLIP_SCALE = 10000;
+function expandPolygon(points: XY[], deltaM: number): XY[][] {
+  if (deltaM === 0 || points.length < 3) return points.length ? [points] : [];
+  const path = points.map((p) => ({
+    X: Math.trunc(Math.fround(p.x) * CLIP_SCALE),
+    Y: Math.trunc(Math.fround(p.y) * CLIP_SCALE),
+  }));
+  const co = new ClipperLib.ClipperOffset(2.0, 0.25);
+  co.AddPath(path, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+  const sol: { X: number; Y: number }[][] = [];
+  co.Execute(sol, deltaM * CLIP_SCALE);
+  return sol.map((ring) => ring.map((q) => ({ x: q.X / CLIP_SCALE, y: q.Y / CLIP_SCALE })));
 }
 
 // ── OpenCV-compatible scanline polygon fill (even-odd) ──────────────────────
@@ -152,11 +178,19 @@ function fillCircle(grid: Uint8Array, W: number, H: number,
   }
 }
 
-function collectAllPoints(input: MapInput): XY[] {
+interface OffsetRings { work: XY[][]; obstacles: XY[][]; unicom: XY[][]; }
+function offsetAll(input: MapInput, o: OffsetOpts): OffsetRings {
+  const work: XY[][] = [], obstacles: XY[][] = [], unicom: XY[][] = [];
+  for (const w of input.workMaps) work.push(...expandPolygon(w.points, o.work));
+  for (const ob of input.obstacles) obstacles.push(...expandPolygon(ob.points, o.obstacle));
+  for (const u of input.unicom) unicom.push(...expandPolygon(u.points, o.unicom));
+  return { work, obstacles, unicom };
+}
+function collectRingPoints(r: OffsetRings): XY[] {
   const pts: XY[] = [];
-  for (const w of input.workMaps) pts.push(...w.points);
-  for (const o of input.obstacles) pts.push(...o.points);
-  for (const u of input.unicom) pts.push(...u.points);
+  for (const ring of r.work) pts.push(...ring);
+  for (const ring of r.obstacles) pts.push(...ring);
+  for (const ring of r.unicom) pts.push(...ring);
   return pts;
 }
 
@@ -170,20 +204,20 @@ function pgm(grid: Uint8Array, g: Geometry): Buffer {
   return Buffer.concat([Buffer.from(header, 'ascii'), Buffer.from(grid)]);
 }
 
-function buildWhole(input: MapInput, g: Geometry): Uint8Array {
+function buildWhole(input: MapInput, rings: OffsetRings, g: Geometry): Uint8Array {
   const W = g.width, H = g.height;
   const grid = new Uint8Array(W * H); // init 0 (OCCUPIED)
 
   // 1. work areas -> free
-  for (const w of input.workMaps) fillPoly(grid, W, H, polyToPx(w.points, g), FREE);
+  for (const ring of rings.work) fillPoly(grid, W, H, polyToPx(ring, g), FREE);
   // 2. unicom -> free
-  for (const u of input.unicom) fillPoly(grid, W, H, polyToPx(u.points, g), FREE);
+  for (const ring of rings.unicom) fillPoly(grid, W, H, polyToPx(ring, g), FREE);
   // 3. obstacles -> occupied
-  for (const o of input.obstacles) fillPoly(grid, W, H, polyToPx(o.points, g), OCCUPIED);
+  for (const ring of rings.obstacles) fillPoly(grid, W, H, polyToPx(ring, g), OCCUPIED);
 
   // 4a. whole_map_handle_switch == true: dilate, re-stamp obstacles, dilate
   dilate3x3(grid, W, H);
-  for (const o of input.obstacles) fillPoly(grid, W, H, polyToPx(o.points, g), OCCUPIED);
+  for (const ring of rings.obstacles) fillPoly(grid, W, H, polyToPx(ring, g), OCCUPIED);
   dilate3x3(grid, W, H);
 
   // 9. dock circles
@@ -206,11 +240,12 @@ function buildWhole(input: MapInput, g: Geometry): Uint8Array {
   return grid;
 }
 
-export function generateOccupancyGrid(input: MapInput): GeneratedMap {
-  const all = collectAllPoints(input);
+export function generateOccupancyGrid(input: MapInput, offsets: OffsetOpts = DEFAULT_OFFSETS): GeneratedMap {
+  const rings = offsetAll(input, offsets);
+  const all = collectRingPoints(rings);
   if (!all.length) throw new Error('generateOccupancyGrid: no input points');
   const g = computeGeometry(all);
-  const grid = buildWhole(input, g);
+  const grid = buildWhole(input, rings, g);
   const whole: GridFile = { yaml: yaml('map.pgm', g), pgm: pgm(grid, g) };
   return { whole, perMap: [] };
 }
