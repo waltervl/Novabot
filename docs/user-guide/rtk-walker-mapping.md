@@ -34,14 +34,13 @@ just want to back up. Use the regular backup flow for that.
 |---|---|
 | RTK walker hardware | ESP32-S3 board with TFT + LC29HDA RTK receiver, in the printed case (`tools/rtk-walker/designs/`). |
 | Walker firmware | Built from branch `feat/rtk-walker-map-import` (or `master` once merged). Build with `pio run -e jc3248w535-walker`, flash via USB. |
-| OpenNova server | Running, version 2026.0521 or newer (the `import-walker-bundle` endpoint must exist). |
+| OpenNova server | Running, version 2026.0526 or newer (the `walker-bundles` library endpoint must exist). |
 | Mower | Physically docked, powered on, online, `battery_state: Charging`. The server reads the mower's live `map_position` to align the walked polygon to the mower's local frame. |
-| Admin bearer token | From the admin page. See [Admin Panel](admin-panel.md) for how to generate one. |
-| RTK corrections | An NTRIP feed reachable from the walker's WiFi (the walker uses the same NTRIP plumbing as the GPS dev mode). FIX quality is required for a clean boundary; FLOAT and BAD points are filtered out automatically. |
+| RTK corrections | Either the local charger LoRa RTCM relay or an NTRIP feed reachable from the walker's WiFi. FIX quality is preferred for a clean boundary; FLOAT is accepted by the current walker build, BAD points are filtered out automatically. |
 
 ## First-time setup
 
-The walker stores its server credentials in NVS (Preferences). You only
+The walker stores its OpenNova server URL in NVS (Preferences). You only
 have to do this once per walker.
 
 1. Power up the walker. The TFT comes up on the GPS screen.
@@ -55,23 +54,17 @@ have to do this once per walker.
    - **Server URL**: the OpenNova server, including port. Example:
      `http://192.168.0.247:8080`. No trailing slash needed (the walker
      strips it).
-   - **Mower SN**: the serial of the mower you are mapping for. Example:
-     `LFIN2230700238`.
-   - **Admin token**: paste the raw bearer (no `Bearer ` prefix). The
-     walker stores it in NVS and only sends it inside the `Authorization`
-     header. It is never echoed in the web log.
 5. Save. This does not require a reboot.
 
 The walker can now POST bundles to:
 
 ```
-POST <serverUrl>/api/admin-status/maps/<mowerSn>/import-walker-bundle
-Authorization: Bearer <adminToken>
+POST <serverUrl>/api/walker-bundles
 Content-Type: multipart/form-data
 ```
 
-If you change mowers or rotate the admin token, come back to this page and
-update the fields.
+The upload is SN-agnostic. The server stores the bundle in the walker bundle
+library, and the operator assigns it to a mower from the admin page.
 
 ## Recording a work-area map
 
@@ -82,11 +75,10 @@ supports up to 3 maps per session.
 1. On the TFT, tap the **Maps** tab in the bottom bar (next to GPS, Tracks,
    Settings).
 2. Tap **+ Add area** at the bottom of the maps screen.
-3. Physically stand at the dock. This becomes the session origin
-   `(0, 0)` in the walker-local frame. Everything you walk is recorded
-   relative to that point in the East-North plane (X = East, Y = North,
-   meters).
-4. Walk the boundary you want to mow. Keep the walker upright and visible
+3. Walk the boundary you want to mow. The first accepted RTK point becomes
+   the walker-local session origin, but it does not need to be the dock. The
+   import is anchored later from the mandatory charger channel.
+4. Keep the walker upright and visible
    so you can see the RTK quality dot in the corner:
    - **Green**: FIX quality. Points are recorded.
    - **Orange**: FLOAT. Points are dropped (counted as "Dropped" on the
@@ -119,14 +111,24 @@ You can add multiple obstacles per map. Each one is its own polygon.
 
 ### Channels
 
-A channel is a narrow corridor between two areas (currently used to wire
-the mower's route to the charger). The MVP build hardcodes the target to
-`charge`. Multi-map channel targets are tracked for a later build.
+A channel is a narrow corridor between an area and a target. For map0, a
+`map0tocharge_unicom` channel is mandatory: it is both the mower's route
+between the work polygon and the charger, and the geometric anchor that lets
+the server place the walked boundary in the mower's local frame.
+
+The MVP build hardcodes the target to `charge`. Multi-map channel targets are
+tracked for a later build.
 
 1. From MapDetail, tap **+ Channel**.
-2. Walk the channel path.
+2. Prefer starting at the charger and walking the path into the work polygon.
+   If you walk it the other way around, the server detects the charger-side
+   endpoint and reverses the CSV so row 1 is still the dock pose.
 3. Tap **Save**.
 4. The channel appears in the left-hand list on the detail screen.
+
+Do not upload/apply a walker bundle until map0 has one charger channel. The
+server rejects bundles without `map0tocharge_unicom` instead of creating a map
+that the Novabot app cannot route back to the dock.
 
 ## Exporting and uploading
 
@@ -141,11 +143,10 @@ OpenNova server.
 1. On the main maps screen, tap **Upload**.
 2. The title flips to `Uploading...` while the POST is in flight. Typical
    bundles upload in a few seconds.
-3. On success the title shows `Upload OK (<bytes> B): <staging response>`.
-   The server returns a JSON body with a `stagingId` you can use on the
-   admin page to confirm and apply.
-4. On failure the title shows `ERR: <HTTP code> <reply>`. Check that the
-   server URL, mower SN, and admin token are all current.
+3. On success the title shows `Upload OK (<bytes> B): <library response>`.
+   The server returns a JSON body with the stored bundle id.
+4. On failure the title shows `ERR: <HTTP code> <reply>`. Check the server
+   URL and WiFi reachability.
 
 ### Method B: manual download then upload
 
@@ -165,21 +166,23 @@ you want to inspect the bundle before sending it.
 
 ## What happens server-side
 
-When the bundle hits `/api/admin-status/maps/:sn/import-walker-bundle`,
-the server:
+When the bundle is assigned to a mower from the library (or uploaded through
+the per-mower import endpoint), the server:
 
 1. Reads the mower's live `map_position` `(x, y, orientation)` over MQTT.
    This is the dock's pose in the mower's current local frame.
-2. Treats the walker's session origin `(0, 0)` as the dock too, with the
-   walker-local axes (X = East, Y = North) as the polygon frame.
+2. Reads `map0tocharge_unicom`, finds the charger-side endpoint, and treats
+   that point as the dock anchor in walker-local coordinates.
 3. Computes the rotation and translation Δ that maps walker-local
    coordinates onto the mower's local frame, and applies it to every
    polygon point, obstacle, and channel.
-4. Rasterises the polygon set into a Nav2-compatible `map.pgm` + `map.yaml`
+4. Reverses the charger unicom when needed so its first CSV row is the dock
+   pose, matching stock Novabot `save_recharge_pos` output.
+5. Rasterises the polygon set into a Nav2-compatible `map.pgm` + `map.yaml`
    pair, carving obstacles out of free space.
-5. Wraps the transformed CSVs + raster into a synthetic portable bundle
+6. Wraps the transformed CSVs + raster into a synthetic portable bundle
    that looks identical to a bundle produced by a normal save_map.
-6. Hands off to the existing apply-verbatim flow described in
+7. Hands off to the existing apply-verbatim flow described in
    [Map Backup & Restore](map-backup-restore.md). All the same hooks fire
    (write_map_files, regenerate_per_map_files, charging_station.yaml
    refresh).
