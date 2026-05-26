@@ -294,6 +294,14 @@ static uint32_t lastGgaAtMs     = 0;
 static int      lastPair001Cmd = -1;
 static int      lastPair001Result = -1;
 static uint32_t lastPair001AtMs = 0;
+enum GnssVariant : uint8_t {
+  GNSS_VARIANT_UNKNOWN = 0,
+  GNSS_VARIANT_HDA,
+  GNSS_VARIANT_HEA,
+  GNSS_VARIANT_OTHER,
+};
+static GnssVariant gnssVariant = GNSS_VARIANT_UNKNOWN;
+static bool gnssVariantLogged = false;
 
 static void sendGnssCommand(const String& payload) {
   uint8_t cs = 0;
@@ -344,6 +352,22 @@ static void gnssLineFeed(char c) {
       }
       if (nmeaLineLen >= 3 && nmeaLineBuf[0] == '$' && nmeaLineBuf[1] == 'P') {
         weblogf("[gnss-rx] %s\n", nmeaLineBuf);
+        if (strncmp(nmeaLineBuf, "$PAIR020,", 9) == 0) {
+          if (strstr(nmeaLineBuf, "LC29HEA")) {
+            gnssVariant = GNSS_VARIANT_HEA;
+          } else if (strstr(nmeaLineBuf, "LC29HDA")) {
+            gnssVariant = GNSS_VARIANT_HDA;
+          } else {
+            gnssVariant = GNSS_VARIANT_OTHER;
+          }
+          if (!gnssVariantLogged) {
+            const char* variant =
+              (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
+              (gnssVariant == GNSS_VARIANT_HDA) ? "LC29HDA" : "other";
+            weblogf("[gnss] detected %s firmware profile\n", variant);
+            gnssVariantLogged = true;
+          }
+        }
         // PAIR001 ACK: "$PAIR001,<cmd>,<result>*HH" — cmd matches the
         // PAIR<cmd> we sent (e.g. 050 for PAIR050), result=0 means OK.
         // Parse it here so the retry loop in gnssPump() can see whether
@@ -1054,14 +1078,18 @@ static bool     batteryCharging = false;
 
 static uint32_t gnssDetectedAtMs = 0; // millis() when first byte arrived (used to delay the post-detect PAIR queries)
 static bool     pair021Sent = false; // firmware version query
-static bool     pair050_1HzSent = false; // force 1 Hz fix rate (override NV)
+static bool     pair050_1HzSent = false; // true once at least one 1 Hz command was sent
 // PAIR050 rate-config ACK state. The LC29HDA silently drops the cmd
-// if its serial parser is busy, so resend up to 4 times spaced 2 s
-// apart and stop once PAIR001,050,0 ACK is observed. Confirmation goes
-// into gnssRateHz so the UI can show the real measured fix rate.
+// if its serial parser is busy, so keep retrying until PAIR001,050,0
+// ACK is observed. Confirmation goes into gnss5HzAcked (legacy field
+// name) so the UI can show whether the 1 Hz rate command really landed.
 static uint32_t pair050LastTxMs = 0;
 static uint8_t  pair050TxCount  = 0;
 static bool     pair050Acked    = false;
+static uint32_t pair050AckedAtMs = 0;
+static bool     pair400RtkSent  = false;
+static bool     pair513SaveSent = false;
+static uint32_t lastRateReassertMs = 0;
 
 // Measured GGA rate (location updates per second). Rolling counter
 // reset every 1000 ms; gnssRateHz holds the most recently completed
@@ -1108,23 +1136,56 @@ static void gnssPump() {
     sendGnssCommand("PAIR021");
     pair021Sent = true;
   }
-  if (!pair050_1HzSent && sinceDetect >= 700) {
-    // 1000 ms = 1 Hz. The LC29HDA *-DA* variant is hardware-locked to 1 Hz
-    // RTK regardless of what PAIR050 says (Quectel LC29H Hardware Design
-    // datasheet + DR&RTK App Note v1.2.0: "LC29H (DA) only supports RTK
-    // (Max update rate: 1 Hz)"). Sending a faster value makes the parser
-    // ACK but the RTK engine still runs at 1 Hz and interpolates PVT
-    // epochs between, which corrupts the FLOAT->FIX lock entirely. Our
-    // 5 Hz / 2 Hz attempts both fell back to FLOAT-only with 28+ sats.
-    // True 5 Hz RTK requires LC29HEA (different SKU, same footprint).
-    // Density at 1 Hz is recovered server-side via polygon densification
-    // + a tight displacement filter that keeps real-but-small movements.
-    sendGnssCommand("PAIR050,1000");
-    pair050_1HzSent = true;
+  // 1000 ms = 1 Hz. The LC29HDA *-DA* variant is hardware-locked to 1 Hz
+  // RTK regardless of what PAIR050 says (Quectel LC29H Hardware Design
+  // datasheet + DR&RTK App Note v1.2.0: "LC29H (DA) only supports RTK
+  // (Max update rate: 1 Hz)"). Sending a faster value makes the parser
+  // ACK but the RTK engine still runs at 1 Hz and interpolates PVT
+  // epochs between, which corrupts the FLOAT->FIX lock entirely. Our
+  // 5 Hz / 2 Hz attempts both fell back to FLOAT-only with 28+ sats.
+  // True 5 Hz RTK requires LC29HEA (different SKU, same footprint).
+  // Density at 1 Hz is recovered server-side via polygon densification
+  // + a tight displacement filter that keeps real-but-small movements.
+  uint32_t nowCfgMs = millis();
+  bool enforceDa1Hz = (gnssVariant != GNSS_VARIANT_HEA) &&
+                      (gnssVariant != GNSS_VARIANT_UNKNOWN || sinceDetect >= 3000);
+  if (sinceDetect >= 700 && enforceDa1Hz && !pair050Acked) {
+    uint32_t retryMs = (pair050TxCount < 4) ? 2000 : 15000;
+    if (pair050TxCount == 0 || nowCfgMs - pair050LastTxMs >= retryMs) {
+      sendGnssCommand("PAIR050,1000");
+      pair050_1HzSent = true;
+      pair050LastTxMs = nowCfgMs;
+      if (pair050TxCount < UINT8_MAX) pair050TxCount++;
+      weblogf("[gnss] PAIR050 1 Hz attempt %u\n", (unsigned) pair050TxCount);
+    }
   }
   if (!pair050Acked && lastPair001Cmd == 50 && lastPair001Result == 0) {
     pair050Acked = true;
-    weblogf("[gnss] PAIR050 ACKed\n");
+    pair050AckedAtMs = millis();
+    weblogf("[gnss] PAIR050 ACKed after %u attempt(s)\n", (unsigned) pair050TxCount);
+  }
+  if (!pair400RtkSent && sinceDetect >= 950 &&
+      ((pair050_1HzSent && nowCfgMs - pair050LastTxMs >= 250) ||
+       gnssVariant == GNSS_VARIANT_HEA)) {
+    sendGnssCommand("PAIR400,2");
+    pair400RtkSent = true;
+  }
+  if (enforceDa1Hz && pair050Acked && pair400RtkSent && !pair513SaveSent &&
+      pair050AckedAtMs != 0 && nowCfgMs - pair050AckedAtMs >= 1500) {
+    sendGnssCommand("PAIR513");
+    pair513SaveSent = true;
+  }
+  if (enforceDa1Hz && gnssRateHz > 2 && sinceDetect >= 5000 &&
+      (lastRateReassertMs == 0 || nowCfgMs - lastRateReassertMs >= 10000)) {
+    weblogf("[gnss] measured %u Hz after 1 Hz request; reasserting PAIR050,1000\n",
+            (unsigned) gnssRateHz);
+    pair050Acked = false;
+    pair050AckedAtMs = 0;
+    pair050TxCount = 0;
+    pair050LastTxMs = 0;
+    pair400RtkSent = false;
+    pair513SaveSent = false;
+    lastRateReassertMs = nowCfgMs;
   }
 #if NMEA_HEARTBEAT
   // Periodic heartbeat so you can tell "no bytes" apart from "bytes
@@ -1561,6 +1622,12 @@ static void handleStatus() {
   doc["areaM2"]     = lastAreaM2;
   doc["gnssHz"]     = gnssRateHz;
   doc["gnss5HzAcked"] = pair050Acked;
+  doc["gnss1HzAcked"] = pair050Acked;
+  doc["gnss1HzAttempts"] = pair050TxCount;
+  doc["gnssVariant"] =
+    (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
+    (gnssVariant == GNSS_VARIANT_HDA) ? "LC29HDA" :
+    (gnssVariant == GNSS_VARIANT_OTHER) ? "other" : "unknown";
   doc["authConfigured"] = cfg.authToken.length() > 0;
   // viewingSlot mirrors the on-device "currently loaded saved map" state
   // so the web UI can highlight the active row in its Maps list without

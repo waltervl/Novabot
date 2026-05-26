@@ -178,7 +178,8 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
         <button type="button" class="gnss-quick" data-cmd="PAIR021" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">FW version</button>
         <button type="button" class="gnss-quick" data-cmd="PAIR050,1000" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">1 Hz fix</button>
         <button type="button" class="gnss-quick" data-cmd="PAIR050,200" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">5 Hz fix</button>
-        <button type="button" class="gnss-quick" data-cmd="PAIR432,1" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">Save config</button>
+        <button type="button" class="gnss-quick" data-cmd="PAIR050,100" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">10 Hz HEA</button>
+        <button type="button" class="gnss-quick" data-cmd="PAIR513" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">Save config</button>
         <button type="button" class="gnss-quick" data-cmd="PAIR002" style="width:auto;padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.06);color:var(--text)">Cold start</button>
       </div>
     </div>
