@@ -860,7 +860,10 @@ export function handleWalkerFirmwareBinary(req: express.Request, res: express.Re
     res.status(404).json({ ok: false, error: 'not found' });
     return;
   }
+  const stat = fs.statSync(filePath);
   res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Length', String(stat.size));
+  res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
   fs.createReadStream(filePath).pipe(res);
 }
