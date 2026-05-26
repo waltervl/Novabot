@@ -32,9 +32,16 @@ struct WalkerLoraStats {
 // (M1=1, M0=0) via the 0xC0 command. Returns true if the module ACK'd.
 bool walkerLoraSetup(const WalkerLoraConfig& cfg);
 
-// Called from main loop every iteration. Drains UART2 RX, parses
-// frames, forwards 0x31 payloads to gnssSerial. Non-blocking.
+// Called from main loop every iteration. Drains UART2 RX, parses charger
+// frames, and forwards only complete RTCM3 messages from 0x31 payloads to
+// gnssSerial. Non-blocking.
 void walkerLoraPump();
+
+// Temporarily gate RTCM forwarding while the GNSS module is receiving its
+// boot-time PAIR config. Frames still count as active; bytes are just not
+// pushed into the LC29 UART until the rover is ready for corrections.
+void walkerLoraSetForwardingEnabled(bool enabled);
+bool walkerLoraForwardingEnabled();
 
 // True if a valid 0x31 frame arrived within the last 10 s. Used by
 // ntripPump() to decide whether to push its own RTCM bytes.
@@ -69,6 +76,8 @@ struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived
                           uint32_t rawBytesIn; uint32_t lastFrameMsAgo; };
 inline bool walkerLoraSetup(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraPump() {}
+inline void walkerLoraSetForwardingEnabled(bool) {}
+inline bool walkerLoraForwardingEnabled() { return false; }
 inline bool walkerLoraActive() { return false; }
 inline bool walkerLoraReconfigure(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraGetStats(WalkerLoraStats& out) {

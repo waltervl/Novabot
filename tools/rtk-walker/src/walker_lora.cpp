@@ -185,6 +185,92 @@ static uint32_t g_framesRejected = 0;
 static uint32_t g_bytesForwarded = 0;
 static uint32_t g_lastValidMs    = 0;
 static uint32_t g_rawBytesIn     = 0;
+static volatile bool g_forwardingEnabled = true;
+
+enum RtcmParseState : uint8_t {
+    RTCM_WAIT_PREAMBLE,
+    RTCM_HEADER_1,
+    RTCM_HEADER_2,
+    RTCM_BODY,
+};
+static RtcmParseState g_rtcmState = RTCM_WAIT_PREAMBLE;
+static uint8_t  g_rtcmBuf[1030] = {0}; // 0xD3 + 2-byte len + 1023 payload + 3-byte CRC
+static uint16_t g_rtcmIdx = 0;
+static uint16_t g_rtcmExpectedLen = 0;
+
+static void rtcmResetParser() {
+    g_rtcmState = RTCM_WAIT_PREAMBLE;
+    g_rtcmIdx = 0;
+    g_rtcmExpectedLen = 0;
+}
+
+static uint32_t rtcmCrc24q(const uint8_t* data, size_t len) {
+    uint32_t crc = 0;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint32_t)data[i] << 16;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            crc <<= 1;
+            if (crc & 0x1000000UL) crc ^= 0x1864CFBUL;
+        }
+    }
+    return crc & 0xFFFFFFUL;
+}
+
+static void forwardRtcmStreamBytes(const uint8_t* data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        uint8_t b = data[i];
+        switch (g_rtcmState) {
+            case RTCM_WAIT_PREAMBLE:
+                if (b == 0xD3) {
+                    g_rtcmBuf[0] = b;
+                    g_rtcmIdx = 1;
+                    g_rtcmState = RTCM_HEADER_1;
+                }
+                break;
+            case RTCM_HEADER_1:
+                if ((b & 0xFC) != 0) {
+                    // False preamble inside NMEA/binary noise. If this byte is
+                    // another preamble, keep it as the start of a new candidate.
+                    if (b == 0xD3) {
+                        g_rtcmBuf[0] = b;
+                        g_rtcmIdx = 1;
+                    } else {
+                        rtcmResetParser();
+                    }
+                    break;
+                }
+                g_rtcmBuf[g_rtcmIdx++] = b;
+                g_rtcmState = RTCM_HEADER_2;
+                break;
+            case RTCM_HEADER_2: {
+                g_rtcmBuf[g_rtcmIdx++] = b;
+                uint16_t payloadLen = (uint16_t)(((g_rtcmBuf[1] & 0x03) << 8) | g_rtcmBuf[2]);
+                g_rtcmExpectedLen = (uint16_t)(payloadLen + 6);
+                if (payloadLen == 0 || g_rtcmExpectedLen > sizeof(g_rtcmBuf)) {
+                    rtcmResetParser();
+                } else {
+                    g_rtcmState = RTCM_BODY;
+                }
+                break;
+            }
+            case RTCM_BODY:
+                g_rtcmBuf[g_rtcmIdx++] = b;
+                if (g_rtcmIdx >= g_rtcmExpectedLen) {
+                    uint32_t want = ((uint32_t)g_rtcmBuf[g_rtcmExpectedLen - 3] << 16) |
+                                    ((uint32_t)g_rtcmBuf[g_rtcmExpectedLen - 2] << 8) |
+                                    (uint32_t)g_rtcmBuf[g_rtcmExpectedLen - 1];
+                    uint32_t got = rtcmCrc24q(g_rtcmBuf, g_rtcmExpectedLen - 3);
+                    if (want == got) {
+                        gnssSerial.write(g_rtcmBuf, g_rtcmExpectedLen);
+                        rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
+                        g_bytesForwarded += g_rtcmExpectedLen;
+                    }
+                    rtcmResetParser();
+                }
+                break;
+        }
+    }
+}
 
 // Ring of the most recent raw UART2 bytes (pre-framing) for the serial
 // diagnostic dump. 32 bytes is enough to eyeball a frame header / noise.
@@ -310,10 +396,8 @@ void walkerLoraPump() {
                     // any other valid cmd as "we're hearing the charger".
                     g_framesReceived++;
                     g_lastValidMs = millis();
-                    if (g_lastCmd == 0x31 && g_payloadIdx > 0) {
-                        gnssSerial.write(g_payloadBuf, g_payloadIdx);
-                        rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
-                        g_bytesForwarded += g_payloadIdx;
+                    if (g_lastCmd == 0x31 && g_payloadIdx > 0 && g_forwardingEnabled) {
+                        forwardRtcmStreamBytes(g_payloadBuf, g_payloadIdx);
                     }
                 } else {
                     g_framesRejected++;
@@ -322,6 +406,15 @@ void walkerLoraPump() {
                 break;
         }
     }
+}
+
+void walkerLoraSetForwardingEnabled(bool enabled) {
+    if (g_forwardingEnabled != enabled) rtcmResetParser();
+    g_forwardingEnabled = enabled;
+}
+
+bool walkerLoraForwardingEnabled() {
+    return g_forwardingEnabled;
 }
 
 bool walkerLoraActive() {

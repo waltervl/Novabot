@@ -280,8 +280,8 @@ void tftSetup() {
   //    blow past the 4 KB default; saw the overflow on the first frame.
   //  - task_affinity 1 keeps LVGL beside Arduino's loopTask instead of
   //    competing with WiFi/lwIP on core 0.
-  //  - task_priority 1 matches loopTask. The dedicated GNSS/LoRa task
-  //    runs above this, so heavy redraws cannot starve UART service.
+  //  - task_priority 1 matches loopTask and the dedicated GNSS/LoRa task
+  //    so UI, HTTP, and UART service share core 1 cooperatively.
   jc3248w535_config_t cfg = JC3248W535_DEFAULT_CONFIG(LV_DISP_ROT_90);
   cfg.lvgl.task_stack    = 24 * 1024;
   cfg.lvgl.task_affinity = 1;
