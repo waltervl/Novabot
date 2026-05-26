@@ -1170,7 +1170,7 @@ static void gnssPump() {
   // from the 2 cm displacement filter instead.
   uint32_t nowCfgMs = millis();
   uint32_t sinceDetect = nowCfgMs - gnssDetectedAtMs;
-  if (sinceDetect >= 500 && gnssVariant == GNSS_VARIANT_UNKNOWN) {
+  if (sinceDetect >= 500 && gnssVariant == GNSS_VARIANT_UNKNOWN && pair021TxCount < 5) {
     uint32_t retryMs = (pair021TxCount < 5) ? 1000 : 10000;
     if (pair021TxCount == 0 || nowCfgMs - pair021LastTxMs >= retryMs) {
       sendGnssCommand("PAIR021");
@@ -1192,7 +1192,7 @@ static void gnssPump() {
   // + a tight displacement filter that keeps real-but-small movements.
   bool enforceDa1Hz = (gnssVariant != GNSS_VARIANT_HEA) &&
                       (gnssVariant != GNSS_VARIANT_UNKNOWN || sinceDetect >= 3000);
-  if (sinceDetect >= 700 && enforceDa1Hz && !pair050Acked) {
+  if (sinceDetect >= 700 && enforceDa1Hz && !pair050Acked && pair050TxCount < 4) {
     uint32_t retryMs = (pair050TxCount < 4) ? 2000 : 15000;
     if (pair050TxCount == 0 || nowCfgMs - pair050LastTxMs >= retryMs) {
       sendGnssCommand("PAIR050,1000");
