@@ -198,7 +198,46 @@ fed in p1).
   `charging_station.yaml` (`charging_pose: [0.1250293, -0.5169092, 1.5751852]`).
 - Whole map: 539×444, origin [-21.25, -20.70], res 0.05; pgm {0:158572, 254:80744}.
 
-### Open item: the rasterized boundary is a PROCESSED polygon, not a stored CSV
+## 8. CONFIRMED: the pre-rasterize pipeline (`expandPolygon` → `saveMap`)
+
+The full path is `NovabotMapping::mappingCallback` (the `Mapping.srv` handler,
+`novabot_mapping.cpp`), decompiled in
+`research/ghidra_output/savemap_caller_decompiled.c` (via
+`research/decompile_savemap_caller.java`):
+
+1. Load boundary/obstacle/unicom polygons into members
+   (`this+0x278` work, `this+0x290` obstacles, …).
+2. **`NovabotMapping::expandPolygon(work, obstacles, unicom, …)`**
+   (`novabot_mapping.cpp:1494`) — offsets each set **in place** with ClipperLib:
+   - scale float metres → int by **×10000** (and back by ÷10000)
+   - `ClipperLib::ClipperOffset(miterLimit = 2.0, arcTolerance = 0.25)`
+   - `AddPath(path, jtRound /*JoinType=1*/, etClosedPolygon /*EndType=0*/)`
+   - `Execute(solution, delta)` with, per set:
+     - **work boundary:** `delta = +offset × 10000 = +0.30 m`  (grow outward)
+     - **obstacles:** `delta = -obstacle_offset × 10000 = -0.25 m`  (shrink)
+     - **third set (unicom/charge):** `delta = -(obstacle_offset/2) × 10000 = -0.125 m`
+   - params confirmed: `this+0x20 = "offset" = 0.30`, `this+0x28 = "obstacle_offset" = 0.25`
+     (`get_parameter<double>` @ lines 29312-29359; values from
+     `novabot_mapping_launch.py`).
+3. **`MapGenerator::saveMap(work, obstacles, unicom, …, mapIndex)`** rasterizes
+   the **offset** polygons per §3-§5. `mapIndex = -1` for the per-call sub-map;
+   the whole map re-runs after `readAllCsvData`.
+
+So byte-identity is reproducible: apply the same ClipperOffset (a deterministic,
+JS-portable algorithm — e.g. `clipper-lib`) with these exact deltas/params, then
+rasterize. The on-disk `map0_work.csv` is the *raw* boundary; `saveMap` sees it
+**grown by 0.30 m** (rounded corners), which is why the raw-CSV bbox does not
+match `map.pgm` — and why `server/src/maps/occupancyGrid.ts` (which rasterizes
+the raw polygon) is 99.49% pixel-identical but not byte-exact.
+
+### Validation status (against real stored files, no save_map trigger needed)
+`occupancyGrid.ts` vs the live `LFIN1231000211` `map.pgm` (md5 `30d0a371…`):
+**99.49 % pixel-identical** (239,316 px; freeBoth 79,823 / occBoth 158,273;
+1,220 px differ, almost all in the offset/dilate border band). The **dock
+approach-disc is FREE in both** — the Error-125 fix is reproduced. Remaining gap
+to byte-identity = the `expandPolygon` ClipperOffset pre-step (not yet ported).
+
+### Original open-item notes (superseded by §8 above)
 
 `saveMap` does **not** rasterize either CSV on disk. Hard evidence (live mower
 LFIN1231000211, 2026-05-23 save; its `map.pgm` md5 `30d0a371…` == our fixture):
