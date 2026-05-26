@@ -59,7 +59,13 @@ docker buildx build --platform linux/amd64,linux/arm64 \
   -t "rvbcrs/opennova:$NEW" \
   --push --no-cache .
 
-# Restart local container with new image
+# Restart local container with new image.
+# NOTE: `docker buildx build --push` (multiplatform) pushes to the registry but
+# does NOT load the image into the local Docker store. Without an explicit pull,
+# `docker compose up -d` would silently reuse the STALE local image and run old
+# code. So pull the freshly-pushed image first.
+echo "Pulling freshly-pushed image into local store..."
+docker pull "rvbcrs/opennova:$NEW" 2>/dev/null || docker compose pull 2>/dev/null
 echo "Restarting local container..."
 docker compose down 2>/dev/null
 docker compose up -d 2>/dev/null
