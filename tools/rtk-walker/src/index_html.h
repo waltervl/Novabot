@@ -1123,7 +1123,7 @@ toggleRecord = async function() {
 };
 
 // ── Console log polling ──────────────────────────────────────────
-// Server keeps an 8 KB ring buffer; we ask for the current snapshot +
+// Server keeps a small ring buffer; we ask for the current snapshot +
 // the monotonic byte offset of its newest byte. Between polls we know
 // `lastSeenSeq`, so we figure out which suffix of `buf` is new and
 // only append that. Buffer drops 25 % off the front when it fills up,

@@ -1,6 +1,6 @@
 // walker_lora.h — passive LoRa RTCM receiver for the Novabot charger
-// broadcast. Snoops 0x31 (RTK_RELAY) frames and writes CRC-valid RTCM3
-// messages to the LC29HDA UART so the GNSS chip gets RTK corrections
+// broadcast. Snoops 0x31 (RTK_RELAY) frames and writes the relay payload
+// to the LC29HDA UART so the GNSS chip can extract RTK corrections
 // without any internet / WiFi.
 #pragma once
 
@@ -22,7 +22,7 @@ struct WalkerLoraStats {
     bool     active;             // last valid frame in 10 s
     uint32_t framesReceived;     // valid frames (any cmd byte)
     uint32_t framesRejected;     // bad XOR or unknown cmd
-    uint32_t bytesForwarded;     // CRC-valid RTCM3 bytes pushed to gnssSerial
+    uint32_t bytesForwarded;     // LoRa relay payload bytes pushed to gnssSerial
     uint32_t rawBytesIn;         // every byte read off UART2, pre-framing
     uint32_t lastFrameMsAgo;     // ms since last valid 0x31 frame, UINT32_MAX if never
     uint32_t rtcmMessages;       // complete CRC-valid RTCM3 messages observed
@@ -37,7 +37,7 @@ struct WalkerLoraStats {
 bool walkerLoraSetup(const WalkerLoraConfig& cfg);
 
 // Called from main loop every iteration. Drains UART2 RX, parses charger
-// frames, and forwards CRC-valid RTCM3 from 0x31 payloads to gnssSerial.
+// frames, and forwards 0x31 payloads to gnssSerial.
 // Non-blocking.
 void walkerLoraPump();
 

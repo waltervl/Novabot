@@ -241,7 +241,7 @@ static void coreUnlock() { if (coreMux) xSemaphoreGiveRecursive(coreMux); }
 // USB-C cable is disconnected. Buffer is bounded at WEB_LOG_MAX bytes;
 // once full we drop a quarter off the front. The monotonic seq counter
 // lets the client poll for "what's new since I last asked".
-#define WEB_LOG_MAX 8192
+#define WEB_LOG_MAX 2048
 static String  webLogBuf;
 static uint32_t webLogSeq = 0;
 static SemaphoreHandle_t webLogMux = nullptr;
@@ -637,18 +637,23 @@ static String setupApPassword() {
 }
 
 static uint32_t wifiLastReconnectAttemptMs = 0;
+static uint32_t wifiLastDiagMs = 0;
 
 static void startSetupAp() {
   String ssid = setupApSsid();
   String pass = setupApPassword();
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(cfg.ssid.length() > 0 ? WIFI_AP_STA : WIFI_AP);
   WiFi.softAP(ssid.c_str(), pass.c_str());
   weblogf("[wifi] setup AP ssid=%s (device-specific password)\n", ssid.c_str());
 }
 
 static void wifiPump() {
   if (cfg.ssid.length() == 0) return;
-  if (WiFi.getMode() != WIFI_STA) return;
+  wifi_mode_t mode = WiFi.getMode();
+  if (mode != WIFI_STA && mode != WIFI_AP_STA) {
+    WiFi.mode(WIFI_STA);
+    mode = WIFI_STA;
+  }
   if (WiFi.status() == WL_CONNECTED) return;
 
   uint32_t now = millis();
@@ -659,8 +664,23 @@ static void wifiPump() {
   wifiLastReconnectAttemptMs = now;
   weblogf("[wifi] reconnecting to %s (status=%d)\n",
           cfg.ssid.c_str(), (int) WiFi.status());
-  WiFi.disconnect(false, false);
-  WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+  if (mode == WIFI_AP_STA) {
+    WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+  } else {
+    WiFi.disconnect(false, false);
+    WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+  }
+}
+
+static void wifiDiagPump() {
+  uint32_t now = millis();
+  if (wifiLastDiagMs != 0 && now - wifiLastDiagMs < 10000) return;
+  wifiLastDiagMs = now;
+  Serial.printf("[wifi] diag mode=%d status=%d ip=%s rssi=%d heap=%lu minHeap=%lu\n",
+                (int) WiFi.getMode(), (int) WiFi.status(),
+                WiFi.localIP().toString().c_str(), WiFi.RSSI(),
+                (unsigned long) ESP.getFreeHeap(),
+                (unsigned long) ESP.getMinFreeHeap());
 }
 
 // Shoelace area on an equirectangular projection anchored at the first
@@ -1651,10 +1671,13 @@ static void sendProgmemCooperatively(int code, const char* contentType, PGM_P bo
   size_t len = strlen_P(body);
   server.setContentLength(len);
   server.send(code, contentType, "");
+  char chunkBuf[kHttpChunkBytes + 1];
   for (size_t off = 0; off < len; off += kHttpChunkBytes) {
     size_t n = len - off;
     if (n > kHttpChunkBytes) n = kHttpChunkBytes;
-    server.sendContent_P(body + off, n);
+    memcpy_P(chunkBuf, body + off, n);
+    chunkBuf[n] = '\0';
+    server.sendContent(chunkBuf, n);
     serviceRealtimeDuringHttp();
   }
 }
@@ -1762,7 +1785,87 @@ static void handleAuthPost() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+static const char INDEX_LITE_HTML[] PROGMEM = R"LITE(
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RTK Walker</title>
+<style>
+  :root{color-scheme:dark;--bg:#070b12;--panel:#131b29;--line:#263244;--ok:#00d4aa;--warn:#f59e0b;--bad:#ef4444;--text:#f3f4f6;--dim:#9ca3af}
+  *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:14px;max-width:520px}
+  h1{font-size:18px;margin:0 0 12px}.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:10px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.item{background:#0b111d;border:1px solid #1d2738;border-radius:6px;padding:10px}
+  .label{color:var(--dim);font-size:12px}.value{font-size:18px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
+  .fix{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;font-weight:800}.dot{width:9px;height:9px;border-radius:50%;background:currentColor}
+  .fix-4{color:var(--ok);background:rgba(0,212,170,.12)}.fix-5{color:var(--warn);background:rgba(245,158,11,.14)}.fix-1,.fix-2{color:var(--warn);background:rgba(245,158,11,.10)}.fix-0{color:var(--bad);background:rgba(239,68,68,.12)}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:14px}.row:last-child{border-bottom:0}
+  a,button{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:7px;padding:10px 12px;background:var(--ok);color:#02251e;font-weight:800;text-decoration:none}
+  .muted{color:var(--dim);font-size:12px}.bar{height:7px;background:#111827;border-radius:999px;overflow:hidden;margin-top:8px}.bar span{display:block;height:100%;background:var(--ok);width:0}
+</style>
+</head>
+<body>
+<h1>RTK Walker</h1>
+<div class="card">
+  <div id="fix" class="fix fix-0"><span class="dot"></span><span id="fixText">NO FIX</span></div>
+  <div class="bar"><span id="rtcmBar"></span></div>
+  <div class="muted" id="stamp" style="margin-top:8px">connecting...</div>
+</div>
+<div class="grid">
+  <div class="item"><div class="label">Satellites</div><div class="value" id="sats">-</div></div>
+  <div class="item"><div class="label">HDOP</div><div class="value" id="hdop">-</div></div>
+  <div class="item"><div class="label">LoRa RTCM age</div><div class="value" id="rtcm">-</div></div>
+  <div class="item"><div class="label">Heap</div><div class="value" id="heap">-</div></div>
+</div>
+<div class="card">
+  <div class="row"><span>IP</span><strong id="ip">-</strong></div>
+  <div class="row"><span>WiFi RSSI</span><strong id="rssi">-</strong></div>
+  <div class="row"><span>GNSS Hz</span><strong id="hz">-</strong></div>
+  <div class="row"><span>LoRa frames</span><strong id="frames">-</strong></div>
+  <div class="row"><span>Forwarded bytes</span><strong id="bytes">-</strong></div>
+  <div class="row"><span>Lat/Lng</span><strong id="pos">-</strong></div>
+</div>
+<div class="card"><a href="/full">Open full UI</a></div>
+<script>
+const $=id=>document.getElementById(id);
+function fixName(f){return f===4?'RTK FIX':f===5?'RTK FLOAT':f===2?'DGPS':f===1?'GPS':'NO FIX'}
+function setFix(f){
+  const el=$('fix'); el.className='fix fix-'+(f||0);
+  $('fixText').textContent=fixName(f);
+}
+async function tick(){
+  try{
+    const r=await fetch('/api/status',{cache:'no-store'});
+    const d=await r.json();
+    setFix(d.fix);
+    $('sats').textContent=d.sats??'-';
+    $('hdop').textContent=d.hdop!=null?d.hdop.toFixed(2):'-';
+    $('ip').textContent=d.wifiIp||'-';
+    $('rssi').textContent=d.wifiRssi!=null?d.wifiRssi+' dBm':'-';
+    $('hz').textContent=d.gnssHz??'-';
+    $('heap').textContent=d.heapFree!=null?Math.round(d.heapFree/1024)+' KB':'-';
+    $('pos').textContent=(d.lat&&d.lng)?d.lat.toFixed(7)+', '+d.lng.toFixed(7):'-';
+    const l=d.lora||{};
+    $('frames').textContent=l.frames??'-';
+    $('bytes').textContent=l.bytes??'-';
+    const age=l.lastRtcmMsAgo;
+    $('rtcm').textContent=age!=null?Math.round(age/1000)+' s':'-';
+    $('rtcmBar').style.width=age==null?'0%':Math.max(0,Math.min(100,100-(age/100)))+'%';
+    $('stamp').textContent='updated '+new Date().toLocaleTimeString();
+  }catch(e){$('stamp').textContent='offline / waiting for HTTP';}
+}
+setInterval(tick,1000); tick();
+</script>
+</body>
+</html>
+)LITE";
+
 static void handleRoot() {
+  sendProgmemCooperatively(200, "text/html", INDEX_LITE_HTML);
+}
+
+static void handleFullRoot() {
   sendProgmemCooperatively(200, "text/html", INDEX_HTML);
 }
 
@@ -1818,11 +1921,16 @@ static void handleStatus() {
   coreUnlock();
   if (WiFi.status() == WL_CONNECTED) {
     doc["wifiIp"] = WiFi.localIP().toString();
+    doc["wifiRssi"] = WiFi.RSSI();
   } else if (WiFi.getMode() == WIFI_AP) {
     doc["wifiIp"] = WiFi.softAPIP().toString();
+    doc["wifiRssi"] = nullptr;
   } else {
     doc["wifiIp"] = "";
+    doc["wifiRssi"] = nullptr;
   }
+  doc["heapFree"] = ESP.getFreeHeap();
+  doc["heapMin"] = ESP.getMinFreeHeap();
   WalkerLoraStats lstats;
   walkerLoraGetStats(lstats);
   JsonObject lora = doc["lora"].to<JsonObject>();
@@ -2641,10 +2749,9 @@ static void handleConfigLoraPost() {
 }
 
 static void handleRtcmLog() {
-  // Snapshot the last 2 KB of the ring (4 KB raw → 8 KB hex string).
-  // 2 KB is a good balance: covers 5-10 RTCM3 messages of typical
-  // size, fits in a single HTTP response without bloating poll cost.
-  const size_t WANT = 2048;
+  // Snapshot the last 512 B of the ring. This is enough to identify the
+  // active RTCM message family while keeping the web debug endpoint tiny.
+  const size_t WANT = 512;
   static char hexbuf[2 * WANT + 1];
   uint32_t seq = 0;
   RtcmLogSource src = RTCM_SRC_NONE;
@@ -3036,6 +3143,7 @@ void setup() {
   server.collectHeaders(authHeaderKeys, 2);
 
   server.on("/",           HTTP_GET,  handleRoot);
+  server.on("/full",       HTTP_GET,  handleFullRoot);
   server.on("/api/status",        HTTP_GET,  handleStatus);
   server.on("/api/auth",          HTTP_GET,  handleAuthGet);
   server.on("/api/auth",          HTTP_POST, handleAuthPost);
@@ -3277,6 +3385,7 @@ static void serialLoraScan(uint8_t chStart, uint8_t chEnd,
 void loop() {
   pumpRealtimeFallbackOnce();
   wifiPump();
+  wifiDiagPump();
   server.handleClient();
   ntripPump();
   pumpRealtimeFallbackOnce();
@@ -3332,6 +3441,13 @@ void loop() {
     } else if (cmd == "session-reset") {
       sessionStore.reset();
       Serial.println("session reset");
+    }
+    else if (cmd == "wifi-status") {
+      Serial.printf("wifi mode=%d status=%d ssid=%s ip=%s rssi=%d fail=%d reason=%s\n",
+                    (int) WiFi.getMode(), (int) WiFi.status(),
+                    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
+                    WiFi.RSSI(), wifiConnectFailed ? 1 : 0,
+                    wifiFailReason.c_str());
     }
     else if (cmd == "lora-status") {
       WalkerLoraStats ls;

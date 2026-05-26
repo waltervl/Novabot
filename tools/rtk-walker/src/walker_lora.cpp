@@ -220,7 +220,7 @@ static uint32_t rtcmCrc24q(const uint8_t* data, size_t len) {
     return crc & 0xFFFFFFUL;
 }
 
-static void forwardRtcmStreamBytes(const uint8_t* data, size_t len) {
+static void inspectRtcmStreamBytes(const uint8_t* data, size_t len) {
     for (size_t i = 0; i < len; i++) {
         uint8_t b = data[i];
         switch (g_rtcmState) {
@@ -271,9 +271,6 @@ static void forwardRtcmStreamBytes(const uint8_t* data, size_t len) {
                                                  (((uint16_t) g_rtcmBuf[4]) >> 4));
                             msgType &= 0x0FFF;
                         }
-                        gnssSerial.write(g_rtcmBuf, g_rtcmExpectedLen);
-                        rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
-                        g_bytesForwarded += g_rtcmExpectedLen;
                         g_rtcmMessages++;
                         g_rtcmLastValidMs = millis();
                         g_rtcmLastType = msgType;
@@ -409,12 +406,17 @@ void walkerLoraPump() {
                 if (b == 0x03) {
                     // Valid LoRa frame. The charger emits a mixed UM980 stream
                     // on 0x31: RTCM3 corrections plus NMEA / proprietary bytes.
-                    // Only forward CRC-valid RTCM3 messages to the LC29; PAIR
-                    // commands are protected separately by pausing forwarding.
+                    // Forward the payload verbatim, matching the proven mower
+                    // path; the LC29 extracts RTCM internally. The RTCM parser
+                    // below is diagnostic only so parser false-negatives cannot
+                    // starve the receiver and drop RTK FIX to FLOAT/GPS.
                     g_framesReceived++;
                     g_lastValidMs = millis();
                     if (g_lastCmd == 0x31 && g_payloadIdx > 0 && g_forwardingEnabled) {
-                        forwardRtcmStreamBytes(g_payloadBuf, g_payloadIdx);
+                        gnssSerial.write(g_payloadBuf, g_payloadIdx);
+                        rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
+                        g_bytesForwarded += g_payloadIdx;
+                        inspectRtcmStreamBytes(g_payloadBuf, g_payloadIdx);
                     }
                 } else {
                     g_framesRejected++;

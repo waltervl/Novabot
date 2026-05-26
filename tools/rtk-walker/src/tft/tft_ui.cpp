@@ -194,7 +194,7 @@ static lv_obj_t* maps_status = nullptr;
 // Polyline backing store — LVGL holds the pointer so the storage must
 // outlive every redraw. Capped at MAP_POINT_MAX so we don't allocate
 // gigabytes during a long walk.
-#define MAP_POINT_MAX 1500
+#define MAP_POINT_MAX 1000
 static lv_point_t map_pts[MAP_POINT_MAX];
 
 // User-controlled zoom + pan for the home-screen map. zoom == 1.0 is
@@ -276,14 +276,14 @@ static void exit_viewing_mode();
 void tftSetup() {
   jc3248w535_handles_t handles = {};
   // 90° rotation matches the esp32-tool — landscape orientation.
-  //  - task_stack 24 KB — flex layouts + line redraws + tabview keyboard
-  //    blow past the 4 KB default; saw the overflow on the first frame.
+  //  - task_stack 16 KB — enough for flex layouts + line redraws + tabview
+  //    keyboard while leaving HTTP/WiFi heap headroom.
   //  - task_affinity 1 keeps LVGL beside Arduino's loopTask instead of
   //    competing with WiFi/lwIP on core 0.
   //  - task_priority 1 matches loopTask and the dedicated GNSS/LoRa task
   //    so UI, HTTP, and UART service share core 1 cooperatively.
   jc3248w535_config_t cfg = JC3248W535_DEFAULT_CONFIG(LV_DISP_ROT_90);
-  cfg.lvgl.task_stack    = 24 * 1024;
+  cfg.lvgl.task_stack    = 16 * 1024;
   cfg.lvgl.task_affinity = 1;
   cfg.lvgl.task_priority = 1;
   cfg.lvgl.task_max_sleep_ms = 25;
