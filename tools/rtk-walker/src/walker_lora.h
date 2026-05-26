@@ -22,10 +22,10 @@ struct WalkerLoraStats {
     bool     active;             // last valid frame in 10 s
     uint32_t framesReceived;     // valid frames (any cmd byte)
     uint32_t framesRejected;     // bad XOR or unknown cmd
-    uint32_t bytesForwarded;     // valid RTCM3 bytes pushed to gnssSerial
+    uint32_t bytesForwarded;     // mixed 0x31 payload bytes pushed to gnssSerial
     uint32_t rawBytesIn;         // every byte read off UART2, pre-framing
     uint32_t lastFrameMsAgo;     // ms since last valid 0x31 frame, UINT32_MAX if never
-    uint32_t rtcmMessages;       // complete CRC-valid RTCM3 messages forwarded
+    uint32_t rtcmMessages;       // complete CRC-valid RTCM3 messages observed
     uint32_t rtcmCrcRejected;    // complete RTCM3 candidates rejected by CRC
     uint32_t lastRtcmMsAgo;      // ms since last CRC-valid RTCM3 message
     uint16_t lastRtcmType;       // RTCM3 message type of the most recent valid frame
@@ -37,8 +37,8 @@ struct WalkerLoraStats {
 bool walkerLoraSetup(const WalkerLoraConfig& cfg);
 
 // Called from main loop every iteration. Drains UART2 RX, parses charger
-// frames, and forwards only complete RTCM3 messages from 0x31 payloads to
-// gnssSerial. Non-blocking.
+// frames, and forwards mixed 0x31 payloads verbatim to gnssSerial.
+// Non-blocking.
 void walkerLoraPump();
 
 // Temporarily gate RTCM forwarding while the GNSS module is receiving its

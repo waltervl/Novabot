@@ -357,6 +357,8 @@ static void noteGgaRateEpoch(const char* line, size_t len) {
 // can verify that PAIR050 (rate config) was actually accepted. The LC29HDA
 // silently drops PAIR commands if its parser is busy, so we have to
 // look for `$PAIR001,050,0*XX` (cmd=050, result=0 → success).
+static int      lastPair001Cmd = -1;
+static int      lastPair001Result = -1;
 static uint32_t lastPair001AtMs = 0;
 static uint32_t pair050AckOkAtMs = 0;
 
@@ -368,6 +370,7 @@ static void rememberPair001Ack(int cmd, int result, uint32_t atMs) {
 static bool pair050AckOkSince(uint32_t sinceMs) {
   return pair050AckOkAtMs != 0 && (int32_t)(pair050AckOkAtMs - sinceMs) >= 0;
 }
+
 enum GnssVariant : uint8_t {
   GNSS_VARIANT_UNKNOWN = 0,
   GNSS_VARIANT_HDA,
@@ -389,12 +392,31 @@ static void setGnssVariant(GnssVariant variant) {
   }
 }
 
+static uint32_t loraGnssCommandResumeAtMs = 0;
+static bool     loraGnssCommandResumeValue = false;
+
+static void pauseLoraForGnssCommand(uint32_t guardMs) {
+  loraGnssCommandResumeValue = walkerLoraForwardingEnabled();
+  walkerLoraSetForwardingEnabled(false);
+  loraGnssCommandResumeAtMs = millis() + guardMs;
+}
+
+static void serviceLoraCommandPause() {
+  if (loraGnssCommandResumeAtMs == 0) return;
+  if ((int32_t)(millis() - loraGnssCommandResumeAtMs) < 0) return;
+  loraGnssCommandResumeAtMs = 0;
+  walkerLoraSetForwardingEnabled(loraGnssCommandResumeValue);
+}
+
 static void sendGnssCommand(const String& payload) {
   uint8_t cs = 0;
   for (size_t i = 0; i < payload.length(); i++) cs ^= (uint8_t) payload[i];
   char out[200];
   snprintf(out, sizeof(out), "$%s*%02X\r\n", payload.c_str(), cs);
+  pauseLoraForGnssCommand(900);
+  gnssSerial.flush();
   gnssSerial.print(out);
+  gnssSerial.flush();
   // Trim trailing \r\n for log readability.
   size_t n = strlen(out);
   while (n > 0 && (out[n-1] == '\n' || out[n-1] == '\r')) out[--n] = '\0';
@@ -449,6 +471,8 @@ static void gnssLineFeed(char c) {
         if (strncmp(nmeaLineBuf, "$PAIR001,", 9) == 0) {
           int cmd = -1, res = -1;
           if (sscanf(nmeaLineBuf + 9, "%d,%d", &cmd, &res) == 2) {
+            lastPair001Cmd    = cmd;
+            lastPair001Result = res;
             lastPair001AtMs   = millis();
             rememberPair001Ack(cmd, res, lastPair001AtMs);
           }
@@ -1189,6 +1213,7 @@ static bool     pair050RateReady = false;
 static uint8_t  pair050SaveStage = 0;
 static bool     pair400RtkSent  = false;
 static bool     pair513SaveSent = false;
+static uint32_t lastRateReassertMs = 0;
 
 static void setLoraRtcmForwarding(bool enabled);
 
@@ -1248,8 +1273,7 @@ static void gnssPump() {
   // + a tight displacement filter that keeps real-but-small movements.
   bool enforceDa1Hz = (gnssVariant != GNSS_VARIANT_HEA) &&
                       (gnssVariant != GNSS_VARIANT_UNKNOWN || sinceDetect >= 3000);
-  if (sinceDetect >= 700 && enforceDa1Hz && !pair050Acked &&
-      pair050SaveStage == 0 && pair050TxCount < 4) {
+  if (sinceDetect >= 700 && enforceDa1Hz && !pair050Acked && pair050TxCount < 4) {
     uint32_t retryMs = (pair050TxCount < 4) ? 2000 : 15000;
     if (pair050TxCount == 0 || nowCfgMs - pair050LastTxMs >= retryMs) {
       sendGnssCommand("PAIR050,1000");
@@ -1262,51 +1286,49 @@ static void gnssPump() {
   if (!pair050Acked && pair050TxCount > 0 && pair050AckOkSince(pair050LastTxMs)) {
     pair050Acked = true;
     pair050AckedAtMs = millis();
-    pair050RateReady = false;
+    pair050RateReady = true;
     pair050SaveStage = 0;
     weblogf("[gnss] PAIR050 ACKed after %u attempt(s)\n", (unsigned) pair050TxCount);
   }
 
-  // PAIR051 confirms the configured interval, while some LC29HDA firmware
-  // still emits multiple GGA/RMC-looking epochs around the 1 Hz RTK engine.
-  // Treat the ACK + settings save as authoritative; do not power-cycle the
-  // receiver just because our lightweight NMEA-rate heuristic reads 2 Hz.
-  if (enforceDa1Hz && pair050Acked && !pair050RateReady) {
-    uint32_t ackAgeMs = pair050AckedAtMs ? (nowCfgMs - pair050AckedAtMs) : 0;
-    if (ackAgeMs >= 1500) {
-      if (!pair513SaveSent) {
-        sendGnssCommand("PAIR513");
-        pair513SaveSent = true;
-      }
-      pair050SaveStage = 0;
-      pair050RateReady = true;
-      if (gnssRateHz > 1) {
-        weblogf("[gnss] PAIR050 saved at 1 Hz; measured %u Hz output, allowing RTCM\n",
-                (unsigned) gnssRateHz);
-      } else {
-        weblogf("[gnss] PAIR050 1 Hz accepted; settings save requested\n");
-      }
-    }
-  }
-
   if (!pair400RtkSent && sinceDetect >= 950 &&
-      ((enforceDa1Hz && pair050RateReady) || gnssVariant == GNSS_VARIANT_HEA)) {
+      ((pair050_1HzSent && nowCfgMs - pair050LastTxMs >= 250) ||
+       gnssVariant == GNSS_VARIANT_HEA)) {
     sendGnssCommand("PAIR400,2");
     pair400RtkSent = true;
   }
+  if (enforceDa1Hz && pair050Acked && pair400RtkSent && !pair513SaveSent &&
+      pair050AckedAtMs != 0 && nowCfgMs - pair050AckedAtMs >= 1500) {
+    sendGnssCommand("PAIR513");
+    pair513SaveSent = true;
+  }
   bool rtcmReadyForRover =
       pair400RtkSent &&
-      (!enforceDa1Hz || (pair050Acked && pair050RateReady));
+      (!enforceDa1Hz || pair050Acked);
   static bool rtcmConfigTimeoutLogged = false;
-  if (!rtcmReadyForRover && nowCfgMs - gnssDetectedAtMs >= 15000) {
+  if (!rtcmReadyForRover && pair400RtkSent && nowCfgMs - gnssDetectedAtMs >= 15000) {
     rtcmReadyForRover = true;
     if (!rtcmConfigTimeoutLogged) {
-      weblogf("[gnss] config not fully confirmed after 15s; allowing RTCM anyway\n");
+      weblogf("[gnss] config not fully confirmed after 15s; allowing LoRa RTCM anyway\n");
       rtcmConfigTimeoutLogged = true;
     }
   }
   if (rtcmReadyForRover) {
     setLoraRtcmForwarding(true);
+  }
+  if (enforceDa1Hz && gnssRateHz > 2 && sinceDetect >= 5000 &&
+      (lastRateReassertMs == 0 || nowCfgMs - lastRateReassertMs >= 10000)) {
+    weblogf("[gnss] measured %u Hz after 1 Hz request; reasserting PAIR050,1000\n",
+            (unsigned) gnssRateHz);
+    pair050Acked = false;
+    pair050AckedAtMs = 0;
+    pair050RateReady = false;
+    pair050SaveStage = 0;
+    pair050TxCount = 0;
+    pair050LastTxMs = 0;
+    pair400RtkSent = false;
+    pair513SaveSent = false;
+    lastRateReassertMs = nowCfgMs;
   }
 #if NMEA_HEARTBEAT
   // Periodic heartbeat so you can tell "no bytes" apart from "bytes
@@ -1417,38 +1439,11 @@ static void gnssPump() {
   }
 }
 
-static TaskHandle_t realtimePumpTaskHandle = nullptr;
-
-static void realtimePumpTask(void*) {
-  for (;;) {
-    gnssPump();
-    walkerLoraPump();
-    // Keep the UART service cadence independent from WebServer/LVGL work.
-    vTaskDelay(pdMS_TO_TICKS(2));
-  }
-}
-
-static void startRealtimePumpTask() {
-  if (realtimePumpTaskHandle) return;
-  BaseType_t ok = xTaskCreatePinnedToCore(
-      realtimePumpTask,
-      "GNSS LoRa",
-      6 * 1024,
-      NULL,
-      1,
-      &realtimePumpTaskHandle,
-      1);
-  if (ok == pdPASS) {
-    weblogf("[rt] GNSS/LoRa pump task started\n");
-  } else {
-    weblogf("[rt] GNSS/LoRa pump task start failed\n");
-  }
-}
-
 static void pumpRealtimeFallbackOnce() {
-  if (realtimePumpTaskHandle) return;
   gnssPump();
+  serviceLoraCommandPause();
   walkerLoraPump();
+  serviceLoraCommandPause();
 }
 
 static void setLoraRtcmForwarding(bool enabled) {
@@ -1602,14 +1597,16 @@ static void buttonPump() {
 
 // ── Web handlers ────────────────────────────────────────────────────
 static void serviceRealtimeDuringHttp() {
-  // GNSS/LoRa now have a dedicated realtimePumpTask. Do not call those
-  // pumps from HTTP handlers as well: concurrent UART/LoRa service can
-  // corrupt timing and long web responses then starve the main loop.
-  delay(1);
+  // Keep UART service alive while large HTTP responses are being sent.
+  // This matches the proven field flow where GNSS and LoRa are serviced
+  // cooperatively from the main/UI path.
+  gnssPump();
+  walkerLoraPump();
+  delay(0);
 }
 
 static void sendStringCooperatively(int code, const char* contentType, const String& body) {
-  constexpr size_t kHttpChunkBytes = 2048;
+  constexpr size_t kHttpChunkBytes = 512;
   server.setContentLength(body.length());
   server.send(code, contentType, "");
   for (size_t off = 0; off < body.length(); off += kHttpChunkBytes) {
@@ -1621,7 +1618,7 @@ static void sendStringCooperatively(int code, const char* contentType, const Str
 }
 
 static void sendProgmemCooperatively(int code, const char* contentType, PGM_P body) {
-  constexpr size_t kHttpChunkBytes = 2048;
+  constexpr size_t kHttpChunkBytes = 512;
   size_t len = strlen_P(body);
   server.setContentLength(len);
   server.send(code, contentType, "");
@@ -1636,7 +1633,7 @@ static void sendProgmemCooperatively(int code, const char* contentType, PGM_P bo
 static void sendJson(int code, const JsonDocument& doc) {
   String out;
   serializeJson(doc, out);
-  server.send(code, "application/json", out);
+  sendStringCooperatively(code, "application/json", out);
 }
 
 static String authTokenSnapshot() {
@@ -3127,7 +3124,6 @@ void setup() {
   });
   server.begin();
   weblogf("[http] listening on :80\n");
-  startRealtimePumpTask();
 
   // Bring the TFT up after WiFi + HTTP are registered. Keep this in the
   // main boot flow so there is only one LVGL/display owner and failures
@@ -3650,8 +3646,8 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
 void walkerPumpGnss() {
   // Wraps gnssPump() so external compilation units (the TFT loaders in
   // tft_ui.cpp) can drain the UART RX FIFO without sharing the .cpp's
-  // static globals. Once the realtime task is running it owns UART parsing.
-  if (!realtimePumpTaskHandle) gnssPump();
+  // static globals. Safe to call from the main/LVGL flow.
+  gnssPump();
 }
 
 void walkerResetTrail() {

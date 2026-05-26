@@ -40,7 +40,7 @@ struct WalkerSnapshot {
   // LoRa RTCM source state.
   bool     loraActive;          // valid frames in last 10 s
   bool     loraModuleReady;     // EBYTE config acked at boot
-  uint32_t loraBytesForwarded;  // total RTCM bytes pushed to LC29HDA from LoRa
+  uint32_t loraBytesForwarded;  // total 0x31 payload bytes pushed to LC29HDA from LoRa
   uint32_t loraFramesReceived;  // valid LoRa frames seen (any cmd)
 };
 
