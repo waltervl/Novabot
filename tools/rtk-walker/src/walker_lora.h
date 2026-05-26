@@ -13,6 +13,8 @@ struct WalkerLoraConfig {
     uint8_t  channel;   // LoRa channel within hc..lc, default 17 (≈867 MHz)
     uint8_t  hc;        // scan high bound, default 20
     uint8_t  lc;        // scan low bound, default 14
+    uint8_t  packetLenCode; // EBYTE AT+PACKET code: 0=240, 1=128, 2=64, 3=32
+    uint8_t  airRateCode;   // EBYTE AT+RATE code. Stock charger uses 7 (=62.5 kbps).
 };
 
 struct WalkerLoraStats {
@@ -54,7 +56,14 @@ size_t walkerLoraGetRawTailHex(char* out, size_t outCap);
 #else
 
 // Headless / no-LoRa builds: stubs so callers don't need #ifdef everywhere.
-struct WalkerLoraConfig { uint16_t addr; uint8_t channel; uint8_t hc; uint8_t lc; };
+struct WalkerLoraConfig {
+    uint16_t addr;
+    uint8_t channel;
+    uint8_t hc;
+    uint8_t lc;
+    uint8_t packetLenCode;
+    uint8_t airRateCode;
+};
 struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived;
                           uint32_t framesRejected; uint32_t bytesForwarded;
                           uint32_t rawBytesIn; uint32_t lastFrameMsAgo; };

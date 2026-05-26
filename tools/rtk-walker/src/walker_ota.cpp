@@ -34,6 +34,7 @@ const char* walkerFirmwareVersion() { return FIRMWARE_VERSION; }
 namespace {
 
 const char* kWalkerOtaSigningKeyId = "walker-p256-2026-01";
+constexpr uint32_t kOtaManifestTimeoutMs = 5000;
 
 // Development/test public key only. Replace this PEM and kWalkerOtaSigningKeyId
 // with the production public key before shipping signed public releases.
@@ -184,7 +185,7 @@ OtaCheckResult walkerOtaCheck() {
     HTTPClient http;
     WiFiClient plainClient;
     WiFiClientSecure tlsClient;
-    http.setTimeout(30000);
+    http.setTimeout(kOtaManifestTimeoutMs);
     if (!beginHttp(http, url, plainClient, tlsClient)) {
         r.error = "http begin failed";
         return r;

@@ -57,11 +57,13 @@ struct WalkerConfigView {
   String   serverUrl;
   bool     otaAutoCheck = true;
   bool     authConfigured = false;
-  // LoRa pair settings (mirror the four NVS keys lora_addr/ch/hc/lc).
+  // LoRa pair settings (mirror the NVS keys lora_*).
   uint16_t loraAddr      = 718;
   uint8_t  loraChannel   = 17;
   uint8_t  loraHc        = 20;
   uint8_t  loraLc        = 14;
+  uint8_t  loraPacketLenCode = 0; // 0=240, 1=128, 2=64, 3=32 bytes
+  uint8_t  loraAirRateCode   = 7; // Stock charger profile: 62.5 kbps
 };
 
 struct WalkerConfigUpdate {
@@ -79,6 +81,8 @@ struct WalkerConfigUpdate {
   bool loraChannelSet = false; uint8_t  loraChannel = 0;
   bool loraHcSet      = false; uint8_t  loraHc      = 0;
   bool loraLcSet      = false; uint8_t  loraLc      = 0;
+  bool loraPacketLenCodeSet = false; uint8_t loraPacketLenCode = 0;
+  bool loraAirRateCodeSet   = false; uint8_t loraAirRateCode   = 7;
 };
 
 void walkerGetSnapshot(WalkerSnapshot& out);
@@ -115,11 +119,9 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount);
 // whatever the home-screen polygon left behind.
 void walkerResetTrail();
 
-// Drain the GNSS UART RX FIFO immediately. Long-running TFT operations
-// (saved-map polygon load, obstacle reload) call this every few dozen
-// LittleFS reads so the 256 B UART FIFO doesn't overrun and trigger the
-// "RTK module not detected" overlay. Safe to call at any time; no-op
-// when there are no pending bytes.
+// Yield to the dedicated GNSS/LoRa task during long operations. Older
+// code paths still call this from TFT/LoRa loaders; UART parsing itself
+// has one owner now, so callers must not drain GNSS directly.
 void walkerPumpGnss();
 
 // Upload the current /session/ bundle to the configured Novabot server.

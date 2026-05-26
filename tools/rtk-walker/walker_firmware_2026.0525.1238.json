@@ -1,0 +1,12 @@
+{
+  "version": "2026.0525.1238",
+  "device_type": "walker",
+  "filename": "walker_firmware_2026.0525.1238.bin",
+  "md5": "2d5e81d416c20e9b19ad8a0de9db9bd6",
+  "sha256": "7dfd447a323d1f53735c61355312bf5f02cc08e61e21ac290bee65f826cbf0b3",
+  "size": 1582128,
+  "signature": "MEUCIEopQw7TpOltkbTwmF17bOoY9kDoH7nPP0GHXeXZkJLXAiEA5gQJrKGKPFl0b7vMhvdB+Se63H+KMJRcMYRsz5/kcGI=",
+  "signing_key_id": "walker-p256-2026-01",
+  "keyId": "walker-p256-2026-01",
+  "description": "Walker firmware 2026.0525.1238"
+}

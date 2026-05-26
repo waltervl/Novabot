@@ -50,7 +50,7 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   .track .meta { color: var(--text-dim); font-size: 11px; }
   .track-actions { display: flex; flex-direction: column; gap: 4px; text-align: right; }
   .config { font-size: 12px; color: var(--text-dim); }
-  .config input { width: 100%; padding: 8px; background: rgba(0,0,0,0.4); color: var(--text); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; margin-top: 4px; font-family: inherit; }
+  .config input, .config select { width: 100%; padding: 8px; background: rgba(0,0,0,0.4); color: var(--text); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; margin-top: 4px; font-family: inherit; }
   .config label { display: block; margin-top: 8px; font-weight: 600; color: var(--text-dim); }
   .small { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
   .map-card { padding: 0; overflow: hidden; }
@@ -121,6 +121,7 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <div class="row"><span class="label">Longitude</span><span class="value" id="lng">-</span></div>
     <div class="row"><span class="label">Altitude</span><span class="value" id="alt">-</span></div>
     <div class="row"><span class="label">NTRIP bytes</span><span class="value" id="ntrip">0</span></div>
+    <div class="row"><span class="label">LoRa raw / frames</span><span class="value" id="loraDiag">-</span></div>
     <div class="row" id="batteryRow" style="display:none"><span class="label">Battery</span><span class="value" id="battery">-</span></div>
   </div>
 
@@ -214,15 +215,37 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <p style="font-size:11px;color:var(--text-dim);margin:6px 0 10px;line-height:1.4">
       Pair with the Novabot charger so the walker gets RTK corrections
       over LoRa instead of WiFi/NTRIP. Defaults match the factory pair
-      (addr=718, ch=17). The walker is a passive listener — only
-      <strong>channel</strong> controls what it tunes to. <strong>HC/LC</strong>
-      are kept here for reference (they describe the charger's scan range).
+      (addr=718, ch=17). E22/E220 compatibility mirrors the stock charger
+      PHY profile: NETID 0, 240-byte packets, air-rate 62.5 kbps and
+      115200 baud in data mode. Set Address to <strong>65535</strong>
+      to sniff all addresses on the selected channel.
     </p>
     <form id="loraForm">
       <label>Address<input id="lora_addr" type="number" min="1" max="65535" placeholder="718"></label>
       <label>Channel<input id="lora_channel" type="number" min="0" max="83" placeholder="17"></label>
       <label>HC (charger scan upper)<input id="lora_hc" type="number" min="0" max="83" placeholder="20"></label>
       <label>LC (charger scan lower)<input id="lora_lc" type="number" min="0" max="83" placeholder="14"></label>
+      <label>Packet length
+        <select id="lora_packetLenCode">
+          <option value="0">240 bytes (stock charger)</option>
+          <option value="1">128 bytes</option>
+          <option value="2">64 bytes</option>
+          <option value="3">32 bytes</option>
+        </select>
+      </label>
+      <label>Air rate
+        <select id="lora_airRateCode">
+          <option value="7">62.5 kbps (stock charger)</option>
+          <option value="2">2.4 kbps</option>
+          <option value="0">2.4 kbps (E22 alias 0)</option>
+          <option value="1">2.4 kbps (E22 alias 1)</option>
+          <option value="3">4.8 kbps</option>
+          <option value="4">9.6 kbps</option>
+          <option value="5">19.2 kbps</option>
+          <option value="6">38.4 kbps</option>
+        </select>
+      </label>
+      <button id="loraSniff" type="button" style="margin-top:8px;background:rgba(255,255,255,0.08);color:var(--text);width:auto;padding:7px 10px">Use monitor address (65535)</button>
       <button type="submit" style="margin-top:12px">Save LoRa config</button>
       <div id="loraStatus" style="margin-top:8px;font-size:12px;min-height:16px"></div>
     </form>
@@ -375,6 +398,7 @@ async function refresh() {
     else if (d.ntripUp) rtkSrc = 'NTRIP';
     else if (lora.moduleReady) rtkSrc = 'LoRa quiet';
     setText('rtkSource', rtkSrc);
+    setText('loraDiag', (lora.raw != null ? lora.raw : 0) + ' / ' + (lora.frames != null ? lora.frames : 0));
 
     // The walker may have loaded (or exited) a saved map on its own
     // (TFT tap, BLE, anything). Mirror that into the web UI so the
@@ -492,6 +516,8 @@ async function loadLora() {
       const el = document.getElementById('lora_' + k);
       if (el && c[k] != null) el.value = c[k];
     }
+    if (c.packetLenCode != null) document.getElementById('lora_packetLenCode').value = String(c.packetLenCode);
+    if (c.airRateCode != null) document.getElementById('lora_airRateCode').value = String(c.airRateCode);
   } catch (e) { /* ignore */ }
 }
 
@@ -505,6 +531,8 @@ async function saveLora(ev) {
     channel: parseInt(document.getElementById('lora_channel').value, 10),
     hc:      parseInt(document.getElementById('lora_hc').value, 10),
     lc:      parseInt(document.getElementById('lora_lc').value, 10),
+    packetLenCode: parseInt(document.getElementById('lora_packetLenCode').value, 10),
+    airRateCode:   parseInt(document.getElementById('lora_airRateCode').value, 10),
   };
   try {
     const r = await authFetch('/api/config/lora', {
@@ -527,6 +555,12 @@ async function saveLora(ev) {
   }
 }
 document.getElementById('loraForm').addEventListener('submit', saveLora);
+document.getElementById('loraSniff').addEventListener('click', function() {
+  document.getElementById('lora_addr').value = '65535';
+  const status = document.getElementById('loraStatus');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = 'Monitor address set. Save to reconfigure.';
+});
 
 let rtcmLastSeq = 0;
 let rtcmLastHex = '';

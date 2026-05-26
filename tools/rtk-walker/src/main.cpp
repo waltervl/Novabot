@@ -122,6 +122,11 @@ struct Config {
   uint8_t  loraChannel = 17;
   uint8_t  loraHc      = 20;
   uint8_t  loraLc      = 14;
+  // E22/E220 interop: mirror the stock charger E220 PHY profile
+  // (REG0=e7, REG1=20, REG3=83): 115200 UART in transparent mode,
+  // 240-byte RF packets and air-rate code 7.
+  uint8_t  loraPacketLenCode = 0; // 0=240, 1=128, 2=64, 3=32 bytes
+  uint8_t  loraAirRateCode   = 7; // EBYTE code 7 = 62.5 kbps on E22-900
 
   // OTA auto-check on boot. Default true — walker pulls the manifest from
   // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
@@ -178,6 +183,7 @@ enum NtripHeaderResult : uint8_t {
 static uint32_t      ntripLastConnectAttemptMs = 0;
 static uint32_t      ntripGgaLastSentMs        = 0;
 static bool          ntripGgaUploadLogged      = false;
+static bool          ntripSuppressedLogged     = false;
 static NtripState    ntripState                = NTRIP_IDLE;
 static uint32_t      ntripBackoffUntilMs       = 0;
 static uint32_t      ntripHandshakeDeadlineMs  = 0;
@@ -208,9 +214,9 @@ static std::vector<LivePoint> livePoints;
 // Deferred on-device view refresh. HTTP handlers that modify the
 // session (obstacle delete, etc.) can't safely re-load the polygon /
 // obstacles inline — those operations are 500+ ms of LittleFS work
-// and would starve gnssPump(). Instead the handler sets this slot and
-// the main loop picks it up between gnssPump() ticks. -1 = no refresh
-// pending; 0..2 = refresh that slot's on-device view.
+// and should not happen while a HTTP response is open. Instead the
+// handler sets this slot and the main loop picks it up afterwards.
+// -1 = no refresh pending; 0..2 = refresh that slot's on-device view.
 static int g_pendingViewRefreshSlot = -1;
 
 // Guards every access to `livePoints` so the main task (push_back +
@@ -394,6 +400,10 @@ static void loadConfig() {
   cfg.loraChannel = prefs.getUChar("lora_ch", 17);
   cfg.loraHc      = prefs.getUChar("lora_hc", 20);
   cfg.loraLc      = prefs.getUChar("lora_lc", 14);
+  cfg.loraPacketLenCode = prefs.getUChar("lora_pkt", 0);
+  cfg.loraAirRateCode   = prefs.getUChar("lora_air", 7);
+  if (cfg.loraPacketLenCode > 3) cfg.loraPacketLenCode = 0;
+  if (cfg.loraAirRateCode > 7) cfg.loraAirRateCode = 7;
 }
 
 static void saveConfig() {
@@ -414,6 +424,28 @@ static void saveConfig() {
   prefs.putUChar("lora_ch",    cfg.loraChannel);
   prefs.putUChar("lora_hc",    cfg.loraHc);
   prefs.putUChar("lora_lc",    cfg.loraLc);
+  prefs.putUChar("lora_pkt",   cfg.loraPacketLenCode);
+  prefs.putUChar("lora_air",   cfg.loraAirRateCode);
+}
+
+static uint16_t loraPacketLenBytes(uint8_t code) {
+  switch (code) {
+    case 0: return 240;
+    case 1: return 128;
+    case 2: return 64;
+    case 3: return 32;
+    default: return 128;
+  }
+}
+
+static bool loraPacketLenCodeFromBytes(int bytes, uint8_t& out) {
+  switch (bytes) {
+    case 240: out = 0; return true;
+    case 128: out = 1; return true;
+    case 64:  out = 2; return true;
+    case 32:  out = 3; return true;
+    default: return false;
+  }
 }
 
 // Haversine distance between two lat/lng points in metres. Accurate to
@@ -684,6 +716,14 @@ static bool ntripReadyToRun() {
   coreUnlock();
   if (!haveHost || !haveMount || !havePort) return false;
   if (WiFi.status() != WL_CONNECTED) return false;
+  WalkerLoraStats loraStats;
+  walkerLoraGetStats(loraStats);
+  // LoRa wins absolutely when the receiver module is detected. The
+  // requirement for this hardware variant is "LoRa OR NTRIP", not
+  // failover. Keeping NTRIP alive in parallel costs CPU/network, keeps
+  // the UI pinned on NTRIP, and can starve the web server while the
+  // socket is being drained.
+  if (loraStats.moduleReady) return false;
   // No GNSS module: no point fetching RTCM corrections, there is
   // nothing on the other end of the UART to consume them. Skip until
   // the first NMEA byte proves the module is awake.
@@ -873,12 +913,24 @@ static void ntripPushGga() {
 }
 
 static void ntripPump() {
+  WalkerLoraStats loraStats;
+  walkerLoraGetStats(loraStats);
+  bool suppressedByLora = loraStats.moduleReady;
   if (!ntripReadyToRun()) {
+    if (suppressedByLora) {
+      if (!ntripSuppressedLogged) {
+        weblogf("[ntrip] suppressed: LoRa module detected, skipping WiFi/NTRIP RTCM\n");
+        ntripSuppressedLogged = true;
+      }
+    } else {
+      ntripSuppressedLogged = false;
+    }
     if (ntripState != NTRIP_IDLE || ntrip.connected()) {
       ntripEnterIdle(true);
     }
     return;
   }
+  ntripSuppressedLogged = false;
 
   switch (ntripState) {
     case NTRIP_IDLE:
@@ -1176,6 +1228,34 @@ static void gnssPump() {
   }
 }
 
+static TaskHandle_t realtimePumpTaskHandle = nullptr;
+
+static void realtimePumpTask(void*) {
+  for (;;) {
+    gnssPump();
+    walkerLoraPump();
+    // Keep the UART service cadence independent from WebServer/LVGL work.
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
+static void startRealtimePumpTask() {
+  if (realtimePumpTaskHandle) return;
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      realtimePumpTask,
+      "GNSS LoRa",
+      6 * 1024,
+      NULL,
+      3,
+      &realtimePumpTaskHandle,
+      1);
+  if (ok == pdPASS) {
+    weblogf("[rt] GNSS/LoRa pump task started\n");
+  } else {
+    weblogf("[rt] GNSS/LoRa pump task start failed\n");
+  }
+}
+
 // ── Battery monitor ─────────────────────────────────────────────────
 #ifdef BAT_ADC
 // 3.7 V LiPo discharge curve - piecewise linear, accurate enough for
@@ -1319,10 +1399,44 @@ static void buttonPump() {
 }
 
 // ── Web handlers ────────────────────────────────────────────────────
+static void serviceRealtimeDuringHttp() {
+  // Keep UART service alive while large HTTP responses are being sent.
+  // Do this directly instead of relying on a second task: boot stability
+  // matters more than clever scheduling on the memory-tight TFT build.
+  gnssPump();
+  walkerLoraPump();
+  delay(0);
+}
+
+static void sendStringCooperatively(int code, const char* contentType, const String& body) {
+  constexpr size_t kHttpChunkBytes = 512;
+  server.setContentLength(body.length());
+  server.send(code, contentType, "");
+  for (size_t off = 0; off < body.length(); off += kHttpChunkBytes) {
+    size_t n = body.length() - off;
+    if (n > kHttpChunkBytes) n = kHttpChunkBytes;
+    server.sendContent(body.c_str() + off, n);
+    serviceRealtimeDuringHttp();
+  }
+}
+
+static void sendProgmemCooperatively(int code, const char* contentType, PGM_P body) {
+  constexpr size_t kHttpChunkBytes = 512;
+  size_t len = strlen_P(body);
+  server.setContentLength(len);
+  server.send(code, contentType, "");
+  for (size_t off = 0; off < len; off += kHttpChunkBytes) {
+    size_t n = len - off;
+    if (n > kHttpChunkBytes) n = kHttpChunkBytes;
+    server.sendContent_P(body + off, n);
+    serviceRealtimeDuringHttp();
+  }
+}
+
 static void sendJson(int code, const JsonDocument& doc) {
   String out;
   serializeJson(doc, out);
-  server.send(code, "application/json", out);
+  sendStringCooperatively(code, "application/json", out);
 }
 
 static String authTokenSnapshot() {
@@ -1423,7 +1537,7 @@ static void handleAuthPost() {
 }
 
 static void handleRoot() {
-  server.send_P(200, "text/html", INDEX_HTML);
+  sendProgmemCooperatively(200, "text/html", INDEX_HTML);
 }
 
 static void handleStatus() {
@@ -1452,6 +1566,10 @@ static void handleStatus() {
   // so the web UI can highlight the active row in its Maps list without
   // a separate poll.
   doc["viewingSlot"] = tft_ui_current_view_slot();
+  uint16_t statusLoraAddr = cfg.loraAddr;
+  uint8_t statusLoraChannel = cfg.loraChannel;
+  uint8_t statusLoraPacketLenCode = cfg.loraPacketLenCode;
+  uint8_t statusLoraAirRateCode = cfg.loraAirRateCode;
 #ifdef BAT_ADC
   if (batteryReady) {
     doc["batteryVolts"]    = batteryVoltsEma;
@@ -1467,6 +1585,11 @@ static void handleStatus() {
   lora["moduleReady"] = lstats.moduleReady;
   lora["bytes"]       = lstats.bytesForwarded;
   lora["frames"]      = lstats.framesReceived;
+  lora["raw"]         = lstats.rawBytesIn;
+  lora["addr"]        = statusLoraAddr;
+  lora["channel"]     = statusLoraChannel;
+  lora["packetLen"]   = loraPacketLenBytes(statusLoraPacketLenCode);
+  lora["airRateCode"] = statusLoraAirRateCode;
   sendJson(200, doc);
 }
 
@@ -1548,7 +1671,7 @@ static void handleLog() {
     }
   }
   out += "\"}";
-  server.send(200, "application/json", out);
+  sendStringCooperatively(200, "application/json", out);
 }
 
 static void handleTrackCurrent() {
@@ -1578,7 +1701,7 @@ static void handleTrackCurrent() {
   }
   out += "]}";
   livePointsUnlock();
-  server.send(200, "application/json", out);
+  sendStringCooperatively(200, "application/json", out);
 }
 
 static void handleTracks() {
@@ -1740,7 +1863,7 @@ static void handleI2cScan() {
   // and 0x78..0x7F are reserved.
   for (uint8_t a = 0x03; a <= 0x77; a++) {
     if (i2cProbe(a)) arr.add((unsigned) a);
-    if ((a & 0x0F) == 0) gnssPump();
+    if ((a & 0x0F) == 0) serviceRealtimeDuringHttp();
     if ((int32_t)(millis() - deadline) >= 0) {
       truncated = true;
       break;
@@ -1924,13 +2047,10 @@ static int polygonToJsonAppend(const String& path, size_t maxPoints,
     firstPoint = false;
     written++;
 
-    // Drain the GNSS UART + yield to the scheduler every 32 points.
-    // Keeps the 256 B UART FIFO from overrunning while we build the
-    // response in memory; without this an 8 KB body builds for >5 s
-    // and the "RTK module not detected" overlay trips.
+    // Yield to the realtime GNSS/LoRa task every 32 points while this
+    // response is being built in memory.
     if ((written & 0x1F) == 0) {
-      gnssPump();
-      yield();
+      serviceRealtimeDuringHttp();
     }
   }
   f.close();
@@ -2095,7 +2215,7 @@ static void handleMapDetail() {
   // emits proper headers + body and closes the socket cleanly. The
   // device stays pingable through this whole call (was the bug we hit
   // with the previous streaming code).
-  server.send(200, "application/json", body);
+  sendStringCooperatively(200, "application/json", body);
 }
 
 // Delete one obstacle CSV by its filesystem name. Auth-required. The
@@ -2150,12 +2270,9 @@ static void handleObstacleDelete() {
   weblogf("[obstacle] deleted %s\n", name.c_str());
 
   // DON'T refresh the on-device view inline — tft_ui_view_map_slot
-  // does multiple LittleFS reads + a per-point lat/lng conversion
-  // which can block the main loop for hundreds of ms. While we're
-  // blocked the 256 B UART RX FIFO overruns and the GNSS module
-  // reports "RTK module not found" within ~25 ms. Instead, defer the
-  // refresh to the main loop: it'll pick up the flag on the next
-  // iteration and do the work outside the HTTP critical section.
+  // does multiple LittleFS reads + a per-point lat/lng conversion.
+  // Defer the refresh to the main loop so the HTTP response can finish
+  // quickly while the realtime GNSS/LoRa task keeps UART service alive.
   int viewing = tft_ui_current_view_slot();
   if (viewing >= 0 && (slotChar - '0') == viewing) {
     g_pendingViewRefreshSlot = viewing;
@@ -2188,11 +2305,9 @@ static void handleMapView() {
     return;
   }
   // Load is expensive — load_saved_map_polygon + load_saved_map_obstacles
-  // do 500+ ms of LittleFS reads + per-point lat/lng conversion. Doing
-  // that inside the HTTP handler starves gnssPump() and the GNSS module
-  // reports "module not found" within ~25 ms. Defer to the main loop;
-  // the response goes out immediately, the TFT catches up ~1 main-loop
-  // iter later.
+  // do 500+ ms of LittleFS reads + per-point lat/lng conversion. Defer to
+  // the main loop; the response goes out immediately and the realtime
+  // GNSS/LoRa task keeps UART service alive while the TFT catches up.
   //
   // We can't pre-validate the slot here without doing the same expensive
   // work, so the response is optimistically 200 OK. If the slot is
@@ -2212,6 +2327,9 @@ static void handleConfigLoraGet() {
   doc["channel"] = cfg.loraChannel;
   doc["hc"]      = cfg.loraHc;
   doc["lc"]      = cfg.loraLc;
+  doc["packetLenCode"] = cfg.loraPacketLenCode;
+  doc["packetLen"]     = loraPacketLenBytes(cfg.loraPacketLenCode);
+  doc["airRateCode"]   = cfg.loraAirRateCode;
   coreUnlock();
   sendJson(200, doc);
 }
@@ -2244,6 +2362,23 @@ static void handleConfigLoraPost() {
     if (v < 0 || v > 83) { server.send(400, "text/plain", "lc 0..83"); return; }
     upd.loraLcSet = true; upd.loraLc = (uint8_t) v;
   }
+  if (body["packetLenCode"].is<int>()) {
+    int v = body["packetLenCode"];
+    if (v < 0 || v > 3) { server.send(400, "text/plain", "packetLenCode 0..3"); return; }
+    upd.loraPacketLenCodeSet = true; upd.loraPacketLenCode = (uint8_t) v;
+  } else if (body["packetLen"].is<int>()) {
+    uint8_t code = 0;
+    int bytes = body["packetLen"];
+    if (!loraPacketLenCodeFromBytes(bytes, code)) {
+      server.send(400, "text/plain", "packetLen 240/128/64/32"); return;
+    }
+    upd.loraPacketLenCodeSet = true; upd.loraPacketLenCode = code;
+  }
+  if (body["airRateCode"].is<int>()) {
+    int v = body["airRateCode"];
+    if (v < 0 || v > 7) { server.send(400, "text/plain", "airRateCode 0..7"); return; }
+    upd.loraAirRateCodeSet = true; upd.loraAirRateCode = (uint8_t) v;
+  }
   walkerApplyConfig(upd);
   JsonDocument resp;
   resp["ok"] = true;
@@ -2260,16 +2395,33 @@ static void handleRtcmLog() {
   RtcmLogSource src = RTCM_SRC_NONE;
   size_t n = rtcmLogSnapshot(hexbuf, WANT, &seq, &src);
 
-  JsonDocument doc;
-  doc["bytesAvailable"] = (uint32_t) n;
-  doc["seq"]            = seq;
   const char* srcStr = "none";
   if (src == RTCM_SRC_LORA)  srcStr = "lora";
   if (src == RTCM_SRC_NTRIP) srcStr = "ntrip";
-  doc["source"] = srcStr;
-  doc["hex"]    = hexbuf;
 
-  sendJson(200, doc);
+  char prefix[128];
+  int prefixLen = snprintf(prefix, sizeof(prefix),
+                           "{\"bytesAvailable\":%lu,\"seq\":%lu,\"source\":\"%s\",\"hex\":\"",
+                           (unsigned long) n, (unsigned long) seq, srcStr);
+  if (prefixLen < 0) {
+    server.send(500, "text/plain", "format error");
+    return;
+  }
+  if ((size_t) prefixLen >= sizeof(prefix)) prefixLen = sizeof(prefix) - 1;
+
+  const char suffix[] = "\"}";
+  const size_t hexLen = n * 2;
+  server.setContentLength((size_t) prefixLen + hexLen + (sizeof(suffix) - 1));
+  server.send(200, "application/json", "");
+  server.sendContent(prefix, (size_t) prefixLen);
+  constexpr size_t kHttpChunkBytes = 512;
+  for (size_t off = 0; off < hexLen; off += kHttpChunkBytes) {
+    size_t chunk = hexLen - off;
+    if (chunk > kHttpChunkBytes) chunk = kHttpChunkBytes;
+    server.sendContent(hexbuf + off, chunk);
+    serviceRealtimeDuringHttp();
+  }
+  server.sendContent(suffix, sizeof(suffix) - 1);
 }
 
 static void handleConfigGet() {
@@ -2487,18 +2639,23 @@ void setup() {
   webLogMux = xSemaphoreCreateRecursiveMutex();
   coreMux = xSemaphoreCreateRecursiveMutex();
   livePointsMux = xSemaphoreCreateRecursiveMutex();
-  weblogf("[rtk-walker] boot\n");
+  weblogf("[rtk-walker] boot version=%s build=%s %s\n",
+          walkerFirmwareVersion(), __DATE__, __TIME__);
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-  // Default 256 B RX buffer is kept — gnssPump() runs twice per loop()
-  // iteration (start + after HTTP/NTRIP) and the main loop ticks every
-  // few ms, so 22 ms-to-fill-at-115200-baud is plenty. Tried bumping to
-  // 1 KB / 4 KB but that ate enough internal SRAM that LVGL's DMA-
-  // capable buffer alloc (~30 KB contiguous) failed during tftSetup()
-  // and crashed the board on boot. Leaving the buffer alone keeps the
-  // memory map LVGL needs intact.
+  // Default 256 B RX buffer is kept. A dedicated realtime task drains the
+  // UART every few ms; bumping this to 1 KB / 4 KB ate enough internal SRAM
+  // that LVGL's DMA-capable buffer alloc (~30 KB contiguous) failed during
+  // tftSetup() and crashed the board on boot.
   gnssSerial.begin(GNSS_BAUD, SERIAL_8N1, GNSS_RX_PIN, GNSS_TX_PIN);
+
+  // Load persisted config BEFORE touching LoRa. The previous order
+  // always booted the receiver with the hardcoded defaults
+  // (addr=718/ch=17), then only loaded the saved LoRa settings after
+  // the fact. That made "LoRa config OK" misleading when the actual
+  // charger pair on disk differed.
+  loadConfig();
 #ifdef LORA_PRESENT
   // EBYTE E22-900T22S default UART is 9600 8N1. Mode pins start in
   // config mode (1,1); walker_lora.cpp lowers M0+M1 to data mode
@@ -2512,7 +2669,14 @@ void setup() {
           LORA_RX_PIN, LORA_TX_PIN, LORA_M0_PIN, LORA_M1_PIN);
 #endif
 #ifdef LORA_PRESENT
-  WalkerLoraConfig lcfg = { cfg.loraAddr, cfg.loraChannel, cfg.loraHc, cfg.loraLc };
+  WalkerLoraConfig lcfg = {
+    cfg.loraAddr,
+    cfg.loraChannel,
+    cfg.loraHc,
+    cfg.loraLc,
+    cfg.loraPacketLenCode,
+    cfg.loraAirRateCode,
+  };
   walkerLoraSetup(lcfg);
 #endif
 
@@ -2527,8 +2691,6 @@ void setup() {
   if (!sessionStore.begin()) {
     weblogf("[session] init failed\n");
   }
-
-  loadConfig();
   if (cfg.authToken.length() == 0) {
     weblogf("[auth] WARNING: no API token configured; setup endpoints remain open until a token is set\n");
   }
@@ -2558,6 +2720,8 @@ void setup() {
     WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
     unsigned long deadline = millis() + 20000;
     while (millis() < deadline && WiFi.status() != WL_CONNECTED) {
+      gnssPump();
+      walkerLoraPump();
       delay(200);
     }
     if (WiFi.status() == WL_CONNECTED) {
@@ -2640,7 +2804,7 @@ void setup() {
     doc["error"] = r.error;
     String out;
     serializeJson(doc, out);
-    server.send(200, "application/json", out);
+    sendStringCooperatively(200, "application/json", out);
   });
 
   // OTA: trigger the actual update. Re-checks first so a stale browser tab
@@ -2662,7 +2826,7 @@ void setup() {
     doc["error"] = err;
     String out;
     serializeJson(doc, out);
-    server.send(ok ? 200 : 500, "application/json", out);
+    sendStringCooperatively(ok ? 200 : 500, "application/json", out);
   });
 
   // Walker bundle export — produces a .novabundle zip and streams it back.
@@ -2705,10 +2869,9 @@ void setup() {
   server.begin();
   weblogf("[http] listening on :80\n");
 
-  // TFT comes up only after WiFi + HTTP have settled. Doing it earlier
-  // means the LVGL refresh timer fires (and reads WiFi state) while
-  // the WiFi stack is still mid-init, which corrupts the IDLE0 stack.
-  // Safe to call on the headless target — the header inlines a no-op.
+  // Bring the TFT up after WiFi + HTTP are registered. Keep this in the
+  // main boot flow so there is only one LVGL/display owner and failures
+  // are visible in the serial log instead of hidden in a detached task.
   tftSetup();
   // PAIR021 firmware-version query is no longer fired blindly here —
   // gnssPump() schedules it half a second after the first byte arrives,
@@ -2719,20 +2882,116 @@ void setup() {
 // ── Loop ────────────────────────────────────────────────────────────
 static uint32_t mainTickCount = 0;
 
-// Deferred OTA boot-check: runs *once*, ~3 s after the WebServer comes
-// up. Putting this in setup() before server.begin() means a slow or
-// dead manifest endpoint blocks setup() for up to 30 s (the HTTPClient
-// default timeout) — and during those 30 s the user can't load the
-// web UI. Running it from the main loop instead lets server.handleClient()
-// answer requests immediately while OTA still checks on its own.
-static bool otaBootCheckDone = false;
+// Deferred OTA boot-check: starts once after the WebServer is listening,
+// then runs in its own low-priority task. Keeping HTTPClient out of
+// loop() matters: a dead manifest endpoint used to pause GNSS UART
+// pumping and server.handleClient() long enough to look like a full
+// firmware hang.
+static bool otaBootCheckStarted = false;
+
+static void otaBootCheckTask(void*) {
+  walkerOtaAutoTick(false);
+  vTaskDelete(NULL);
+}
+
+static void serialLoraScan(uint8_t chStart, uint8_t chEnd,
+                           uint16_t dwellMs, uint16_t addr,
+                           bool scanAllPacketCodes) {
+#ifndef LORA_PRESENT
+  Serial.println("lora-scan: this build has no LoRa support");
+#else
+  if (chStart > chEnd) {
+    uint8_t tmp = chStart;
+    chStart = chEnd;
+    chEnd = tmp;
+  }
+  if (chEnd > 83) chEnd = 83;
+  if (dwellMs < 250) dwellMs = 250;
+  if (dwellMs > 10000) dwellMs = 10000;
+
+  coreLock();
+  WalkerLoraConfig restoreCfg = {
+    cfg.loraAddr,
+    cfg.loraChannel,
+    cfg.loraHc,
+    cfg.loraLc,
+    cfg.loraPacketLenCode,
+    cfg.loraAirRateCode,
+  };
+  coreUnlock();
+
+  uint8_t packetStart = scanAllPacketCodes ? 0 : restoreCfg.packetLenCode;
+  uint8_t packetEnd   = scanAllPacketCodes ? 3 : restoreCfg.packetLenCode;
+  uint32_t bestRaw = 0;
+  uint32_t bestFrames = 0;
+  uint8_t bestPacket = packetStart;
+  uint8_t bestCh = chStart;
+  uint8_t bestAir = 0;
+
+  Serial.printf("[lora-scan] addr=%u ch=%u..%u dwell=%ums packet=%s air=0..7\n",
+                (unsigned) addr, (unsigned) chStart, (unsigned) chEnd,
+                (unsigned) dwellMs, scanAllPacketCodes ? "0..3" : "current");
+
+  for (uint8_t packet = packetStart; packet <= packetEnd; packet++) {
+    for (uint8_t ch = chStart; ch <= chEnd; ch++) {
+      for (uint8_t air = 0; air <= 7; air++) {
+        WalkerLoraConfig testCfg = restoreCfg;
+        testCfg.addr = addr;
+        testCfg.channel = ch;
+        testCfg.packetLenCode = packet;
+        testCfg.airRateCode = air;
+        if (!walkerLoraReconfigure(testCfg)) {
+          Serial.printf("[lora-scan] ch=%u packet=%u air=%u config failed\n",
+                        (unsigned) ch, (unsigned) packet, (unsigned) air);
+          continue;
+        }
+
+        WalkerLoraStats before;
+        walkerLoraGetStats(before);
+        uint32_t until = millis() + dwellMs;
+        while ((int32_t)(millis() - until) < 0) {
+          gnssPump();
+          walkerLoraPump();
+          server.handleClient();
+          ntripPump();
+          buttonPump();
+          batteryPump();
+          tftTick();
+          delay(5);
+        }
+
+        WalkerLoraStats after;
+        walkerLoraGetStats(after);
+        uint32_t rawDelta = after.rawBytesIn - before.rawBytesIn;
+        uint32_t frameDelta = after.framesReceived - before.framesReceived;
+        uint32_t rejectDelta = after.framesRejected - before.framesRejected;
+        Serial.printf("[lora-scan] ch=%u packet=%u air=%u raw+%lu frames+%lu rejected+%lu\n",
+                      (unsigned) ch, (unsigned) packet, (unsigned) air,
+                      (unsigned long) rawDelta, (unsigned long) frameDelta,
+                      (unsigned long) rejectDelta);
+        if (rawDelta > bestRaw || (rawDelta == bestRaw && frameDelta > bestFrames)) {
+          bestRaw = rawDelta;
+          bestFrames = frameDelta;
+          bestPacket = packet;
+          bestCh = ch;
+          bestAir = air;
+        }
+      }
+    }
+  }
+
+  walkerLoraReconfigure(restoreCfg);
+  Serial.printf("[lora-scan] best ch=%u packet=%u air=%u raw+%lu frames+%lu; restored addr=%u ch=%u packet=%u air=%u\n",
+                (unsigned) bestCh, (unsigned) bestPacket, (unsigned) bestAir,
+                (unsigned long) bestRaw, (unsigned long) bestFrames,
+                (unsigned) restoreCfg.addr, (unsigned) restoreCfg.channel,
+                (unsigned) restoreCfg.packetLenCode, (unsigned) restoreCfg.airRateCode);
+#endif
+}
 
 void loop() {
-  // gnssPump() drains the UART RX buffer first — bytes flowing at
-  // 3-4 KB/s at 5 Hz overflow the (now 4 KB) FIFO if HTTP or NTRIP
-  // hogs a beat. Two drains per loop (start + after the slow ops)
-  // keep latency well under one GGA cycle (200 ms at 5 Hz).
   gnssPump();
+  walkerLoraPump();
   server.handleClient();
   ntripPump();
   gnssPump();
@@ -2742,25 +3001,27 @@ void loop() {
   tftTick();
 
   // Deferred OTA boot-check. Wait 3 s after boot so WiFi + WebServer
-  // are firmly up + the first user request (if any) lands fast. After
-  // that one tick we're done — manual checks via /api/ota/check or the
-  // TFT button take over.
-  if (!otaBootCheckDone && millis() > 3000 && WiFi.status() == WL_CONNECTED) {
-    otaBootCheckDone = true;
-    walkerOtaAutoTick(false);
+  // are firmly up + the first user request (if any) lands fast. The
+  // actual HTTP work runs outside loop() so UART/web service cadence is
+  // preserved even when the server URL is slow or unreachable.
+  if (!otaBootCheckStarted && millis() > 3000 && WiFi.status() == WL_CONNECTED) {
+    otaBootCheckStarted = true;
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        otaBootCheckTask, "OTA auto", 12 * 1024, NULL, 1, NULL, 0);
+    if (ok != pdPASS) {
+      weblogf("[ota] auto-check task start failed\n");
+    }
   }
 
   // Drain a deferred on-device view refresh requested by an HTTP
-  // handler (e.g. /api/maps/obstacles/delete). Runs OUTSIDE the
-  // HTTP critical section so the few hundred ms of LittleFS work
-  // doesn't starve gnssPump(). gnssPump() ran two lines up already
-  // and runs again right after this, so even the worst-case UART
-  // pause stays under the FIFO depth.
+  // handler (e.g. /api/maps/obstacles/delete). Runs outside the HTTP
+  // critical section; GNSS/LoRa keep flowing on the realtime task while
+  // this LittleFS work refreshes the on-device view.
   if (g_pendingViewRefreshSlot >= 0) {
     int slot = g_pendingViewRefreshSlot;
     g_pendingViewRefreshSlot = -1;
     tft_ui_view_map_slot(slot);
-    gnssPump();
+    serviceRealtimeDuringHttp();
   }
 
   // Diagnostic heartbeats were noisy on the serial console after the UI
@@ -2787,6 +3048,101 @@ void loop() {
     } else if (cmd == "session-reset") {
       sessionStore.reset();
       Serial.println("session reset");
+    }
+    else if (cmd == "lora-status") {
+      WalkerLoraStats ls;
+      walkerLoraGetStats(ls);
+      coreLock();
+      uint16_t addr = cfg.loraAddr;
+      uint8_t ch = cfg.loraChannel;
+      uint8_t hc = cfg.loraHc;
+      uint8_t lc = cfg.loraLc;
+      uint8_t packet = cfg.loraPacketLenCode;
+      uint8_t air = cfg.loraAirRateCode;
+      coreUnlock();
+      Serial.printf("lora cfg addr=%u ch=%u hc=%u lc=%u packetCode=%u packet=%uB airCode=%u\n",
+                    (unsigned) addr, (unsigned) ch, (unsigned) hc, (unsigned) lc,
+                    (unsigned) packet, (unsigned) loraPacketLenBytes(packet), (unsigned) air);
+      Serial.printf("lora stats ready=%d active=%d raw=%lu frames=%lu rejected=%lu bytesFwd=%lu lastFrameAgo=%ld\n",
+                    ls.moduleReady, ls.active, (unsigned long) ls.rawBytesIn,
+                    (unsigned long) ls.framesReceived, (unsigned long) ls.framesRejected,
+                    (unsigned long) ls.bytesForwarded,
+                    ls.lastFrameMsAgo == UINT32_MAX ? -1L : (long) ls.lastFrameMsAgo);
+    }
+    else if (cmd == "lora-scan" || cmd.startsWith("lora-scan ") ||
+             cmd == "lora-scan-deep" || cmd.startsWith("lora-scan-deep ")) {
+      bool deep = cmd.startsWith("lora-scan-deep");
+      String rest = cmd.substring(deep ? 14 : 9);
+      rest.trim();
+      coreLock();
+      int chStart = cfg.loraLc;
+      int chEnd = cfg.loraHc;
+      coreUnlock();
+      int dwell = 1200;
+      int addr = 65535;
+      int vals[4] = {chStart, chEnd, dwell, addr};
+      int n = 0;
+      while (rest.length() > 0 && n < 4) {
+        int sp = rest.indexOf(' ');
+        String tok = (sp >= 0) ? rest.substring(0, sp) : rest;
+        tok.trim();
+        if (tok.length() > 0) vals[n++] = tok.toInt();
+        if (sp < 0) break;
+        rest = rest.substring(sp + 1);
+        rest.trim();
+      }
+      if (n >= 1) chStart = vals[0];
+      if (n >= 2) chEnd = vals[1];
+      if (n >= 3) dwell = vals[2];
+      if (n >= 4) addr = vals[3];
+      if (chStart < 0 || chStart > 83 || chEnd < 0 || chEnd > 83 ||
+          dwell < 250 || dwell > 10000 || addr < 1 || addr > 65535) {
+        Serial.println("usage: lora-scan [chStart chEnd dwellMs addr] or lora-scan-deep [chStart chEnd dwellMs addr]");
+      } else {
+        serialLoraScan((uint8_t) chStart, (uint8_t) chEnd,
+                       (uint16_t) dwell, (uint16_t) addr, deep);
+      }
+    }
+    else if (cmd.startsWith("lora-set ") || cmd.startsWith("lora-monitor ")) {
+      bool monitor = cmd.startsWith("lora-monitor ");
+      String rest = cmd.substring(monitor ? 13 : 9);
+      rest.trim();
+      coreLock();
+      int defaultPacket = cfg.loraPacketLenCode;
+      int defaultAir = cfg.loraAirRateCode;
+      coreUnlock();
+      int vals[4] = {0, 0, defaultPacket, defaultAir};
+      int n = 0;
+      while (rest.length() > 0 && n < 4) {
+        int sp = rest.indexOf(' ');
+        String tok = (sp >= 0) ? rest.substring(0, sp) : rest;
+        tok.trim();
+        if (tok.length() > 0) vals[n++] = tok.toInt();
+        if (sp < 0) break;
+        rest = rest.substring(sp + 1);
+        rest.trim();
+      }
+      uint32_t addrVal = monitor ? 65535 : (uint32_t) vals[0];
+      uint32_t chVal = monitor ? (uint32_t) vals[0] : (uint32_t) vals[1];
+      uint32_t packetVal = monitor ? (uint32_t) (n >= 2 ? vals[1] : defaultPacket)
+                                   : (uint32_t) (n >= 3 ? vals[2] : defaultPacket);
+      uint32_t airVal = monitor ? (uint32_t) (n >= 3 ? vals[2] : defaultAir)
+                                : (uint32_t) (n >= 4 ? vals[3] : defaultAir);
+      if ((!monitor && n < 2) || (monitor && n < 1) ||
+          addrVal < 1 || addrVal > 65535 || chVal > 83 ||
+          packetVal > 3 || airVal > 7) {
+        Serial.println("usage: lora-set <addr> <ch> [packetCode 0..3] [airCode 0..7] or lora-monitor <ch> [packetCode] [airCode]");
+      } else {
+        WalkerConfigUpdate upd;
+        upd.loraAddrSet = true; upd.loraAddr = (uint16_t) addrVal;
+        upd.loraChannelSet = true; upd.loraChannel = (uint8_t) chVal;
+        upd.loraPacketLenCodeSet = true; upd.loraPacketLenCode = (uint8_t) packetVal;
+        upd.loraAirRateCodeSet = true; upd.loraAirRateCode = (uint8_t) airVal;
+        walkerApplyConfig(upd);
+        Serial.printf("lora reconfigured addr=%u ch=%u packetCode=%u airCode=%u\n",
+                      (unsigned) addrVal, (unsigned) chVal,
+                      (unsigned) packetVal, (unsigned) airVal);
+      }
     }
     else if (cmd == "rec-work") {
       int s = -1;
@@ -2898,6 +3254,8 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.loraChannel  = cfg.loraChannel;
   out.loraHc       = cfg.loraHc;
   out.loraLc       = cfg.loraLc;
+  out.loraPacketLenCode = cfg.loraPacketLenCode;
+  out.loraAirRateCode   = cfg.loraAirRateCode;
   coreUnlock();
 }
 
@@ -2940,6 +3298,8 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   if (upd.loraChannelSet) { cfg.loraChannel = upd.loraChannel; loraChanged = true; }
   if (upd.loraHcSet)      { cfg.loraHc      = upd.loraHc;      loraChanged = true; }
   if (upd.loraLcSet)      { cfg.loraLc      = upd.loraLc;      loraChanged = true; }
+  if (upd.loraPacketLenCodeSet) { cfg.loraPacketLenCode = upd.loraPacketLenCode; loraChanged = true; }
+  if (upd.loraAirRateCodeSet)   { cfg.loraAirRateCode   = upd.loraAirRateCode;   loraChanged = true; }
   saveConfig();
   if (needsReboot) {
     weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
@@ -2949,7 +3309,14 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   }
   // Snapshot LoRa config under the lock so walkerLoraReconfigure gets a
   // consistent copy even if another task writes cfg immediately after unlock.
-  WalkerLoraConfig newLoraCfg = { cfg.loraAddr, cfg.loraChannel, cfg.loraHc, cfg.loraLc };
+  WalkerLoraConfig newLoraCfg = {
+    cfg.loraAddr,
+    cfg.loraChannel,
+    cfg.loraHc,
+    cfg.loraLc,
+    cfg.loraPacketLenCode,
+    cfg.loraAirRateCode,
+  };
   coreUnlock();
 
   if (loraChanged) {
@@ -3025,7 +3392,7 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
 void walkerPumpGnss() {
   // Wraps gnssPump() so external compilation units (the TFT loaders in
   // tft_ui.cpp) can drain the UART RX FIFO without sharing the .cpp's
-  // static globals. Safe to call from anywhere on the main thread.
+  // static globals. Safe to call from the main/LVGL flow.
   gnssPump();
 }
 

@@ -157,6 +157,8 @@ static lv_obj_t* ta_lora_addr    = nullptr;
 static lv_obj_t* ta_lora_channel = nullptr;
 static lv_obj_t* ta_lora_hc      = nullptr;
 static lv_obj_t* ta_lora_lc      = nullptr;
+static lv_obj_t* ta_lora_packet  = nullptr;
+static lv_obj_t* ta_lora_air     = nullptr;
 static lv_obj_t* keyboard = nullptr;
 static lv_obj_t* lbl_save_status = nullptr;
 
@@ -258,22 +260,24 @@ static void exit_viewing_mode();
 
 // ── Public entry points ────────────────────────────────────────────────────
 void tftSetup() {
-  jc3248w535_handles_t handles;
+  jc3248w535_handles_t handles = {};
   // 90° rotation matches the esp32-tool — landscape orientation.
   //  - task_stack 24 KB — flex layouts + line redraws + tabview keyboard
   //    blow past the 4 KB default; saw the overflow on the first frame.
-  //  - task_affinity 1 — same core as Arduino's loopTask. Core 0 is
-  //    where the ESP-IDF parks WiFi (prio 23) and lwIP (prio 18), and
-  //    those higher-priority workers starve our LVGL task whenever
-  //    network traffic flares up (the deterministic ~30 s freeze).
-  //  - task_priority 10 — well above Arduino loopTask's 1, so LVGL
-  //    preempts the main loop instead of competing with it. delay(1)
-  //    in loop() already yields, so the preemption is cheap.
+  //  - task_affinity 1 keeps LVGL beside Arduino's loopTask instead of
+  //    competing with WiFi/lwIP on core 0.
+  //  - task_priority 1 matches loopTask. The dedicated GNSS/LoRa task
+  //    runs above this, so heavy redraws cannot starve UART service.
   jc3248w535_config_t cfg = JC3248W535_DEFAULT_CONFIG(LV_DISP_ROT_90);
   cfg.lvgl.task_stack    = 24 * 1024;
   cfg.lvgl.task_affinity = 1;
-  cfg.lvgl.task_priority = 10;
-  jc3248w535_begin(&cfg, &handles);
+  cfg.lvgl.task_priority = 1;
+  cfg.lvgl.task_max_sleep_ms = 25;
+  esp_err_t err = jc3248w535_begin(&cfg, &handles);
+  if (err != ESP_OK || handles.disp == nullptr) {
+    Serial.printf("[tft] init failed: %d\n", (int) err);
+    return;
+  }
   jc3248w535_backlight_set(100);
 
   if (!jc3248w535_lock(0)) return;
@@ -918,6 +922,8 @@ static void build_settings_screen() {
   make_field(tab_lora, "Channel (0-83)",    &ta_lora_channel, false, "17");
   make_field(tab_lora, "HC (charger scan upper)", &ta_lora_hc,  false, "20");
   make_field(tab_lora, "LC (charger scan lower)", &ta_lora_lc,  false, "14");
+  make_field(tab_lora, "Packet code (0=240 1=128)", &ta_lora_packet, false, "0");
+  make_field(tab_lora, "Air rate code (7=62.5k)", &ta_lora_air, false, "7");
 
   // ── Firmware tab ────────────────────────────────────────────────────
   // Flex column with: section header, current-version label, Check +
@@ -1109,7 +1115,8 @@ static void focus_textarea(lv_obj_t* ta) {
   // Numeric mode for the port and LoRa fields, alpha otherwise.
   if (ta == ta_ntrip_port ||
       ta == ta_lora_addr || ta == ta_lora_channel ||
-      ta == ta_lora_hc   || ta == ta_lora_lc) {
+      ta == ta_lora_hc   || ta == ta_lora_lc ||
+      ta == ta_lora_packet || ta == ta_lora_air) {
     lv_keyboard_set_mode(keyboard, LV_KEYBOARD_MODE_NUMBER);
   } else {
     lv_keyboard_set_mode(keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
@@ -1149,7 +1156,8 @@ static void on_keyboard_event(lv_event_t* e) {
   lv_obj_t* wifiOrder[]  = { ta_wifi_ssid, ta_wifi_pass };
   lv_obj_t* ntripOrder[] = { ta_ntrip_host, ta_ntrip_port, ta_ntrip_mount,
                              ta_ntrip_user, ta_ntrip_pass };
-  lv_obj_t* loraOrder[]  = { ta_lora_addr, ta_lora_channel, ta_lora_hc, ta_lora_lc };
+  lv_obj_t* loraOrder[]  = { ta_lora_addr, ta_lora_channel, ta_lora_hc, ta_lora_lc,
+                             ta_lora_packet, ta_lora_air };
   auto advance = [&](lv_obj_t** chain, size_t n) -> lv_obj_t* {
     for (size_t i = 0; i + 1 < n; i++) {
       if (chain[i] == current) return chain[i + 1];
@@ -1198,6 +1206,10 @@ static void load_settings_values() {
   lv_textarea_set_text(ta_lora_hc, loraBuf);
   snprintf(loraBuf, sizeof(loraBuf), "%u", (unsigned) cfg_baseline.loraLc);
   lv_textarea_set_text(ta_lora_lc, loraBuf);
+  snprintf(loraBuf, sizeof(loraBuf), "%u", (unsigned) cfg_baseline.loraPacketLenCode);
+  lv_textarea_set_text(ta_lora_packet, loraBuf);
+  snprintf(loraBuf, sizeof(loraBuf), "%u", (unsigned) cfg_baseline.loraAirRateCode);
+  lv_textarea_set_text(ta_lora_air, loraBuf);
 
   // Hint that a password is stored — empty placeholder otherwise.
   if (cfg_baseline.wifiPassMasked.length() > 0) {
@@ -1287,6 +1299,16 @@ static void on_save_settings(lv_event_t* e) {
   int lcVal = s.toInt();
   if (lcVal >= 0 && lcVal <= 83 && (uint8_t) lcVal != cfg_baseline.loraLc) {
     upd.loraLcSet = true; upd.loraLc = (uint8_t) lcVal;
+  }
+  s = taText(ta_lora_packet);
+  int packetVal = s.toInt();
+  if (packetVal >= 0 && packetVal <= 3 && (uint8_t) packetVal != cfg_baseline.loraPacketLenCode) {
+    upd.loraPacketLenCodeSet = true; upd.loraPacketLenCode = (uint8_t) packetVal;
+  }
+  s = taText(ta_lora_air);
+  int airVal = s.toInt();
+  if (airVal >= 0 && airVal <= 7 && (uint8_t) airVal != cfg_baseline.loraAirRateCode) {
+    upd.loraAirRateCodeSet = true; upd.loraAirRateCode = (uint8_t) airVal;
   }
 
   bool willReboot = upd.wifiSsidSet || upd.wifiPassSet ||
@@ -1423,11 +1445,8 @@ static bool load_saved_map_polygon(int slot) {
     viewing_buffer[viewing_count].fix = 4;
     viewing_count++;
 
-    // Drain the GNSS UART every 32 lines so a 300-point map load
-    // doesn't starve the FIFO for the >5 sec that trips the
-    // "RTK module not detected" overlay. ~22 ms FIFO budget at
-    // 115200 baud, 32 lines × ~1.5 ms = ~50 ms — well within margin
-    // even with LittleFS variance.
+    // Yield every 32 lines so the dedicated GNSS/LoRa task can preempt
+    // long LittleFS map loads cleanly.
     if ((viewing_count & 0x1F) == 0) walkerPumpGnss();
   }
   f.close();
@@ -2421,22 +2440,19 @@ static void refresh_status_cb(lv_timer_t* t) {
 
   g_lvgl_checkpoint = 5;
   // RTK module presence — flag only after a sustained outage, not on
-  // a single UART hiccup. Raw "no bytes for >5 s" is the trigger, but
-  // we additionally require the gap to persist across two consecutive
-  // status ticks (~2 s total) before showing the overlay, and require
-  // a steady byte stream before clearing it. That kills the
-  // "popup-every-4s" flicker pattern caused by short bursts of the
-  // buffer being drained at exactly the wrong moment.
+  // a single UART hiccup or a short WiFi burst. Raw "no bytes for >12 s"
+  // is the trigger, and we additionally require the gap to persist before
+  // showing the overlay.
   static uint32_t missingSinceMs = 0;     // when the "no bytes" condition first turned true
   static uint32_t presentSinceMs = 0;     // when bytes flowed cleanly again
   static bool     overlayLatched = false; // sticky output of the debounce
-  bool rawMissing = (!snap.gnssAlive && millis() > 3000) ||
-                    (snap.gnssAlive && snap.msSinceGnssByte > 5000);
+  bool rawMissing = (!snap.gnssAlive && millis() > 5000) ||
+                    (snap.gnssAlive && snap.msSinceGnssByte > 12000);
   uint32_t nowOverlayMs = millis();
   if (rawMissing) {
     if (missingSinceMs == 0) missingSinceMs = nowOverlayMs;
     presentSinceMs = 0;
-    if (nowOverlayMs - missingSinceMs >= 2000) overlayLatched = true;
+    if (nowOverlayMs - missingSinceMs >= 3000) overlayLatched = true;
   } else {
     if (presentSinceMs == 0) presentSinceMs = nowOverlayMs;
     missingSinceMs = 0;

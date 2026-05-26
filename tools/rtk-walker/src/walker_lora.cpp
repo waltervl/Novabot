@@ -9,6 +9,9 @@
 extern HardwareSerial gnssSerial;
 extern HardwareSerial loraSerial;
 
+#define LORA_CONFIG_BAUD 9600
+#define LORA_DATA_BAUD   115200
+
 // Forward to main.cpp's logger so timing aligns with the rest of the
 // serial output. weblogf is declared in main.cpp as static — instead
 // we just use Serial.printf here; the user has serial access during
@@ -24,27 +27,71 @@ static void loraLogf(const char* fmt, ...) {
     Serial.print(buf);
 }
 
-// Build + send the 11-byte EBYTE permanent-save command. Returns true
+static uint8_t sanitizePacketLenCode(uint8_t code) {
+    return (code <= 3) ? code : 1;
+}
+
+static uint8_t sanitizeAirRateCode(uint8_t code) {
+    return (code <= 7) ? code : 2;
+}
+
+static uint16_t packetLenBytes(uint8_t code) {
+    switch (sanitizePacketLenCode(code)) {
+        case 0: return 240;
+        case 1: return 128;
+        case 2: return 64;
+        case 3: return 32;
+    }
+    return 128;
+}
+
+static float airRateKbps(uint8_t code) {
+    switch (sanitizeAirRateCode(code)) {
+        case 3: return 4.8f;
+        case 4: return 9.6f;
+        case 5: return 19.2f;
+        case 6: return 38.4f;
+        case 7: return 62.5f;
+        case 0:
+        case 1:
+        case 2:
+        default:
+            return 2.4f;
+    }
+}
+
+// Build + send the 12-byte EBYTE permanent-save command. Returns true
 // if the module echoed back a `0xC1` ACK with matching ADDH/ADDL/CHAN.
-// REG0 = 0x62 (UART 9600 8N1, air 2.4 kbps). REG1 = 0x00 (240 B sub-
-// packet, 22 dBm, no ambient RSSI). REG2 = channel. REG3 = 0x00 (no
-// LBT, transparent mode). NETID = 0 (we don't use netid).
+//
+// Stock charger firmware writes the E220-style 8-byte payload:
+//   ADDH ADDL e7 20 CH 83 00 00
+// For our E22 we insert NETID=0 before REG0 and keep the same PHY profile:
+// - REG0 = UART 115200 8N1 + configurable air rate (stock air code 7)
+// - REG1 = configurable packet length + environmental RSSI + 22 dBm
+// - REG3 = packet RSSI enabled, transparent mode, no relay/LBT
+//
+// NETID = 0 is mandatory for E22<->E220 interoperability because the E220
+// family has no NETID filter.
 //
 // Per EBYTE E22-900T22S datasheet section 5.3 "Register Definition".
 // Send 0xC0 = permanent save (NVS), 0xC2 = until power-cycle.
 static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
     uint8_t addH = (cfg.addr >> 8) & 0xFF;
     uint8_t addL = cfg.addr & 0xFF;
+    uint8_t airCode = sanitizeAirRateCode(cfg.airRateCode);
+    uint8_t packetCode = sanitizePacketLenCode(cfg.packetLenCode);
+    uint8_t reg0 = 0xE0 | airCode;              // UART 115200 8N1 + air-rate bits
+    uint8_t reg1 = (uint8_t) ((packetCode << 6) | 0x20); // subpacket + env RSSI + 22 dBm
     uint8_t pkt[] = {
         0xC0,        // permanent save
         0x00,        // start register
         0x09,        // 9 bytes of register data follow
         addH, addL,  // ADDH, ADDL
         0x00,        // NETID
-        0x62,        // REG0: UART 9600 8N1, air 2.4 kbps
-        0x00,        // REG1: 240 B subpacket, +22 dBm, no RSSI
+        reg0,        // REG0: UART 115200 8N1, configurable air rate
+        reg1,        // REG1: configurable subpacket, env RSSI, +22 dBm
         cfg.channel, // REG2: channel (= freq - base_freq, 1 MHz step)
-        0x00,        // REG3: transparent mode, no LBT, WOR 500 ms
+        0x83,        // REG3: packet RSSI, transparent mode, WOR cycle 2000 ms
         0x00,        // CRYPT_H (no encryption)
         0x00,        // CRYPT_L (no encryption)
     };
@@ -55,7 +102,9 @@ static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
     // HardwareSerial re-inits cleanly.
     pinMode(LORA_M0_PIN, OUTPUT);
     pinMode(LORA_M1_PIN, OUTPUT);
-    loraSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
+    // Per the E22 manual, configuration mode is always 9600 8N1 even when
+    // the transparent/data UART is configured for 115200.
+    loraSerial.begin(LORA_CONFIG_BAUD, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
 
     // Enter configuration mode. Per E22-T datasheet section 5.1 the four
     // modes are selected by M1,M0:
@@ -96,23 +145,27 @@ static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
     }
     bool ok = (resp[0] == 0xC1) &&
               (resp[3] == addH) && (resp[4] == addL) &&
+              (resp[6] == reg0) && (resp[7] == reg1) &&
               (resp[8] == cfg.channel);
     if (!ok) {
         loraLogf("config: bad echo "
-                 "%02x %02x %02x  addr=%02x%02x ch=%02x\n",
-                 resp[0], resp[1], resp[2], resp[3], resp[4], resp[8]);
+                 "%02x %02x %02x  addr=%02x%02x reg0=%02x reg1=%02x ch=%02x\n",
+                 resp[0], resp[1], resp[2], resp[3], resp[4],
+                 resp[6], resp[7], resp[8]);
     }
     return ok;
 }
 
 static bool g_moduleReady = false;
-static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14};
+static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14, 0, 7};
 
 // Frame parser state. Resets to WAIT_PRE1 on any malformed byte.
-// Frame format (from charger Ghidra decomp, FIRMWARE-CHARGER.md):
-//   [0x02 0x02][addr_hi addr_lo][len+1][cmd][payload...][XOR][0x03 0x03]
-// where len_byte = 1 + payload_data_count and XOR runs over the
-// payload byte count = len_byte bytes (cmd + data).
+// Stock charger RTK relay frames observed over RF look like:
+//   [0x02 0x02][addr_hi addr_lo][len][cmd][payload...][0x03 0x03][RSSI]
+// where len = cmd + payload byte count. The E22 appends the final RSSI
+// byte because REG3 bit7 mirrors the charger config. Older notes mention
+// a XOR byte before the trailer; LP_XOR accepts both formats so we stay
+// compatible with non-RTK command frames as well.
 enum LoraParseState : uint8_t {
     LP_WAIT_PRE1, LP_WAIT_PRE2,
     LP_ADDR_HI,   LP_ADDR_LO,
@@ -144,9 +197,11 @@ bool walkerLoraSetup(const WalkerLoraConfig& cfg) {
     g_currentCfg = cfg;
     g_moduleReady = ebyteWriteConfig(cfg);
     if (g_moduleReady) {
-        loraLogf("config OK: addr=%u ch=%u (%.3f MHz)\n",
+        loraLogf("config OK: addr=%u ch=%u (%.3f MHz) packet=%uB air=%.1fkbps netid=0\n",
                  (unsigned) cfg.addr, (unsigned) cfg.channel,
-                 850.125 + cfg.channel);
+                 850.125 + cfg.channel,
+                 (unsigned) packetLenBytes(cfg.packetLenCode),
+                 (double) airRateKbps(cfg.airRateCode));
         // Drop into transparent data mode.
         digitalWrite(LORA_M0_PIN, LOW);
         digitalWrite(LORA_M1_PIN, LOW);
@@ -154,6 +209,9 @@ bool walkerLoraSetup(const WalkerLoraConfig& cfg) {
         walkerPumpGnss();
         delay(25);
         walkerPumpGnss();
+        loraSerial.updateBaudRate(LORA_DATA_BAUD);
+        while (loraSerial.available()) loraSerial.read();
+        loraLogf("data UART set to %u baud\n", (unsigned) LORA_DATA_BAUD);
         delay(25);
         walkerPumpGnss();
     } else {
@@ -217,6 +275,12 @@ void walkerLoraPump() {
                 if (g_payloadIdx >= g_payloadLen) g_st = LP_XOR;
                 break;
             case LP_XOR:
+                if (b == 0x03) {
+                    // Stock RTK frames omit the XOR byte; this is already
+                    // the first trailer byte.
+                    g_st = LP_POST2;
+                    break;
+                }
                 if (b != g_xorAccum) {
                     g_framesRejected++;
                     g_st = LP_WAIT_PRE1;
