@@ -88,6 +88,9 @@ supports up to 3 maps per session.
    have to be perfect; the server rasterises the polygon as drawn.
 6. Tap **Save** to keep the recording. The map appears in the list with
    its point count. Tap **Cancel** instead to discard.
+7. After a successful save, the walker immediately opens the charger-channel
+   capture screen for that map. Walk to the charger, tap **Start**, then walk
+   from the charger into the work polygon and tap **Save**.
 
 Dropped points do not break the polygon. They just mean the boundary in
 those segments is reconstructed from the surrounding FIX points. If the
@@ -111,10 +114,15 @@ You can add multiple obstacles per map. Each one is its own polygon.
 
 ### Channels
 
-A channel is a narrow corridor between an area and a target. For map0, a
-`map0tocharge_unicom` channel is mandatory: it is both the mower's route
+A channel is a narrow corridor between an area and a target. Every walker map
+needs its own `mapNtocharge_unicom` channel: it is both the mower's route
 between the work polygon and the charger, and the geometric anchor that lets
 the server place the walked boundary in the mower's local frame.
+
+This mirrors the OpenNova mower-mapping flow. The app saves a work map, enters
+the charger-position step, calls `save_recharge_pos`, then performs a final
+`save_map` so the mower ZIP contains `map0tocharge_unicom`. The walker cannot
+ask the mower to generate that file, so it records the charger channel itself.
 
 The MVP build hardcodes the target to `charge`. Multi-map channel targets are
 tracked for a later build.
@@ -126,9 +134,11 @@ tracked for a later build.
 3. Tap **Save**.
 4. The channel appears in the left-hand list on the detail screen.
 
-Do not upload/apply a walker bundle until map0 has one charger channel. The
-server rejects bundles without `map0tocharge_unicom` instead of creating a map
-that the Novabot app cannot route back to the dock.
+Do not upload/apply a walker bundle until every saved work map has a charger
+channel. The walker and server both reject bundles without the required
+`mapNtocharge_unicom.csv` files instead of creating a map that the Novabot app
+cannot route back to the dock. If a map is missing one, the upload returns
+`mapN needs charger channel`.
 
 ## Exporting and uploading
 

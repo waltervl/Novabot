@@ -453,7 +453,9 @@ function makeMapRow(m, active) {
   meta.className = 'meta';
   meta.textContent = (m.boundaryPoints || 0) + ' pts boundary · ' +
                      (m.obstacleCount || 0) + ' obstacles · ' +
-                     (m.channelCount || 0) + ' channels';
+                     (m.channelCount || 0) + ' channels' +
+                     (m.hasChargeChannel ? '' : ' · needs charger channel');
+  if (!m.hasChargeChannel) meta.style.color = 'var(--amber)';
   left.appendChild(name);
   left.appendChild(meta);
 

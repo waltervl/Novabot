@@ -2059,6 +2059,7 @@ static void handleMapsList() {
     m["boundaryPoints"]  = entries[i].boundaryPoints;
     m["obstacleCount"]   = entries[i].obstacleCount;
     m["channelCount"]    = entries[i].channelCount;
+    m["hasChargeChannel"] = sessionStore.hasChargeChannel(entries[i].slot);
   }
   doc["viewingSlot"] = tft_ui_current_view_slot();
   sendJson(200, doc);
@@ -2607,6 +2608,19 @@ static void handleConfigServerPost() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+static bool validateMapsHaveChargeChannels(String& outMsg) {
+  MapEntry maps[3];
+  size_t mapCount = 0;
+  sessionStore.listMaps(maps, 3, mapCount);
+  for (size_t i = 0; i < mapCount; i++) {
+    if (!sessionStore.hasChargeChannel(maps[i].slot)) {
+      outMsg = "map" + String(maps[i].slot) + " needs charger channel";
+      return false;
+    }
+  }
+  return true;
+}
+
 // uploadBundleToServer — build a fresh .novabundle from the current
 // /session/ state and POST it as multipart/form-data to the admin-import
 // endpoint. Synchronous: caller (HTTP handler or LVGL button) blocks for
@@ -2633,6 +2647,8 @@ bool uploadBundleToServer(String& outMsg) {
     outMsg = "WiFi not connected";
     return false;
   }
+
+  if (!validateMapsHaveChargeChannels(outMsg)) return false;
 
   BundleBuilder bb(sessionStore);
   String path = bb.build();
@@ -2932,6 +2948,11 @@ void setup() {
   // is reflected; the build cost is ~hundreds of ms for typical sessions.
   server.on("/bundle.novabundle", HTTP_GET, []() {
     if (!requireAuth()) return;
+    String readyMsg;
+    if (!validateMapsHaveChargeChannels(readyMsg)) {
+      server.send(409, "text/plain", readyMsg);
+      return;
+    }
     BundleBuilder bb(sessionStore);
     String path = bb.build();
     if (path.isEmpty()) {

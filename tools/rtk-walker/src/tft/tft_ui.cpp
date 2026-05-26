@@ -239,10 +239,12 @@ static void buildRecordingScreen();
 static void onOtaButtonClicked(lv_event_t* e);
 static void on_save_as_area_clicked(lv_event_t* e);
 static void onSaveResultDismissed(lv_event_t* e);
+static void onAreaSavedStartChannel(lv_event_t* e);
 static void update_save_area_button(const WalkerSnapshot& snap);
 static void update_map_action_buttons(const WalkerSnapshot& snap);
 static void on_add_channel_clicked(lv_event_t* e);
 static void on_add_obstacle_clicked(lv_event_t* e);
+static void arm_charge_channel_for_slot(int slot);
 
 // Map zoom + pan controls. The +/- buttons live as widgets on the
 // home-screen map_panel; drag handlers are attached to the same panel
@@ -1737,13 +1739,15 @@ static void reload_maps_list() {
     lv_obj_align(ltitle, LV_ALIGN_TOP_LEFT, 0, 0);
 
     char meta[96];
-    snprintf(meta, sizeof(meta), "%d pts boundary  -  obs %d  -  ch %d",
+    snprintf(meta, sizeof(meta), "%d pts boundary  -  obs %d  -  ch %d%s",
              entries[i].boundaryPoints,
              entries[i].obstacleCount,
-             entries[i].channelCount);
+             entries[i].channelCount,
+             sessionStore.hasChargeChannel(entries[i].slot) ? "" : "  -  needs charger");
     lv_obj_t* lmeta = lv_label_create(row);
     lv_label_set_text(lmeta, meta);
-    lv_obj_set_style_text_color(lmeta, COL_DIM, 0);
+    lv_obj_set_style_text_color(lmeta,
+        sessionStore.hasChargeChannel(entries[i].slot) ? COL_DIM : COL_AMBER, 0);
     lv_obj_set_style_text_font(lmeta, &lv_font_montserrat_12, 0);
     lv_obj_align(lmeta, LV_ALIGN_BOTTOM_LEFT, 0, 0);
   }
@@ -1831,11 +1835,15 @@ static RecordingMode s_pendingRecMode      = RecordingMode::Idle;
 static int           s_pendingRecParent    = -1;
 static String        s_pendingRecChannelTo = "";
 
+static void arm_charge_channel_for_slot(int slot) {
+  s_pendingRecMode      = RecordingMode::Channel;
+  s_pendingRecParent    = slot;
+  s_pendingRecChannelTo = "charge";
+}
+
 static void on_add_channel_clicked(lv_event_t* /*e*/) {
   if (viewing_map_slot < 0) return;
-  s_pendingRecMode      = RecordingMode::Channel;
-  s_pendingRecParent    = viewing_map_slot;
-  s_pendingRecChannelTo = "charge";
+  arm_charge_channel_for_slot(viewing_map_slot);
   tft_ui_set_screen(UiScreen::Recording);
 }
 
@@ -1919,9 +1927,10 @@ static void on_map_panel_released(lv_event_t* /*e*/) {
 // missing, slot allocation failed, no fixed rows). The first useable
 // fix row also seeds SessionStore.setOrigin() so all subsequent
 // conversions share the same anchor.
-static int import_track_as_area(const String& trackPath, const String& alias) {
+static int import_track_as_area(const String& trackPath, const String& alias, int* outSlot = nullptr) {
   int slot = sessionStore.allocWorkSlot();
   if (slot < 0) return -1;
+  if (outSlot) *outSlot = slot;
 
   File f = LittleFS.open(trackPath, FILE_READ);
   if (!f) return -1;
@@ -2015,7 +2024,8 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
   // lock the loop with file I/O.
   lv_refr_now(NULL);
 
-  int written = import_track_as_area(path, alias);
+  int savedSlot = -1;
+  int written = import_track_as_area(path, alias, &savedSlot);
 
   // Dismiss the in-progress modal before the result modal.
   if (progress) lv_msgbox_close(progress);
@@ -2036,15 +2046,32 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
   if (written > 0) {
     snprintf(title, sizeof(title), "Saved as %s", alias.c_str());
     snprintf(body, sizeof(body),
-             "%d RTK FIX points imported.\nVisible on the Maps tab.",
+             "%d RTK points imported.\nNext: record charger channel.",
              written);
   } else {
     snprintf(title, sizeof(title), "Save failed");
     snprintf(body, sizeof(body),
              "No RTK FIX rows in the track.\nWalk again with FIX active.");
   }
-  lv_obj_t* mbox = lv_msgbox_create(NULL, title, body, msgbox_buttons, false);
-  lv_obj_add_event_cb(mbox, onSaveResultDismissed, LV_EVENT_VALUE_CHANGED, nullptr);
+  const char** buttons = msgbox_buttons;
+  lv_event_cb_t cb = onSaveResultDismissed;
+  static const char* channel_buttons[] = { "Record channel", "" };
+  if (written > 0 && savedSlot >= 0) {
+    buttons = channel_buttons;
+    cb = onAreaSavedStartChannel;
+
+    // Load the freshly-saved parent polygon now so the armed channel screen
+    // shows the area outline while the operator walks to the charger.
+    if (load_saved_map_polygon(savedSlot)) {
+      load_saved_map_obstacles(savedSlot);
+      viewing_map_slot = savedSlot;
+      viewing_map_alias = alias;
+      reset_map_view();
+    }
+    arm_charge_channel_for_slot(savedSlot);
+  }
+  lv_obj_t* mbox = lv_msgbox_create(NULL, title, body, buttons, false);
+  lv_obj_add_event_cb(mbox, cb, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_center(mbox);
 
   // Best-effort refresh of the Maps screen so the new entry is visible
@@ -2055,6 +2082,12 @@ static void on_save_as_area_clicked(lv_event_t* /*e*/) {
 static void onSaveResultDismissed(lv_event_t* e) {
   lv_obj_t* mbox = lv_event_get_current_target(e);
   if (mbox) lv_msgbox_close(mbox);
+}
+
+static void onAreaSavedStartChannel(lv_event_t* e) {
+  lv_obj_t* mbox = lv_event_get_current_target(e);
+  if (mbox) lv_msgbox_close(mbox);
+  tft_ui_set_screen(UiScreen::Recording);
 }
 
 // Discard the just-stopped track. Removes the file on flash (so it
@@ -2807,8 +2840,13 @@ static void recArmUi() {
     if (s_recBtnSave)  lv_obj_add_flag(s_recBtnSave, LV_OBJ_FLAG_HIDDEN);
     if (s_recLblCancel) lv_label_set_text(s_recLblCancel, "Back");
     if (s_recPoints)   lv_label_set_text(s_recPoints, "Ready");
-    if (s_recClosure)  lv_label_set_text(s_recClosure,
-        "Walk to your start position, then tap Start.");
+    if (s_recClosure) {
+        if (s_pendingRecMode == RecordingMode::Channel && s_pendingRecChannelTo == "charge") {
+            lv_label_set_text(s_recClosure, "Walk to the charger, tap Start, then walk into the map.");
+        } else {
+            lv_label_set_text(s_recClosure, "Walk to your start position, then tap Start.");
+        }
+    }
     if (s_recLiveLine) lv_obj_add_flag(s_recLiveLine, LV_OBJ_FLAG_HIDDEN);
     if (s_recStartDot) lv_obj_add_flag(s_recStartDot, LV_OBJ_FLAG_HIDDEN);
     s_recLivePtsUsed = 0;

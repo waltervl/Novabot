@@ -267,6 +267,13 @@ bool SessionStore::appendChannelPoint(int parentSlot, const String& target, doub
     return appendLine(channelPath(parentSlot, target), buf);
 }
 
+bool SessionStore::hasChargeChannel(int parentSlot) {
+    SessionGuard guard(*this);
+    if (parentSlot < 0 || parentSlot >= kMaxWorkSlots) return false;
+    String path = channelPath(parentSlot, String("charge"));
+    return countRows(path) > 0;
+}
+
 bool SessionStore::appendRawRow(const String& baseName, unsigned long ts, double lat,
                                  double lng, double alt, int fix, int sats, double hdop) {
     SessionGuard guard(*this);

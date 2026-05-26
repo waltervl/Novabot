@@ -86,7 +86,22 @@ function distanceToPolygonBoundary(p: Point, polygon: Point[] | undefined): numb
 }
 
 function chargeAnchorFromWalkerData(polygons: WalkerPolygon[], unicom: WalkerUnicom[]): ChargeAnchor {
-  const charge = unicom.find((u) => normaliseUnicomTarget(u.name, u.targetMapName) === 'charge');
+  const workParents = Array.from(new Set(polygons.map((p) => parentMapOf(p.name))));
+  const chargeByParent = new Map<string, WalkerUnicom>();
+  for (const u of unicom) {
+    if (normaliseUnicomTarget(u.name, u.targetMapName) !== 'charge') continue;
+    chargeByParent.set(u.parentMap ?? parentMapOf(u.name), u);
+  }
+
+  const missing = workParents.filter((parent) => !chargeByParent.has(parent));
+  if (missing.length > 0) {
+    const names = missing.map((parent) => `${parent}tocharge_unicom`).join(', ');
+    throw new Error(
+      `walker bundle missing ${names}; record a charger path/channel for every map before importing`,
+    );
+  }
+
+  const charge = chargeByParent.get(workParents[0]);
   if (!charge) {
     throw new Error(
       'walker bundle missing map0tocharge_unicom; record a charger path/channel before importing',

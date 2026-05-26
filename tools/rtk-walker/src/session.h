@@ -43,6 +43,7 @@ public:
     bool appendWorkPoint(int slot, double x, double y);
     bool appendObstaclePoint(int parentSlot, int obstacleIdx, double x, double y);
     bool appendChannelPoint(int parentSlot, const String& target, double x, double y);
+    bool hasChargeChannel(int parentSlot);
     bool appendRawRow(const String& baseName, unsigned long ts, double lat, double lng,
                       double alt, int fix, int sats, double hdop);
     bool deleteMap(int slot);

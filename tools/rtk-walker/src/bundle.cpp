@@ -376,6 +376,12 @@ String BundleBuilder::build() {
     MapEntry mapEntries[3];
     size_t mapCount = 0;
     sess_.listMaps(mapEntries, 3, mapCount);
+    for (size_t i = 0; i < mapCount; i++) {
+        if (!sess_.hasChargeChannel(mapEntries[i].slot)) {
+            Serial.printf("[bundle] map%d missing charger channel\n", mapEntries[i].slot);
+            return String();
+        }
+    }
 
     double originLat = 0, originLng = 0;
     bool hasOrigin = sess_.getOrigin(originLat, originLng);
