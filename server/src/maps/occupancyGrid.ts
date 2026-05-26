@@ -14,6 +14,7 @@
  * Pure: inputs in, buffers out. No I/O.
  */
 import ClipperLib from 'clipper-lib';
+import { deflateSync } from 'node:zlib';
 
 export interface XY { x: number; y: number; }
 
@@ -178,19 +179,37 @@ function fillCircle(grid: Uint8Array, W: number, H: number,
   }
 }
 
-interface OffsetRings { work: XY[][]; obstacles: XY[][]; unicom: XY[][]; }
+// Offset rings grouped per work-map so we can render mapN.* on the shared canvas.
+interface MapGroup { canonical: string; work: XY[][]; obstacles: XY[][]; unicom: XY[][]; }
+interface OffsetRings { groups: MapGroup[]; }
+
 function offsetAll(input: MapInput, o: OffsetOpts): OffsetRings {
-  const work: XY[][] = [], obstacles: XY[][] = [], unicom: XY[][] = [];
-  for (const w of input.workMaps) work.push(...expandPolygon(w.points, o.work));
-  for (const ob of input.obstacles) obstacles.push(...expandPolygon(ob.points, o.obstacle));
-  for (const u of input.unicom) unicom.push(...expandPolygon(u.points, o.unicom));
-  return { work, obstacles, unicom };
+  const groups: MapGroup[] = input.workMaps.map((w) => ({
+    canonical: w.canonical,
+    work: expandPolygon(w.points, o.work),
+    obstacles: [],
+    unicom: [],
+  }));
+  const byName = new Map(groups.map((g) => [g.canonical, g]));
+  const fallback = groups[0];
+  for (const ob of input.obstacles) {
+    const g = byName.get(ob.parentMap) ?? fallback;
+    if (g) g.obstacles.push(...expandPolygon(ob.points, o.obstacle));
+  }
+  for (const u of input.unicom) {
+    // unicom names look like "<mapX>tocharge_unicom" / "<mapX>tomapY_n_unicom".
+    const owner = groups.find((g) => u.name.startsWith(g.canonical)) ?? fallback;
+    if (owner) owner.unicom.push(...expandPolygon(u.points, o.unicom));
+  }
+  return { groups };
 }
 function collectRingPoints(r: OffsetRings): XY[] {
   const pts: XY[] = [];
-  for (const ring of r.work) pts.push(...ring);
-  for (const ring of r.obstacles) pts.push(...ring);
-  for (const ring of r.unicom) pts.push(...ring);
+  for (const g of r.groups) {
+    for (const ring of g.work) pts.push(...ring);
+    for (const ring of g.obstacles) pts.push(...ring);
+    for (const ring of g.unicom) pts.push(...ring);
+  }
   return pts;
 }
 
@@ -204,40 +223,71 @@ function pgm(grid: Uint8Array, g: Geometry): Buffer {
   return Buffer.concat([Buffer.from(header, 'ascii'), Buffer.from(grid)]);
 }
 
-function buildWhole(input: MapInput, rings: OffsetRings, g: Geometry): Uint8Array {
+// Build one occupancy grid (shared canvas g) from the given offset rings:
+// work + unicom -> free, obstacles -> occupied, dilate x2 (re-stamp obstacles
+// between), then the dock circles.
+function buildGrid(
+  work: XY[][], unicom: XY[][], obstacles: XY[][],
+  chargingPose: MapInput['chargingPose'], g: Geometry,
+): Uint8Array {
   const W = g.width, H = g.height;
   const grid = new Uint8Array(W * H); // init 0 (OCCUPIED)
-
-  // 1. work areas -> free
-  for (const ring of rings.work) fillPoly(grid, W, H, polyToPx(ring, g), FREE);
-  // 2. unicom -> free
-  for (const ring of rings.unicom) fillPoly(grid, W, H, polyToPx(ring, g), FREE);
-  // 3. obstacles -> occupied
-  for (const ring of rings.obstacles) fillPoly(grid, W, H, polyToPx(ring, g), OCCUPIED);
-
-  // 4a. whole_map_handle_switch == true: dilate, re-stamp obstacles, dilate
+  for (const ring of work) fillPoly(grid, W, H, polyToPx(ring, g), FREE);
+  for (const ring of unicom) fillPoly(grid, W, H, polyToPx(ring, g), FREE);
+  for (const ring of obstacles) fillPoly(grid, W, H, polyToPx(ring, g), OCCUPIED);
   dilate3x3(grid, W, H);
-  for (const ring of rings.obstacles) fillPoly(grid, W, H, polyToPx(ring, g), OCCUPIED);
+  for (const ring of obstacles) fillPoly(grid, W, H, polyToPx(ring, g), OCCUPIED);
   dilate3x3(grid, W, H);
 
-  // 9. dock circles
-  const { x, y, orientation: th } = input.chargingPose;
+  const { x, y, orientation: th } = chargingPose;
   if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(th)) {
     const sinT = Math.sin(th), cosT = Math.cos(th);
-    // body circle (occupied), r6, at pose + 0.5*(cos,sin)
-    {
-      const p = toPx(x + cosT * 0.5, y + sinT * 0.5, g);
-      fillCircle(grid, W, H, p.c, p.r, 6, OCCUPIED);
-    }
-    // approach circle (free), r16, at pose + 1.2*(cos(th+pi),sin(th+pi))
-    {
-      const th2 = ((th * 180.0) / PI + 180.0) * PI / 180.0;
-      const s2 = Math.sin(th2), c2 = Math.cos(th2);
-      const p = toPx(x + c2 * 1.2, y + s2 * 1.2, g);
-      fillCircle(grid, W, H, p.c, p.r, 16, FREE);
-    }
+    const body = toPx(x + cosT * 0.5, y + sinT * 0.5, g);
+    fillCircle(grid, W, H, body.c, body.r, 6, OCCUPIED);
+    const th2 = ((th * 180.0) / PI + 180.0) * PI / 180.0;
+    const s2 = Math.sin(th2), c2 = Math.cos(th2);
+    const ap = toPx(x + c2 * 1.2, y + s2 * 1.2, g);
+    fillCircle(grid, W, H, ap.c, ap.r, 16, FREE);
   }
   return grid;
+}
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+const zlibDeflate = (b: Buffer): Buffer => deflateSync(b, { level: 9 });
+
+// Minimal 8-bit grayscale PNG encoder (node:zlib). Produces a valid PNG of the
+// occupancy grid for app display; not byte-identical to OpenCV's encoder.
+function encodePng(grid: Uint8Array, w: number, h: number): Buffer {
+  const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+    const tb = Buffer.from(type, 'ascii');
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([tb, data])) >>> 0, 0);
+    return Buffer.concat([len, tb, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 0; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0; // 8-bit grayscale
+  const raw = Buffer.alloc((w + 1) * h);
+  for (let r = 0; r < h; r++) {
+    raw[r * (w + 1)] = 0; // filter type 0
+    grid.subarray(r * w, r * w + w).forEach((v, i) => { raw[r * (w + 1) + 1 + i] = v; });
+  }
+  const idat = zlibDeflate(raw);
+  return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
 }
 
 export function generateOccupancyGrid(input: MapInput, offsets: OffsetOpts = DEFAULT_OFFSETS): GeneratedMap {
@@ -245,7 +295,25 @@ export function generateOccupancyGrid(input: MapInput, offsets: OffsetOpts = DEF
   const all = collectRingPoints(rings);
   if (!all.length) throw new Error('generateOccupancyGrid: no input points');
   const g = computeGeometry(all);
-  const grid = buildWhole(input, rings, g);
-  const whole: GridFile = { yaml: yaml('map.pgm', g), pgm: pgm(grid, g) };
-  return { whole, perMap: [] };
+
+  const allWork = rings.groups.flatMap((gr) => gr.work);
+  const allUni = rings.groups.flatMap((gr) => gr.unicom);
+  const allObs = rings.groups.flatMap((gr) => gr.obstacles);
+  const wholeGrid = buildGrid(allWork, allUni, allObs, input.chargingPose, g);
+  const whole: GridFile = {
+    yaml: yaml('map.pgm', g), pgm: pgm(wholeGrid, g),
+    png: encodePng(wholeGrid, g.width, g.height),
+  };
+
+  const perMap = rings.groups.map((gr) => {
+    const grid = buildGrid(gr.work, gr.unicom, gr.obstacles, input.chargingPose, g);
+    return {
+      name: gr.canonical,
+      file: {
+        yaml: yaml(`${gr.canonical}.pgm`, g), pgm: pgm(grid, g),
+        png: encodePng(grid, g.width, g.height),
+      } as GridFile,
+    };
+  });
+  return { whole, perMap };
 }

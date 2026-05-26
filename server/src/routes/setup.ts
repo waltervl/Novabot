@@ -505,6 +505,18 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               } catch (zipErr) {
                 console.warn(`[Setup] ZIP generation failed (non-fatal):`, zipErr);
               }
+
+              // Auto-generate a self-contained restorable bundle (rasterized
+              // map.pgm/png/yaml + per-map + csvs) from the freshly imported
+              // polygons, so cloud re-imports produce a working costmap bundle
+              // without needing the mower online. Best-effort, non-fatal.
+              try {
+                const { createBundleFromDb } = await import('../services/portableBackup.js');
+                const entry = await createBundleFromDb(mower.sn, 'cloud-import');
+                if (entry) console.log(`[Setup] Auto-bundle generated for ${mower.sn}: ${entry.filename} (${entry.bytes} B)`);
+              } catch (bundleErr) {
+                console.warn(`[Setup] Auto-bundle generation failed (non-fatal):`, bundleErr);
+              }
             }
           }
         }

@@ -1388,6 +1388,54 @@ adminStatusRouter.post('/maps/:sn/portable-backups', async (req: AuthRequest, re
   }
 });
 
+// Rebuild a self-contained bundle from the DB polygons alone (no mower) using
+// the faithful occupancy-grid generator. Powers the "Rebuild bundle" button and
+// the auto-trigger after cloud re-import.
+adminStatusRouter.post('/maps/:sn/portable-backups/rebuild', async (req: AuthRequest, res: Response) => {
+  const { createBundleFromDb } = await import('../services/portableBackup.js');
+  try {
+    const entry = await createBundleFromDb(req.params.sn, 'rebuild-db');
+    if (!entry) {
+      res.status(409).json({ ok: false, error: 'rebuild failed (no work polygon or charger anchor in DB)' });
+      return;
+    }
+    res.json({ ok: true, backup: entry });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: (e as Error).message });
+  }
+});
+
+// CSV-only import: upload a .zip of a csv_file/ folder (map*_work.csv,
+// *_obstacle.csv, *_unicom.csv, map_info.json). Rasterizes + saves a restorable
+// bundle without needing the mower or cloud.
+adminStatusRouter.post(
+  '/maps/:sn/portable-backups/from-csv-zip',
+  bundleUpload.single('bundle'),
+  async (req: AuthRequest, res: Response) => {
+    if (!req.file) { res.status(400).json({ ok: false, error: 'zip file required (field "bundle")' }); return; }
+    try {
+      const dir = await unzipper.Open.buffer(req.file.buffer);
+      const csvFiles: Record<string, string> = {};
+      for (const f of dir.files) {
+        if (f.type !== 'File') continue;
+        const base = f.path.split('/').pop() ?? f.path;
+        if (!base.endsWith('.csv') && base !== 'map_info.json') continue;
+        csvFiles[base] = (await f.buffer()).toString('utf8');
+      }
+      if (Object.keys(csvFiles).length === 0) {
+        res.status(400).json({ ok: false, error: 'zip contains no .csv / map_info.json files' });
+        return;
+      }
+      const { createBundleFromCsvFiles } = await import('../services/portableBackup.js');
+      const entry = await createBundleFromCsvFiles(req.params.sn, csvFiles, 'csv-import');
+      if (!entry) { res.status(409).json({ ok: false, error: 'no map*_work.csv found in zip' }); return; }
+      res.json({ ok: true, backup: entry });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: (e as Error).message });
+    }
+  },
+);
+
 adminStatusRouter.get('/maps/:sn/portable-backups/:filename', async (req: AuthRequest, res: Response) => {
   const { readBackup } = await import('../services/portableBackup.js');
   const buf = readBackup(req.params.sn, req.params.filename);

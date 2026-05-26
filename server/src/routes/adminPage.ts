@@ -462,6 +462,9 @@ export function adminPageHtml(): string {
           <input id="portableImportFile" type="file" accept=".novabotmap,.novabundle,.zip" style="display:none" onchange="startPortableImport()">
           <button onclick="document.getElementById('portableImportFile').click()" title="Accepts .novabotmap (mower export) and .novabundle (RTK walker export). Walker bundles are auto-rotated against the mower's live dock pose + rasterized server-side." style="padding:7px 18px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import bundle...</button>
           <button onclick="manualPortableBackup()" style="padding:7px 18px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Snapshot now</button>
+          <button onclick="rebuildBundleFromDb()" title="Generate a self-contained bundle (rasterized map.pgm/png/yaml + per-map + csvs) from the stored polygons alone — no mower needed. Uses the faithful firmware occupancy-grid generator." style="padding:7px 18px;background:rgba(16,185,129,.15);color:#6ee7b7;border:1px solid rgba(16,185,129,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Rebuild bundle (DB)</button>
+          <input id="csvZipFile" type="file" accept=".zip" style="display:none" onchange="importCsvZip()">
+          <button onclick="document.getElementById('csvZipFile').click()" title="Upload a .zip of a csv_file/ folder (mapN_work.csv, *_obstacle.csv, *_unicom.csv, map_info.json). Rasterizes + saves a restorable bundle." style="padding:7px 18px;background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.28);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import CSV zip...</button>
           <button onclick="loadPortableBackups()" style="padding:7px 12px;background:rgba(124,58,237,.15);color:#a78bfa;border:1px solid rgba(124,58,237,.3);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">&#x21BB; Refresh</button>
         </div>
         <div id="portableImportPanel" style="display:none;margin-top:10px"></div>
@@ -2819,6 +2822,39 @@ async function manualPortableBackup() {
   if (!j.ok) { await appAlert('Snapshot failed: ' + j.error, { accent: 'danger' }); return; }
   await appAlert('Snapshot saved: ' + j.backup.filename + ' (' + (j.backup.bytes / 1024).toFixed(1) + ' KB)', { accent: 'success' });
   loadPortableBackups();
+}
+
+async function rebuildBundleFromDb() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) { await appAlert('Select a mower first', { accent: 'warning' }); return; }
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/rebuild', {
+    method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+  });
+  var j = await r.json();
+  if (!j.ok) { await appAlert('Rebuild failed: ' + j.error, { accent: 'danger' }); return; }
+  await appAlert('Bundle rebuilt from DB: ' + j.backup.filename + ' (' + (j.backup.bytes / 1024).toFixed(1) + ' KB)', { accent: 'success' });
+  loadPortableBackups();
+}
+
+async function importCsvZip() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) { await appAlert('Select a mower first', { accent: 'warning' }); return; }
+  var input = document.getElementById('csvZipFile');
+  var file = input.files && input.files[0];
+  if (!file) return;
+  var fd = new FormData();
+  fd.append('bundle', file);
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/from-csv-zip', {
+      method: 'POST', headers: { 'Authorization': token }, body: fd,
+    });
+    var j = await r.json();
+    if (!j.ok) { await appAlert('CSV import failed: ' + j.error, { accent: 'danger' }); return; }
+    await appAlert('Bundle generated from CSV zip: ' + j.backup.filename + ' (' + (j.backup.bytes / 1024).toFixed(1) + ' KB)', { accent: 'success' });
+    loadPortableBackups();
+  } finally {
+    input.value = '';
+  }
 }
 
 async function loadPortableBackups() {
