@@ -2904,20 +2904,16 @@ async function restorePortableBackup(filename) {
   var j = await r.json();
   if (!j.ok) { await appAlert('Restore failed: ' + j.error, { accent: 'danger' }); return; }
   portableStagingId = j.stagingId;
-  portableExactRestore = !!j.exactRestore;
   portableVerbatimRestore = !!j.verbatimRestore;
   portableSourceSn = j.sourceSn || null;
   portableSourceSnMatches = !!j.sourceSnMatches;
-  // Verbatim restore is the safer/preferred path when the bundle is from
-  // THIS mower AND has full mower-side state captured (pos.json + map
-  // files). It does not depend on liveDock pose so it works even when
-  // localization isn't initialized yet.
-  if (portableVerbatimRestore && portableSourceSnMatches) {
+  // Single restore path: push the complete bundle verbatim (no Δ rotation,
+  // pos.json untouched), then dock-cycle. Works regardless of source SN since
+  // pos.json is never overwritten and the map is charger-relative.
+  if (portableVerbatimRestore) {
     await portableApplyVerbatim();
-  } else if (portableExactRestore) {
-    await portableApplyExact();
   } else {
-    await appAlert('Restore staged but bundle is missing mower-side data. Use Import bundle wizard.', { accent: 'warning' });
+    await appAlert('Restore staged but bundle has no map files. Use the Import bundle wizard.', { accent: 'warning' });
   }
 }
 
@@ -3338,29 +3334,20 @@ function renderPortableImportWizard(sn, state) {
   html += '</div>';
   html += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
   if (state === 'UPLOADED') {
-    if (portableVerbatimRestore && portableSourceSnMatches) {
-      // Verbatim restore — same mower + bundle has pos.json + map.yaml/pgm/png.
-      // Pushes everything 1-to-1 back to mower disk, no Δ math, no liveDock
-      // dependency. Deterministic — works even when localization isn't yet
-      // initialized.
-      html += '<div style="flex-basis:100%;font-size:10px;color:#86efac;margin-bottom:4px">Same-mower full-state bundle detected (sourceSn = ' + portableSourceSn + '). Verbatim restore pushes csv_file/ + pos.json + map.yaml/pgm/png back unchanged — no rotation math, no liveDock dependency.</div>';
-      html += '<button onclick="portableApplyVerbatim()" style="padding:6px 12px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Restore verbatim (recommended)</button>';
-      if (portableExactRestore) {
-        html += '<button onclick="portableApplyExact()" style="padding:6px 12px;background:rgba(99,102,241,.18);color:#a5b4fc;border:1px solid rgba(99,102,241,.45);border-radius:6px;font-size:11px;cursor:pointer" title="Use only when dock has been physically moved or rotated since the bundle was made.">Apply Δ-aware (advanced)</button>';
-      }
-      html += '<button onclick="portableShowSelective()" style="padding:6px 12px;background:rgba(99,102,241,.18);color:#a5b4fc;border:1px solid rgba(99,102,241,.45);border-radius:6px;font-size:11px;cursor:pointer">Selective…</button>';
-    } else if (portableExactRestore) {
-      // Δ-aware path — typical for cross-mower or moved-dock cases. Reads
-      // mower live charging_pose, transforms polygons before push.
-      var crossSn = portableSourceSn && !portableSourceSnMatches;
-      html += '<div style="flex-basis:100%;font-size:10px;color:' + (crossSn ? '#fbbf24' : '#86efac') + ';margin-bottom:4px">' +
-        (crossSn
-          ? 'Cross-mower bundle (source: ' + portableSourceSn + ', target: ' + (document.getElementById('mapMowerSelect') ? document.getElementById('mapMowerSelect').value : '?') + '). Δ rotation will be applied — verify polygons after restore.'
-          : 'Exact-restore bundle detected — Δ rotation applied. Mower must be online with valid map_position.')
-        + '</div>';
-      html += '<button onclick="portableApplyExact()" style="padding:6px 12px;background:rgba(16,185,129,.2);color:#86efac;border:1px solid rgba(16,185,129,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Apply bundle (Δ-aware)</button>';
-      html += '<button onclick="portableShowSelective()" style="padding:6px 12px;background:rgba(99,102,241,.18);color:#a5b4fc;border:1px solid rgba(99,102,241,.45);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Selective import…</button>';
+    if (portableVerbatimRestore) {
+      // Single restore path. The bundle carries a complete map (csv_file/ +
+      // server-generated map.pgm/png/yaml + per-map). Restore pushes it to the
+      // mower 1-to-1 (no Δ rotation, pos.json untouched); the dock-cycle
+      // (1m back + ArUco redock) then refreshes the dock heading + charger pos
+      // so the charger-relative map is valid in the live frame.
+      var xsn = portableSourceSn && !portableSourceSnMatches;
+      html += '<div style="flex-basis:100%;font-size:10px;color:' + (xsn ? '#fbbf24' : '#86efac') + ';margin-bottom:4px">'
+        + (xsn ? 'Bundle source ' + portableSourceSn + ' differs from target — pos.json is left untouched so this is safe; verify after the dock-cycle. '
+               : 'Complete bundle (csv + rasterized map.pgm/png/yaml + per-map). ')
+        + 'Restore pushes it to the mower, then you dock-cycle (1m back + ArUco redock).</div>';
+      html += '<button onclick="portableApplyVerbatim()" style="padding:6px 12px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Restore to mower</button>';
     } else {
+      html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">Legacy bundle with no map files — falls back to the drive+realign flow.</div>';
       html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Start drive backward + RTK lock</button>';
     }
   }
@@ -3395,141 +3382,10 @@ function renderPortableImportWizard(sn, state) {
   portableStartRtkPoll(sn);
 }
 
-// ── Selective import — pick which categories of the bundle to push ─────────
-// Loads inventory from /inventory, renders checkbox panel + advanced toggle,
-// confirms, posts to /apply-selective.
-async function portableShowSelective() {
-  var sn = document.getElementById('mapMowerSelect').value;
-  if (!sn || !portableStagingId) return;
-  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/inventory', {
-    headers: { 'Authorization': token },
-  });
-  var j = await r.json();
-  if (!j.ok) {
-    await appAlert('Inventory failed: ' + (j.error || ('HTTP ' + r.status)), { accent: 'danger' });
-    return;
-  }
-  var bc = j.bundle.byCategory;
-  var mowerWorkSlots = j.mower ? j.mower.workMaps : [];
-
-  function row(cat, label, color) {
-    var n = bc[cat] ? bc[cat].length : 0;
-    if (n === 0) return '';
-    var disabled = n === 0 ? 'disabled' : '';
-    var checked = (cat === 'work' || cat === 'obstacle' || cat === 'unicom' || cat === 'dock') ? 'checked' : '';
-    return '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:6px;margin-bottom:4px;cursor:pointer">'
-      + '<input type="checkbox" name="selective-cat" value="' + cat + '" ' + checked + ' ' + disabled + ' style="cursor:pointer">'
-      + '<span style="color:' + color + ';font-weight:600;font-size:11px">' + label + '</span>'
-      + '<span style="color:#888;font-size:10px;margin-left:auto">' + n + ' files</span>'
-      + '</label>';
-  }
-
-  // Per-obstacle remap dropdowns (only when bundle has obstacles AND mower has work-maps).
-  var obstacleEntries = bc.obstacle || [];
-  var remapHtml = '';
-  if (obstacleEntries.length > 0 && mowerWorkSlots.length > 0) {
-    remapHtml = '<details style="margin-top:8px;padding:8px;background:#0d0d20;border:1px solid #333;border-radius:6px">'
-      + '<summary style="font-size:11px;color:#a5b4fc;cursor:pointer;font-weight:600">Advanced — remap obstacle parents</summary>'
-      + '<div style="margin-top:8px;font-size:10px;color:#888">Override which work-map each obstacle attaches to on the destination mower. Leave as default to keep the bundle parent.</div>';
-    remapHtml += '<div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:8px">';
-    for (var i = 0; i < obstacleEntries.length; i++) {
-      var o = obstacleEntries[i];
-      var opts = '<option value="">' + o.parent + ' (default)</option>';
-      for (var k = 0; k < mowerWorkSlots.length; k++) {
-        if (mowerWorkSlots[k] !== o.parent) {
-          opts += '<option value="' + mowerWorkSlots[k] + '">' + mowerWorkSlots[k] + '</option>';
-        }
-      }
-      remapHtml += '<span style="font-family:&quot;Roboto Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:10px;color:#cbd5e1;align-self:center">' + o.filename + '</span>';
-      remapHtml += '<select data-remap-source="' + o.filename + '" style="background:#161628;color:#fff;border:1px solid #333;border-radius:4px;padding:3px 6px;font-size:10px">' + opts + '</select>';
-    }
-    remapHtml += '</div></details>';
-  }
-
-  var bodyHtml = '<div style="font-size:11px;color:#cbd5e1;margin-bottom:8px">Pick which parts of the bundle to push to the mower. Add-only mode skips files that already exist; Replace overwrites them.</div>'
-    + '<div style="margin-bottom:10px">'
-    + row('work',     'Work polygons',    '#86efac')
-    + row('obstacle', 'Obstacles',        '#fca5a5')
-    + row('unicom',   'Channels (unicom)', '#93c5fd')
-    + row('dock',     'Charging-station yaml', '#fbbf24')
-    + row('meta',     'map_info.json + metadata', '#a78bfa')
-    + '</div>'
-    + '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:6px;margin-bottom:8px;cursor:pointer;font-size:11px">'
-    + '  <input type="radio" name="selective-mode" value="add-only" checked> Add-only — never overwrite mower files'
-    + '</label>'
-    + '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);border-radius:6px;margin-bottom:8px;cursor:pointer;font-size:11px">'
-    + '  <input type="radio" name="selective-mode" value="replace"> Replace — overwrite matching filenames'
-    + '</label>'
-    + remapHtml;
-
-  var captured = await appModal({
-    title: 'Selective import',
-    bodyHtml: bodyHtml,
-    accent: 'warning',
-    dismissOnBackdrop: false,
-    buttons: [
-      { text: 'Cancel', value: null },
-      {
-        text: 'Apply selection',
-        primary: true,
-        onClick: function() {
-          var cats = Array.prototype.slice.call(document.querySelectorAll('input[name="selective-cat"]:checked'))
-            .map(function(el) { return el.value; });
-          var modeEl = document.querySelector('input[name="selective-mode"]:checked');
-          var mode = modeEl ? modeEl.value : 'add-only';
-          var remap = {};
-          var sels = document.querySelectorAll('select[data-remap-source]');
-          for (var i = 0; i < sels.length; i++) {
-            var s = sels[i];
-            if (s.value) remap[s.getAttribute('data-remap-source')] = s.value;
-          }
-          return { include: cats, mode: mode, obstacleRemap: remap };
-        },
-      },
-    ],
-  });
-  if (!captured || !captured.include || captured.include.length === 0) return;
-
-  var ar = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-selective', {
-    method: 'POST',
-    headers: { 'Authorization': token, 'Content-Type': 'application/json' },
-    body: JSON.stringify(captured),
-  });
-  var aj = await ar.json();
-  if (!aj.ok) {
-    await appAlert('Apply failed: ' + (aj.error || ('HTTP ' + ar.status)), { accent: 'danger' });
-    return;
-  }
-  var summary = 'Applied (' + aj.mode + '). ' + (aj.written.length || 0) + ' written, ' + (aj.skipped.length || 0) + ' skipped.';
-  if (aj.skipped.length) summary += '\\nSkipped: ' + aj.skipped.join(', ');
-  await appAlert(summary, { accent: 'success' });
-  document.getElementById('portableImportPanel').style.display = 'none';
-  portableStagingId = null;
-  portableExactRestore = false;
-  loadMaps();
-}
-
-async function portableApplyExact() {
-  var sn = document.getElementById('mapMowerSelect').value;
-  if (!(await appConfirm('Apply exact-restore bundle? Reads mower live charging_pose, transforms polygon, pushes CSVs to mower. After applying you will be asked to dock-cycle the mower so the UTM anchor refreshes.', { okText: 'Apply' }))) return;
-  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-exact', {
-    method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
-  });
-  var j = await r.json();
-  if (!j.ok) { await appAlert('Apply failed: ' + j.error, { accent: 'danger' }); portableCheckActive(sn); return; }
-  await appAlert('Applied. Δ dx=' + j.delta.dx.toFixed(3) + ' dy=' + j.delta.dy.toFixed(3) + ' dθ=' + (j.delta.dtheta * 180 / Math.PI).toFixed(2) + '°\\n\\nFiles pushed: ' + j.transformedFiles.length, { accent: 'success' });
-  document.getElementById('portableImportPanel').style.display = 'none';
-  portableStagingId = null;
-  portableExactRestore = false;
-  portableVerbatimRestore = false;
-  loadMaps();
-  if (j.requires_dock_anchor_refresh) await promptDockAnchorRefresh(sn);
-}
-
 async function portableApplyVerbatim() {
   var sn = document.getElementById('mapMowerSelect').value;
-  var msg = 'Restore VERBATIM: pushes csv_file/ + pos.json + map.yaml/pgm/png back to mower 1-to-1. No rotation math. Mower disk + UTM anchor returned to the exact state captured in the bundle. Continue?';
-  if (!(await appConfirm(msg, { okText: 'Restore verbatim' }))) return;
+  var msg = 'Restore to mower: pushes csv_file/ + the rasterized map.pgm/png/yaml (+ per-map) back 1-to-1. No rotation, pos.json left untouched. After this you dock-cycle (1m back + ArUco redock) so the dock heading + charger pos refresh. Continue?';
+  if (!(await appConfirm(msg, { okText: 'Restore to mower' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-verbatim', {
     method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
   });

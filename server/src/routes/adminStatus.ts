@@ -1452,16 +1452,16 @@ adminStatusRouter.delete('/maps/:sn/portable-backups/:filename', async (req: Aut
 });
 
 // Restore by piping the saved bundle through the existing import-portable
-// + apply-exact endpoints. Server-side fan-out keeps the wizard logic single-
-// sourced.
+// staging + apply-verbatim path (the single restore path). Server-side fan-out
+// keeps the wizard logic single-sourced.
 adminStatusRouter.post('/maps/:sn/portable-backups/:filename/restore', async (req: AuthRequest, res: Response) => {
   const { sn, filename } = req.params;
   const { readBackup } = await import('../services/portableBackup.js');
   const buf = readBackup(sn, filename);
   if (!buf) { res.status(404).json({ ok: false, error: 'backup not found' }); return; }
 
-  // Use parseBundle directly + spin up a staging session so /apply-exact
-  // can run unchanged. Avoids duplicating the transform pipeline.
+  // Use parseBundle directly + spin up a staging session so /apply-verbatim
+  // can run unchanged. Avoids duplicating the restore pipeline.
   let parsed;
   try { parsed = await parseBundle(buf); }
   catch (e) {
@@ -1488,7 +1488,7 @@ adminStatusRouter.post('/maps/:sn/portable-backups/:filename/restore', async (re
     verbatimRestore: !!(parsed.mowerFiles?.csvFiles && Object.keys(parsed.mowerFiles.csvFiles).length > 0),
     sourceSn,
     sourceSnMatches: sourceSn === sn,
-    note: 'staging created — POST /apply-verbatim (same SN) or /apply-exact (Δ-rotated)',
+    note: 'staging created — POST /apply-verbatim (single restore path; dock-cycle after)',
   });
 });
 
@@ -2749,193 +2749,6 @@ adminStatusRouter.post(
   },
 );
 
-// POST /api/admin-status/maps/:sn/import-portable/:stagingId/apply-exact
-// One-click exact-restore: read mower's live charging_pose from sensor
-// cache, compute Δ rotation+translation against bundle's stored
-// originalChargingPose, transform every point in every CSV file, push
-// the result to the mower via write_map_files. No drive, no manual
-// snapshot, no preview/confirm — bundle ships everything we need.
-adminStatusRouter.post(
-  '/maps/:sn/import-portable/:stagingId/apply-exact',
-  async (req: AuthRequest, res: Response) => {
-    const { sn, stagingId } = req.params;
-    const session = importStaging.get(stagingId);
-    if (!session || session.sn !== sn) {
-      res.status(404).json({ ok: false, error: 'unknown staging session' });
-      return;
-    }
-    if (session.state !== 'UPLOADED') {
-      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
-      return;
-    }
-
-    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
-    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
-    const mowerFiles = parsed.mowerFiles as
-      | { csvFiles: Record<string, string>; chargingStationYaml: string | null }
-      | undefined;
-    const origPose = parsed.metadata?.originalChargingPose as
-      | { x: number; y: number; orientation: number }
-      | undefined;
-    if (!mowerFiles || !origPose) {
-      res.status(400).json({ ok: false, error: 'bundle missing exact-restore data (mowerFiles + originalChargingPose)' });
-      return;
-    }
-
-    // Live dock pose from MQTT sensor cache (updated every ~1s while mower
-    // is online). No need for drive — Δ is derived purely from stored vs
-    // current charging_pose.
-    const sensors = deviceCache.get(sn);
-    const mx = parseFloat(sensors?.get('map_position_x') ?? '');
-    const my = parseFloat(sensors?.get('map_position_y') ?? '');
-    const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
-    const lat = parseFloat(sensors?.get('latitude') ?? '');
-    const lng = parseFloat(sensors?.get('longitude') ?? '');
-    if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
-      res.status(409).json({
-        ok: false,
-        error: 'no live map_position in sensor cache — is mower online?',
-      });
-      return;
-    }
-    const dockMP = { x: mx, y: my, orientation: mo };
-
-    // Δ rotation + translation
-    const dt = dockMP.orientation - origPose.orientation;
-    const cosDt = Math.cos(dt);
-    const sinDt = Math.sin(dt);
-    const transformPoint = (px: number, py: number): [number, number] => {
-      const relX = px - origPose.x;
-      const relY = py - origPose.y;
-      const rx = relX * cosDt - relY * sinDt;
-      const ry = relX * sinDt + relY * cosDt;
-      return [rx + dockMP.x, ry + dockMP.y];
-    };
-    const transformedCsvs: Record<string, string> = {};
-    for (const [fname, content] of Object.entries(mowerFiles.csvFiles)) {
-      if (fname === 'map_info.json') {
-        try {
-          const mi = JSON.parse(content) as Record<string, unknown>;
-          mi.charging_pose = { x: dockMP.x, y: dockMP.y, orientation: dockMP.orientation };
-          transformedCsvs[fname] = JSON.stringify(mi, null, 3);
-        } catch {
-          transformedCsvs[fname] = content;
-        }
-        continue;
-      }
-      if (!fname.endsWith('.csv')) {
-        transformedCsvs[fname] = content;
-        continue;
-      }
-      const out: string[] = [];
-      for (const raw of content.split('\n')) {
-        const line = raw.trim();
-        if (!line) { out.push(''); continue; }
-        const parts = line.split(',');
-        if (parts.length < 2) { out.push(line); continue; }
-        const px = parseFloat(parts[0]);
-        const py = parseFloat(parts[1]);
-        if (!Number.isFinite(px) || !Number.isFinite(py)) { out.push(line); continue; }
-        const [nx, ny] = transformPoint(px, py);
-        out.push(`${nx.toFixed(2)},${ny.toFixed(2)}`);
-      }
-      transformedCsvs[fname] = out.join('\n');
-    }
-    const newYaml = `charging_pose: [${dockMP.x}, ${dockMP.y}, ${dockMP.orientation}]\n`;
-
-    // Update DB calibration so dashboard live-position projection lines up
-    // with the new dock pose. Also store the absolute new dock heading as
-    // polygon_charging_orientation — that's what next export will pick up.
-    if (Number.isFinite(lat) && Number.isFinite(lng)) {
-      mapRepo.setChargerGps(sn, lat, lng);
-    }
-    mapRepo.setPolygonChargingOrientation(sn, dockMP.orientation);
-    mapRepo.setPolygonOffset(sn, 0, 0);
-
-    // Replace DB polygons so the dashboard map view reflects the new state.
-    db.prepare(`DELETE FROM maps WHERE mower_sn = ?`).run(sn);
-    const ins = db.prepare(
-      `INSERT INTO maps (mower_sn, map_id, map_name, map_type, file_name, map_area, canonical_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    );
-    const transformPolygonPts = (pts: { x: number; y: number }[]) =>
-      pts.map((p) => {
-        const [nx, ny] = transformPoint(p.x, p.y);
-        return { x: nx, y: ny };
-      });
-    const workPolygons: Array<{ name: string; alias: string; points: { x: number; y: number }[] }> =
-      Array.isArray(parsed.polygons) && parsed.polygons.length > 0 ? parsed.polygons : [parsed.polygon];
-    for (let wi = 0; wi < workPolygons.length; wi++) {
-      const wp = workPolygons[wi];
-      ins.run(sn, `imp_work_${wi}`, wp.alias, 'work', wp.name + '.csv',
-        JSON.stringify(transformPolygonPts(wp.points)), wp.name);
-    }
-    for (let i = 0; i < parsed.obstacles.length; i++) {
-      const o = parsed.obstacles[i];
-      ins.run(sn, `imp_obs_${i}`, o.alias, 'obstacle', o.name + '.csv',
-        JSON.stringify(transformPolygonPts(o.points)), o.name);
-    }
-    for (let i = 0; i < parsed.unicom.length; i++) {
-      const u = parsed.unicom[i];
-      ins.run(sn, `imp_uni_${i}`, u.targetMapName, 'unicom', u.name + '.csv',
-        JSON.stringify(transformPolygonPts(u.points)), u.name);
-    }
-
-    // Push to mower. Skip the auto-restart of novabot_mapping — coverage_planner
-    // reads CSVs from disk on each new coverage task, so the new polygon
-    // takes effect without needing to bounce the mapping node. Restarting
-    // it briefly + having it exit (per stock save-flow design) made
-    // robot_decision health-checks raise false-positive Error 140 that
-    // aborted the in-progress coverage. Verified live LFIN1231000211
-    // 2026-05-08.
-    //
-    // Bundle now also ships pos.json + map.yaml/pgm/png + per-slot pgm/png.
-    // For apply-exact the polygons get Δ-rotated against current dock, but
-    // we leave pos.json + occupancy grids alone here — those are only
-    // pushed when the bundle is being restored verbatim on the same SN
-    // (where Δ should be zero). Apply-exact use case is cross-dock or
-    // cross-mower migration; rebroadcasting old pos.json in that case
-    // would corrupt the new mower's UTM anchor.
-    publishToExtended(sn, {
-      write_map_files: {
-        csv_files: transformedCsvs,
-        charging_station_yaml: newYaml,
-        restart_mapping: false,
-      },
-    });
-
-    // After write_map_files lands the fresh CSVs on disk, trigger the
-    // firmware's own save_map handler to regenerate map.yaml / map.pgm /
-    // map.png — the exact same path a real BLE mapping session takes for
-    // its final "total map" pass. This replaces the earlier custom
-    // generate_empty_map call, which produced a blank raster that
-    // coverage_planner couldn't actually use (Error 118 file_not_exists,
-    // verified on LFIN1231000211 2026-05-21). save_map type:1 makes the
-    // firmware read the new CSVs + emit the artefacts in its own native
-    // format. Same call that recovery-playbook 2026-04-23 + restore-and-
-    // realign (this file, line 1209) already use successfully.
-    // Fire-and-forget — caller doesn't need to await the respond.
-    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
-    console.log(`[Admin] apply-exact ${sn}: save_map type:1 dispatched after write_map_files`);
-    // Mirror map.yaml/pgm/png into each map<N> slot so Nav2 can resolve
-    // start_navigation lookups for any work-map without hitting Error 107.
-    // 3s delay so save_map type:1 finishes writing map.yaml first.
-    setTimeout(() => {
-      publishToExtended(sn, { regenerate_per_map_files: {} });
-      console.log(`[Admin] apply-exact ${sn}: regenerate_per_map_files dispatched`);
-    }, 3000);
-
-    importStaging.transition(stagingId, 'APPLIED', { applyResult: {} });
-    importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'UPLOADED', to_state: 'APPLIED', reason: 'exact-restore one-click' });
-    res.json({
-      ok: true,
-      state: 'APPLIED',
-      delta: { dx: dockMP.x - origPose.x, dy: dockMP.y - origPose.y, dtheta: dt },
-      transformedFiles: Object.keys(transformedCsvs),
-      requires_dock_anchor_refresh: true,
-    });
-  },
-);
-
 // POST /api/admin-status/maps/:sn/import-portable/:stagingId/apply-verbatim
 //
 // Same-mower full state restore. Pushes csv_files + charging_station.yaml +
@@ -3017,7 +2830,7 @@ adminStatusRouter.post(
     // restart cycles the pool fills up, new nodes can't acquire chunks
     // and crash on init, triggering robot_decision Error 140. Verified
     // live LFIN2230700238 2026-05-21: apply-verbatim with restart_mapping
-    // = true caused the cascade. Same mitigation apply-exact already uses
+    // = true caused the cascade. Same restart_mapping:false mitigation used
     // (see comment at write_map_files call further up). Refresh of cached
     // polygons happens via the save_map type:1 trigger below — firmware
     // re-reads CSVs through its own native save flow without bouncing
@@ -3045,19 +2858,26 @@ adminStatusRouter.post(
     }
     publishToExtended(sn, { write_map_files: writePayload });
 
-    // Trigger the firmware's own save_map handler so it regenerates
-    // map.yaml/pgm/png + per-slot artefacts through the same native path
-    // a real BLE mapping session uses. Refreshes novabot_mapping's cached
-    // polygons without bouncing the process. Followed by regenerate_per
-    // _map_files 3s later to mirror the artefacts into every mapN slot
-    // so start_navigation lookups resolve for each work-map (otherwise
-    // Error 107). Same pattern as apply-exact.
-    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
-    console.log(`[Admin] apply-verbatim ${sn}: save_map type:1 dispatched after write_map_files`);
-    setTimeout(() => {
-      publishToExtended(sn, { regenerate_per_map_files: {} });
-      console.log(`[Admin] apply-verbatim ${sn}: regenerate_per_map_files dispatched`);
-    }, 3000);
+    // The bundle now ships a complete, correct occupancy grid (whole map.pgm +
+    // every mapN.pgm, generated server-side by the faithful map_generator
+    // reimplementation). write_map_files lands those on disk and
+    // coverage_planner loads map_yaml fresh from disk per task, so the
+    // restored raster is used directly. The firmware's own save_map type:1 +
+    // regenerate_per_map_files were only ever needed to GENERATE the raster
+    // on-device when the bundle lacked one — running them now would overwrite
+    // our raster and re-introduce the save_map 118/120 failure surface. So
+    // only fall back to them when the bundle has no whole-area pgm.
+    const hasWholeRaster = !!(mowerFiles.mapFilesB64 && mowerFiles.mapFilesB64['map.pgm']);
+    if (!hasWholeRaster) {
+      publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+      console.log(`[Admin] apply-verbatim ${sn}: no raster in bundle — save_map type:1 dispatched (fallback)`);
+      setTimeout(() => {
+        publishToExtended(sn, { regenerate_per_map_files: {} });
+        console.log(`[Admin] apply-verbatim ${sn}: regenerate_per_map_files dispatched (fallback)`);
+      }, 3000);
+    } else {
+      console.log(`[Admin] apply-verbatim ${sn}: complete raster shipped — skipping on-device save_map/regen`);
+    }
 
     // Update server DB so dashboard map view reflects what's now on disk.
     // Polygon points come from the bundle untransformed (same frame as
@@ -3121,7 +2941,7 @@ adminStatusRouter.post(
 
 // POST /api/admin-status/maps/:sn/refresh-dock-anchor
 //
-// After any restore (apply-verbatim or apply-exact) the mower's pos.json
+// After a restore (apply-verbatim) the mower's pos.json
 // UTM anchor on disk no longer matches reality: the bundle's polygons are
 // in their export-time local frame, but the mower's running localization
 // has its own current frame. The only way to make these coincide is to
@@ -3209,239 +3029,6 @@ adminStatusRouter.post(
         console.error(`[Admin] refresh-dock-anchor ${sn}: sequence failed`, err);
       }
     })();
-  },
-);
-
-// POST /api/admin-status/maps/:sn/import-portable/:stagingId/apply-selective
-//
-// Selective import — pushes a chosen subset of bundle categories to the
-// mower. Two safety modes:
-//   - mode = 'add-only' (default): skip files that already exist on the
-//     mower; never overwrite. Safe combination because nothing on the
-//     mower is destroyed.
-//   - mode = 'replace': overwrite matching filenames. Same risk profile
-//     as the existing apply-exact endpoint but scoped to the chosen
-//     categories.
-//
-// Files in selected categories are Δ-rotated/translated against the
-// bundle's originalChargingPose vs the mower's live charging_pose so the
-// imported polygons land in the destination frame. obstacleRemap can
-// rewrite an obstacle's parent map (e.g. rename `map3_0_obstacle.csv`
-// from the bundle to `map1_0_obstacle.csv` so it attaches to the mower's
-// existing `map1`).
-//
-// NOTE: this endpoint does NOT update DB polygon rows. The dashboard map
-// view continues to reflect whatever the last full import / sync_map
-// wrote; the mower's csv_file/ is the source of truth for actual mowing.
-adminStatusRouter.post(
-  '/maps/:sn/import-portable/:stagingId/apply-selective',
-  async (req: AuthRequest, res: Response) => {
-    const { sn, stagingId } = req.params;
-    const session = importStaging.get(stagingId);
-    if (!session || session.sn !== sn) {
-      res.status(404).json({ ok: false, error: 'unknown staging session' });
-      return;
-    }
-    if (session.state !== 'UPLOADED') {
-      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
-      return;
-    }
-
-    const body = (req.body ?? {}) as {
-      include?: string[];
-      mode?: 'add-only' | 'replace';
-      obstacleRemap?: Record<string, string>;
-    };
-    const include = new Set(body.include ?? ['work', 'obstacle', 'unicom', 'dock']);
-    const mode: 'add-only' | 'replace' = body.mode === 'replace' ? 'replace' : 'add-only';
-    const obstacleRemap = body.obstacleRemap ?? {};
-
-    // ── Read bundle from staging dir ─────────────────────────────────
-    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
-    let parsed: {
-      mowerFiles?: { csvFiles: Record<string, string>; chargingStationYaml: string | null };
-      metadata?: { originalChargingPose?: { x: number; y: number; orientation: number } };
-    };
-    try {
-      parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
-    } catch (err) {
-      res.status(500).json({ ok: false, error: `failed to read bundle: ${(err as Error).message}` });
-      return;
-    }
-    const mowerFiles = parsed.mowerFiles;
-    const origPose = parsed.metadata?.originalChargingPose;
-    if (!mowerFiles || !origPose) {
-      res.status(400).json({ ok: false, error: 'bundle missing exact-restore data' });
-      return;
-    }
-
-    // ── Live mower frame for Δ ───────────────────────────────────────
-    const sensors = deviceCache.get(sn);
-    const mx = parseFloat(sensors?.get('map_position_x') ?? '');
-    const my = parseFloat(sensors?.get('map_position_y') ?? '');
-    const mo = parseFloat(sensors?.get('map_position_orientation') ?? '');
-    if (!Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(mo)) {
-      res.status(409).json({ ok: false, error: 'no live map_position — is mower online?' });
-      return;
-    }
-    const dockMP = { x: mx, y: my, orientation: mo };
-    const dt = dockMP.orientation - origPose.orientation;
-    const cosDt = Math.cos(dt);
-    const sinDt = Math.sin(dt);
-    const transformPoint = (px: number, py: number): [number, number] => {
-      const relX = px - origPose.x;
-      const relY = py - origPose.y;
-      const rx = relX * cosDt - relY * sinDt;
-      const ry = relX * sinDt + relY * cosDt;
-      return [rx + dockMP.x, ry + dockMP.y];
-    };
-
-    // ── Mower current files (for collision detection in add-only mode) ──
-    const mowerSide = await new Promise<{ csvFiles?: Record<string, string>; chargingStationYaml?: string | null }>(resolve => {
-      let settled = false;
-      const handler = (data: Record<string, unknown>) => {
-        const r = data.read_map_files_respond as
-          | { result?: number; csv_files?: Record<string, string>; charging_station_yaml?: string }
-          | undefined;
-        if (!r || settled) return;
-        settled = true;
-        offExtendedResponse(sn, handler);
-        if (r.result !== 0) { resolve({}); return; }
-        resolve({ csvFiles: r.csv_files, chargingStationYaml: r.charging_station_yaml ?? null });
-      };
-      onExtendedResponse(sn, handler);
-      publishToExtended(sn, { read_map_files: {} });
-      setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        offExtendedResponse(sn, handler);
-        resolve({});
-      }, 8000);
-    });
-    const mowerExisting = new Set(Object.keys(mowerSide.csvFiles ?? {}));
-
-    // ── Build target file map ────────────────────────────────────────
-    const toWrite: Record<string, string> = {};
-    const skipped: string[] = [];
-
-    const bundleClass = classifyBundle(mowerFiles);
-
-    for (const e of bundleClass.entries) {
-      // Skip categories the operator didn't tick.
-      if (!include.has(e.category)) continue;
-      // 'meta' (map_info.json etc.) follows whichever other category was
-      // selected — we always include it when ANY data category is chosen
-      // so the mower has a coherent metadata file. Falls into the
-      // skip-existing logic below.
-      if (e.category === 'meta' && !include.has('work') && !include.has('obstacle') && !include.has('unicom')) {
-        continue;
-      }
-
-      const original = mowerFiles.csvFiles[e.filename];
-      if (original === undefined) continue;
-
-      // Apply obstacle remap if requested.
-      let targetName = e.filename;
-      if (e.category === 'obstacle' && obstacleRemap[e.filename]) {
-        const newParent = obstacleRemap[e.filename];
-        targetName = e.filename.replace(/^map\d+_/, `${newParent}_`);
-      }
-
-      if (mode === 'add-only' && mowerExisting.has(targetName)) {
-        skipped.push(targetName);
-        continue;
-      }
-
-      // Δ-transform CSV polygon points so they land in the mower's frame.
-      if (e.category === 'work' || e.category === 'obstacle' || e.category === 'unicom') {
-        const out: string[] = [];
-        for (const raw of original.split('\n')) {
-          const line = raw.trim();
-          if (!line) { out.push(''); continue; }
-          const parts = line.split(',');
-          if (parts.length < 2) { out.push(line); continue; }
-          const px = parseFloat(parts[0]);
-          const py = parseFloat(parts[1]);
-          if (!Number.isFinite(px) || !Number.isFinite(py)) { out.push(line); continue; }
-          const [nx, ny] = transformPoint(px, py);
-          out.push(`${nx.toFixed(2)},${ny.toFixed(2)}`);
-        }
-        toWrite[targetName] = out.join('\n');
-      } else if (e.category === 'meta' && e.filename === 'map_info.json') {
-        // Inject mower's live charging_pose so map_info matches the dock.
-        try {
-          const mi = JSON.parse(original) as Record<string, unknown>;
-          mi.charging_pose = { x: dockMP.x, y: dockMP.y, orientation: dockMP.orientation };
-          toWrite[targetName] = JSON.stringify(mi, null, 3);
-        } catch {
-          toWrite[targetName] = original;
-        }
-      } else {
-        toWrite[targetName] = original;
-      }
-    }
-
-    // Dock yaml lives alongside csv_file on the mower; treat separately.
-    let chargingStationYaml: string | null = null;
-    if (include.has('dock') && mowerFiles.chargingStationYaml != null) {
-      // add-only never overwrites the existing dock — prevents accidental
-      // pose loss when the operator just wants to add obstacles.
-      const dockExists = mowerSide.chargingStationYaml != null && mowerSide.chargingStationYaml.length > 0;
-      if (mode === 'add-only' && dockExists) {
-        skipped.push('charging_station.yaml');
-      } else {
-        chargingStationYaml = `charging_pose: [${dockMP.x}, ${dockMP.y}, ${dockMP.orientation}]\n`;
-      }
-    }
-
-    if (Object.keys(toWrite).length === 0 && chargingStationYaml === null) {
-      res.json({ ok: true, written: [], skipped, note: 'nothing to write — selection was empty or all files skipped by add-only mode' });
-      return;
-    }
-
-    publishToExtended(sn, {
-      write_map_files: {
-        csv_files: toWrite,
-        charging_station_yaml: chargingStationYaml,
-        restart_mapping: false,
-      },
-    });
-
-    // Re-render map.yaml/pgm/png when polygon-bearing categories were
-    // touched. Nav2's static costmap layer reads the pgm; without a
-    // re-render new obstacles wouldn't be inflated and the mower could
-    // drive through them. Skip for dock-only or meta-only changes —
-    // those don't affect the rasterized occupancy grid.
-    const polygonCategoriesTouched = include.has('work') || include.has('obstacle') || include.has('unicom');
-    if (polygonCategoriesTouched && Object.keys(toWrite).length > 0) {
-      publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
-      console.log(`[Admin] apply-selective ${sn}: post-write save_map type:1 dispatched to render map.yaml/pgm`);
-      // See restore-and-realign for the per-map-mirror rationale.
-      setTimeout(() => {
-        publishToExtended(sn, { regenerate_per_map_files: {} });
-        console.log(`[Admin] apply-selective ${sn}: regenerate_per_map_files dispatched`);
-      }, 3000);
-    }
-
-    importStaging.transition(stagingId, 'APPLIED', {
-      applyResult: {
-        warning: `selective ${mode} — ${Object.keys(toWrite).length} written, ${skipped.length} skipped`,
-      },
-    });
-    importAuditRepo.append({
-      sn,
-      staging_id: stagingId,
-      from_state: 'UPLOADED',
-      to_state: 'APPLIED',
-      reason: `selective apply mode=${mode} categories=${[...include].join(',')}`,
-    });
-    res.json({
-      ok: true,
-      mode,
-      written: Object.keys(toWrite),
-      skipped,
-      delta: { dx: dockMP.x - origPose.x, dy: dockMP.y - origPose.y, dtheta: dt },
-    });
   },
 );
 
