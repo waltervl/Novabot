@@ -287,6 +287,49 @@ static char     lastGgaLine[180] = {0};
 static size_t   lastGgaLen      = 0;
 static uint32_t lastGgaAtMs     = 0;
 
+// Measured GGA epoch rate (position fixes per second). Count completed
+// GGA sentences, not TinyGPS location updates: TinyGPS can mark location
+// updated more than once per epoch as it ingests related NMEA sentences,
+// which made a true 1 Hz LC29HDA look like 3-4 Hz and triggered pointless
+// PAIR050/PAIR400 reassert loops.
+static uint32_t gnssRateWinStartMs = 0;
+static uint16_t gnssRateWinCount   = 0;
+static uint16_t gnssRateHz         = 0;
+static char     gnssRateLastGgaTime[16] = {0};
+
+static void noteGgaRateEpoch(const char* line, size_t len) {
+  // Field 1 is UTC time: $GxGGA,<time>,...  Use it to avoid double-counting
+  // receivers that emit both GNGGA and GPGGA for the same epoch.
+  if (len < 8) return;
+  const char* start = strchr(line, ',');
+  if (!start) return;
+  start++;
+  const char* end = strchr(start, ',');
+  if (!end || end <= start) return;
+  size_t n = (size_t)(end - start);
+  if (n >= sizeof(gnssRateLastGgaTime)) n = sizeof(gnssRateLastGgaTime) - 1;
+
+  char epoch[sizeof(gnssRateLastGgaTime)];
+  memcpy(epoch, start, n);
+  epoch[n] = '\0';
+  if (strcmp(epoch, gnssRateLastGgaTime) == 0) return;
+  memcpy(gnssRateLastGgaTime, epoch, n + 1);
+
+  uint32_t now = millis();
+  if (gnssRateWinStartMs == 0) {
+    gnssRateWinStartMs = now;
+    gnssRateWinCount = 1;
+    return;
+  }
+  if (now - gnssRateWinStartMs >= 1000) {
+    gnssRateHz = gnssRateWinCount;
+    gnssRateWinCount = 1;
+    gnssRateWinStartMs = now;
+  } else {
+    gnssRateWinCount++;
+  }
+}
+
 // Tracks the most recent PAIR001 ACK so the post-detect command flow
 // can verify that PAIR050 (rate config) was actually accepted. The LC29HDA
 // silently drops PAIR commands if its parser is busy, so we have to
@@ -342,6 +385,7 @@ static void gnssLineFeed(char c) {
       if (nmeaLineLen >= 6 && nmeaLineBuf[0] == '$' &&
           (strncmp(nmeaLineBuf, "$GNGGA,", 7) == 0 ||
            strncmp(nmeaLineBuf, "$GPGGA,", 7) == 0)) {
+        noteGgaRateEpoch(nmeaLineBuf, nmeaLineLen);
         int commaCount = 0;
         bool hasFix = false;
         for (size_t i = 0; i < nmeaLineLen; i++) {
@@ -1092,14 +1136,6 @@ static bool     pair400RtkSent  = false;
 static bool     pair513SaveSent = false;
 static uint32_t lastRateReassertMs = 0;
 
-// Measured GGA rate (location updates per second). Rolling counter
-// reset every 1000 ms; gnssRateHz holds the most recently completed
-// window's count so the UI sees a stable value rather than a partial
-// tally mid-window.
-static uint32_t gnssRateWinStartMs = 0;
-static uint16_t gnssRateWinCount   = 0;
-static uint16_t gnssRateHz         = 0;
-
 static void gnssPump() {
   while (gnssSerial.available()) {
     char c = gnssSerial.read();
@@ -1267,19 +1303,6 @@ static void gnssPump() {
     satsNow = st.sats;
     hdopNow = st.hdop;
     lastFixNow = st.lastFixMs;
-    // Rolling 1-second window counter so the UI can show the actual
-    // fix rate. Window closes when 1000 ms elapses; final count gets
-    // latched into gnssRateHz and the window restarts at the current
-    // sample. Lets the field confirm "5 Hz confirmed" log without
-    // needing serial access.
-    uint32_t nowRate = st.lastFixMs;
-    if (gnssRateWinStartMs == 0) gnssRateWinStartMs = nowRate;
-    gnssRateWinCount++;
-    if (nowRate - gnssRateWinStartMs >= 1000) {
-      gnssRateHz         = gnssRateWinCount;
-      gnssRateWinCount   = 0;
-      gnssRateWinStartMs = nowRate;
-    }
     appendPoint();
     coreUnlock();
     // Feed the new session recorder. No-op when recorder is idle, so
