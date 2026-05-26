@@ -165,7 +165,7 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   <details class="card log-card">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">Console log</summary>
     <div class="log-toolbar">
-      <label><input id="logFollow" type="checkbox" checked> follow tail</label>
+      <label><input id="logFollow" type="checkbox"> console logging</label>
       <span class="grow"></span>
       <button type="button" id="logClear">clear view</button>
     </div>
@@ -258,7 +258,7 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
   <details class="card log-card">
     <summary style="cursor:pointer;font-weight:600;color:var(--text)">RTCM debug</summary>
     <div class="log-toolbar">
-      <label><input id="rtcmFollow" type="checkbox" checked> follow tail</label>
+      <label><input id="rtcmFollow" type="checkbox"> RTCM logging</label>
       <span class="grow"></span>
       <span style="font-size:11px;color:var(--text-dim)" id="rtcmSrc">source: -</span>
       <button type="button" id="rtcmClear">clear view</button>
@@ -579,7 +579,8 @@ document.getElementById('loraSniff').addEventListener('click', function() {
 
 let rtcmLastSeq = 0;
 let rtcmLastHex = '';
-let rtcmFollow = true;
+let rtcmFollow = false;
+let rtcmLoading = false;
 
 // Decode RTCM3 message types from a Uint8Array. Each message starts
 // with 0xD3, followed by 6 reserved bits + 10 length bits, then
@@ -651,7 +652,8 @@ function formatHexDump(hex) {
 }
 
 async function refreshRtcm() {
-  if (!rtcmFollow) return;
+  if (!rtcmFollow || rtcmLoading) return;
+  rtcmLoading = true;
   try {
     const r = await fetch('/api/rtcm/log');
     const d = await r.json();
@@ -667,9 +669,11 @@ async function refreshRtcm() {
                                 + m.len + ' B');
     document.getElementById('rtcmMsgs').textContent = lines.join('\n');
   } catch (e) { /* ignore */ }
+  finally { rtcmLoading = false; }
 }
 document.getElementById('rtcmFollow').addEventListener('change', function(e) {
   rtcmFollow = e.target.checked;
+  if (rtcmFollow) refreshRtcm();
 });
 document.getElementById('rtcmClear').addEventListener('click', function() {
   document.getElementById('rtcmHex').textContent = '';
@@ -1126,9 +1130,16 @@ toggleRecord = async function() {
 // so a stale client gets a `firstSeq > lastSeenSeq` jump — handled by
 // replacing the whole view rather than appending.
 let lastSeenSeq = 0;
+let logLoading = false;
+
+function logFollowEnabled() {
+  const follow = document.getElementById('logFollow');
+  return !!(follow && follow.checked);
+}
 
 async function refreshLog() {
-  if (mapLoading) return;
+  if (mapLoading || !logFollowEnabled() || logLoading) return;
+  logLoading = true;
   try {
     const r = await authFetch('/api/log');
     if (r.status === 401 || r.status === 403) { showAuthNeeded('logView'); return; }
@@ -1154,7 +1165,12 @@ async function refreshLog() {
       view.scrollTop = view.scrollHeight;
     }
   } catch (e) { /* ignore */ }
+  finally { logLoading = false; }
 }
+
+document.getElementById('logFollow').addEventListener('change', function(e) {
+  if (e.target.checked) refreshLog();
+});
 
 document.getElementById('logClear').addEventListener('click', function() {
   document.getElementById('logView').textContent = '';

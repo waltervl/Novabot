@@ -1439,7 +1439,38 @@ static void gnssPump() {
   }
 }
 
+static TaskHandle_t realtimePumpTaskHandle = nullptr;
+
+static void realtimePumpTask(void*) {
+  for (;;) {
+    gnssPump();
+    serviceLoraCommandPause();
+    walkerLoraPump();
+    serviceLoraCommandPause();
+    // Keep UART service cadence independent from WebServer/LVGL work.
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
+static void startRealtimePumpTask() {
+  if (realtimePumpTaskHandle) return;
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      realtimePumpTask,
+      "GNSS LoRa",
+      6 * 1024,
+      NULL,
+      1,
+      &realtimePumpTaskHandle,
+      1);
+  if (ok == pdPASS) {
+    weblogf("[rt] GNSS/LoRa pump task started\n");
+  } else {
+    weblogf("[rt] GNSS/LoRa pump task start failed\n");
+  }
+}
+
 static void pumpRealtimeFallbackOnce() {
+  if (realtimePumpTaskHandle) return;
   gnssPump();
   serviceLoraCommandPause();
   walkerLoraPump();
@@ -1597,12 +1628,10 @@ static void buttonPump() {
 
 // ── Web handlers ────────────────────────────────────────────────────
 static void serviceRealtimeDuringHttp() {
-  // Keep UART service alive while large HTTP responses are being sent.
-  // This matches the proven field flow where GNSS and LoRa are serviced
-  // cooperatively from the main/UI path.
-  gnssPump();
-  walkerLoraPump();
-  delay(0);
+  // GNSS/LoRa have a dedicated realtimePumpTask once setup is complete.
+  // Before that task starts, keep boot-time HTTP responses cooperative.
+  pumpRealtimeFallbackOnce();
+  delay(1);
 }
 
 static void sendStringCooperatively(int code, const char* contentType, const String& body) {
@@ -3124,6 +3153,7 @@ void setup() {
   });
   server.begin();
   weblogf("[http] listening on :80\n");
+  startRealtimePumpTask();
 
   // Bring the TFT up after WiFi + HTTP are registered. Keep this in the
   // main boot flow so there is only one LVGL/display owner and failures
@@ -3646,8 +3676,8 @@ size_t walkerCopyLivePoints(WalkerLivePoint* dst, size_t maxCount) {
 void walkerPumpGnss() {
   // Wraps gnssPump() so external compilation units (the TFT loaders in
   // tft_ui.cpp) can drain the UART RX FIFO without sharing the .cpp's
-  // static globals. Safe to call from the main/LVGL flow.
-  gnssPump();
+  // static globals. Once the realtime task is running it owns UART parsing.
+  if (!realtimePumpTaskHandle) gnssPump();
 }
 
 void walkerResetTrail() {
