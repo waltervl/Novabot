@@ -198,14 +198,48 @@ fed in p1).
   `charging_station.yaml` (`charging_pose: [0.1250293, -0.5169092, 1.5751852]`).
 - Whole map: 539×444, origin [-21.25, -20.70], res 0.05; pgm {0:158572, 254:80744}.
 
-### Open item to close during byte-identical implementation
-Geometry computed from the **raw CSV** bounds (xMin −20.31, xMax 4.73,
-yMin −19.79, yMax 0.49) yields 541×446 origin [-21.30, -20.75] — **2 cells /
-0.05 m larger** than the fixture (539×444, [-21.25, -20.70]). Since
-`readCsvToArea` does no downsampling, the boundary polygon `saveMap` actually
-rasterizes must differ slightly from `map0_work.csv` (live mapping message is
-likely closed/cleaned, or extreme scan points trimmed). The exact preprocessing
-will be pinned empirically against the fixture in the implementation tasks
-(adjust bbox source until 539×444/[-21.25,-20.70] and the pgm match
-byte-for-byte). Everything else (formulae, fill order, values, dock circles,
-YAML/PGM format) is confirmed from the decompile + constants.
+### Open item: the rasterized boundary is a PROCESSED polygon, not a stored CSV
+
+`saveMap` does **not** rasterize either CSV on disk. Hard evidence (live mower
+LFIN1231000211, 2026-05-23 save; its `map.pgm` md5 `30d0a371…` == our fixture):
+
+| Source | pts | bbox x | bbox y | → grid | origin |
+|--------|-----|--------|--------|--------|--------|
+| `csv_file/map0_work.csv` (+obs+unicom) | dense 2495 | [-20.31, 4.73] | [-19.79, 0.49] | **541×446** | [-21.30, -20.75] |
+| `x3_csv_file/map0_work.csv` (+obs+unicom) | 536 | [-20.01, 4.43] | [-19.49, 0.19] | **529×434** | [-21.00, -20.45] |
+| **target `map.pgm`** | — | xMin∈(-20.30,-20.25] | yMin∈(-19.75,-19.70] | **539×444** | **[-21.25, -20.70]** |
+
+The target sits **between** the two stored CSVs and matches **neither**. Also
+`map.pgm` (May 23 20:40) is newer than `map0_work.csv` (May 8 18:25): the save
+re-rasterized an **in-memory** boundary, not the on-disk dense CSV.
+
+**Lead — ClipperLib.** The binary links `ClipperLib::SimplifyPolygon(s)`
+(`_ZN10ClipperLib16SimplifyPolygonsE…`). ClipperLib runs in integer space and
+removes self-intersections/spikes from the dense self-crossing scan trajectory,
+which trims the extreme vertices and pulls the bbox in by ~2 cells — exactly the
+observed 541→539 / 446→444 shrink. So the pre-rasterize pipeline is almost
+certainly: load boundary → scale float→int → `ClipperLib::SimplifyPolygons`
+(fill type TBD) → back to float → `saveMap`. ClipperLib is deterministic and
+has JS ports, so byte-identity is reproducible once the scale + fill type are
+known.
+
+**Not yet pinned (needs the `saveMap` caller `NovabotMapping::*`, which is NOT in
+the current decompile set):** (a) ClipperLib scale factor, (b) PolyFillType,
+(c) which CSV source is loaded, (d) whether obstacles/unicom are also simplified.
+
+### Two ways to close it (user chose "fresh ground-truth + exact polygon")
+1. **Live capture (chosen):** the node has a `Publisher<mapping_msgs::msg::Polygon>`.
+   On LFIN1231000211, `ros2 topic list -t | grep Polygon` to find it, then
+   `ros2 topic echo <topic> > /tmp/saved_polys.txt` while triggering a fresh
+   `save_map type:1` (Mapping.srv type=1). That captures the exact post-process
+   polygon `saveMap` rasterizes. Pull it + the resulting `map.pgm` as a matched
+   fixture → the byte-identical test then has correct inputs.
+2. **Static:** decompile `NovabotMapping`'s Mapping/MappingControl service
+   handler (the `saveMap` caller) to read the ClipperLib scale + fill type +
+   source, then replicate `SimplifyPolygons` server-side (JS clipper port).
+
+Everything else (geometry formula, fill order, free=254/occupied=0, dilate ×2,
+dock circles, YAML/PGM format) is confirmed from the decompile + `.rodata`
+constants. `server/src/maps/occupancyGrid.ts` implements all of it and is correct
+**given the cleaned polygon as input**; only the ClipperLib pre-step is missing,
+which is why the current fixture test is off by the 2-cell bbox.
