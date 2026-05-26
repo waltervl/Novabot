@@ -455,7 +455,7 @@ export function adminPageHtml(): string {
           <div style="font-size:12px;font-weight:600;color:#67e8f9">Portable Map Bundle <span style="background:rgba(16,185,129,.15);color:#86efac;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:6px">RECOMMENDED</span></div>
         </div>
         <div style="font-size:11px;color:#94a3b8;line-height:1.6;margin-bottom:8px">
-          Export the active polygon + verbatim mower files as a portable .novabotmap bundle. Re-import on this same mower with one click — Δ rotation/translation derived from charging-pose, no drive needed. Auto-snapshots every successful save_map (last 20 retained per mower).
+          Export the polygons + a complete rasterized map (map.pgm/png/yaml + per-map) as a portable .novabotmap bundle. Single restore path: "Restore to mower" pushes the bundle verbatim (no rotation, pos.json untouched), then you dock-cycle the mower (1m back + ArUco redock) so the dock heading + charger pos refresh and the charger-relative map lines up. Auto-snapshots every successful save_map (last 20 retained per mower).
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <button onclick="exportPortableBundle()" style="padding:7px 18px;background:rgba(34,211,238,.2);color:#67e8f9;border:1px solid rgba(34,211,238,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Export bundle</button>
@@ -3393,7 +3393,7 @@ async function portableApplyVerbatim() {
   if (!j.ok) {
     // Cross-SN block — let the operator force if they really know what they're doing.
     if (j.sourceSn && j.targetSn && j.sourceSn !== j.targetSn) {
-      var forceMsg = "Bundle was made on " + j.sourceSn + ", not " + j.targetSn + ". Verbatim restore will overwrite pos.json with the source mower's UTM anchor. Only force if both mowers were provisioned to the same physical location. Continue?";
+      var forceMsg = "Bundle was made on " + j.sourceSn + ", not " + j.targetSn + ". The map is charger-relative and pos.json is left untouched, so this is generally safe; the dock-cycle re-anchors the frame. Continue?";
       if (!(await appConfirm(forceMsg, { destructive: true, okText: 'Force verbatim' }))) {
         portableCheckActive(sn);
         return;

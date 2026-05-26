@@ -2762,9 +2762,10 @@ adminStatusRouter.post(
 // was captured, polygons sit at the same world coordinates and Nav2's
 // costmap matches.
 //
-// Refuses when bundle.metadata.sourceSn !== :sn unless ?force=1, since
-// cross-mower verbatim restore would overwrite the target's pos.json with
-// the wrong UTM anchor — guaranteed to put polygons in the wrong place.
+// Soft-blocks when bundle.metadata.sourceSn !== :sn unless ?force=1. pos.json is
+// no longer pushed (the map is charger-relative and the dock-cycle re-anchors
+// the frame), so cross-mower restore is generally safe — the gate is just a
+// confirm so an accidental wrong-mower restore isn't silent.
 adminStatusRouter.post(
   '/maps/:sn/import-portable/:stagingId/apply-verbatim',
   async (req: AuthRequest, res: Response) => {
@@ -2820,7 +2821,7 @@ adminStatusRouter.post(
     if (sourceSn && sourceSn !== sn && !force) {
       res.status(409).json({
         ok: false,
-        error: `bundle was exported from ${sourceSn}, not ${sn}. Verbatim restore would overwrite this mower's pos.json with the wrong UTM anchor — polygons would end up in the wrong place. Pass force=1 to override (rarely correct).`,
+        error: `bundle was exported from ${sourceSn}, not ${sn}. The map is charger-relative and pos.json is left untouched, so this is generally safe (the dock-cycle re-anchors the frame). Pass force=1 to confirm.`,
         sourceSn,
         targetSn: sn,
       });
