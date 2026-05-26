@@ -160,12 +160,13 @@ static bool g_moduleReady = false;
 static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14, 0, 7};
 
 // Frame parser state. Resets to WAIT_PRE1 on any malformed byte.
-// Stock charger RTK relay frames observed over RF look like:
-//   [0x02 0x02][addr_hi addr_lo][len][cmd][payload...][0x03 0x03][RSSI]
-// where len = cmd + payload byte count. The E22 appends the final RSSI
-// byte because REG3 bit7 mirrors the charger config. Older notes mention
-// a XOR byte before the trailer; LP_XOR accepts both formats so we stay
-// compatible with non-RTK command frames as well.
+// Charger RTK relay frames are:
+//   [0x02 0x02][addr_hi addr_lo][len][cmd][payload...][xor][0x03 0x03][RSSI]
+// where len = cmd + payload + xor byte count. The E22 appends the final
+// RSSI byte because REG3 bit7 mirrors the charger config. Older captures
+// looked like the XOR byte was omitted; LP_XOR keeps a fallback for that,
+// but the primary path must NOT forward XOR into the RTCM stream or every
+// RTCM3 CRC becomes invalid.
 enum LoraParseState : uint8_t {
     LP_WAIT_PRE1, LP_WAIT_PRE2,
     LP_ADDR_HI,   LP_ADDR_LO,
@@ -253,13 +254,14 @@ void walkerLoraPump() {
                 g_st = LP_LEN;
                 break;
             case LP_LEN:
-                // len_byte includes the CMD byte. So total payload size = b.
+                // len_byte includes CMD + XOR. The bytes after CMD that
+                // belong to the forwarded UM980 stream are therefore b - 2.
                 if (b == 0 || b > sizeof(g_payloadBuf)) {
                     g_framesRejected++;
                     g_st = LP_WAIT_PRE1;
                     break;
                 }
-                g_payloadLen = b - 1;   // bytes after CMD
+                g_payloadLen = (b >= 2) ? (uint8_t)(b - 2) : 0;
                 g_payloadIdx = 0;
                 g_xorAccum   = 0;
                 g_st = LP_CMD;
@@ -275,19 +277,29 @@ void walkerLoraPump() {
                 if (g_payloadIdx >= g_payloadLen) g_st = LP_XOR;
                 break;
             case LP_XOR:
+                if (b == g_xorAccum) {
+                    g_st = LP_POST1;
+                    break;
+                }
                 if (b == 0x03) {
-                    // Stock RTK frames omit the XOR byte; this is already
+                    // Compatibility fallback for old captures where RTK
+                    // frames appeared to omit XOR; this byte is already
                     // the first trailer byte.
                     g_st = LP_POST2;
                     break;
                 }
-                if (b != g_xorAccum) {
+                // Compatibility fallback for a no-XOR frame whose len byte
+                // counted one more payload byte. Treat this byte as the
+                // final payload byte, then require the normal trailer.
+                if (g_payloadIdx < sizeof(g_payloadBuf)) {
+                    g_payloadBuf[g_payloadIdx++] = b;
+                    g_st = LP_POST1;
+                    break;
+                } else {
                     g_framesRejected++;
                     g_st = LP_WAIT_PRE1;
                     break;
                 }
-                g_st = LP_POST1;
-                break;
             case LP_POST1:
                 g_st = (b == 0x03) ? LP_POST2 : LP_WAIT_PRE1;
                 if (g_st == LP_WAIT_PRE1) g_framesRejected++;
@@ -298,10 +310,10 @@ void walkerLoraPump() {
                     // any other valid cmd as "we're hearing the charger".
                     g_framesReceived++;
                     g_lastValidMs = millis();
-                    if (g_lastCmd == 0x31 && g_payloadLen > 0) {
-                        gnssSerial.write(g_payloadBuf, g_payloadLen);
-                        rtcmLogAppend(g_payloadBuf, g_payloadLen, RTCM_SRC_LORA);
-                        g_bytesForwarded += g_payloadLen;
+                    if (g_lastCmd == 0x31 && g_payloadIdx > 0) {
+                        gnssSerial.write(g_payloadBuf, g_payloadIdx);
+                        rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
+                        g_bytesForwarded += g_payloadIdx;
                     }
                 } else {
                     g_framesRejected++;
