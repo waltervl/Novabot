@@ -12,11 +12,17 @@ declare module 'clipper-lib' {
     Execute(solution: IntPoint[][], delta: number): void;
     Clear(): void;
   }
-  export const Clipper: { Area(path: IntPoint[]): number };
+  export const PolyFillType: {
+    pftEvenOdd: number; pftNonZero: number; pftPositive: number; pftNegative: number;
+  };
+  export const Clipper: {
+    Area(path: IntPoint[]): number;
+    SimplifyPolygons(polys: IntPoint[][], fillType: number): IntPoint[][];
+  };
   export class Paths extends Array<IntPoint[]> {}
   const _default: {
     JoinType: typeof JoinType; EndType: typeof EndType;
-    ClipperOffset: typeof ClipperOffset; Clipper: typeof Clipper; Paths: typeof Paths;
+    ClipperOffset: typeof ClipperOffset; Clipper: typeof Clipper; Paths: typeof Paths; PolyFillType: typeof PolyFillType;
   };
   export default _default;
 }

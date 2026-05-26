@@ -78,18 +78,30 @@ function polyToPx(points: XY[], g: Geometry): { c: number; r: number }[] {
 
 // NovabotMapping::expandPolygon — ClipperOffset(miterLimit=2.0, arcTolerance=0.25),
 // scale x10000, jtRound + etClosedPolygon. Returns offset rings (may be >1) in metres.
+// IMPORTANT: the firmware ALWAYS runs the polygon through ClipperLib, which
+// cleans self-intersections in the dense sensor scans. Skipping it (delta 0)
+// leaves the raw self-intersecting loop, and the even-odd fillPoly then leaves
+// HOLES (observed: obstacles rasterized as free, mower drove into them). So
+// even at delta 0 we must clean via SimplifyPolygons (NonZero) — no offset,
+// geometry preserved, but self-intersections resolved so fillPoly fills solid.
 const CLIP_SCALE = 10000;
 function expandPolygon(points: XY[], deltaM: number): XY[][] {
-  if (deltaM === 0 || points.length < 3) return points.length ? [points] : [];
+  if (points.length < 3) return points.length ? [points] : [];
   const path = points.map((p) => ({
     X: Math.trunc(Math.fround(p.x) * CLIP_SCALE),
     Y: Math.trunc(Math.fround(p.y) * CLIP_SCALE),
   }));
+  const toMetres = (sol: { X: number; Y: number }[][]): XY[][] =>
+    sol.map((ring) => ring.map((q) => ({ x: q.X / CLIP_SCALE, y: q.Y / CLIP_SCALE })));
+  if (deltaM === 0) {
+    const cleaned = ClipperLib.Clipper.SimplifyPolygons([path], ClipperLib.PolyFillType.pftNonZero);
+    return toMetres(cleaned);
+  }
   const co = new ClipperLib.ClipperOffset(2.0, 0.25);
   co.AddPath(path, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
   const sol: { X: number; Y: number }[][] = [];
   co.Execute(sol, deltaM * CLIP_SCALE);
-  return sol.map((ring) => ring.map((q) => ({ x: q.X / CLIP_SCALE, y: q.Y / CLIP_SCALE })));
+  return toMetres(sol);
 }
 
 // ── OpenCV-compatible scanline polygon fill (even-odd) ──────────────────────
