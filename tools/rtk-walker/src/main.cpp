@@ -1460,6 +1460,7 @@ static void gnssPump() {
 }
 
 static TaskHandle_t realtimePumpTaskHandle = nullptr;
+static TaskHandle_t webServerTaskHandle = nullptr;
 
 static void realtimePumpTask(void*) {
   for (;;) {
@@ -1486,6 +1487,30 @@ static void startRealtimePumpTask() {
     weblogf("[rt] GNSS/LoRa pump task started\n");
   } else {
     weblogf("[rt] GNSS/LoRa pump task start failed\n");
+  }
+}
+
+static void webServerTask(void*) {
+  for (;;) {
+    server.handleClient();
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
+static void startWebServerTask() {
+  if (webServerTaskHandle) return;
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      webServerTask,
+      "HTTP",
+      10 * 1024,
+      NULL,
+      1,
+      &webServerTaskHandle,
+      0);
+  if (ok == pdPASS) {
+    weblogf("[http] server task started\n");
+  } else {
+    weblogf("[http] server task start failed\n");
   }
 }
 
@@ -1656,6 +1681,12 @@ static void serviceRealtimeDuringHttp() {
 
 static void sendStringCooperatively(int code, const char* contentType, const String& body) {
   constexpr size_t kHttpChunkBytes = 512;
+  constexpr size_t kHttpSingleSendBytes = 8192;
+  server.sendHeader("Connection", "close");
+  if (body.length() <= kHttpSingleSendBytes) {
+    server.send(code, contentType, body);
+    return;
+  }
   server.setContentLength(body.length());
   server.send(code, contentType, "");
   for (size_t off = 0; off < body.length(); off += kHttpChunkBytes) {
@@ -1668,7 +1699,24 @@ static void sendStringCooperatively(int code, const char* contentType, const Str
 
 static void sendProgmemCooperatively(int code, const char* contentType, PGM_P body) {
   constexpr size_t kHttpChunkBytes = 512;
+  constexpr size_t kHttpSingleSendBytes = 8192;
   size_t len = strlen_P(body);
+  server.sendHeader("Connection", "close");
+  if (len <= kHttpSingleSendBytes) {
+    String out;
+    if (out.reserve(len)) {
+      char chunkBuf[kHttpChunkBytes + 1];
+      for (size_t off = 0; off < len; off += kHttpChunkBytes) {
+        size_t n = len - off;
+        if (n > kHttpChunkBytes) n = kHttpChunkBytes;
+        memcpy_P(chunkBuf, body + off, n);
+        chunkBuf[n] = '\0';
+        out += chunkBuf;
+      }
+      server.send(code, contentType, out);
+      return;
+    }
+  }
   server.setContentLength(len);
   server.send(code, contentType, "");
   char chunkBuf[kHttpChunkBytes + 1];
@@ -3262,6 +3310,7 @@ void setup() {
   server.begin();
   weblogf("[http] listening on :80\n");
   startRealtimePumpTask();
+  startWebServerTask();
 
   // Bring the TFT up after WiFi + HTTP are registered. Keep this in the
   // main boot flow so there is only one LVGL/display owner and failures
@@ -3345,7 +3394,7 @@ static void serialLoraScan(uint8_t chStart, uint8_t chEnd,
         uint32_t until = millis() + dwellMs;
         while ((int32_t)(millis() - until) < 0) {
           pumpRealtimeFallbackOnce();
-          server.handleClient();
+          if (!webServerTaskHandle) server.handleClient();
           ntripPump();
           buttonPump();
           batteryPump();
@@ -3386,7 +3435,7 @@ void loop() {
   pumpRealtimeFallbackOnce();
   wifiPump();
   wifiDiagPump();
-  server.handleClient();
+  if (!webServerTaskHandle) server.handleClient();
   ntripPump();
   pumpRealtimeFallbackOnce();
   buttonPump();
