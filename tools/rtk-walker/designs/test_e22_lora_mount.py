@@ -17,6 +17,9 @@ bb = part.bounding_box()
 assert mount.board_w == 26.0
 assert mount.board_l == 16.0
 assert mount.fixture_name == "E22 LoRa Mount Test"
+assert mount.front_stop_post_count == 2
+assert mount.front_stop_gap_y >= 8.0
+assert mount.front_stop_h < mount.module_top
 assert bb.size.X > mount.board_w + 6.0
 assert bb.size.Y > mount.board_l + 4.0
 approx(bb.min.Z, -mount.base_t)

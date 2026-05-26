@@ -56,6 +56,14 @@ clip_w = 4.2
 # Back-wall wire exit. The +X antenna side stays open.
 wire_slot_w = 10.0
 
+# +X anti-slide stops. Two low posts catch the module corners so it cannot
+# walk out of the open side, while the middle stays clear for insertion and
+# antenna / IPEX access.
+front_stop_post_count = 2
+front_stop_r = 1.1
+front_stop_h = 2.6
+front_stop_gap_y = 10.0
+
 pkt_w = board_w + 2 * clr
 pkt_l = board_l + 2 * clr
 module_top = standoff_z + module_t
@@ -123,6 +131,14 @@ def build_mount():
                 standoff_z,
                 align=(Align.CENTER, Align.CENTER, Align.MIN),
             )
+        stop_x = pkt_w / 2 - front_stop_r
+        stop_y = front_stop_gap_y / 2 + front_stop_r
+        with Locations([(stop_x, -stop_y, 0), (stop_x, stop_y, 0)]):
+            Cylinder(
+                radius=front_stop_r,
+                height=front_stop_h,
+                align=(Align.CENTER, Align.CENTER, Align.MIN),
+            )
 
     return e22_mount.part
 
@@ -167,7 +183,8 @@ if __name__ == "__main__":
     print(f"Exported: {step_path} + {stl_path}")
     print(
         f"  board {board_w:.1f}x{board_l:.1f} | hook underside Z={hook_z:.2f} "
-        f"| clip gap {clamp_gap:.2f} | wire slot {wire_slot_w:.1f}"
+        f"| clip gap {clamp_gap:.2f} | wire slot {wire_slot_w:.1f} "
+        f"| front gap {front_stop_gap_y:.1f}"
     )
 
     if _OCP_AVAILABLE and _ocp_viewer_listening():
