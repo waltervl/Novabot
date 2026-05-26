@@ -303,6 +303,18 @@ enum GnssVariant : uint8_t {
 static GnssVariant gnssVariant = GNSS_VARIANT_UNKNOWN;
 static bool gnssVariantLogged = false;
 
+static void setGnssVariant(GnssVariant variant) {
+  if (variant == GNSS_VARIANT_UNKNOWN || gnssVariant != GNSS_VARIANT_UNKNOWN) return;
+  gnssVariant = variant;
+  if (!gnssVariantLogged) {
+    const char* name =
+      (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
+      (gnssVariant == GNSS_VARIANT_HDA) ? "LC29HDA" : "other";
+    weblogf("[gnss] detected %s firmware profile\n", name);
+    gnssVariantLogged = true;
+  }
+}
+
 static void sendGnssCommand(const String& payload) {
   uint8_t cs = 0;
   for (size_t i = 0; i < payload.length(); i++) cs ^= (uint8_t) payload[i];
@@ -352,22 +364,9 @@ static void gnssLineFeed(char c) {
       }
       if (nmeaLineLen >= 3 && nmeaLineBuf[0] == '$' && nmeaLineBuf[1] == 'P') {
         weblogf("[gnss-rx] %s\n", nmeaLineBuf);
-        if (strncmp(nmeaLineBuf, "$PAIR020,", 9) == 0) {
-          if (strstr(nmeaLineBuf, "LC29HEA")) {
-            gnssVariant = GNSS_VARIANT_HEA;
-          } else if (strstr(nmeaLineBuf, "LC29HDA")) {
-            gnssVariant = GNSS_VARIANT_HDA;
-          } else {
-            gnssVariant = GNSS_VARIANT_OTHER;
-          }
-          if (!gnssVariantLogged) {
-            const char* variant =
-              (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
-              (gnssVariant == GNSS_VARIANT_HDA) ? "LC29HDA" : "other";
-            weblogf("[gnss] detected %s firmware profile\n", variant);
-            gnssVariantLogged = true;
-          }
-        }
+        if (strstr(nmeaLineBuf, "LC29HEA")) setGnssVariant(GNSS_VARIANT_HEA);
+        else if (strstr(nmeaLineBuf, "LC29HDA")) setGnssVariant(GNSS_VARIANT_HDA);
+        else if (strncmp(nmeaLineBuf, "$PAIR020,", 9) == 0) setGnssVariant(GNSS_VARIANT_OTHER);
         // PAIR001 ACK: "$PAIR001,<cmd>,<result>*HH" — cmd matches the
         // PAIR<cmd> we sent (e.g. 050 for PAIR050), result=0 means OK.
         // Parse it here so the retry loop in gnssPump() can see whether
@@ -1078,6 +1077,8 @@ static bool     batteryCharging = false;
 
 static uint32_t gnssDetectedAtMs = 0; // millis() when first byte arrived (used to delay the post-detect PAIR queries)
 static bool     pair021Sent = false; // firmware version query
+static uint32_t pair021LastTxMs = 0;
+static uint8_t  pair021TxCount = 0;
 static bool     pair050_1HzSent = false; // true once at least one 1 Hz command was sent
 // PAIR050 rate-config ACK state. The LC29HDA silently drops the cmd
 // if its serial parser is busy, so keep retrying until PAIR001,050,0
@@ -1131,10 +1132,17 @@ static void gnssPump() {
   // entirely (31 sats, HDOP 0.49, no fix in 5 min). At 1 Hz the same
   // setup fixes inside a minute. So we stay at 1 Hz, and density comes
   // from the 2 cm displacement filter instead.
-  uint32_t sinceDetect = millis() - gnssDetectedAtMs;
-  if (!pair021Sent && sinceDetect >= 500) {
-    sendGnssCommand("PAIR021");
-    pair021Sent = true;
+  uint32_t nowCfgMs = millis();
+  uint32_t sinceDetect = nowCfgMs - gnssDetectedAtMs;
+  if (sinceDetect >= 500 && gnssVariant == GNSS_VARIANT_UNKNOWN) {
+    uint32_t retryMs = (pair021TxCount < 5) ? 1000 : 10000;
+    if (pair021TxCount == 0 || nowCfgMs - pair021LastTxMs >= retryMs) {
+      sendGnssCommand("PAIR021");
+      pair021Sent = true;
+      pair021LastTxMs = nowCfgMs;
+      if (pair021TxCount < UINT8_MAX) pair021TxCount++;
+      weblogf("[gnss] PAIR021 firmware query attempt %u\n", (unsigned) pair021TxCount);
+    }
   }
   // 1000 ms = 1 Hz. The LC29HDA *-DA* variant is hardware-locked to 1 Hz
   // RTK regardless of what PAIR050 says (Quectel LC29H Hardware Design
@@ -1146,7 +1154,6 @@ static void gnssPump() {
   // True 5 Hz RTK requires LC29HEA (different SKU, same footprint).
   // Density at 1 Hz is recovered server-side via polygon densification
   // + a tight displacement filter that keeps real-but-small movements.
-  uint32_t nowCfgMs = millis();
   bool enforceDa1Hz = (gnssVariant != GNSS_VARIANT_HEA) &&
                       (gnssVariant != GNSS_VARIANT_UNKNOWN || sinceDetect >= 3000);
   if (sinceDetect >= 700 && enforceDa1Hz && !pair050Acked) {
