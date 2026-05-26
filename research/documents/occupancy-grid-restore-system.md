@@ -165,6 +165,21 @@ update, browsers may cache the old HTML → **hard-refresh (Cmd/Ctrl+Shift+R)**.
 
 ---
 
+## 7a. Bug fixed 2026-05-26: obstacles rasterized as FREE (self-intersection)
+
+Symptom: David's mower drove into defined obstacles. Cause: the dense obstacle
+sensor-scans **self-intersect**, and at `DEFAULT_OFFSETS=0` `expandPolygon`
+skipped ClipperLib and returned raw points; the even-odd `fillPoly` then left
+the interior unfilled (holes) → obstacles became FREE in `map.pgm`. The firmware
+always runs polygons through ClipperLib (which cleans self-intersections), so we
+must too. Fix (commit 5cccc0e9): at delta 0, clean via
+`Clipper.SimplifyPolygons(path, pftNonZero)` (no offset, geometry preserved).
+Verified: Zone1 obstacles went 0% → 75-91% occupied. NB: very small obstacles
+(a few cells) still erode under the 3×3 dilate ×2 - the firmware does the same
+and relies on live camera perception for those, so this matches firmware
+behavior. **Any bundle generated before 5cccc0e9 has hollow obstacles and must
+be regenerated + re-imported.**
+
 ## 8. Open items / next steps
 
 - `tools/opennova-restore/db-map-to-bundle.mjs` still has the old embedded
