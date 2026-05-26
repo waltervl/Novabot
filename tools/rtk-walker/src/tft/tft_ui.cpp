@@ -51,6 +51,18 @@ extern Recorder recorder;
 #define COL_AMBER       lv_color_hex(0xf59e0b)
 #define COL_BLUE        lv_color_hex(0x60a5fa)
 
+// Polygon closure UX. "Near" gives the operator an early visual cue while
+// walking; "closed" is tight enough to treat the ring as complete.
+#define POLYGON_CLOSE_MIN_POINTS 8
+#define POLYGON_NEAR_CLOSE_M     5.0f
+#define POLYGON_CLOSED_M         1.5f
+
+enum PolygonCloseState {
+  PCS_OPEN = 0,
+  PCS_NEAR,
+  PCS_CLOSED,
+};
+
 // ── Geometry ───────────────────────────────────────────────────────────────
 #define SCREEN_W        480
 #define SCREEN_H        320
@@ -2118,6 +2130,23 @@ static void on_discard_track_clicked(lv_event_t* /*e*/) {
 // .bss instead so the redraw is constant-stack.
 static WalkerLivePoint redraw_scratch[MAP_POINT_MAX];
 
+static double tft_haversineM(double lat1, double lng1, double lat2, double lng2) {
+  const double R = 6371000.0;
+  double dLat = (lat2 - lat1) * (M_PI / 180.0);
+  double dLng = (lng2 - lng1) * (M_PI / 180.0);
+  double a = sin(dLat / 2) * sin(dLat / 2)
+           + cos(lat1 * M_PI / 180.0) * cos(lat2 * M_PI / 180.0)
+           * sin(dLng / 2) * sin(dLng / 2);
+  return 2 * R * asin(sqrt(a));
+}
+
+static PolygonCloseState polygon_close_state(size_t n, float closingM) {
+  if (n < POLYGON_CLOSE_MIN_POINTS || closingM <= 0.0f) return PCS_OPEN;
+  if (closingM <= POLYGON_CLOSED_M) return PCS_CLOSED;
+  if (closingM <= POLYGON_NEAR_CLOSE_M) return PCS_NEAR;
+  return PCS_OPEN;
+}
+
 static void redraw_map(const WalkerSnapshot& snap) {
   size_t n;
   WalkerLivePoint* pts;
@@ -2177,6 +2206,17 @@ static void redraw_map(const WalkerSnapshot& snap) {
   if (latSpan < 0.00005) { double c = (minLat + maxLat) / 2; minLat = c - 0.000025; maxLat = c + 0.000025; latSpan = maxLat - minLat; }
   if (lngSpan < 0.00005) { double c = (minLng + maxLng) / 2; minLng = c - 0.000025; maxLng = c + 0.000025; lngSpan = maxLng - minLng; }
 
+  bool viewingSavedMap = (viewing_map_slot >= 0);
+  float closingM = 0.0f;
+  if (!viewingSavedMap && n >= 2) {
+    closingM = (float) tft_haversineM(pts[0].lat, pts[0].lng,
+                                      pts[n - 1].lat, pts[n - 1].lng);
+  }
+  PolygonCloseState closeState = polygon_close_state(n, closingM);
+  bool visuallyClosed = viewingSavedMap ||
+                        (!snap.recording && snap.areaM2 > 0.0f && n >= 3) ||
+                        (snap.recording && closeState == PCS_CLOSED);
+
   lv_coord_t w = lv_obj_get_width(map_panel);
   lv_coord_t h = lv_obj_get_height(map_panel);
   // Inner padding inside the map card — keeps the polyline off the
@@ -2226,23 +2266,42 @@ static void redraw_map(const WalkerSnapshot& snap) {
 
   // Cap to MAP_POINT_MAX (storage size). If the live buffer is bigger
   // (e.g. 4000), decimate evenly so the polyline shape stays faithful.
+  size_t renderCap = (visuallyClosed && MAP_POINT_MAX > 1) ? MAP_POINT_MAX - 1 : MAP_POINT_MAX;
   size_t outN = n;
   size_t step = 1;
-  if (n > MAP_POINT_MAX) {
-    step = (n + MAP_POINT_MAX - 1) / MAP_POINT_MAX;
+  if (n > renderCap) {
+    step = (n + renderCap - 1) / renderCap;
     outN = (n + step - 1) / step;
-    if (outN > MAP_POINT_MAX) outN = MAP_POINT_MAX;
+    if (outN > renderCap) outN = renderCap;
   }
   uint16_t wi = 0;
-  for (size_t i = 0; i < n && wi < outN && wi < MAP_POINT_MAX; i += step) {
+  for (size_t i = 0; i < n && wi < outN && wi < renderCap; i += step) {
     float fx, fy;
     project(pts[i].lat, pts[i].lng, fx, fy);
     map_pts[wi].x = (lv_coord_t) fx;
     map_pts[wi].y = (lv_coord_t) fy;
     wi++;
   }
+  if (visuallyClosed && wi >= 3 && wi < MAP_POINT_MAX) {
+    map_pts[wi] = map_pts[0];
+    wi++;
+  }
   map_pts_used = wi;
   lv_line_set_points(map_line, map_pts, map_pts_used);
+
+  lv_color_t lineColor = COL_BLUE;
+  lv_coord_t lineWidth = 3;
+  if (viewingSavedMap || (!snap.recording && snap.areaM2 > 0.0f)) {
+    lineColor = COL_EMERALD;
+  } else if (snap.recording && closeState == PCS_CLOSED) {
+    lineColor = COL_EMERALD;
+    lineWidth = 4;
+  } else if (snap.recording && closeState == PCS_NEAR) {
+    lineColor = COL_AMBER;
+    lineWidth = 4;
+  }
+  lv_obj_set_style_line_color(map_line, lineColor, 0);
+  lv_obj_set_style_line_width(map_line, lineWidth, 0);
 
   // Obstacles overlay: only meaningful when we're viewing a saved map.
   // Project each loaded obstacle through the *same* lambda we used for
@@ -2303,9 +2362,19 @@ static void redraw_map(const WalkerSnapshot& snap) {
                (unsigned) n, alias);
     } else if (snap.recording) {
       // Live: how far have we walked, how much further to the start.
-      snprintf(buf, sizeof(buf),
-               LV_SYMBOL_DIRECTORY " %u pts\n%.1f m walked\n%.1f m to close",
-               (unsigned) n, snap.walkedM, snap.closingM);
+      if (closeState == PCS_CLOSED) {
+        snprintf(buf, sizeof(buf),
+                 LV_SYMBOL_OK " %u pts\nClosed\nTap Stop",
+                 (unsigned) n);
+      } else if (closeState == PCS_NEAR) {
+        snprintf(buf, sizeof(buf),
+                 LV_SYMBOL_WARNING " %u pts\nAlmost closed\n%.1f m to start",
+                 (unsigned) n, closingM);
+      } else {
+        snprintf(buf, sizeof(buf),
+                 LV_SYMBOL_DIRECTORY " %u pts\n%.1f m walked\n%.1f m to close",
+                 (unsigned) n, snap.walkedM, closingM);
+      }
     } else if (snap.areaM2 > 0) {
       // Stopped: show the closed-polygon area + total path.
       snprintf(buf, sizeof(buf),
@@ -2951,13 +3020,7 @@ static void recRebuildParentPts() {
 }
 
 static double rec_haversineM(double lat1, double lng1, double lat2, double lng2) {
-    const double R = 6371000.0;
-    double dLat = (lat2 - lat1) * (M_PI / 180.0);
-    double dLng = (lng2 - lng1) * (M_PI / 180.0);
-    double a = sin(dLat/2) * sin(dLat/2)
-             + cos(lat1 * M_PI / 180.0) * cos(lat2 * M_PI / 180.0)
-             * sin(dLng/2) * sin(dLng/2);
-    return 2 * R * asin(sqrt(a));
+    return tft_haversineM(lat1, lng1, lat2, lng2);
 }
 
 static void recRebuildLivePts(const WalkerSnapshot& snap) {
@@ -3006,26 +3069,61 @@ static void recRebuildLivePts(const WalkerSnapshot& snap) {
     }
     if (grew) recRebuildParentPts();
 
+    RecordingState activeRecState = recorder.state();
+    RecordingMode activeMode = s_recArmed ? s_pendingRecMode : activeRecState.mode;
+    String activeChannelTarget = s_recArmed ? s_pendingRecChannelTo : activeRecState.channelTarget;
+    bool polygonMode = (activeMode == RecordingMode::Work ||
+                        activeMode == RecordingMode::Obstacle);
+    float closingM = 0.0f;
+    PolygonCloseState closeState = PCS_OPEN;
+    if (polygonMode && n >= 2) {
+        closingM = (float) rec_haversineM(
+            redraw_scratch[0].lat, redraw_scratch[0].lng,
+            redraw_scratch[n - 1].lat, redraw_scratch[n - 1].lng);
+        closeState = polygon_close_state(n, closingM);
+    }
+    bool visuallyClosed = polygonMode && closeState == PCS_CLOSED;
+
     // Render the live polyline. Decimate to REC_PTS_MAX because the live
     // ring (walkerCopyLivePoints up to MAP_POINT_MAX) can be much wider
     // than what the small map line widget needs.
     size_t step = 1;
+    size_t renderCap = (visuallyClosed && REC_PTS_MAX > 1) ? REC_PTS_MAX - 1 : REC_PTS_MAX;
     size_t outN = n;
-    if (n > REC_PTS_MAX) {
-        step = (n + REC_PTS_MAX - 1) / REC_PTS_MAX;
+    if (n > renderCap) {
+        step = (n + renderCap - 1) / renderCap;
         outN = (n + step - 1) / step;
-        if (outN > REC_PTS_MAX) outN = REC_PTS_MAX;
+        if (outN > renderCap) outN = renderCap;
     }
     uint16_t wi = 0;
-    for (size_t i = 0; i < n && wi < outN && wi < REC_PTS_MAX; i += step) {
+    for (size_t i = 0; i < n && wi < outN && wi < renderCap; i += step) {
         float fx, fy;
         rec_project(redraw_scratch[i].lat, redraw_scratch[i].lng, fx, fy);
         s_recLivePts[wi].x = (lv_coord_t) fx;
         s_recLivePts[wi].y = (lv_coord_t) fy;
         wi++;
     }
+    if (visuallyClosed && wi >= 3 && wi < REC_PTS_MAX) {
+        s_recLivePts[wi] = s_recLivePts[0];
+        wi++;
+    }
     s_recLivePtsUsed = wi;
     if (s_recLivePtsUsed >= 2) {
+        lv_color_t lineColor = COL_BLUE;
+        lv_coord_t lineWidth = 3;
+        if (polygonMode) {
+            if (closeState == PCS_CLOSED) {
+                lineColor = COL_EMERALD;
+                lineWidth = 4;
+            } else if (closeState == PCS_NEAR) {
+                lineColor = COL_AMBER;
+                lineWidth = 4;
+            } else {
+                lineColor = COL_RED;
+            }
+        }
+        lv_obj_set_style_line_color(s_recLiveLine, lineColor, 0);
+        lv_obj_set_style_line_width(s_recLiveLine, lineWidth, 0);
         lv_line_set_points(s_recLiveLine, s_recLivePts, s_recLivePtsUsed);
         lv_obj_clear_flag(s_recLiveLine, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -3048,29 +3146,36 @@ static void recRebuildLivePts(const WalkerSnapshot& snap) {
         lv_obj_clear_flag(s_recCursor, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Closure detection: need at least 8 points so the polygon has a
-    // real shape (not just standstill jitter) before we tell the user
-    // "you can close this now". 1.5 m is a generous threshold but well
-    // inside RTK FIX noise floor, so the green state only triggers when
-    // the operator actually walked back close to the start vertex.
-    if (n >= 8) {
-        double d = rec_haversineM(
-            redraw_scratch[0].lat, redraw_scratch[0].lng,
-            redraw_scratch[n - 1].lat, redraw_scratch[n - 1].lng);
-        char buf[64];
-        if (d < 1.5) {
-            lv_obj_set_style_bg_color(s_recStartDot, lv_color_hex(0x16a34a), 0);
-            snprintf(buf, sizeof(buf),
-                     LV_SYMBOL_OK "  Polygon closeable (%.1f m). Tap Save.", d);
-            lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0x86efac), 0);
+    // Closure detection is only meaningful for polygon recordings
+    // (work/obstacle). Channel recordings are routes, not rings.
+    if (!polygonMode) {
+        lv_obj_set_style_bg_color(s_recStartDot, COL_BLUE, 0);
+        if (activeMode == RecordingMode::Channel && activeChannelTarget == "charge") {
+            lv_label_set_text(s_recClosure, "Walk from the charger into the map, then tap Save.");
         } else {
-            lv_obj_set_style_bg_color(s_recStartDot, lv_color_hex(0xef4444), 0);
-            snprintf(buf, sizeof(buf), "Closure: %.1f m", d);
+            lv_label_set_text(s_recClosure, "Walk the channel route, then tap Save.");
+        }
+        lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xcbd5f5), 0);
+    } else if (n >= POLYGON_CLOSE_MIN_POINTS) {
+        char buf[64];
+        if (closeState == PCS_CLOSED) {
+            lv_obj_set_style_bg_color(s_recStartDot, COL_EMERALD, 0);
+            snprintf(buf, sizeof(buf),
+                     LV_SYMBOL_OK "  Polygon closed (%.1f m). Tap Save.", closingM);
+            lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0x86efac), 0);
+        } else if (closeState == PCS_NEAR) {
+            lv_obj_set_style_bg_color(s_recStartDot, COL_AMBER, 0);
+            snprintf(buf, sizeof(buf),
+                     LV_SYMBOL_WARNING "  Almost closed: %.1f m to start.", closingM);
+            lv_obj_set_style_text_color(s_recClosure, COL_AMBER, 0);
+        } else {
+            lv_obj_set_style_bg_color(s_recStartDot, COL_RED, 0);
+            snprintf(buf, sizeof(buf), "Closure: %.1f m", closingM);
             lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xcbd5f5), 0);
         }
         lv_label_set_text(s_recClosure, buf);
     } else {
-        lv_obj_set_style_bg_color(s_recStartDot, lv_color_hex(0xef4444), 0);
+        lv_obj_set_style_bg_color(s_recStartDot, COL_RED, 0);
         lv_label_set_text(s_recClosure, "Walk the perimeter, return to start to close.");
         lv_obj_set_style_text_color(s_recClosure, lv_color_hex(0xcbd5f5), 0);
     }
