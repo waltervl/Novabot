@@ -68,6 +68,7 @@
 #define NTRIP_HANDSHAKE_TIMEOUT_MS 900
 #define NTRIP_HEADER_MAX 4096
 #define NTRIP_HEADER_BYTES_PER_PUMP 512
+#define WIFI_RECONNECT_INTERVAL_MS 5000
 
 // How often to push the latest GGA back to the NTRIP caster. VRS / NEAREST
 // mountpoints (Centipede NLDB, RTK2go VRS, NetR9, etc.) need a periodic
@@ -611,12 +612,31 @@ static String setupApPassword() {
   return String(buf);
 }
 
+static uint32_t wifiLastReconnectAttemptMs = 0;
+
 static void startSetupAp() {
   String ssid = setupApSsid();
   String pass = setupApPassword();
   WiFi.mode(WIFI_AP);
   WiFi.softAP(ssid.c_str(), pass.c_str());
   weblogf("[wifi] setup AP ssid=%s (device-specific password)\n", ssid.c_str());
+}
+
+static void wifiPump() {
+  if (cfg.ssid.length() == 0) return;
+  if (WiFi.getMode() != WIFI_STA) return;
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  uint32_t now = millis();
+  if (wifiLastReconnectAttemptMs != 0 &&
+      now - wifiLastReconnectAttemptMs < WIFI_RECONNECT_INTERVAL_MS) {
+    return;
+  }
+  wifiLastReconnectAttemptMs = now;
+  weblogf("[wifi] reconnecting to %s (status=%d)\n",
+          cfg.ssid.c_str(), (int) WiFi.status());
+  WiFi.disconnect(false, false);
+  WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
 }
 
 // Shoelace area on an equirectangular projection anchored at the first
@@ -1324,11 +1344,14 @@ static void gnssPump() {
     if (ls.moduleReady) {
       char rawHex[2 * 32 + 1];
       walkerLoraGetRawTailHex(rawHex, sizeof(rawHex));
-      weblogf("[lora] raw=%lu frames=%lu rejected=%lu bytesFwd=%lu active=%d lastFrameAgo=%ldms tail=%s\n",
+      weblogf("[lora] raw=%lu frames=%lu rejected=%lu bytesFwd=%lu rtcm=%lu crcBad=%lu lastRtcmType=%u active=%d lastFrameAgo=%ldms lastRtcmAgo=%ldms tail=%s\n",
               (unsigned long) ls.rawBytesIn, (unsigned long) ls.framesReceived,
               (unsigned long) ls.framesRejected, (unsigned long) ls.bytesForwarded,
+              (unsigned long) ls.rtcmMessages, (unsigned long) ls.rtcmCrcRejected,
+              (unsigned) ls.lastRtcmType,
               (int) ls.active,
               ls.lastFrameMsAgo == UINT32_MAX ? -1L : (long) ls.lastFrameMsAgo,
+              ls.lastRtcmMsAgo == UINT32_MAX ? -1L : (long) ls.lastRtcmMsAgo,
               rawHex);
     }
     lastLoraStatsMs = nowLora;
@@ -1767,6 +1790,13 @@ static void handleStatus() {
   }
 #endif
   coreUnlock();
+  if (WiFi.status() == WL_CONNECTED) {
+    doc["wifiIp"] = WiFi.localIP().toString();
+  } else if (WiFi.getMode() == WIFI_AP) {
+    doc["wifiIp"] = WiFi.softAPIP().toString();
+  } else {
+    doc["wifiIp"] = "";
+  }
   WalkerLoraStats lstats;
   walkerLoraGetStats(lstats);
   JsonObject lora = doc["lora"].to<JsonObject>();
@@ -1775,7 +1805,15 @@ static void handleStatus() {
   lora["forwarding"]  = walkerLoraForwardingEnabled();
   lora["bytes"]       = lstats.bytesForwarded;
   lora["frames"]      = lstats.framesReceived;
+  lora["rejected"]    = lstats.framesRejected;
   lora["raw"]         = lstats.rawBytesIn;
+  if (lstats.lastFrameMsAgo != UINT32_MAX) lora["lastFrameMsAgo"] = lstats.lastFrameMsAgo;
+  else lora["lastFrameMsAgo"] = nullptr;
+  lora["rtcmMessages"] = lstats.rtcmMessages;
+  lora["rtcmCrcRejected"] = lstats.rtcmCrcRejected;
+  if (lstats.lastRtcmMsAgo != UINT32_MAX) lora["lastRtcmMsAgo"] = lstats.lastRtcmMsAgo;
+  else lora["lastRtcmMsAgo"] = nullptr;
+  lora["lastRtcmType"] = lstats.lastRtcmType;
   lora["addr"]        = statusLoraAddr;
   lora["channel"]     = statusLoraChannel;
   lora["packetLen"]   = loraPacketLenBytes(statusLoraPacketLenCode);
@@ -2924,6 +2962,12 @@ void setup() {
 
     weblogf("[wifi] connecting to %s\n", cfg.ssid.c_str());
     WiFi.mode(WIFI_STA);
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.setSleep(false);
+    String hostname = setupApSsid();
+    hostname.toLowerCase();
+    WiFi.setHostname(hostname.c_str());
     WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
     unsigned long deadline = millis() + 20000;
     while (millis() < deadline && WiFi.status() != WL_CONNECTED) {
@@ -2931,6 +2975,10 @@ void setup() {
       delay(200);
     }
     if (WiFi.status() == WL_CONNECTED) {
+      coreLock();
+      wifiConnectFailed = false;
+      wifiFailReason = "";
+      coreUnlock();
       weblogf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
       // Sync time so CSV timestamps are real wall-clock seconds.
       configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
@@ -3202,6 +3250,7 @@ static void serialLoraScan(uint8_t chStart, uint8_t chEnd,
 
 void loop() {
   pumpRealtimeFallbackOnce();
+  wifiPump();
   server.handleClient();
   ntripPump();
   pumpRealtimeFallbackOnce();

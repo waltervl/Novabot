@@ -22,9 +22,13 @@ struct WalkerLoraStats {
     bool     active;             // last valid frame in 10 s
     uint32_t framesReceived;     // valid frames (any cmd byte)
     uint32_t framesRejected;     // bad XOR or unknown cmd
-    uint32_t bytesForwarded;     // 0x31 payload bytes pushed to gnssSerial
+    uint32_t bytesForwarded;     // valid RTCM3 bytes pushed to gnssSerial
     uint32_t rawBytesIn;         // every byte read off UART2, pre-framing
     uint32_t lastFrameMsAgo;     // ms since last valid 0x31 frame, UINT32_MAX if never
+    uint32_t rtcmMessages;       // complete CRC-valid RTCM3 messages forwarded
+    uint32_t rtcmCrcRejected;    // complete RTCM3 candidates rejected by CRC
+    uint32_t lastRtcmMsAgo;      // ms since last CRC-valid RTCM3 message
+    uint16_t lastRtcmType;       // RTCM3 message type of the most recent valid frame
 };
 
 // Called once from setup() after Serial.begin / WiFi associated.
@@ -73,7 +77,9 @@ struct WalkerLoraConfig {
 };
 struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived;
                           uint32_t framesRejected; uint32_t bytesForwarded;
-                          uint32_t rawBytesIn; uint32_t lastFrameMsAgo; };
+                          uint32_t rawBytesIn; uint32_t lastFrameMsAgo;
+                          uint32_t rtcmMessages; uint32_t rtcmCrcRejected;
+                          uint32_t lastRtcmMsAgo; uint16_t lastRtcmType; };
 inline bool walkerLoraSetup(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraPump() {}
 inline void walkerLoraSetForwardingEnabled(bool) {}
@@ -84,6 +90,8 @@ inline void walkerLoraGetStats(WalkerLoraStats& out) {
     out.moduleReady = false; out.active = false;
     out.framesReceived = 0; out.framesRejected = 0;
     out.bytesForwarded = 0; out.rawBytesIn = 0; out.lastFrameMsAgo = UINT32_MAX;
+    out.rtcmMessages = 0; out.rtcmCrcRejected = 0;
+    out.lastRtcmMsAgo = UINT32_MAX; out.lastRtcmType = 0;
 }
 inline size_t walkerLoraGetRawTailHex(char* out, size_t outCap) {
     if (out && outCap) out[0] = '\0';

@@ -120,8 +120,11 @@ static const char INDEX_HTML[] PROGMEM = R"INDEX(
     <div class="row"><span class="label">Latitude</span><span class="value" id="lat">-</span></div>
     <div class="row"><span class="label">Longitude</span><span class="value" id="lng">-</span></div>
     <div class="row"><span class="label">Altitude</span><span class="value" id="alt">-</span></div>
+    <div class="row"><span class="label">Diff age</span><span class="value" id="dgpsAge">-</span></div>
+    <div class="row"><span class="label">WiFi IP</span><span class="value" id="wifiIp">-</span></div>
     <div class="row"><span class="label">NTRIP bytes</span><span class="value" id="ntrip">0</span></div>
     <div class="row"><span class="label">LoRa raw / frames</span><span class="value" id="loraDiag">-</span></div>
+    <div class="row"><span class="label">LoRa RTCM</span><span class="value" id="loraRtcm">-</span></div>
     <div class="row" id="batteryRow" style="display:none"><span class="label">Battery</span><span class="value" id="battery">-</span></div>
   </div>
 
@@ -373,6 +376,8 @@ async function refresh() {
     setText('lat', d.lat != null ? d.lat.toFixed(7) : '-');
     setText('lng', d.lng != null ? d.lng.toFixed(7) : '-');
     setText('alt', d.alt != null ? (d.alt.toFixed(1) + ' m') : '-');
+    setText('dgpsAge', d.dgpsAge != null ? (d.dgpsAge.toFixed(1) + ' s') : '-');
+    setText('wifiIp', d.wifiIp || '-');
     setText('ntrip', d.ntripBytes != null ? d.ntripBytes : 0);
     setText('points', d.points != null ? d.points : 0);
     const batRow = document.getElementById('batteryRow');
@@ -400,6 +405,13 @@ async function refresh() {
     else if (lora.moduleReady) rtkSrc = 'LoRa quiet';
     setText('rtkSource', rtkSrc);
     setText('loraDiag', (lora.raw != null ? lora.raw : 0) + ' / ' + (lora.frames != null ? lora.frames : 0));
+    const rtcmAge = lora.lastRtcmMsAgo != null ? (Math.round(lora.lastRtcmMsAgo / 100) / 10 + 's') : '-';
+    setText('loraRtcm',
+      (lora.rtcmMessages != null ? lora.rtcmMessages : 0) +
+      ' msgs, bad ' + (lora.rtcmCrcRejected != null ? lora.rtcmCrcRejected : 0) +
+      ', age ' + rtcmAge +
+      (lora.lastRtcmType ? ', type ' + lora.lastRtcmType : '')
+    );
 
     // The walker may have loaded (or exited) a saved map on its own
     // (TFT tap, BLE, anything). Mirror that into the web UI so the

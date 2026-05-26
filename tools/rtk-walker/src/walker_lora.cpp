@@ -185,6 +185,10 @@ static uint32_t g_framesRejected = 0;
 static uint32_t g_bytesForwarded = 0;
 static uint32_t g_lastValidMs    = 0;
 static uint32_t g_rawBytesIn     = 0;
+static uint32_t g_rtcmMessages   = 0;
+static uint32_t g_rtcmCrcRejected = 0;
+static uint32_t g_rtcmLastValidMs = 0;
+static uint16_t g_rtcmLastType    = 0;
 static volatile bool g_forwardingEnabled = true;
 
 enum RtcmParseState : uint8_t {
@@ -261,9 +265,20 @@ static void forwardRtcmStreamBytes(const uint8_t* data, size_t len) {
                                     (uint32_t)g_rtcmBuf[g_rtcmExpectedLen - 1];
                     uint32_t got = rtcmCrc24q(g_rtcmBuf, g_rtcmExpectedLen - 3);
                     if (want == got) {
+                        uint16_t msgType = 0;
+                        if (g_rtcmExpectedLen >= 8) {
+                            msgType = (uint16_t)((((uint16_t) g_rtcmBuf[3]) << 4) |
+                                                 (((uint16_t) g_rtcmBuf[4]) >> 4));
+                            msgType &= 0x0FFF;
+                        }
                         gnssSerial.write(g_rtcmBuf, g_rtcmExpectedLen);
                         rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
                         g_bytesForwarded += g_rtcmExpectedLen;
+                        g_rtcmMessages++;
+                        g_rtcmLastValidMs = millis();
+                        g_rtcmLastType = msgType;
+                    } else {
+                        g_rtcmCrcRejected++;
                     }
                     rtcmResetParser();
                 }
@@ -434,6 +449,10 @@ void walkerLoraGetStats(WalkerLoraStats& out) {
     out.bytesForwarded = g_bytesForwarded;
     out.rawBytesIn     = g_rawBytesIn;
     out.lastFrameMsAgo = g_lastValidMs ? (millis() - g_lastValidMs) : UINT32_MAX;
+    out.rtcmMessages   = g_rtcmMessages;
+    out.rtcmCrcRejected = g_rtcmCrcRejected;
+    out.lastRtcmMsAgo  = g_rtcmLastValidMs ? (millis() - g_rtcmLastValidMs) : UINT32_MAX;
+    out.lastRtcmType   = g_rtcmLastType;
 }
 
 size_t walkerLoraGetRawTailHex(char* out, size_t outCap) {
