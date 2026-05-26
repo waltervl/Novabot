@@ -22,6 +22,11 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+// Faithful firmware occupancy-grid generator (map.pgm/png/yaml + per-map +
+// dock free-disc). Run this script with tsx so the .ts import + clipper-lib
+// resolve from server/node_modules:
+//   cd server && npx tsx ../tools/opennova-restore/cloud-to-bundle.mjs --email ... --sn ...
+import { synthesizeMowerFiles } from '../../server/src/maps/synthMowerFiles.js';
 
 const CLOUD_HOST = '47.253.145.99';
 const KEY_IV = Buffer.from('1234123412ABCDEF', 'utf8');
@@ -52,22 +57,6 @@ function req(method, path, body, token, raw = false) {
   });
 }
 
-// ── rasterizer (mirror of server/src/maps/polygonRasterizer.ts) ─────────────
-function pip(px, py, poly) { if (poly.length < 3) return false; let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y; if (((yi > py) !== (yj > py)) && (px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi)) inside = !inside; } return inside; }
-function rasterize(work, obs, res, m, freeFill) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const poly of [...work, ...obs]) for (const p of poly) { if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y; if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
-  minX -= m; minY -= m; maxX += m; maxY += m;
-  const w = Math.ceil((maxX - minX) / res), h = Math.ceil((maxY - minY) / res);
-  // freeFill: whole bound is free (254) except obstacles (0) — the dock + the
-  // dock->zone transit sit OUTSIDE the work polygons, so a polygon-only costmap
-  // strands the mower in "unknown" (205) and the coverage planner finds no path.
-  // Coverage stays bounded by the polygon contour (CSV), so mowing is unaffected.
-  const px = Buffer.alloc(w * h, freeFill ? 254 : 205);
-  for (let y = 0; y < h; y++) { const wy = minY + (y + 0.5) * res; for (let x = 0; x < w; x++) { const wx = minX + (x + 0.5) * res; if (!freeFill) { let inW = false; for (const poly of work) if (pip(wx, wy, poly)) { inW = true; break; } if (!inW) continue; } let inO = false; for (const o of obs) if (pip(wx, wy, o)) { inO = true; break; } px[(h - 1 - y) * w + x] = inO ? 0 : 254; } }
-  const yaml = `image: map.pgm\nresolution: ${res.toFixed(3)}\norigin: [${minX.toFixed(6)}, ${minY.toFixed(6)}, 0.000000]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n`;
-  return { pgm: Buffer.concat([Buffer.from(`P5\n${w} ${h}\n255\n`, 'ascii'), px]), yaml };
-}
 function area(pts) { if (pts.length < 3) return 0; let a = 0; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += (pts[j].x + pts[i].x) * (pts[j].y - pts[i].y); return Math.abs(a) / 2; }
 function parseCsv(t) { return t.trim().split('\n').map((l) => { const [x, y] = l.trim().split(',').map(Number); return { x, y }; }).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y)); }
 
@@ -114,20 +103,25 @@ function parseCsv(t) { return t.trim().split('\n').map((l) => { const [x, y] = l
   }
   if (work.length === 0) { console.error('no work maps'); process.exit(1); }
 
-  // freeFill=true: the cloud has no real occupancy raster, so we synthesize one
-  // where the whole bound is drivable (free) except obstacles — the dock + the
-  // dock->zone transit sit outside the work polygons and must be navigable.
-  const raster = rasterize(work.map((w) => w.points), obstacles.map((o) => o.points), RES, MARGIN, true);
+  const chargingPose = { x: CX, y: CY, orientation: CT };
+
+  // Faithful raster: same map_generator.cpp algorithm the mower firmware runs
+  // (binary free=254/occupied=0, 3x3 ellipse dilate x2, and the dock free-disc
+  // that makes coverage planning succeed). Produces whole map.pgm/png/yaml +
+  // per-map mapN.* + csv_file/* (incl. map_info.json) + charging_station.yaml.
+  const synth = synthesizeMowerFiles({
+    workMaps: work.map((w) => ({ canonical: w.canonical, alias: w.alias, points: w.points })),
+    obstacles: obstacles.map((o) => ({ canonical: o.base, parentMap: o.parentMap, points: o.points })),
+    unicom: unicom.map((u) => ({ canonical: u.base, targetMapName: u.targetMapName, points: u.points })),
+    chargingPose,
+  });
 
   const polygonsJson = work.map((w) => ({ name: w.canonical, alias: w.alias, areaM2: area(w.points), points: w.points }));
   const obstaclesJson = obstacles.map((o) => ({ name: o.base, parentMap: o.parentMap, areaM2: area(o.points), points: o.points }));
   const unicomJson = unicom.map((u) => ({ name: u.base, targetMapName: u.targetMapName, points: u.points }));
   const userAliases = {}; for (const w of work) userAliases[w.canonical] = w.alias; for (const o of obstacles) if (o.alias) userAliases[o.base] = o.alias;
   const checksum = `sha256:${crypto.createHash('sha256').update(JSON.stringify({ polygonsJson, obstaclesJson, unicomJson })).digest('hex')}`;
-  const chargingPose = { x: CX, y: CY, orientation: CT };
   const metadata = { schemaVersion: 1, exportedAt: new Date().toISOString(), sourceSn: SN, sourceCharger: { lat: 0, lng: 0, rtkQualityAtExport: null }, polygonOriginAnchor: { name: 'charger', x: 0, y: 0 }, originalChargingPose: chargingPose, originalMapAreaName: polygonsJson[0].alias, workMapNames: work.map((w) => w.canonical), userAliases, checksum };
-  const mapInfo = { charging_pose: chargingPose }; for (const w of work) mapInfo[w.fname] = { map_size: area(w.points) };
-  const csvOf = (pts) => pts.map((p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`).join('\n');
 
   // ── stage files + zip ───────────────────────────────────────────────────
   const dir = mkdtempSync(join(tmpdir(), 'novabundle-'));
@@ -138,17 +132,10 @@ function parseCsv(t) { return t.trim().split('\n').map((l) => { const [x, y] = l
   writeFileSync(join(dir, 'polygons.json'), JSON.stringify(polygonsJson, null, 2));
   writeFileSync(join(dir, 'obstacles.json'), JSON.stringify(obstaclesJson, null, 2));
   writeFileSync(join(dir, 'unicom.json'), JSON.stringify(unicomJson, null, 2));
-  for (const w of work) writeFileSync(join(dir, 'mower/csv_file', w.fname), csvOf(w.points));
-  for (const o of obstacles) writeFileSync(join(dir, 'mower/csv_file', o.fname), csvOf(o.points));
-  for (const u of unicom) writeFileSync(join(dir, 'mower/csv_file', u.fname), csvOf(u.points));
-  writeFileSync(join(dir, 'mower/csv_file/map_info.json'), JSON.stringify(mapInfo, null, 3));
-  writeFileSync(join(dir, 'mower/charging_station.yaml'), `charging_pose: [${CX}, ${CY}, ${CT}]\n`);
-  writeFileSync(join(dir, 'mower/map_files/map.yaml'), raster.yaml);
-  writeFileSync(join(dir, 'mower/map_files/map.pgm'), raster.pgm);
-  for (const w of work) {
-    writeFileSync(join(dir, 'mower/map_files', `${w.canonical}.yaml`), raster.yaml.replace('image: map.pgm', `image: ${w.canonical}.pgm`));
-    writeFileSync(join(dir, 'mower/map_files', `${w.canonical}.pgm`), raster.pgm);
-  }
+  for (const [fname, content] of Object.entries(synth.csvFiles)) writeFileSync(join(dir, 'mower/csv_file', fname), content);
+  writeFileSync(join(dir, 'mower/charging_station.yaml'), synth.chargingStationYaml);
+  for (const [fname, content] of Object.entries(synth.mapFilesText)) writeFileSync(join(dir, 'mower/map_files', fname), content);
+  for (const [fname, b64] of Object.entries(synth.mapFilesB64)) writeFileSync(join(dir, 'mower/map_files', fname), Buffer.from(b64, 'base64'));
   const outAbs = OUT.startsWith('/') ? OUT : join(process.cwd(), OUT);
   execFileSync('zip', ['-r', '-q', outAbs, '.'], { cwd: dir });
   rmSync(dir, { recursive: true, force: true });
