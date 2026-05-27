@@ -65,6 +65,7 @@ struct WalkerConfigView {
   uint8_t  loraPacketLenCode = 0; // 0=240, 1=128, 2=64, 3=32 bytes
   uint8_t  loraAirRateCode   = 7; // Stock charger profile: 62.5 kbps
   bool     loraRtcmOnlyFeed  = false;
+  bool     loraDirectGnssWrite = false;
 };
 
 struct WalkerConfigUpdate {
@@ -85,6 +86,7 @@ struct WalkerConfigUpdate {
   bool loraPacketLenCodeSet = false; uint8_t loraPacketLenCode = 0;
   bool loraAirRateCodeSet   = false; uint8_t loraAirRateCode   = 7;
   bool loraRtcmOnlyFeedSet  = false; bool loraRtcmOnlyFeed = false;
+  bool loraDirectGnssWriteSet = false; bool loraDirectGnssWrite = false;
 };
 
 void walkerGetSnapshot(WalkerSnapshot& out);

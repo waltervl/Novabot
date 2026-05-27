@@ -23,20 +23,38 @@ function assertExcludes(haystack, needle, message) {
 
 assertIncludes(
   loraCpp,
-  "walkerGnssTxQueueRtcmFromLora(g_payloadBuf, g_payloadIdx);",
-  "LoRa 0x31 relay must enqueue the charger payload through the single GNSS TX owner."
+  "forwardLoraCorrectionBytes(g_payloadBuf, g_payloadIdx);",
+  "LoRa 0x31 relay must forward the charger payload through the runtime-selected GNSS TX path."
 );
 
 assertIncludes(
   loraCpp,
-  "walkerGnssTxQueueRtcmFromLora(g_rtcmBuf, g_rtcmExpectedLen);",
-  "LoRa RTCM-only feed policy must enqueue complete CRC-valid RTCM3 frames through the same GNSS TX owner."
+  "forwardLoraCorrectionBytes(g_rtcmBuf, g_rtcmExpectedLen);",
+  "LoRa RTCM-only feed policy must forward complete CRC-valid RTCM3 frames through the same selectable TX path."
 );
 
 assertIncludes(
   loraCpp,
-  "static volatile bool g_rtcmOnlyFeed = false;",
-  "LoRa feed policy must default to raw_0x31 and be switchable at runtime."
+  "walkerGnssTxQueueRtcmFromLora(bytes, len);",
+  "LoRa diagnostics must preserve the queued GNSS TX path for normal operation."
+);
+
+assertIncludes(
+  loraCpp,
+  "static volatile bool g_rtcmOnlyFeed = true;",
+  "LoRa feed policy must default to rtcm_only and be switchable at runtime."
+);
+
+assertIncludes(
+  mainCpp,
+  "bool     loraRtcmOnlyFeed  = true;",
+  "Runtime config must default new walkers to RTCM-only LoRa forwarding."
+);
+
+assertIncludes(
+  mainCpp,
+  "prefs.getBool(\"lora_rtcm\", true)",
+  "Existing walkers without an NVS feed-policy value must boot in RTCM-only mode."
 );
 
 assertIncludes(
@@ -46,15 +64,33 @@ assertIncludes(
 );
 
 assertIncludes(
+  loraCpp,
+  "static volatile bool g_directGnssWrite = false;",
+  "LoRa GNSS TX mode must default to queued and be switchable for legacy direct-write diagnostics."
+);
+
+assertIncludes(
+  loraCpp,
+  "void walkerLoraSetDirectGnssWrite(bool enabled)",
+  "LoRa GNSS TX mode must have a runtime setter so outdoor tests can switch without reflashing."
+);
+
+assertIncludes(
+  loraCpp,
+  "gnssSerial.write(bytes, len);",
+  "LoRa diagnostics must preserve a legacy direct-write path to compare against the stable RTK relay."
+);
+
+assertIncludes(
   mainCpp,
   "doc[\"rtcmOnlyFeed\"] = cfg.loraRtcmOnlyFeed;",
   "LoRa config API must expose the runtime RTCM-only feed policy."
 );
 
-assertExcludes(
-  loraCpp,
-  "gnssSerial.write",
-  "LoRa code must not write directly to the LC29HDA UART."
+assertIncludes(
+  mainCpp,
+  "doc[\"txMode\"] = cfg.loraDirectGnssWrite ? \"legacy_direct\" : \"queued\";",
+  "LoRa config API must expose the runtime GNSS TX mode."
 );
 
 assertIncludes(
@@ -78,7 +114,7 @@ assertIncludes(
 assertExcludes(
   loraCpp,
   "forwardRtcmStreamBytes",
-  "LoRa relay must not re-parse the charger payload into RTCM-only fragments; that starves the rover on live frames."
+  "LoRa relay must use the observed RTCM router path, not the removed direct raw parser helper."
 );
 
 assertExcludes(

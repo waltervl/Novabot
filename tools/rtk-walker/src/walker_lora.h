@@ -1,7 +1,6 @@
 // walker_lora.h — passive LoRa RTCM receiver for the Novabot charger
-// broadcast. Snoops 0x31 (RTK_RELAY) frames and enqueues the payload
-// for the LC29HDA UART so the GNSS chip gets RTK corrections without
-// any internet / WiFi.
+// broadcast. Snoops 0x31 (RTK_RELAY) frames and forwards CRC-valid RTCM3
+// by default so the LC29HDA gets RTK corrections without raw charger noise.
 #pragma once
 
 #include <Arduino.h>
@@ -15,7 +14,8 @@ struct WalkerLoraConfig {
     uint8_t  lc;        // scan low bound, default 14
     uint8_t  packetLenCode; // EBYTE AT+PACKET code: 0=240, 1=128, 2=64, 3=32
     uint8_t  airRateCode;   // EBYTE AT+RATE code. Stock charger uses 7 (=62.5 kbps).
-    bool     rtcmOnlyFeed;  // false=raw 0x31 payload, true=CRC-valid RTCM3 frames only
+    bool     rtcmOnlyFeed;  // default true: forward only CRC-valid RTCM3 frames
+    bool     directGnssWrite; // diagnostic: bypass GNSS TX queue for LoRa corrections
 };
 
 struct WalkerLoraStats {
@@ -31,6 +31,7 @@ struct WalkerLoraStats {
     uint32_t lastRtcmMsAgo;      // ms since last CRC-valid RTCM3 message
     uint16_t lastRtcmType;       // RTCM3 message type of the most recent valid frame
     bool     rtcmOnlyFeed;       // current feed policy into the LC29HDA
+    bool     directGnssWrite;    // current LoRa->LC29 TX path
 };
 
 // Called once from setup() after Serial.begin / WiFi associated.
@@ -50,11 +51,12 @@ bool walkerLoraActive();
 // the UI. No reboot required.
 bool walkerLoraReconfigure(const WalkerLoraConfig& cfg);
 
-// Runtime feed-policy switch. Raw 0x31 is the default because it is the
-// known-good stationary FIX path; RTCM-only is used for outdoor movement
-// tests where raw mixed bytes disturb the LC29 parser.
+// Runtime feed-policy switch. RTCM-only is the default because raw mixed 0x31
+// bytes can make the LC29 parser emit PAIR001,000,4 and drop RTK while moving.
 void walkerLoraSetRtcmOnlyFeed(bool enabled);
 bool walkerLoraRtcmOnlyFeed();
+void walkerLoraSetDirectGnssWrite(bool enabled);
+bool walkerLoraDirectGnssWrite();
 
 // Stats snapshot for the UI / API.
 void walkerLoraGetStats(WalkerLoraStats& out);
@@ -76,19 +78,22 @@ struct WalkerLoraConfig {
     uint8_t packetLenCode;
     uint8_t airRateCode;
     bool rtcmOnlyFeed;
+    bool directGnssWrite;
 };
 struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived;
                           uint32_t framesRejected; uint32_t bytesForwarded;
                           uint32_t rawBytesIn; uint32_t lastFrameMsAgo;
                           uint32_t rtcmMessages; uint32_t rtcmCrcRejected;
                           uint32_t lastRtcmMsAgo; uint16_t lastRtcmType;
-                          bool rtcmOnlyFeed; };
+                          bool rtcmOnlyFeed; bool directGnssWrite; };
 inline bool walkerLoraSetup(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraPump() {}
 inline bool walkerLoraActive() { return false; }
 inline bool walkerLoraReconfigure(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraSetRtcmOnlyFeed(bool) {}
 inline bool walkerLoraRtcmOnlyFeed() { return false; }
+inline void walkerLoraSetDirectGnssWrite(bool) {}
+inline bool walkerLoraDirectGnssWrite() { return false; }
 inline void walkerLoraGetStats(WalkerLoraStats& out) {
     out.moduleReady = false; out.active = false;
     out.framesReceived = 0; out.framesRejected = 0;
@@ -96,6 +101,7 @@ inline void walkerLoraGetStats(WalkerLoraStats& out) {
     out.rtcmMessages = 0; out.rtcmCrcRejected = 0;
     out.lastRtcmMsAgo = UINT32_MAX; out.lastRtcmType = 0;
     out.rtcmOnlyFeed = false;
+    out.directGnssWrite = false;
 }
 inline size_t walkerLoraGetRawTailHex(char* out, size_t outCap) {
     if (out && outCap) out[0] = '\0';

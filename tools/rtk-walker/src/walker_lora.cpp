@@ -8,6 +8,7 @@
 #ifdef LORA_PRESENT
 
 extern HardwareSerial loraSerial;
+extern HardwareSerial gnssSerial;
 
 #define LORA_CONFIG_BAUD 9600
 #define LORA_DATA_BAUD   115200
@@ -157,8 +158,9 @@ static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
 }
 
 static bool g_moduleReady = false;
-static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14, 0, 7, false};
-static volatile bool g_rtcmOnlyFeed = false;
+static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14, 0, 7, true, false};
+static volatile bool g_rtcmOnlyFeed = true;
+static volatile bool g_directGnssWrite = false;
 
 // Frame parser state. Resets to WAIT_PRE1 on any malformed byte.
 // Charger RTK relay frames are:
@@ -220,6 +222,15 @@ static uint32_t rtcmCrc24q(const uint8_t* data, size_t len) {
     return crc & 0xFFFFFFUL;
 }
 
+static void forwardLoraCorrectionBytes(const uint8_t* bytes, size_t len) {
+    if (!bytes || len == 0) return;
+    if (g_directGnssWrite) {
+        gnssSerial.write(bytes, len);
+    } else {
+        walkerGnssTxQueueRtcmFromLora(bytes, len);
+    }
+}
+
 static void observeRtcmStreamBytes(const uint8_t* data, size_t len) {
     for (size_t i = 0; i < len; i++) {
         uint8_t b = data[i];
@@ -275,7 +286,7 @@ static void observeRtcmStreamBytes(const uint8_t* data, size_t len) {
                         g_rtcmLastValidMs = millis();
                         g_rtcmLastType = msgType;
                         if (g_rtcmOnlyFeed) {
-                            walkerGnssTxQueueRtcmFromLora(g_rtcmBuf, g_rtcmExpectedLen);
+                            forwardLoraCorrectionBytes(g_rtcmBuf, g_rtcmExpectedLen);
                             rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
                             g_bytesForwarded += g_rtcmExpectedLen;
                         }
@@ -300,6 +311,7 @@ static uint8_t  g_rawTailLen     = 0;   // valid bytes (<= sizeof(g_rawTail))
 bool walkerLoraSetup(const WalkerLoraConfig& cfg) {
     g_currentCfg = cfg;
     g_rtcmOnlyFeed = cfg.rtcmOnlyFeed;
+    g_directGnssWrite = cfg.directGnssWrite;
     g_moduleReady = ebyteWriteConfig(cfg);
     if (g_moduleReady) {
         loraLogf("config OK: addr=%u ch=%u (%.3f MHz) packet=%uB air=%.1fkbps netid=0\n",
@@ -418,7 +430,7 @@ void walkerLoraPump() {
                     g_lastValidMs = millis();
                     if (g_lastCmd == 0x31 && g_payloadIdx > 0) {
                         if (!g_rtcmOnlyFeed) {
-                            walkerGnssTxQueueRtcmFromLora(g_payloadBuf, g_payloadIdx);
+                            forwardLoraCorrectionBytes(g_payloadBuf, g_payloadIdx);
                             rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
                             g_bytesForwarded += g_payloadIdx;
                         }
@@ -452,6 +464,16 @@ bool walkerLoraRtcmOnlyFeed() {
     return g_rtcmOnlyFeed;
 }
 
+void walkerLoraSetDirectGnssWrite(bool enabled) {
+    g_directGnssWrite = enabled;
+    g_currentCfg.directGnssWrite = enabled;
+    loraLogf("tx mode=%s\n", enabled ? "legacy_direct" : "queued");
+}
+
+bool walkerLoraDirectGnssWrite() {
+    return g_directGnssWrite;
+}
+
 void walkerLoraGetStats(WalkerLoraStats& out) {
     out.moduleReady    = g_moduleReady;
     out.active         = walkerLoraActive();
@@ -465,6 +487,7 @@ void walkerLoraGetStats(WalkerLoraStats& out) {
     out.lastRtcmMsAgo  = g_rtcmLastValidMs ? (millis() - g_rtcmLastValidMs) : UINT32_MAX;
     out.lastRtcmType   = g_rtcmLastType;
     out.rtcmOnlyFeed   = g_rtcmOnlyFeed;
+    out.directGnssWrite = g_directGnssWrite;
 }
 
 size_t walkerLoraGetRawTailHex(char* out, size_t outCap) {

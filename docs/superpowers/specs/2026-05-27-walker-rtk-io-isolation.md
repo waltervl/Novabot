@@ -159,12 +159,14 @@ The router supports two feed policies:
 
 | Policy | Behavior | Purpose |
 |---|---|---|
-| `raw_0x31` | serialize the whole `0x31` payload to LC29HDA | preserves the last known working behavior |
-| `rtcm_only` | forward only complete CRC-valid RTCM3 frames | validates whether mixed NMEA/ASCII is hurting LC29HDA |
+| `raw_0x31` | serialize the whole `0x31` payload to LC29HDA | diagnostic fallback for comparing against older firmware |
+| `rtcm_only` | forward only complete CRC-valid RTCM3 frames | stable LC29HDA input; strips charger NMEA/ASCII noise |
 
-The default for the first implementation should be `raw_0x31` plus full
-instrumentation. Switch to `rtcm_only` only after a capture proves that all
-required RTCM messages survive the parser.
+Outdoor testing on 2026-05-27 proved that `raw_0x31` can hold RTK FIX while
+stationary, but movement triggers repeated `$PAIR001,000,4*3F`, `dgpsAge=null`,
+and a drop to DGPS even though LoRa RTCM stays current. Switching to
+`rtcm_only` stopped the PAIR spam and held RTK FIX with the queued GNSS TX path,
+so `rtcm_only` is now the default.
 
 ### LC29HDA boot configuration
 
@@ -270,6 +272,9 @@ Capture 60 seconds of LoRa `0x31` data outside and compare:
 Acceptance: the chosen policy produces stable RTK FIX while walking, with no
 seconds-long drops to GPS unless the RTCM input stream itself has a measured gap.
 
+Result: `rtcm_only` is the chosen policy. `raw_0x31` remains available through
+`/api/config/lora` for diagnostics only.
+
 ### Phase 5: isolate Web UI, LVGL, and LittleFS
 
 Move heavy web endpoints and UI-triggered file work to `storage_worker_task`.
@@ -327,8 +332,8 @@ invalidity in the incoming RTCM stream.
 ## Risks
 
 - `rtcm_only` may initially look worse if the LoRa payload is fragmented in a way
-  our parser does not reassemble correctly. That is why Phase 1 and Phase 2 keep
-  raw behavior while adding measurements.
+  our parser does not reassemble correctly. This is now covered by keeping
+  `raw_0x31` as a runtime diagnostic fallback while defaulting to `rtcm_only`.
 - Moving LittleFS work behind a worker changes UI timing. Keep UI behavior simple
   at first: show busy/progress state, then refresh from snapshot.
 - LC29HEA will support higher RTK rate later, but the IO isolation is still
@@ -337,7 +342,6 @@ invalidity in the incoming RTCM stream.
 
 ## Open Decisions
 
-- Whether `rtcm_only` should become the default after the first outdoor capture.
 - Whether NTRIP should remain as an automatic fallback while LoRa is active, or
   become a manual source selector during debugging.
 - Whether to add a temporary raw capture endpoint that writes to LittleFS, or to

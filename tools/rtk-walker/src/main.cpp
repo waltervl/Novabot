@@ -129,7 +129,8 @@ struct Config {
   // 240-byte RF packets and air-rate code 7.
   uint8_t  loraPacketLenCode = 0; // 0=240, 1=128, 2=64, 3=32 bytes
   uint8_t  loraAirRateCode   = 7; // EBYTE code 7 = 62.5 kbps on E22-900
-  bool     loraRtcmOnlyFeed  = false;
+  bool     loraRtcmOnlyFeed  = true;
+  bool     loraDirectGnssWrite = false;
 
   // OTA auto-check on boot. Default true — walker pulls the manifest from
   // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
@@ -510,7 +511,8 @@ static void loadConfig() {
   cfg.loraLc      = prefs.getUChar("lora_lc", 14);
   cfg.loraPacketLenCode = prefs.getUChar("lora_pkt", 0);
   cfg.loraAirRateCode   = prefs.getUChar("lora_air", 7);
-  cfg.loraRtcmOnlyFeed  = prefs.getBool("lora_rtcm", false);
+  cfg.loraRtcmOnlyFeed  = prefs.getBool("lora_rtcm", true);
+  cfg.loraDirectGnssWrite = prefs.getBool("lora_dir", false);
   if (cfg.loraPacketLenCode > 3) cfg.loraPacketLenCode = 0;
   if (cfg.loraAirRateCode > 7) cfg.loraAirRateCode = 7;
 }
@@ -536,6 +538,7 @@ static void saveConfig() {
   prefs.putUChar("lora_pkt",   cfg.loraPacketLenCode);
   prefs.putUChar("lora_air",   cfg.loraAirRateCode);
   prefs.putBool("lora_rtcm",   cfg.loraRtcmOnlyFeed);
+  prefs.putBool("lora_dir",    cfg.loraDirectGnssWrite);
 }
 
 static uint16_t loraPacketLenBytes(uint8_t code) {
@@ -1902,6 +1905,7 @@ static void handleStatus() {
   uint8_t statusLoraPacketLenCode = cfg.loraPacketLenCode;
   uint8_t statusLoraAirRateCode = cfg.loraAirRateCode;
   bool statusLoraRtcmOnlyFeed = cfg.loraRtcmOnlyFeed;
+  bool statusLoraDirectGnssWrite = cfg.loraDirectGnssWrite;
 #ifdef BAT_ADC
   if (batteryReady) {
     doc["batteryVolts"]    = batteryVoltsEma;
@@ -1945,6 +1949,9 @@ static void handleStatus() {
   lora["rtcmOnlyFeed"] = lstats.rtcmOnlyFeed;
   lora["feedPolicy"] = lstats.rtcmOnlyFeed ? "rtcm_only" : "raw_0x31";
   lora["configuredRtcmOnlyFeed"] = statusLoraRtcmOnlyFeed;
+  lora["directGnssWrite"] = lstats.directGnssWrite;
+  lora["txMode"] = lstats.directGnssWrite ? "legacy_direct" : "queued";
+  lora["configuredDirectGnssWrite"] = statusLoraDirectGnssWrite;
   WalkerGnssTxStats txStats;
   walkerGnssTxGetStats(txStats);
   JsonObject gnssTx = doc["gnssTx"].to<JsonObject>();
@@ -2697,6 +2704,8 @@ static void handleConfigLoraGet() {
   doc["airRateCode"]   = cfg.loraAirRateCode;
   doc["rtcmOnlyFeed"] = cfg.loraRtcmOnlyFeed;
   doc["feedPolicy"]    = cfg.loraRtcmOnlyFeed ? "rtcm_only" : "raw_0x31";
+  doc["directGnssWrite"] = cfg.loraDirectGnssWrite;
+  doc["txMode"] = cfg.loraDirectGnssWrite ? "legacy_direct" : "queued";
   coreUnlock();
   sendJson(200, doc);
 }
@@ -2761,6 +2770,23 @@ static void handleConfigLoraPost() {
       upd.loraRtcmOnlyFeed = true;
     } else {
       server.send(400, "text/plain", "feedPolicy raw_0x31/rtcm_only"); return;
+    }
+  }
+  if (body["directGnssWrite"].is<bool>()) {
+    upd.loraDirectGnssWriteSet = true;
+    upd.loraDirectGnssWrite = body["directGnssWrite"].as<bool>();
+  }
+  if (body["txMode"].is<const char*>()) {
+    String txMode = body["txMode"].as<String>();
+    txMode.trim();
+    if (txMode == "queued" || txMode == "queue") {
+      upd.loraDirectGnssWriteSet = true;
+      upd.loraDirectGnssWrite = false;
+    } else if (txMode == "legacy_direct" || txMode == "direct") {
+      upd.loraDirectGnssWriteSet = true;
+      upd.loraDirectGnssWrite = true;
+    } else {
+      server.send(400, "text/plain", "txMode queued/legacy_direct"); return;
     }
   }
   walkerApplyConfig(upd);
@@ -3076,6 +3102,7 @@ void setup() {
     cfg.loraPacketLenCode,
     cfg.loraAirRateCode,
     cfg.loraRtcmOnlyFeed,
+    cfg.loraDirectGnssWrite,
   };
   walkerLoraSetup(lcfg);
 #endif
@@ -3335,6 +3362,7 @@ static void serialLoraScan(uint8_t chStart, uint8_t chEnd,
     cfg.loraPacketLenCode,
     cfg.loraAirRateCode,
     cfg.loraRtcmOnlyFeed,
+    cfg.loraDirectGnssWrite,
   };
   coreUnlock();
 
@@ -3681,6 +3709,7 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.loraPacketLenCode = cfg.loraPacketLenCode;
   out.loraAirRateCode   = cfg.loraAirRateCode;
   out.loraRtcmOnlyFeed  = cfg.loraRtcmOnlyFeed;
+  out.loraDirectGnssWrite = cfg.loraDirectGnssWrite;
   coreUnlock();
 }
 
@@ -3730,6 +3759,11 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
     cfg.loraRtcmOnlyFeed = upd.loraRtcmOnlyFeed;
     loraFeedPolicyChanged = true;
   }
+  bool loraTxModeChanged = false;
+  if (upd.loraDirectGnssWriteSet) {
+    cfg.loraDirectGnssWrite = upd.loraDirectGnssWrite;
+    loraTxModeChanged = true;
+  }
   saveConfig();
   if (needsReboot) {
     weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
@@ -3747,16 +3781,25 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
     cfg.loraPacketLenCode,
     cfg.loraAirRateCode,
     cfg.loraRtcmOnlyFeed,
+    cfg.loraDirectGnssWrite,
   };
   bool newLoraRtcmOnlyFeed = cfg.loraRtcmOnlyFeed;
+  bool newLoraDirectGnssWrite = cfg.loraDirectGnssWrite;
   coreUnlock();
 
   if (loraChanged) {
     walkerLoraReconfigure(newLoraCfg);
-  } else if (loraFeedPolicyChanged) {
-    walkerLoraSetRtcmOnlyFeed(newLoraRtcmOnlyFeed);
-    weblogf("[cfg] lora feed policy=%s\n",
-            newLoraRtcmOnlyFeed ? "rtcm_only" : "raw_0x31");
+  } else {
+    if (loraFeedPolicyChanged) {
+      walkerLoraSetRtcmOnlyFeed(newLoraRtcmOnlyFeed);
+      weblogf("[cfg] lora feed policy=%s\n",
+              newLoraRtcmOnlyFeed ? "rtcm_only" : "raw_0x31");
+    }
+    if (loraTxModeChanged) {
+      walkerLoraSetDirectGnssWrite(newLoraDirectGnssWrite);
+      weblogf("[cfg] lora tx mode=%s\n",
+              newLoraDirectGnssWrite ? "legacy_direct" : "queued");
+    }
   }
   if (needsReboot) {
     delay(500);
