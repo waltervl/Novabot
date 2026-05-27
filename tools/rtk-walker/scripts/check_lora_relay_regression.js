@@ -27,6 +27,30 @@ assertIncludes(
   "LoRa 0x31 relay must enqueue the charger payload through the single GNSS TX owner."
 );
 
+assertIncludes(
+  loraCpp,
+  "walkerGnssTxQueueRtcmFromLora(g_rtcmBuf, g_rtcmExpectedLen);",
+  "LoRa RTCM-only feed policy must enqueue complete CRC-valid RTCM3 frames through the same GNSS TX owner."
+);
+
+assertIncludes(
+  loraCpp,
+  "static volatile bool g_rtcmOnlyFeed = false;",
+  "LoRa feed policy must default to raw_0x31 and be switchable at runtime."
+);
+
+assertIncludes(
+  loraCpp,
+  "void walkerLoraSetRtcmOnlyFeed(bool enabled)",
+  "LoRa feed policy must have a runtime setter so outdoor tests can switch without reflashing."
+);
+
+assertIncludes(
+  mainCpp,
+  "doc[\"rtcmOnlyFeed\"] = cfg.loraRtcmOnlyFeed;",
+  "LoRa config API must expose the runtime RTCM-only feed policy."
+);
+
 assertExcludes(
   loraCpp,
   "gnssSerial.write",

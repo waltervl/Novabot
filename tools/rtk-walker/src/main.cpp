@@ -129,6 +129,7 @@ struct Config {
   // 240-byte RF packets and air-rate code 7.
   uint8_t  loraPacketLenCode = 0; // 0=240, 1=128, 2=64, 3=32 bytes
   uint8_t  loraAirRateCode   = 7; // EBYTE code 7 = 62.5 kbps on E22-900
+  bool     loraRtcmOnlyFeed  = false;
 
   // OTA auto-check on boot. Default true — walker pulls the manifest from
   // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
@@ -509,6 +510,7 @@ static void loadConfig() {
   cfg.loraLc      = prefs.getUChar("lora_lc", 14);
   cfg.loraPacketLenCode = prefs.getUChar("lora_pkt", 0);
   cfg.loraAirRateCode   = prefs.getUChar("lora_air", 7);
+  cfg.loraRtcmOnlyFeed  = prefs.getBool("lora_rtcm", false);
   if (cfg.loraPacketLenCode > 3) cfg.loraPacketLenCode = 0;
   if (cfg.loraAirRateCode > 7) cfg.loraAirRateCode = 7;
 }
@@ -533,6 +535,7 @@ static void saveConfig() {
   prefs.putUChar("lora_lc",    cfg.loraLc);
   prefs.putUChar("lora_pkt",   cfg.loraPacketLenCode);
   prefs.putUChar("lora_air",   cfg.loraAirRateCode);
+  prefs.putBool("lora_rtcm",   cfg.loraRtcmOnlyFeed);
 }
 
 static uint16_t loraPacketLenBytes(uint8_t code) {
@@ -1898,6 +1901,7 @@ static void handleStatus() {
   uint8_t statusLoraChannel = cfg.loraChannel;
   uint8_t statusLoraPacketLenCode = cfg.loraPacketLenCode;
   uint8_t statusLoraAirRateCode = cfg.loraAirRateCode;
+  bool statusLoraRtcmOnlyFeed = cfg.loraRtcmOnlyFeed;
 #ifdef BAT_ADC
   if (batteryReady) {
     doc["batteryVolts"]    = batteryVoltsEma;
@@ -1938,6 +1942,9 @@ static void handleStatus() {
   lora["channel"]     = statusLoraChannel;
   lora["packetLen"]   = loraPacketLenBytes(statusLoraPacketLenCode);
   lora["airRateCode"] = statusLoraAirRateCode;
+  lora["rtcmOnlyFeed"] = lstats.rtcmOnlyFeed;
+  lora["feedPolicy"] = lstats.rtcmOnlyFeed ? "rtcm_only" : "raw_0x31";
+  lora["configuredRtcmOnlyFeed"] = statusLoraRtcmOnlyFeed;
   WalkerGnssTxStats txStats;
   walkerGnssTxGetStats(txStats);
   JsonObject gnssTx = doc["gnssTx"].to<JsonObject>();
@@ -2688,6 +2695,8 @@ static void handleConfigLoraGet() {
   doc["packetLenCode"] = cfg.loraPacketLenCode;
   doc["packetLen"]     = loraPacketLenBytes(cfg.loraPacketLenCode);
   doc["airRateCode"]   = cfg.loraAirRateCode;
+  doc["rtcmOnlyFeed"] = cfg.loraRtcmOnlyFeed;
+  doc["feedPolicy"]    = cfg.loraRtcmOnlyFeed ? "rtcm_only" : "raw_0x31";
   coreUnlock();
   sendJson(200, doc);
 }
@@ -2736,6 +2745,23 @@ static void handleConfigLoraPost() {
     int v = body["airRateCode"];
     if (v < 0 || v > 7) { server.send(400, "text/plain", "airRateCode 0..7"); return; }
     upd.loraAirRateCodeSet = true; upd.loraAirRateCode = (uint8_t) v;
+  }
+  if (body["rtcmOnlyFeed"].is<bool>()) {
+    upd.loraRtcmOnlyFeedSet = true;
+    upd.loraRtcmOnlyFeed = body["rtcmOnlyFeed"].as<bool>();
+  }
+  if (body["feedPolicy"].is<const char*>()) {
+    String policy = body["feedPolicy"].as<String>();
+    policy.trim();
+    if (policy == "raw_0x31" || policy == "raw") {
+      upd.loraRtcmOnlyFeedSet = true;
+      upd.loraRtcmOnlyFeed = false;
+    } else if (policy == "rtcm_only" || policy == "rtcm") {
+      upd.loraRtcmOnlyFeedSet = true;
+      upd.loraRtcmOnlyFeed = true;
+    } else {
+      server.send(400, "text/plain", "feedPolicy raw_0x31/rtcm_only"); return;
+    }
   }
   walkerApplyConfig(upd);
   JsonDocument resp;
@@ -3049,6 +3075,7 @@ void setup() {
     cfg.loraLc,
     cfg.loraPacketLenCode,
     cfg.loraAirRateCode,
+    cfg.loraRtcmOnlyFeed,
   };
   walkerLoraSetup(lcfg);
 #endif
@@ -3307,6 +3334,7 @@ static void serialLoraScan(uint8_t chStart, uint8_t chEnd,
     cfg.loraLc,
     cfg.loraPacketLenCode,
     cfg.loraAirRateCode,
+    cfg.loraRtcmOnlyFeed,
   };
   coreUnlock();
 
@@ -3652,6 +3680,7 @@ void walkerGetConfig(WalkerConfigView& out) {
   out.loraLc       = cfg.loraLc;
   out.loraPacketLenCode = cfg.loraPacketLenCode;
   out.loraAirRateCode   = cfg.loraAirRateCode;
+  out.loraRtcmOnlyFeed  = cfg.loraRtcmOnlyFeed;
   coreUnlock();
 }
 
@@ -3696,6 +3725,11 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   if (upd.loraLcSet)      { cfg.loraLc      = upd.loraLc;      loraChanged = true; }
   if (upd.loraPacketLenCodeSet) { cfg.loraPacketLenCode = upd.loraPacketLenCode; loraChanged = true; }
   if (upd.loraAirRateCodeSet)   { cfg.loraAirRateCode   = upd.loraAirRateCode;   loraChanged = true; }
+  bool loraFeedPolicyChanged = false;
+  if (upd.loraRtcmOnlyFeedSet) {
+    cfg.loraRtcmOnlyFeed = upd.loraRtcmOnlyFeed;
+    loraFeedPolicyChanged = true;
+  }
   saveConfig();
   if (needsReboot) {
     weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
@@ -3712,11 +3746,17 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
     cfg.loraLc,
     cfg.loraPacketLenCode,
     cfg.loraAirRateCode,
+    cfg.loraRtcmOnlyFeed,
   };
+  bool newLoraRtcmOnlyFeed = cfg.loraRtcmOnlyFeed;
   coreUnlock();
 
   if (loraChanged) {
     walkerLoraReconfigure(newLoraCfg);
+  } else if (loraFeedPolicyChanged) {
+    walkerLoraSetRtcmOnlyFeed(newLoraRtcmOnlyFeed);
+    weblogf("[cfg] lora feed policy=%s\n",
+            newLoraRtcmOnlyFeed ? "rtcm_only" : "raw_0x31");
   }
   if (needsReboot) {
     delay(500);

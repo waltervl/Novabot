@@ -157,7 +157,8 @@ static bool ebyteWriteConfig(const WalkerLoraConfig& cfg) {
 }
 
 static bool g_moduleReady = false;
-static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14, 0, 7};
+static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14, 0, 7, false};
+static volatile bool g_rtcmOnlyFeed = false;
 
 // Frame parser state. Resets to WAIT_PRE1 on any malformed byte.
 // Charger RTK relay frames are:
@@ -273,6 +274,11 @@ static void observeRtcmStreamBytes(const uint8_t* data, size_t len) {
                         g_rtcmMessages++;
                         g_rtcmLastValidMs = millis();
                         g_rtcmLastType = msgType;
+                        if (g_rtcmOnlyFeed) {
+                            walkerGnssTxQueueRtcmFromLora(g_rtcmBuf, g_rtcmExpectedLen);
+                            rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
+                            g_bytesForwarded += g_rtcmExpectedLen;
+                        }
                     } else {
                         g_rtcmCrcRejected++;
                     }
@@ -293,6 +299,7 @@ static uint8_t  g_rawTailLen     = 0;   // valid bytes (<= sizeof(g_rawTail))
 
 bool walkerLoraSetup(const WalkerLoraConfig& cfg) {
     g_currentCfg = cfg;
+    g_rtcmOnlyFeed = cfg.rtcmOnlyFeed;
     g_moduleReady = ebyteWriteConfig(cfg);
     if (g_moduleReady) {
         loraLogf("config OK: addr=%u ch=%u (%.3f MHz) packet=%uB air=%.1fkbps netid=0\n",
@@ -410,9 +417,11 @@ void walkerLoraPump() {
                     g_framesReceived++;
                     g_lastValidMs = millis();
                     if (g_lastCmd == 0x31 && g_payloadIdx > 0) {
-                        walkerGnssTxQueueRtcmFromLora(g_payloadBuf, g_payloadIdx);
-                        rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
-                        g_bytesForwarded += g_payloadIdx;
+                        if (!g_rtcmOnlyFeed) {
+                            walkerGnssTxQueueRtcmFromLora(g_payloadBuf, g_payloadIdx);
+                            rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
+                            g_bytesForwarded += g_payloadIdx;
+                        }
                         observeRtcmStreamBytes(g_payloadBuf, g_payloadIdx);
                     }
                 } else {
@@ -433,6 +442,16 @@ bool walkerLoraReconfigure(const WalkerLoraConfig& cfg) {
     return walkerLoraSetup(cfg);
 }
 
+void walkerLoraSetRtcmOnlyFeed(bool enabled) {
+    g_rtcmOnlyFeed = enabled;
+    g_currentCfg.rtcmOnlyFeed = enabled;
+    loraLogf("feed policy=%s\n", enabled ? "rtcm_only" : "raw_0x31");
+}
+
+bool walkerLoraRtcmOnlyFeed() {
+    return g_rtcmOnlyFeed;
+}
+
 void walkerLoraGetStats(WalkerLoraStats& out) {
     out.moduleReady    = g_moduleReady;
     out.active         = walkerLoraActive();
@@ -445,6 +464,7 @@ void walkerLoraGetStats(WalkerLoraStats& out) {
     out.rtcmCrcRejected = g_rtcmCrcRejected;
     out.lastRtcmMsAgo  = g_rtcmLastValidMs ? (millis() - g_rtcmLastValidMs) : UINT32_MAX;
     out.lastRtcmType   = g_rtcmLastType;
+    out.rtcmOnlyFeed   = g_rtcmOnlyFeed;
 }
 
 size_t walkerLoraGetRawTailHex(char* out, size_t outCap) {
