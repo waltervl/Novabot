@@ -77,6 +77,24 @@ assertIncludes(
 );
 
 assertIncludes(
+  loraCpp,
+  "static bool shouldDropRtcmType(uint16_t msgType)",
+  "LoRa RTCM router must support runtime message-type filtering for constellation isolation tests."
+);
+
+assertIncludes(
+  loraCpp,
+  "walkerLoraSetRtcmDropTypes",
+  "LoRa RTCM drop filter must be switchable at runtime without reflashing."
+);
+
+assertIncludes(
+  loraCpp,
+  "g_rtcmFilteredMessages++",
+  "LoRa diagnostics must count RTCM frames filtered out of the LC29 feed."
+);
+
+assertIncludes(
   mainCpp,
   "static void updateGgaStatusFromLine(const char* line, size_t len)",
   "GNSS status must update from every completed GGA sentence, not only TinyGPS location updates."
@@ -104,6 +122,18 @@ assertIncludes(
   mainCpp,
   "bytesRequested",
   "RTCM log response must report the requested diagnostic capture size."
+);
+
+assertIncludes(
+  mainCpp,
+  "rtcmDropTypes",
+  "LoRa config API must expose runtime RTCM message-type drops."
+);
+
+assertIncludes(
+  mainCpp,
+  "walkerLoraSetRtcmDropTypes",
+  "LoRa config API must apply RTCM drop types immediately without reboot."
 );
 
 assertIncludes(

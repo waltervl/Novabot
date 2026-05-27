@@ -2031,6 +2031,8 @@ static void handleStatus() {
   if (lstats.lastFrameMsAgo != UINT32_MAX) lora["lastFrameMsAgo"] = lstats.lastFrameMsAgo;
   else lora["lastFrameMsAgo"] = nullptr;
   lora["rtcmMessages"] = lstats.rtcmMessages;
+  lora["rtcmForwardedMessages"] = lstats.rtcmForwardedMessages;
+  lora["rtcmFilteredMessages"] = lstats.rtcmFilteredMessages;
   lora["rtcmCrcRejected"] = lstats.rtcmCrcRejected;
   lora["rtcmLastGapMs"] = lstats.rtcmLastGapMs;
   lora["rtcmMaxGapMs"] = lstats.rtcmMaxGapMs;
@@ -2055,6 +2057,10 @@ static void handleStatus() {
   lora["rtcmOnlyFeed"] = lstats.rtcmOnlyFeed;
   lora["feedPolicy"] = lstats.rtcmOnlyFeed ? "rtcm_only" : "raw_0x31";
   lora["configuredRtcmOnlyFeed"] = statusLoraRtcmOnlyFeed;
+  JsonArray rtcmDropTypes = lora["rtcmDropTypes"].to<JsonArray>();
+  for (uint8_t i = 0; i < lstats.rtcmDropTypeCount; i++) {
+    rtcmDropTypes.add(lstats.rtcmDropTypes[i]);
+  }
   lora["directGnssWrite"] = lstats.directGnssWrite;
   lora["txMode"] = lstats.directGnssWrite ? "legacy_direct" : "queued";
   lora["configuredDirectGnssWrite"] = statusLoraDirectGnssWrite;
@@ -2813,6 +2819,10 @@ static void handleConfigLoraGet() {
   doc["directGnssWrite"] = cfg.loraDirectGnssWrite;
   doc["txMode"] = cfg.loraDirectGnssWrite ? "legacy_direct" : "queued";
   coreUnlock();
+  uint16_t dropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS] = {0};
+  size_t dropCount = walkerLoraGetRtcmDropTypes(dropTypes, WALKER_LORA_RTCM_DROP_TYPE_SLOTS);
+  JsonArray rtcmDropTypes = doc["rtcmDropTypes"].to<JsonArray>();
+  for (size_t i = 0; i < dropCount; i++) rtcmDropTypes.add(dropTypes[i]);
   sendJson(200, doc);
 }
 
@@ -2895,9 +2905,39 @@ static void handleConfigLoraPost() {
       server.send(400, "text/plain", "txMode queued/legacy_direct"); return;
     }
   }
+  bool rtcmDropTypesSet = false;
+  uint16_t rtcmDropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS] = {0};
+  size_t rtcmDropTypeCount = 0;
+  if (!body["rtcmDropTypes"].isNull()) {
+    if (!body["rtcmDropTypes"].is<JsonArray>()) {
+      server.send(400, "text/plain", "rtcmDropTypes must be array"); return;
+    }
+    JsonArray arr = body["rtcmDropTypes"].as<JsonArray>();
+    for (JsonVariant v : arr) {
+      if (!v.is<int>()) {
+        server.send(400, "text/plain", "rtcmDropTypes values must be int"); return;
+      }
+      int t = v.as<int>();
+      if (t < 1 || t > 4095) {
+        server.send(400, "text/plain", "rtcmDropTypes values 1..4095"); return;
+      }
+      if (rtcmDropTypeCount >= WALKER_LORA_RTCM_DROP_TYPE_SLOTS) {
+        server.send(400, "text/plain", "too many rtcmDropTypes"); return;
+      }
+      rtcmDropTypes[rtcmDropTypeCount++] = (uint16_t)t;
+    }
+    rtcmDropTypesSet = true;
+  }
   walkerApplyConfig(upd);
+  if (rtcmDropTypesSet) {
+    walkerLoraSetRtcmDropTypes(rtcmDropTypes, rtcmDropTypeCount);
+  }
   JsonDocument resp;
   resp["ok"] = true;
+  if (rtcmDropTypesSet) {
+    JsonArray arr = resp["rtcmDropTypes"].to<JsonArray>();
+    for (size_t i = 0; i < rtcmDropTypeCount; i++) arr.add(rtcmDropTypes[i]);
+  }
   sendJson(200, resp);
 }
 

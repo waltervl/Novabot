@@ -6,6 +6,7 @@
 #include <Arduino.h>
 
 #define WALKER_LORA_RTCM_TYPE_SLOTS 8
+#define WALKER_LORA_RTCM_DROP_TYPE_SLOTS 8
 
 struct WalkerLoraRtcmTypeStat {
     uint16_t type;         // RTCM3 message type, e.g. 1074 / 1084 / 1094 / 1124
@@ -37,12 +38,16 @@ struct WalkerLoraStats {
     uint32_t rawBytesIn;         // every byte read off UART2, pre-framing
     uint32_t lastFrameMsAgo;     // ms since last valid 0x31 frame, UINT32_MAX if never
     uint32_t rtcmMessages;       // complete CRC-valid RTCM3 messages observed
+    uint32_t rtcmForwardedMessages; // RTCM3 messages forwarded to LC29HDA
+    uint32_t rtcmFilteredMessages;  // RTCM3 messages deliberately not forwarded
     uint32_t rtcmCrcRejected;    // complete RTCM3 candidates rejected by CRC
     uint32_t lastRtcmMsAgo;      // ms since last CRC-valid RTCM3 message
     uint16_t lastRtcmType;       // RTCM3 message type of the most recent valid frame
     uint32_t rtcmLastGapMs;      // gap between the last two CRC-valid RTCM messages
     uint32_t rtcmMaxGapMs;       // largest observed gap between RTCM messages
     WalkerLoraRtcmTypeStat rtcmTypes[WALKER_LORA_RTCM_TYPE_SLOTS];
+    uint8_t  rtcmDropTypeCount;  // current runtime RTCM message-type drop list
+    uint16_t rtcmDropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS];
     bool     rtcmOnlyFeed;       // current feed policy into the LC29HDA
     bool     directGnssWrite;    // current LoRa->LC29 TX path
 };
@@ -68,6 +73,8 @@ bool walkerLoraReconfigure(const WalkerLoraConfig& cfg);
 // bytes can make the LC29 parser emit PAIR001,000,4 and drop RTK while moving.
 void walkerLoraSetRtcmOnlyFeed(bool enabled);
 bool walkerLoraRtcmOnlyFeed();
+void walkerLoraSetRtcmDropTypes(const uint16_t* types, size_t count);
+size_t walkerLoraGetRtcmDropTypes(uint16_t* out, size_t maxCount);
 void walkerLoraSetDirectGnssWrite(bool enabled);
 bool walkerLoraDirectGnssWrite();
 
@@ -97,9 +104,12 @@ struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived
                           uint32_t framesRejected; uint32_t bytesForwarded;
                           uint32_t rawBytesIn; uint32_t lastFrameMsAgo;
                           uint32_t rtcmMessages; uint32_t rtcmCrcRejected;
+                          uint32_t rtcmForwardedMessages; uint32_t rtcmFilteredMessages;
                           uint32_t lastRtcmMsAgo; uint16_t lastRtcmType;
                           uint32_t rtcmLastGapMs; uint32_t rtcmMaxGapMs;
                           WalkerLoraRtcmTypeStat rtcmTypes[WALKER_LORA_RTCM_TYPE_SLOTS];
+                          uint8_t rtcmDropTypeCount;
+                          uint16_t rtcmDropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS];
                           bool rtcmOnlyFeed; bool directGnssWrite; };
 inline bool walkerLoraSetup(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraPump() {}
@@ -107,18 +117,23 @@ inline bool walkerLoraActive() { return false; }
 inline bool walkerLoraReconfigure(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraSetRtcmOnlyFeed(bool) {}
 inline bool walkerLoraRtcmOnlyFeed() { return false; }
+inline void walkerLoraSetRtcmDropTypes(const uint16_t*, size_t) {}
+inline size_t walkerLoraGetRtcmDropTypes(uint16_t*, size_t) { return 0; }
 inline void walkerLoraSetDirectGnssWrite(bool) {}
 inline bool walkerLoraDirectGnssWrite() { return false; }
 inline void walkerLoraGetStats(WalkerLoraStats& out) {
     out.moduleReady = false; out.active = false;
     out.framesReceived = 0; out.framesRejected = 0;
     out.bytesForwarded = 0; out.rawBytesIn = 0; out.lastFrameMsAgo = UINT32_MAX;
-    out.rtcmMessages = 0; out.rtcmCrcRejected = 0;
+    out.rtcmMessages = 0; out.rtcmForwardedMessages = 0;
+    out.rtcmFilteredMessages = 0; out.rtcmCrcRejected = 0;
     out.lastRtcmMsAgo = UINT32_MAX; out.lastRtcmType = 0;
     out.rtcmLastGapMs = 0; out.rtcmMaxGapMs = 0;
     for (uint8_t i = 0; i < WALKER_LORA_RTCM_TYPE_SLOTS; i++) {
         out.rtcmTypes[i] = {0, 0, UINT32_MAX, 0, 0};
     }
+    out.rtcmDropTypeCount = 0;
+    for (uint8_t i = 0; i < WALKER_LORA_RTCM_DROP_TYPE_SLOTS; i++) out.rtcmDropTypes[i] = 0;
     out.rtcmOnlyFeed = false;
     out.directGnssWrite = false;
 }

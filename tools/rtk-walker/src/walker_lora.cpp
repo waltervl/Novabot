@@ -189,6 +189,8 @@ static uint32_t g_bytesForwarded = 0;
 static uint32_t g_lastValidMs    = 0;
 static uint32_t g_rawBytesIn     = 0;
 static uint32_t g_rtcmMessages   = 0;
+static uint32_t g_rtcmForwardedMessages = 0;
+static uint32_t g_rtcmFilteredMessages = 0;
 static uint32_t g_rtcmCrcRejected = 0;
 static uint32_t g_rtcmLastValidMs = 0;
 static uint16_t g_rtcmLastType    = 0;
@@ -203,6 +205,8 @@ struct RtcmTypeSlot {
     uint32_t maxGapMs = 0;
 };
 static RtcmTypeSlot g_rtcmTypes[WALKER_LORA_RTCM_TYPE_SLOTS];
+static uint16_t g_rtcmDropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS] = {0};
+static volatile uint8_t g_rtcmDropTypeCount = 0;
 
 enum RtcmParseState : uint8_t {
     RTCM_WAIT_PREAMBLE,
@@ -262,6 +266,16 @@ static void noteRtcmType(uint16_t msgType, uint32_t nowMs) {
     }
     s.lastMs = nowMs;
     s.count++;
+}
+
+static bool shouldDropRtcmType(uint16_t msgType) {
+    uint8_t count = g_rtcmDropTypeCount;
+    if (msgType == 0 || count == 0) return false;
+    if (count > WALKER_LORA_RTCM_DROP_TYPE_SLOTS) count = WALKER_LORA_RTCM_DROP_TYPE_SLOTS;
+    for (uint8_t i = 0; i < count; i++) {
+        if (g_rtcmDropTypes[i] == msgType) return true;
+    }
+    return false;
 }
 
 static void forwardLoraCorrectionBytes(const uint8_t* bytes, size_t len) {
@@ -334,9 +348,14 @@ static void observeRtcmStreamBytes(const uint8_t* data, size_t len) {
                         g_rtcmLastType = msgType;
                         noteRtcmType(msgType, nowRtcmMs);
                         if (g_rtcmOnlyFeed) {
-                            forwardLoraCorrectionBytes(g_rtcmBuf, g_rtcmExpectedLen);
-                            rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
-                            g_bytesForwarded += g_rtcmExpectedLen;
+                            if (shouldDropRtcmType(msgType)) {
+                                g_rtcmFilteredMessages++;
+                            } else {
+                                forwardLoraCorrectionBytes(g_rtcmBuf, g_rtcmExpectedLen);
+                                rtcmLogAppend(g_rtcmBuf, g_rtcmExpectedLen, RTCM_SRC_LORA);
+                                g_bytesForwarded += g_rtcmExpectedLen;
+                                g_rtcmForwardedMessages++;
+                            }
                         }
                     } else {
                         g_rtcmCrcRejected++;
@@ -512,6 +531,37 @@ bool walkerLoraRtcmOnlyFeed() {
     return g_rtcmOnlyFeed;
 }
 
+void walkerLoraSetRtcmDropTypes(const uint16_t* types, size_t count) {
+    g_rtcmDropTypeCount = 0;
+    size_t n = count;
+    if (n > WALKER_LORA_RTCM_DROP_TYPE_SLOTS) n = WALKER_LORA_RTCM_DROP_TYPE_SLOTS;
+    for (size_t i = 0; i < WALKER_LORA_RTCM_DROP_TYPE_SLOTS; i++) {
+        g_rtcmDropTypes[i] = (i < n && types) ? types[i] : 0;
+    }
+    g_rtcmDropTypeCount = (uint8_t)n;
+    loraLogf("rtcm drop types=");
+    if (n == 0) {
+        Serial.print("none\n");
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        Serial.print(i == 0 ? "" : ",");
+        Serial.print(g_rtcmDropTypes[i]);
+    }
+    Serial.print("\n");
+}
+
+size_t walkerLoraGetRtcmDropTypes(uint16_t* out, size_t maxCount) {
+    uint8_t count = g_rtcmDropTypeCount;
+    if (count > WALKER_LORA_RTCM_DROP_TYPE_SLOTS) count = WALKER_LORA_RTCM_DROP_TYPE_SLOTS;
+    size_t n = count;
+    if (n > maxCount) n = maxCount;
+    if (out) {
+        for (size_t i = 0; i < n; i++) out[i] = g_rtcmDropTypes[i];
+    }
+    return n;
+}
+
 void walkerLoraSetDirectGnssWrite(bool enabled) {
     g_directGnssWrite = enabled;
     g_currentCfg.directGnssWrite = enabled;
@@ -531,6 +581,8 @@ void walkerLoraGetStats(WalkerLoraStats& out) {
     out.rawBytesIn     = g_rawBytesIn;
     out.lastFrameMsAgo = g_lastValidMs ? (millis() - g_lastValidMs) : UINT32_MAX;
     out.rtcmMessages   = g_rtcmMessages;
+    out.rtcmForwardedMessages = g_rtcmForwardedMessages;
+    out.rtcmFilteredMessages = g_rtcmFilteredMessages;
     out.rtcmCrcRejected = g_rtcmCrcRejected;
     out.lastRtcmMsAgo  = g_rtcmLastValidMs ? (millis() - g_rtcmLastValidMs) : UINT32_MAX;
     out.lastRtcmType   = g_rtcmLastType;
@@ -543,6 +595,10 @@ void walkerLoraGetStats(WalkerLoraStats& out) {
         out.rtcmTypes[i].lastMsAgo = g_rtcmTypes[i].lastMs ? (nowMs - g_rtcmTypes[i].lastMs) : UINT32_MAX;
         out.rtcmTypes[i].lastGapMs = g_rtcmTypes[i].lastGapMs;
         out.rtcmTypes[i].maxGapMs = g_rtcmTypes[i].maxGapMs;
+    }
+    out.rtcmDropTypeCount = walkerLoraGetRtcmDropTypes(out.rtcmDropTypes, WALKER_LORA_RTCM_DROP_TYPE_SLOTS);
+    for (uint8_t i = out.rtcmDropTypeCount; i < WALKER_LORA_RTCM_DROP_TYPE_SLOTS; i++) {
+        out.rtcmDropTypes[i] = 0;
     }
     out.rtcmOnlyFeed   = g_rtcmOnlyFeed;
     out.directGnssWrite = g_directGnssWrite;
