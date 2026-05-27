@@ -5,6 +5,16 @@
 
 #include <Arduino.h>
 
+#define WALKER_LORA_RTCM_TYPE_SLOTS 8
+
+struct WalkerLoraRtcmTypeStat {
+    uint16_t type;         // RTCM3 message type, e.g. 1074 / 1084 / 1094 / 1124
+    uint32_t count;        // complete CRC-valid messages seen since boot
+    uint32_t lastMsAgo;    // age of the most recent message of this type
+    uint32_t lastGapMs;    // gap between the last two messages of this type
+    uint32_t maxGapMs;     // largest observed gap for this type
+};
+
 #ifdef LORA_PRESENT
 
 struct WalkerLoraConfig {
@@ -30,6 +40,9 @@ struct WalkerLoraStats {
     uint32_t rtcmCrcRejected;    // complete RTCM3 candidates rejected by CRC
     uint32_t lastRtcmMsAgo;      // ms since last CRC-valid RTCM3 message
     uint16_t lastRtcmType;       // RTCM3 message type of the most recent valid frame
+    uint32_t rtcmLastGapMs;      // gap between the last two CRC-valid RTCM messages
+    uint32_t rtcmMaxGapMs;       // largest observed gap between RTCM messages
+    WalkerLoraRtcmTypeStat rtcmTypes[WALKER_LORA_RTCM_TYPE_SLOTS];
     bool     rtcmOnlyFeed;       // current feed policy into the LC29HDA
     bool     directGnssWrite;    // current LoRa->LC29 TX path
 };
@@ -85,6 +98,8 @@ struct WalkerLoraStats  { bool moduleReady; bool active; uint32_t framesReceived
                           uint32_t rawBytesIn; uint32_t lastFrameMsAgo;
                           uint32_t rtcmMessages; uint32_t rtcmCrcRejected;
                           uint32_t lastRtcmMsAgo; uint16_t lastRtcmType;
+                          uint32_t rtcmLastGapMs; uint32_t rtcmMaxGapMs;
+                          WalkerLoraRtcmTypeStat rtcmTypes[WALKER_LORA_RTCM_TYPE_SLOTS];
                           bool rtcmOnlyFeed; bool directGnssWrite; };
 inline bool walkerLoraSetup(const WalkerLoraConfig&) { return false; }
 inline void walkerLoraPump() {}
@@ -100,6 +115,10 @@ inline void walkerLoraGetStats(WalkerLoraStats& out) {
     out.bytesForwarded = 0; out.rawBytesIn = 0; out.lastFrameMsAgo = UINT32_MAX;
     out.rtcmMessages = 0; out.rtcmCrcRejected = 0;
     out.lastRtcmMsAgo = UINT32_MAX; out.lastRtcmType = 0;
+    out.rtcmLastGapMs = 0; out.rtcmMaxGapMs = 0;
+    for (uint8_t i = 0; i < WALKER_LORA_RTCM_TYPE_SLOTS; i++) {
+        out.rtcmTypes[i] = {0, 0, UINT32_MAX, 0, 0};
+    }
     out.rtcmOnlyFeed = false;
     out.directGnssWrite = false;
 }

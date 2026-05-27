@@ -292,6 +292,12 @@ static size_t nmeaLineLen = 0;
 static char     lastGgaLine[180] = {0};
 static size_t   lastGgaLen      = 0;
 static uint32_t lastGgaAtMs     = 0;
+static uint32_t ggaSentenceCount = 0;
+static uint32_t ggaFixTransitionCount = 0;
+static uint32_t ggaLastStatusMs = 0;
+static uint32_t ggaLastFixChangeMs = 0;
+static int      ggaLastFix = -1;
+static int      ggaPrevFix = -1;
 
 // Measured GGA epoch rate (position fixes per second). Count completed
 // GGA sentences, not TinyGPS location updates: TinyGPS can mark location
@@ -354,6 +360,78 @@ static void noteGgaRateEpoch(const char* line, size_t len) {
   } else {
     gnssRateWinCount++;
   }
+}
+
+static bool nmeaField(const char* line, size_t len, uint8_t wantedField,
+                      const char** out, size_t* outLen) {
+  if (!line || !out || !outLen) return false;
+  const char* fieldStart = line;
+  uint8_t field = 0;
+  for (size_t i = 0; i <= len; i++) {
+    char ch = (i < len) ? line[i] : '\0';
+    if (ch != ',' && ch != '*' && i < len) continue;
+    if (field == wantedField) {
+      *out = fieldStart;
+      *outLen = (size_t)(&line[i] - fieldStart);
+      return true;
+    }
+    field++;
+    fieldStart = &line[i + 1];
+    if (ch == '*' || i == len) break;
+  }
+  return false;
+}
+
+static int parseNmeaIntField(const char* line, size_t len, uint8_t field,
+                             int fallback) {
+  const char* start = nullptr;
+  size_t n = 0;
+  if (!nmeaField(line, len, field, &start, &n) || n == 0 || n >= 16) return fallback;
+  char tmp[16];
+  memcpy(tmp, start, n);
+  tmp[n] = '\0';
+  return atoi(tmp);
+}
+
+static double parseNmeaDoubleField(const char* line, size_t len, uint8_t field,
+                                   double fallback) {
+  const char* start = nullptr;
+  size_t n = 0;
+  if (!nmeaField(line, len, field, &start, &n) || n == 0 || n >= 24) return fallback;
+  char tmp[24];
+  memcpy(tmp, start, n);
+  tmp[n] = '\0';
+  return atof(tmp);
+}
+
+static void updateGgaStatusFromLine(const char* line, size_t len) {
+  int fix = parseNmeaIntField(line, len, 6, -1);
+  int sats = parseNmeaIntField(line, len, 7, -1);
+  double hdop = parseNmeaDoubleField(line, len, 8, -1);
+  double diffAge = parseNmeaDoubleField(line, len, 13, -1);
+  int station = parseNmeaIntField(line, len, 14, -1);
+  uint32_t now = millis();
+
+  coreLock();
+  ggaSentenceCount++;
+  ggaLastStatusMs = now;
+  if (fix >= 0) {
+    if (ggaLastFix >= 0 && fix != ggaLastFix) {
+      ggaPrevFix = ggaLastFix;
+      ggaFixTransitionCount++;
+      ggaLastFixChangeMs = now;
+    } else if (ggaLastFix < 0) {
+      ggaLastFixChangeMs = now;
+    }
+    ggaLastFix = fix;
+    st.fix = fix;
+    if (fix > 0) st.lastFixMs = now;
+  }
+  if (sats >= 0) st.sats = sats;
+  if (hdop >= 0) st.hdop = hdop;
+  st.dgpsAge = diffAge;
+  st.dgpsStation = station;
+  coreUnlock();
 }
 
 // Tracks the most recent PAIR001 ACK so the post-detect command flow
@@ -423,6 +501,7 @@ static void gnssLineFeed(char c) {
           (strncmp(nmeaLineBuf, "$GNGGA,", 7) == 0 ||
            strncmp(nmeaLineBuf, "$GPGGA,", 7) == 0)) {
         noteGgaRateEpoch(nmeaLineBuf, nmeaLineLen);
+        updateGgaStatusFromLine(nmeaLineBuf, nmeaLineLen);
         int commaCount = 0;
         bool hasFix = false;
         for (size_t i = 0; i < nmeaLineLen; i++) {
@@ -1895,6 +1974,20 @@ static void handleStatus() {
     (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
     (gnssVariant == GNSS_VARIANT_HDA) ? "LC29HDA" :
     (gnssVariant == GNSS_VARIANT_OTHER) ? "other" : "unknown";
+  JsonObject gnss = doc["gnss"].to<JsonObject>();
+  uint32_t statusNowMs = millis();
+  gnss["ggaSentences"] = ggaSentenceCount;
+  gnss["ggaFix"] = ggaLastFix;
+  gnss["ggaPrevFix"] = ggaPrevFix;
+  gnss["ggaFixTransitions"] = ggaFixTransitionCount;
+  if (ggaLastStatusMs) gnss["lastGgaMsAgo"] = statusNowMs - ggaLastStatusMs;
+  else gnss["lastGgaMsAgo"] = nullptr;
+  if (ggaLastFixChangeMs) gnss["lastGgaFixChangeMsAgo"] = statusNowMs - ggaLastFixChangeMs;
+  else gnss["lastGgaFixChangeMsAgo"] = nullptr;
+  gnss["lastPair001Cmd"] = lastPair001Cmd;
+  gnss["lastPair001Result"] = lastPair001Result;
+  if (lastPair001AtMs) gnss["lastPair001MsAgo"] = statusNowMs - lastPair001AtMs;
+  else gnss["lastPair001MsAgo"] = nullptr;
   doc["authConfigured"] = cfg.authToken.length() > 0;
   // viewingSlot mirrors the on-device "currently loaded saved map" state
   // so the web UI can highlight the active row in its Maps list without
@@ -1939,9 +2032,22 @@ static void handleStatus() {
   else lora["lastFrameMsAgo"] = nullptr;
   lora["rtcmMessages"] = lstats.rtcmMessages;
   lora["rtcmCrcRejected"] = lstats.rtcmCrcRejected;
+  lora["rtcmLastGapMs"] = lstats.rtcmLastGapMs;
+  lora["rtcmMaxGapMs"] = lstats.rtcmMaxGapMs;
   if (lstats.lastRtcmMsAgo != UINT32_MAX) lora["lastRtcmMsAgo"] = lstats.lastRtcmMsAgo;
   else lora["lastRtcmMsAgo"] = nullptr;
   lora["lastRtcmType"] = lstats.lastRtcmType;
+  JsonArray rtcmTypes = lora["rtcmTypes"].to<JsonArray>();
+  for (uint8_t i = 0; i < WALKER_LORA_RTCM_TYPE_SLOTS; i++) {
+    if (lstats.rtcmTypes[i].type == 0 || lstats.rtcmTypes[i].count == 0) continue;
+    JsonObject t = rtcmTypes.add<JsonObject>();
+    t["type"] = lstats.rtcmTypes[i].type;
+    t["count"] = lstats.rtcmTypes[i].count;
+    if (lstats.rtcmTypes[i].lastMsAgo != UINT32_MAX) t["lastMsAgo"] = lstats.rtcmTypes[i].lastMsAgo;
+    else t["lastMsAgo"] = nullptr;
+    t["lastGapMs"] = lstats.rtcmTypes[i].lastGapMs;
+    t["maxGapMs"] = lstats.rtcmTypes[i].maxGapMs;
+  }
   lora["addr"]        = statusLoraAddr;
   lora["channel"]     = statusLoraChannel;
   lora["packetLen"]   = loraPacketLenBytes(statusLoraPacketLenCode);

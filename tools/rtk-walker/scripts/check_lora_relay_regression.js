@@ -71,6 +71,24 @@ assertIncludes(
 
 assertIncludes(
   loraCpp,
+  "static void noteRtcmType(uint16_t msgType, uint32_t nowMs)",
+  "LoRa diagnostics must keep per-RTCM-type counters and gap timing for movement-drop analysis."
+);
+
+assertIncludes(
+  mainCpp,
+  "static void updateGgaStatusFromLine(const char* line, size_t len)",
+  "GNSS status must update from every completed GGA sentence, not only TinyGPS location updates."
+);
+
+assertIncludes(
+  mainCpp,
+  "JsonObject gnss = doc[\"gnss\"].to<JsonObject>();",
+  "Status API must expose LC29-side GGA diagnostics for RTK drop analysis."
+);
+
+assertIncludes(
+  loraCpp,
   "void walkerLoraSetDirectGnssWrite(bool enabled)",
   "LoRa GNSS TX mode must have a runtime setter so outdoor tests can switch without reflashing."
 );
