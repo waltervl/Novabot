@@ -2,11 +2,11 @@
 // frame parsing. We're a passive listener; never transmit user data.
 #include "walker_lora.h"
 #include "walker_api.h"
+#include "gnss_tx.h"
 #include "rtcm_log.h"
 
 #ifdef LORA_PRESENT
 
-extern HardwareSerial gnssSerial;
 extern HardwareSerial loraSerial;
 
 #define LORA_CONFIG_BAUD 9600
@@ -410,7 +410,7 @@ void walkerLoraPump() {
                     g_framesReceived++;
                     g_lastValidMs = millis();
                     if (g_lastCmd == 0x31 && g_payloadIdx > 0) {
-                        gnssSerial.write(g_payloadBuf, g_payloadIdx);
+                        walkerGnssTxQueueRtcmFromLora(g_payloadBuf, g_payloadIdx);
                         rtcmLogAppend(g_payloadBuf, g_payloadIdx, RTCM_SRC_LORA);
                         g_bytesForwarded += g_payloadIdx;
                         observeRtcmStreamBytes(g_payloadBuf, g_payloadIdx);

@@ -1,7 +1,7 @@
 // walker_lora.h — passive LoRa RTCM receiver for the Novabot charger
-// broadcast. Snoops 0x31 (RTK_RELAY) frames and writes the payload
-// straight to the LC29HDA UART so the GNSS chip gets RTK corrections
-// without any internet / WiFi.
+// broadcast. Snoops 0x31 (RTK_RELAY) frames and enqueues the payload
+// for the LC29HDA UART so the GNSS chip gets RTK corrections without
+// any internet / WiFi.
 #pragma once
 
 #include <Arduino.h>
@@ -36,8 +36,8 @@ struct WalkerLoraStats {
 // (M1=1, M0=0) via the 0xC0 command. Returns true if the module ACK'd.
 bool walkerLoraSetup(const WalkerLoraConfig& cfg);
 
-// Called from main loop every iteration. Drains UART2 RX, parses
-// frames, forwards 0x31 payloads to gnssSerial. Non-blocking.
+// Called from main loop every iteration. Drains UART2 RX, parses frames,
+// and enqueues 0x31 payloads for the GNSS TX owner. Non-blocking.
 void walkerLoraPump();
 
 // True if a valid 0x31 frame arrived within the last 10 s. Used by

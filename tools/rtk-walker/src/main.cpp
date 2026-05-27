@@ -51,6 +51,7 @@
 #include "walker_api.h"
 #include "walker_lora.h"
 #include "walker_ota.h"
+#include "gnss_tx.h"
 #include "rtcm_log.h"
 #include "session.h"
 #include "recording.h"
@@ -294,7 +295,7 @@ static uint32_t lastGgaAtMs     = 0;
 // GGA sentences, not TinyGPS location updates: TinyGPS can mark location
 // updated more than once per epoch as it ingests related NMEA sentences,
 // which made a true 1 Hz LC29HDA look like 3-4 Hz and triggered pointless
-// PAIR050/PAIR400 reassert loops.
+// PAIR050 reassert loops.
 static uint32_t gnssRateWinStartMs = 0;
 static uint16_t gnssRateWinCount   = 0;
 static uint16_t gnssRateHz         = 0;
@@ -397,11 +398,11 @@ static void sendGnssCommand(const String& payload) {
   for (size_t i = 0; i < payload.length(); i++) cs ^= (uint8_t) payload[i];
   char out[200];
   snprintf(out, sizeof(out), "$%s*%02X\r\n", payload.c_str(), cs);
-  gnssSerial.print(out);
+  bool queued = walkerGnssTxQueuePairPayload(payload);
   // Trim trailing \r\n for log readability.
   size_t n = strlen(out);
   while (n > 0 && (out[n-1] == '\n' || out[n-1] == '\r')) out[--n] = '\0';
-  weblogf("[gnss-tx] %s\n", out);
+  weblogf("[gnss-tx] %s%s\n", out, queued ? "" : " (queue full)");
 }
 
 static void gnssLineFeed(char c) {
@@ -1139,7 +1140,7 @@ static void ntripPump() {
     int n = ntrip.read(chunk, sizeof(chunk));
     if (n <= 0) break;
     if (!walkerLoraActive()) {
-      gnssSerial.write(chunk, n);
+      walkerGnssTxQueueRtcmFromNtrip(chunk, n);
       rtcmLogAppend(chunk, n, RTCM_SRC_NTRIP);
     }
     // st.ntripBytes counts bytes received from the socket regardless of
@@ -1211,12 +1212,11 @@ static uint8_t  pair050TxCount  = 0;
 static bool     pair050Acked    = false;
 static uint32_t pair050AckedAtMs = 0;
 static bool     pair050RateReady = false;
-static uint8_t  pair050SaveStage = 0;
-static bool     pair400RtkSent  = false;
-static bool     pair513SaveSent = false;
 static uint32_t lastRateReassertMs = 0;
 
 static void gnssPump() {
+  walkerGnssTxPump();
+
   while (gnssSerial.available()) {
     char c = gnssSerial.read();
     gps.encode(c);
@@ -1286,21 +1286,9 @@ static void gnssPump() {
     pair050Acked = true;
     pair050AckedAtMs = millis();
     pair050RateReady = true;
-    pair050SaveStage = 0;
     weblogf("[gnss] PAIR050 ACKed after %u attempt(s)\n", (unsigned) pair050TxCount);
   }
 
-  if (!pair400RtkSent && sinceDetect >= 950 &&
-      ((pair050_1HzSent && nowCfgMs - pair050LastTxMs >= 250) ||
-       gnssVariant == GNSS_VARIANT_HEA)) {
-    sendGnssCommand("PAIR400,2");
-    pair400RtkSent = true;
-  }
-  if (enforceDa1Hz && pair050Acked && pair400RtkSent && !pair513SaveSent &&
-      pair050AckedAtMs != 0 && nowCfgMs - pair050AckedAtMs >= 1500) {
-    sendGnssCommand("PAIR513");
-    pair513SaveSent = true;
-  }
   if (enforceDa1Hz && gnssRateHz > 2 && sinceDetect >= 5000 &&
       (lastRateReassertMs == 0 || nowCfgMs - lastRateReassertMs >= 10000)) {
     weblogf("[gnss] measured %u Hz after 1 Hz request; reasserting PAIR050,1000\n",
@@ -1308,11 +1296,8 @@ static void gnssPump() {
     pair050Acked = false;
     pair050AckedAtMs = 0;
     pair050RateReady = false;
-    pair050SaveStage = 0;
     pair050TxCount = 0;
     pair050LastTxMs = 0;
-    pair400RtkSent = false;
-    pair513SaveSent = false;
     lastRateReassertMs = nowCfgMs;
   }
 #if NMEA_HEARTBEAT
@@ -1898,7 +1883,7 @@ static void handleStatus() {
   doc["gnss5HzAcked"] = pair050Acked;
   doc["gnss1HzAcked"] = pair050Acked;
   doc["gnss1HzReady"] = pair050RateReady;
-  doc["gnss1HzSaveStage"] = pair050SaveStage;
+  doc["gnss1HzSaveStage"] = 0;
   doc["gnss1HzAttempts"] = pair050TxCount;
   doc["gnssVariant"] =
     (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
@@ -1953,6 +1938,15 @@ static void handleStatus() {
   lora["channel"]     = statusLoraChannel;
   lora["packetLen"]   = loraPacketLenBytes(statusLoraPacketLenCode);
   lora["airRateCode"] = statusLoraAirRateCode;
+  WalkerGnssTxStats txStats;
+  walkerGnssTxGetStats(txStats);
+  JsonObject gnssTx = doc["gnssTx"].to<JsonObject>();
+  gnssTx["enqueued"] = txStats.enqueued;
+  gnssTx["dropped"] = txStats.dropped;
+  gnssTx["written"] = txStats.written;
+  gnssTx["bytes"] = txStats.bytesWritten;
+  gnssTx["queueDepth"] = txStats.queueDepth;
+  gnssTx["queueHighWater"] = txStats.queueHighWater;
   sendJson(200, doc);
 }
 
@@ -3027,6 +3021,7 @@ void setup() {
   // that LVGL's DMA-capable buffer alloc (~30 KB contiguous) failed during
   // tftSetup() and crashed the board on boot.
   gnssSerial.begin(GNSS_BAUD, SERIAL_8N1, GNSS_RX_PIN, GNSS_TX_PIN);
+  walkerGnssTxSetup(gnssSerial);
 
   // Load persisted config BEFORE touching LoRa. The previous order
   // always booted the receiver with the hardcoded defaults
