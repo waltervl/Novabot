@@ -160,6 +160,55 @@ assertIncludes(
   "LoRa config API must expose the runtime GNSS TX mode."
 );
 
+// ── Correction-source switch (LoRa ↔ NTRIP) ──────────────────────────────
+assertIncludes(
+  mainCpp,
+  "doc[\"correctionSource\"] = cfg.useNtripCorrections ? \"ntrip\" : \"lora\";",
+  "Config API must expose the runtime correction-source selector (lora/ntrip)."
+);
+
+assertIncludes(
+  mainCpp,
+  "prefs.getBool(\"corr_ntrip\", false)",
+  "Correction source must persist in NVS and default to LoRa (existing walkers keep current behavior)."
+);
+
+assertIncludes(
+  mainCpp,
+  "walkerLoraSetFeedToGnss(!cfg.useNtripCorrections);",
+  "Boot must gate the LoRa GNSS feed by the persisted correction source."
+);
+
+assertIncludes(
+  loraCpp,
+  "void walkerLoraSetFeedToGnss(bool enabled)",
+  "LoRa must expose a runtime setter to stop feeding the GNSS when NTRIP is the active source."
+);
+
+assertIncludes(
+  loraCpp,
+  "if (!g_feedGnss) return;",
+  "LoRa correction forward must skip the GNSS write when its feed is disabled (NTRIP active)."
+);
+
+assertIncludes(
+  mainCpp,
+  "if (!useNtrip) return false;",
+  "NTRIP must run only when it is the explicitly selected correction source."
+);
+
+assertIncludes(
+  mainCpp,
+  "size_t freeSlots = walkerGnssTxFreeSlots();",
+  "NTRIP must backpressure on free GNSS-TX queue slots so bursty corrections never overflow/drop (garbled RTCM → no fix)."
+);
+
+assertIncludes(
+  gnssTxCpp,
+  "size_t walkerGnssTxFreeSlots()",
+  "GNSS TX queue must expose free-slot count for source backpressure."
+);
+
 assertIncludes(
   gnssTxCpp,
   "g_serial->availableForWrite()",

@@ -131,6 +131,12 @@ struct Config {
   uint8_t  loraAirRateCode   = 7; // EBYTE code 7 = 62.5 kbps on E22-900
   bool     loraRtcmOnlyFeed  = true;
   bool     loraDirectGnssWrite = false;
+  // Correction-source selector. false = LoRa relay feeds the GNSS (default,
+  // factory pair). true = NTRIP over WiFi feeds the GNSS; the LoRa relay
+  // keeps parsing for diagnostics but stops feeding the module so the two
+  // sources never fight on the UART. Lets the operator A/B low-latency
+  // NTRIP against the ~2 s LoRa relay without a reflash. NVS key "corr_ntrip".
+  bool     useNtripCorrections = false;
 
   // OTA auto-check on boot. Default true — walker pulls the manifest from
   // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
@@ -592,6 +598,7 @@ static void loadConfig() {
   cfg.loraAirRateCode   = prefs.getUChar("lora_air", 7);
   cfg.loraRtcmOnlyFeed  = prefs.getBool("lora_rtcm", true);
   cfg.loraDirectGnssWrite = prefs.getBool("lora_dir", false);
+  cfg.useNtripCorrections = prefs.getBool("corr_ntrip", false);
   if (cfg.loraPacketLenCode > 3) cfg.loraPacketLenCode = 0;
   if (cfg.loraAirRateCode > 7) cfg.loraAirRateCode = 7;
 }
@@ -618,6 +625,7 @@ static void saveConfig() {
   prefs.putUChar("lora_air",   cfg.loraAirRateCode);
   prefs.putBool("lora_rtcm",   cfg.loraRtcmOnlyFeed);
   prefs.putBool("lora_dir",    cfg.loraDirectGnssWrite);
+  prefs.putBool("corr_ntrip",  cfg.useNtripCorrections);
 }
 
 static uint16_t loraPacketLenBytes(uint8_t code) {
@@ -944,17 +952,18 @@ static bool ntripReadyToRun() {
   bool haveHost = cfg.ntripHost.length() > 0;
   bool haveMount = cfg.ntripMount.length() > 0;
   bool havePort = cfg.ntripPort > 0;
+  bool useNtrip = cfg.useNtripCorrections;
   coreUnlock();
   if (!haveHost || !haveMount || !havePort) return false;
   if (WiFi.status() != WL_CONNECTED) return false;
-  WalkerLoraStats loraStats;
-  walkerLoraGetStats(loraStats);
-  // LoRa wins absolutely when the receiver module is detected. The
-  // requirement for this hardware variant is "LoRa OR NTRIP", not
-  // failover. Keeping NTRIP alive in parallel costs CPU/network, keeps
-  // the UI pinned on NTRIP, and can starve the web server while the
-  // socket is being drained.
-  if (loraStats.moduleReady) return false;
+  // Explicit correction-source selector. NTRIP runs only when it is the
+  // chosen source; when LoRa is selected we keep NTRIP fully idle (no
+  // socket) so the two sources never feed the module in parallel and the
+  // web server isn't starved draining a TCP stream we won't use. (The old
+  // rule auto-suppressed NTRIP whenever the LoRa module was present — the
+  // source switch now makes that choice explicit and overridable so the
+  // operator can force NTRIP with the E22 still installed.)
+  if (!useNtrip) return false;
   // No GNSS module: no point fetching RTCM corrections, there is
   // nothing on the other end of the UART to consume them. Skip until
   // the first NMEA byte proves the module is awake.
@@ -1144,13 +1153,14 @@ static void ntripPushGga() {
 }
 
 static void ntripPump() {
-  WalkerLoraStats loraStats;
-  walkerLoraGetStats(loraStats);
-  bool suppressedByLora = loraStats.moduleReady;
+  coreLock();
+  bool useNtrip = cfg.useNtripCorrections;
+  coreUnlock();
   if (!ntripReadyToRun()) {
-    if (suppressedByLora) {
+    if (!useNtrip) {
+      // LoRa is the selected correction source — NTRIP intentionally idle.
       if (!ntripSuppressedLogged) {
-        weblogf("[ntrip] suppressed: LoRa module detected, skipping WiFi/NTRIP RTCM\n");
+        weblogf("[ntrip] idle: LoRa is the selected correction source\n");
         ntripSuppressedLogged = true;
       }
     } else {
@@ -1221,16 +1231,27 @@ static void ntripPump() {
   // FIX even with 30 sats / good HDOP, exactly the symptom the original
   // (un-budgeted) loop did not have.
   while (ntrip.available()) {
+    // Backpressure: only read what the GNSS TX queue can absorb right now.
+    // NTRIP arrives in bursts (NL VRS can dump several KB at once, especially
+    // the post-connect backlog). Each queue item holds up to 256 B; reading
+    // more than freeSlots*256 overflows the queue and drops RTCM mid-message,
+    // which garbles the corrections — the LC29HDA then rejects them and never
+    // resolves a fix (observed: dropped=21, sats→0). Leftover bytes stay
+    // buffered in the TCP socket (TCP flow-controls the caster) and are read
+    // next iteration once the realtime pump has drained the queue.
+    size_t freeSlots = walkerGnssTxFreeSlots();
+    if (freeSlots == 0) break;
     uint8_t chunk[512];
-    int n = ntrip.read(chunk, sizeof(chunk));
+    size_t want = freeSlots * 256;
+    if (want > sizeof(chunk)) want = sizeof(chunk);
+    int n = ntrip.read(chunk, want);
     if (n <= 0) break;
-    if (!walkerLoraActive()) {
-      walkerGnssTxQueueRtcmFromNtrip(chunk, n);
-      rtcmLogAppend(chunk, n, RTCM_SRC_NTRIP);
-    }
-    // st.ntripBytes counts bytes received from the socket regardless of
-    // whether we forwarded them — keeps the "NTRIP up" metric honest even
-    // when LoRa is the active source.
+    // NTRIP is the selected source here (ntripReadyToRun gated on it) and the
+    // LoRa relay's GNSS feed is disabled while NTRIP is active, so forward
+    // unconditionally — the two sources can't fight on the UART, and the read
+    // above guarantees this enqueue fits without dropping.
+    walkerGnssTxQueueRtcmFromNtrip(chunk, n);
+    rtcmLogAppend(chunk, n, RTCM_SRC_NTRIP);
     coreLock();
     st.ntripBytes += n;
     coreUnlock();
@@ -1999,6 +2020,7 @@ static void handleStatus() {
   uint8_t statusLoraAirRateCode = cfg.loraAirRateCode;
   bool statusLoraRtcmOnlyFeed = cfg.loraRtcmOnlyFeed;
   bool statusLoraDirectGnssWrite = cfg.loraDirectGnssWrite;
+  bool statusUseNtripCorrections = cfg.useNtripCorrections;
 #ifdef BAT_ADC
   if (batteryReady) {
     doc["batteryVolts"]    = batteryVoltsEma;
@@ -2064,6 +2086,8 @@ static void handleStatus() {
   lora["directGnssWrite"] = lstats.directGnssWrite;
   lora["txMode"] = lstats.directGnssWrite ? "legacy_direct" : "queued";
   lora["configuredDirectGnssWrite"] = statusLoraDirectGnssWrite;
+  lora["correctionSource"] = statusUseNtripCorrections ? "ntrip" : "lora";
+  lora["feedingGnss"] = walkerLoraFeedToGnss();
   WalkerGnssTxStats txStats;
   walkerGnssTxGetStats(txStats);
   JsonObject gnssTx = doc["gnssTx"].to<JsonObject>();
@@ -2818,6 +2842,7 @@ static void handleConfigLoraGet() {
   doc["feedPolicy"]    = cfg.loraRtcmOnlyFeed ? "rtcm_only" : "raw_0x31";
   doc["directGnssWrite"] = cfg.loraDirectGnssWrite;
   doc["txMode"] = cfg.loraDirectGnssWrite ? "legacy_direct" : "queued";
+  doc["correctionSource"] = cfg.useNtripCorrections ? "ntrip" : "lora";
   coreUnlock();
   uint16_t dropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS] = {0};
   size_t dropCount = walkerLoraGetRtcmDropTypes(dropTypes, WALKER_LORA_RTCM_DROP_TYPE_SLOTS);
@@ -2903,6 +2928,19 @@ static void handleConfigLoraPost() {
       upd.loraDirectGnssWrite = true;
     } else {
       server.send(400, "text/plain", "txMode queued/legacy_direct"); return;
+    }
+  }
+  if (body["correctionSource"].is<const char*>()) {
+    String src = body["correctionSource"].as<String>();
+    src.trim();
+    if (src == "lora") {
+      upd.useNtripCorrectionsSet = true;
+      upd.useNtripCorrections = false;
+    } else if (src == "ntrip") {
+      upd.useNtripCorrectionsSet = true;
+      upd.useNtripCorrections = true;
+    } else {
+      server.send(400, "text/plain", "correctionSource lora/ntrip"); return;
     }
   }
   bool rtcmDropTypesSet = false;
@@ -3261,6 +3299,9 @@ void setup() {
     cfg.loraDirectGnssWrite,
   };
   walkerLoraSetup(lcfg);
+  // Apply the persisted correction-source choice: when NTRIP is selected the
+  // LoRa relay must not feed the module (NTRIP owns the UART corrections).
+  walkerLoraSetFeedToGnss(!cfg.useNtripCorrections);
 #endif
 
   if (!LittleFS.begin(true)) {
@@ -3920,6 +3961,11 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
     cfg.loraDirectGnssWrite = upd.loraDirectGnssWrite;
     loraTxModeChanged = true;
   }
+  bool correctionSourceChanged = false;
+  if (upd.useNtripCorrectionsSet) {
+    cfg.useNtripCorrections = upd.useNtripCorrections;
+    correctionSourceChanged = true;
+  }
   saveConfig();
   if (needsReboot) {
     weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
@@ -3941,6 +3987,7 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   };
   bool newLoraRtcmOnlyFeed = cfg.loraRtcmOnlyFeed;
   bool newLoraDirectGnssWrite = cfg.loraDirectGnssWrite;
+  bool newUseNtripCorrections = cfg.useNtripCorrections;
   coreUnlock();
 
   if (loraChanged) {
@@ -3956,6 +4003,15 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
       weblogf("[cfg] lora tx mode=%s\n",
               newLoraDirectGnssWrite ? "legacy_direct" : "queued");
     }
+  }
+  // Correction-source switch is independent of the LoRa-pair reconfigure
+  // above: gate the LoRa relay's GNSS feed so it stops writing the module
+  // when NTRIP is the active source (and resumes when LoRa is). The NTRIP
+  // loop itself starts/stops via ntripReadyToRun() reading the same flag.
+  if (correctionSourceChanged) {
+    walkerLoraSetFeedToGnss(!newUseNtripCorrections);
+    weblogf("[cfg] correction source=%s\n",
+            newUseNtripCorrections ? "ntrip" : "lora");
   }
   if (needsReboot) {
     delay(500);

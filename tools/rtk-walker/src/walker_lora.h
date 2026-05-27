@@ -77,6 +77,11 @@ void walkerLoraSetRtcmDropTypes(const uint16_t* types, size_t count);
 size_t walkerLoraGetRtcmDropTypes(uint16_t* out, size_t maxCount);
 void walkerLoraSetDirectGnssWrite(bool enabled);
 bool walkerLoraDirectGnssWrite();
+// Enable/disable feeding LoRa corrections to the GNSS UART. Disabled while
+// NTRIP is the selected correction source so the two never fight on the UART;
+// parsing/diagnostics keep running regardless.
+void walkerLoraSetFeedToGnss(bool enabled);
+bool walkerLoraFeedToGnss();
 
 // Stats snapshot for the UI / API.
 void walkerLoraGetStats(WalkerLoraStats& out);
@@ -121,6 +126,8 @@ inline void walkerLoraSetRtcmDropTypes(const uint16_t*, size_t) {}
 inline size_t walkerLoraGetRtcmDropTypes(uint16_t*, size_t) { return 0; }
 inline void walkerLoraSetDirectGnssWrite(bool) {}
 inline bool walkerLoraDirectGnssWrite() { return false; }
+inline void walkerLoraSetFeedToGnss(bool) {}
+inline bool walkerLoraFeedToGnss() { return false; }
 inline void walkerLoraGetStats(WalkerLoraStats& out) {
     out.moduleReady = false; out.active = false;
     out.framesReceived = 0; out.framesRejected = 0;

@@ -9,6 +9,11 @@ struct WalkerGnssTxItem {
   uint8_t bytes[256];
 };
 
+// Queue depth in items (each up to 256 B). Bursty NTRIP must not enqueue
+// more than the free slots or xQueueSend drops corrections — see
+// walkerGnssTxFreeSlots() + the NTRIP backpressure loop in main.cpp.
+#define WALKER_GNSS_TX_QUEUE_LEN 24
+
 static HardwareSerial* g_serial = nullptr;
 static QueueHandle_t g_queue = nullptr;
 static WalkerGnssTxStats g_stats = {};
@@ -19,7 +24,7 @@ static bool g_hasActive = false;
 void walkerGnssTxSetup(HardwareSerial& serial) {
   g_serial = &serial;
   if (!g_queue) {
-    g_queue = xQueueCreate(24, sizeof(WalkerGnssTxItem));
+    g_queue = xQueueCreate(WALKER_GNSS_TX_QUEUE_LEN, sizeof(WalkerGnssTxItem));
   }
 }
 
@@ -106,6 +111,13 @@ void walkerGnssTxPump() {
   uint16_t totalDepth = (uint16_t)uxQueueMessagesWaiting(g_queue) + (g_hasActive ? 1 : 0);
   g_stats.queueDepth = totalDepth;
   if (totalDepth > g_stats.queueHighWater) g_stats.queueHighWater = totalDepth;
+}
+
+size_t walkerGnssTxFreeSlots() {
+  if (!g_queue) return 0;
+  UBaseType_t waiting = uxQueueMessagesWaiting(g_queue);
+  if ((size_t) waiting >= (size_t) WALKER_GNSS_TX_QUEUE_LEN) return 0;
+  return (size_t) WALKER_GNSS_TX_QUEUE_LEN - (size_t) waiting;
 }
 
 void walkerGnssTxGetStats(WalkerGnssTxStats& out) {

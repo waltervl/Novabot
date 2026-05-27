@@ -24,3 +24,7 @@ bool walkerGnssTxQueueRtcmFromNtrip(const uint8_t* bytes, size_t len);
 bool walkerGnssTxQueuePairPayload(const String& payload);
 void walkerGnssTxPump();
 void walkerGnssTxGetStats(WalkerGnssTxStats& out);
+// Free queue slots (items, each up to 256 B). Callers feeding a bursty source
+// (NTRIP) read at most this much from their socket per iteration so the
+// enqueue can never overflow and drop corrections.
+size_t walkerGnssTxFreeSlots();

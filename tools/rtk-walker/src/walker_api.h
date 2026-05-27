@@ -87,6 +87,7 @@ struct WalkerConfigUpdate {
   bool loraAirRateCodeSet   = false; uint8_t loraAirRateCode   = 7;
   bool loraRtcmOnlyFeedSet  = false; bool loraRtcmOnlyFeed = false;
   bool loraDirectGnssWriteSet = false; bool loraDirectGnssWrite = false;
+  bool useNtripCorrectionsSet = false; bool useNtripCorrections = false;
 };
 
 void walkerGetSnapshot(WalkerSnapshot& out);

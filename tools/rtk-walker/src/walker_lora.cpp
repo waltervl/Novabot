@@ -161,6 +161,12 @@ static bool g_moduleReady = false;
 static WalkerLoraConfig g_currentCfg = {718, 17, 20, 14, 0, 7, true, false};
 static volatile bool g_rtcmOnlyFeed = true;
 static volatile bool g_directGnssWrite = false;
+// When false, the LoRa relay keeps parsing frames and updating diagnostics
+// (counters, RTCM-type histogram, gap timing) but does NOT write corrections
+// to the GNSS UART. Set false while NTRIP is the active correction source so
+// LoRa and NTRIP never feed the module in parallel. Default true = LoRa is
+// the source and feeds the module (the normal case).
+static volatile bool g_feedGnss = true;
 
 // Frame parser state. Resets to WAIT_PRE1 on any malformed byte.
 // Charger RTK relay frames are:
@@ -280,6 +286,9 @@ static bool shouldDropRtcmType(uint16_t msgType) {
 
 static void forwardLoraCorrectionBytes(const uint8_t* bytes, size_t len) {
     if (!bytes || len == 0) return;
+    // NTRIP is the active correction source — diagnostics already counted
+    // this frame; just don't write it to the module (NTRIP owns the UART).
+    if (!g_feedGnss) return;
     if (g_directGnssWrite) {
         gnssSerial.write(bytes, len);
     } else {
@@ -570,6 +579,15 @@ void walkerLoraSetDirectGnssWrite(bool enabled) {
 
 bool walkerLoraDirectGnssWrite() {
     return g_directGnssWrite;
+}
+
+void walkerLoraSetFeedToGnss(bool enabled) {
+    g_feedGnss = enabled;
+    loraLogf("gnss feed=%s\n", enabled ? "on" : "off (ntrip source)");
+}
+
+bool walkerLoraFeedToGnss() {
+    return g_feedGnss;
 }
 
 void walkerLoraGetStats(WalkerLoraStats& out) {
