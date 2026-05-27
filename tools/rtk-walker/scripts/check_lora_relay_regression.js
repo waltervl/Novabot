@@ -6,6 +6,7 @@ const root = path.resolve(__dirname, "..");
 const loraCpp = fs.readFileSync(path.join(root, "src", "walker_lora.cpp"), "utf8");
 const mainCpp = fs.readFileSync(path.join(root, "src", "main.cpp"), "utf8");
 const gnssTxCpp = fs.readFileSync(path.join(root, "src", "gnss_tx.cpp"), "utf8");
+const rtcmLogCpp = fs.readFileSync(path.join(root, "src", "rtcm_log.cpp"), "utf8");
 
 function assertIncludes(haystack, needle, message) {
   if (!haystack.includes(needle)) {
@@ -85,6 +86,24 @@ assertIncludes(
   mainCpp,
   "JsonObject gnss = doc[\"gnss\"].to<JsonObject>();",
   "Status API must expose LC29-side GGA diagnostics for RTK drop analysis."
+);
+
+assertIncludes(
+  rtcmLogCpp,
+  "#define RTCM_LOG_SIZE 4096",
+  "RTCM debug ring must be large enough to capture 10 s reference bursts for movement-drop analysis."
+);
+
+assertIncludes(
+  mainCpp,
+  "server.hasArg(\"bytes\")",
+  "RTCM log endpoint must allow explicit larger diagnostic captures without making the Web UI default heavy."
+);
+
+assertIncludes(
+  mainCpp,
+  "bytesRequested",
+  "RTCM log response must report the requested diagnostic capture size."
 );
 
 assertIncludes(

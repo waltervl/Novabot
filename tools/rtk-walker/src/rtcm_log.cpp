@@ -3,7 +3,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-#define RTCM_LOG_SIZE 1024   // raw bytes kept in the ring
+#define RTCM_LOG_SIZE 4096   // raw bytes kept in the ring
 
 static uint8_t g_buf[RTCM_LOG_SIZE];
 static uint32_t g_head = 0;          // next write index

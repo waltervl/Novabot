@@ -2902,13 +2902,22 @@ static void handleConfigLoraPost() {
 }
 
 static void handleRtcmLog() {
-  // Snapshot the last 512 B of the ring. This is enough to identify the
-  // active RTCM message family while keeping the web debug endpoint tiny.
-  const size_t WANT = 512;
-  static char hexbuf[2 * WANT + 1];
+  // Default to a tiny tail for the Web UI. Allow explicit diagnostic
+  // captures large enough to include the 10 s 1006/1033 reference burst.
+  const size_t DEFAULT_WANT = 512;
+  const size_t MAX_WANT = 4096;
+  size_t want = DEFAULT_WANT;
+  if (server.hasArg("bytes")) {
+    int requested = server.arg("bytes").toInt();
+    if (requested > 0) {
+      want = (size_t) requested;
+      if (want > MAX_WANT) want = MAX_WANT;
+    }
+  }
+  static char hexbuf[2 * MAX_WANT + 1];
   uint32_t seq = 0;
   RtcmLogSource src = RTCM_SRC_NONE;
-  size_t n = rtcmLogSnapshot(hexbuf, WANT, &seq, &src);
+  size_t n = rtcmLogSnapshot(hexbuf, want, &seq, &src);
 
   const char* srcStr = "none";
   if (src == RTCM_SRC_LORA)  srcStr = "lora";
@@ -2916,8 +2925,9 @@ static void handleRtcmLog() {
 
   char prefix[128];
   int prefixLen = snprintf(prefix, sizeof(prefix),
-                           "{\"bytesAvailable\":%lu,\"seq\":%lu,\"source\":\"%s\",\"hex\":\"",
-                           (unsigned long) n, (unsigned long) seq, srcStr);
+                           "{\"bytesAvailable\":%lu,\"bytesRequested\":%lu,\"seq\":%lu,\"source\":\"%s\",\"hex\":\"",
+                           (unsigned long) n, (unsigned long) want,
+                           (unsigned long) seq, srcStr);
   if (prefixLen < 0) {
     server.send(500, "text/plain", "format error");
     return;
