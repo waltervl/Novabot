@@ -448,14 +448,20 @@ static int      lastPair001Cmd = -1;
 static int      lastPair001Result = -1;
 static uint32_t lastPair001AtMs = 0;
 static uint32_t pair050AckOkAtMs = 0;
+static uint32_t pair080AckOkAtMs = 0;
 
 static void rememberPair001Ack(int cmd, int result, uint32_t atMs) {
   if (result != 0) return;
   if (cmd == 50) pair050AckOkAtMs = atMs;
+  if (cmd == 80) pair080AckOkAtMs = atMs;  // PAIR080 nav-mode set ACK
 }
 
 static bool pair050AckOkSince(uint32_t sinceMs) {
   return pair050AckOkAtMs != 0 && (int32_t)(pair050AckOkAtMs - sinceMs) >= 0;
+}
+
+static bool pair080AckOkSince(uint32_t sinceMs) {
+  return pair080AckOkAtMs != 0 && (int32_t)(pair080AckOkAtMs - sinceMs) >= 0;
 }
 
 enum GnssVariant : uint8_t {
@@ -1318,6 +1324,14 @@ static uint8_t  pair050TxCount  = 0;
 static bool     pair050Acked    = false;
 static uint32_t pair050AckedAtMs = 0;
 static bool     pair050RateReady = false;
+// PAIR080,1 = Fitness/pedestrian nav mode. The walker is handheld at walking
+// speed; the default Normal model (tuned for driving) drops RTK fix under
+// handheld motion. Set once at boot, ACK-gated, never reasserted at runtime
+// (changing nav mode resets the solution, so it must be set before/while the
+// module acquires from a clean boot — not mid-run).
+static uint32_t pair080LastTxMs = 0;
+static uint8_t  pair080TxCount  = 0;
+static bool     pair080Acked    = false;
 static uint32_t lastRateReassertMs = 0;
 
 static void gnssPump() {
@@ -1393,6 +1407,27 @@ static void gnssPump() {
     pair050AckedAtMs = millis();
     pair050RateReady = true;
     weblogf("[gnss] PAIR050 ACKed after %u attempt(s)\n", (unsigned) pair050TxCount);
+  }
+
+  // Assert Fitness/pedestrian nav mode (PAIR080,1) once at boot. The walker
+  // walks; the LC29HDA's default Normal model drops RTK fix under handheld
+  // motion. Sent only at startup (variant known, module still acquiring), so
+  // the nav-mode change can't reset an established solution mid-run. ACK is
+  // $PAIR001,080,0. Never reasserted at runtime.
+  if (sinceDetect >= 800 && gnssVariant != GNSS_VARIANT_UNKNOWN &&
+      !pair080Acked && pair080TxCount < 4) {
+    uint32_t retryMs = (pair080TxCount < 4) ? 2000 : 15000;
+    if (pair080TxCount == 0 || nowCfgMs - pair080LastTxMs >= retryMs) {
+      sendGnssCommand("PAIR080,1");
+      pair080LastTxMs = nowCfgMs;
+      if (pair080TxCount < UINT8_MAX) pair080TxCount++;
+      weblogf("[gnss] PAIR080 walking nav-mode attempt %u\n", (unsigned) pair080TxCount);
+    }
+  }
+  if (!pair080Acked && pair080TxCount > 0 && pair080AckOkSince(pair080LastTxMs)) {
+    pair080Acked = true;
+    weblogf("[gnss] PAIR080 walking nav-mode ACKed after %u attempt(s)\n",
+            (unsigned) pair080TxCount);
   }
 
   if (enforceDa1Hz && gnssRateHz > 2 && sinceDetect >= 5000 &&
@@ -1991,6 +2026,8 @@ static void handleStatus() {
   doc["gnss1HzReady"] = pair050RateReady;
   doc["gnss1HzSaveStage"] = 0;
   doc["gnss1HzAttempts"] = pair050TxCount;
+  doc["gnssWalkModeAcked"] = pair080Acked;       // PAIR080,1 Fitness nav mode set at boot
+  doc["gnssWalkModeAttempts"] = pair080TxCount;
   doc["gnssVariant"] =
     (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
     (gnssVariant == GNSS_VARIANT_HDA) ? "LC29HDA" :

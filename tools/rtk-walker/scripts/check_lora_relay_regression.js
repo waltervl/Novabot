@@ -210,6 +210,12 @@ assertIncludes(
 );
 
 assertIncludes(
+  mainCpp,
+  "sendGnssCommand(\"PAIR080,1\")",
+  "Walker must assert Fitness/pedestrian nav mode (PAIR080,1) at boot — Normal model drops RTK fix under handheld walking."
+);
+
+assertIncludes(
   gnssTxCpp,
   "g_serial->availableForWrite()",
   "GNSS TX owner must respect UART TX buffer capacity instead of blocking the realtime pump."
