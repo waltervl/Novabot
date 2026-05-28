@@ -541,11 +541,24 @@ static void gnssLineFeed(char c) {
           lastGgaAtMs = millis();
         }
       }
+      // Diagnostic: also log $GxGSV (satellite-in-view) lines so we can see
+      // per-signal CN0 for L1 vs L5 — needed to verify band tracking quality
+      // when debugging RTK Fixed acquisition issues. GSV is 1Hz so log volume
+      // stays manageable; revert by disabling GSV output via $PAIR062,4,0.
+      if (nmeaLineLen >= 6 && nmeaLineBuf[0] == '$' && nmeaLineBuf[1] == 'G' &&
+          nmeaLineBuf[3] == 'G' && nmeaLineBuf[4] == 'S' && nmeaLineBuf[5] == 'V') {
+        weblogf("[gnss-rx] %s\n", nmeaLineBuf);
+      }
       if (nmeaLineLen >= 3 && nmeaLineBuf[0] == '$' && nmeaLineBuf[1] == 'P') {
         weblogf("[gnss-rx] %s\n", nmeaLineBuf);
         if (strstr(nmeaLineBuf, "LC29HEA")) setGnssVariant(GNSS_VARIANT_HEA);
         else if (strstr(nmeaLineBuf, "LC29HDA")) setGnssVariant(GNSS_VARIANT_HDA);
-        else if (strncmp(nmeaLineBuf, "$PAIR020,", 9) == 0) setGnssVariant(GNSS_VARIANT_OTHER);
+        // Either legacy ($PAIR020) or modern ($PQTMVERNO) version sentence
+        // without a recognised module identifier maps to GNSS_VARIANT_OTHER.
+        else if (strncmp(nmeaLineBuf, "$PAIR020,", 9) == 0 ||
+                 strncmp(nmeaLineBuf, "$PQTMVERNO,", 11) == 0) {
+          setGnssVariant(GNSS_VARIANT_OTHER);
+        }
         // PAIR001 ACK: "$PAIR001,<cmd>,<result>*HH" — cmd matches the
         // PAIR<cmd> we sent (e.g. 050 for PAIR050), result=0 means OK.
         // Parse it here so the retry loop in gnssPump() can see whether
@@ -1387,11 +1400,20 @@ static void gnssPump() {
   if (sinceDetect >= 500 && gnssVariant == GNSS_VARIANT_UNKNOWN && pair021TxCount < 5) {
     uint32_t retryMs = (pair021TxCount < 5) ? 1000 : 10000;
     if (pair021TxCount == 0 || nowCfgMs - pair021LastTxMs >= retryMs) {
+      // Legacy version query — older firmware (NR11A03S and earlier) replies
+      // with a $PAIR020 line containing "LC29HxA" which triggers variant
+      // detection. NR11A04S still ACKs PAIR021 but no longer auto-emits the
+      // version sentence, so we ALSO send the new $PQTMVERNO query which
+      // NR11A04S responds to with "$PQTMVERNO,LC29HDANR11A04S_RSA,...". The
+      // variant matcher accepts either pattern. Sending both keeps backward
+      // compatibility with older module firmware while unblocking the new one.
       sendGnssCommand("PAIR021");
+      sendGnssCommand("PQTMVERNO");
       pair021Sent = true;
       pair021LastTxMs = nowCfgMs;
       if (pair021TxCount < UINT8_MAX) pair021TxCount++;
-      weblogf("[gnss] PAIR021 firmware query attempt %u\n", (unsigned) pair021TxCount);
+      weblogf("[gnss] version query attempt %u (PAIR021 + PQTMVERNO)\n",
+              (unsigned) pair021TxCount);
     }
   }
   // 1000 ms = 1 Hz. The LC29HDA *-DA* variant is hardware-locked to 1 Hz
