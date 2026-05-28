@@ -51,6 +51,7 @@
 #include "walker_api.h"
 #include "walker_lora.h"
 #include "walker_ota.h"
+#include "gnss_upgrade.h"
 #include "gnss_tx.h"
 #include "rtcm_log.h"
 #include "session.h"
@@ -137,6 +138,12 @@ struct Config {
   // sources never fight on the UART. Lets the operator A/B low-latency
   // NTRIP against the ~2 s LoRa relay without a reflash. NVS key "corr_ntrip".
   bool     useNtripCorrections = false;
+  // LC29HDA navigation/dynamics model (PAIR080). Default 1 = Fitness (the
+  // walking model — holds RTK fix under handheld motion where the Normal=0
+  // driving model drops it). Other valid values: 0 Normal, 4 Stationary,
+  // 5 Drone, 7 Swimming, 9 Bike. Asserted once at boot; changing it resets
+  // the GNSS solution so it re-acquires in the new model. NVS key "nav_mode".
+  uint8_t  gnssNavMode = 1;
 
   // OTA auto-check on boot. Default true — walker pulls the manifest from
   // <serverUrl>/api/walker-firmware/latest right after WiFi associates and
@@ -605,6 +612,12 @@ static void loadConfig() {
   cfg.loraRtcmOnlyFeed  = prefs.getBool("lora_rtcm", true);
   cfg.loraDirectGnssWrite = prefs.getBool("lora_dir", false);
   cfg.useNtripCorrections = prefs.getBool("corr_ntrip", false);
+  cfg.gnssNavMode = prefs.getUChar("nav_mode", 1);  // 1 = Fitness (walking)
+  // Only allow real (non-reserved) PAIR080 modes; fall back to Fitness.
+  if (cfg.gnssNavMode != 0 && cfg.gnssNavMode != 1 && cfg.gnssNavMode != 4 &&
+      cfg.gnssNavMode != 5 && cfg.gnssNavMode != 7 && cfg.gnssNavMode != 9) {
+    cfg.gnssNavMode = 1;
+  }
   if (cfg.loraPacketLenCode > 3) cfg.loraPacketLenCode = 0;
   if (cfg.loraAirRateCode > 7) cfg.loraAirRateCode = 7;
 }
@@ -632,6 +645,7 @@ static void saveConfig() {
   prefs.putBool("lora_rtcm",   cfg.loraRtcmOnlyFeed);
   prefs.putBool("lora_dir",    cfg.loraDirectGnssWrite);
   prefs.putBool("corr_ntrip",  cfg.useNtripCorrections);
+  prefs.putUChar("nav_mode",   cfg.gnssNavMode);
 }
 
 static uint16_t loraPacketLenBytes(uint8_t code) {
@@ -1409,25 +1423,29 @@ static void gnssPump() {
     weblogf("[gnss] PAIR050 ACKed after %u attempt(s)\n", (unsigned) pair050TxCount);
   }
 
-  // Assert Fitness/pedestrian nav mode (PAIR080,1) once at boot. The walker
-  // walks; the LC29HDA's default Normal model drops RTK fix under handheld
-  // motion. Sent only at startup (variant known, module still acquiring), so
-  // the nav-mode change can't reset an established solution mid-run. ACK is
-  // $PAIR001,080,0. Never reasserted at runtime.
+  // Assert the configured nav mode (PAIR080,<gnssNavMode>; default 1=Fitness)
+  // once at boot. The walker walks; the LC29HDA's default Normal model drops
+  // RTK fix under handheld motion. Sent only at startup (variant known, module
+  // still acquiring), so the nav-mode change can't reset an established
+  // solution mid-run. ACK is $PAIR001,080,0. Never reasserted at runtime; a
+  // config change resets pair080* (below) so this re-asserts the new mode.
   if (sinceDetect >= 800 && gnssVariant != GNSS_VARIANT_UNKNOWN &&
       !pair080Acked && pair080TxCount < 4) {
     uint32_t retryMs = (pair080TxCount < 4) ? 2000 : 15000;
     if (pair080TxCount == 0 || nowCfgMs - pair080LastTxMs >= retryMs) {
-      sendGnssCommand("PAIR080,1");
+      char navCmd[16];
+      snprintf(navCmd, sizeof(navCmd), "PAIR080,%u", (unsigned) cfg.gnssNavMode);
+      sendGnssCommand(navCmd);
       pair080LastTxMs = nowCfgMs;
       if (pair080TxCount < UINT8_MAX) pair080TxCount++;
-      weblogf("[gnss] PAIR080 walking nav-mode attempt %u\n", (unsigned) pair080TxCount);
+      weblogf("[gnss] PAIR080 nav-mode %u attempt %u\n",
+              (unsigned) cfg.gnssNavMode, (unsigned) pair080TxCount);
     }
   }
   if (!pair080Acked && pair080TxCount > 0 && pair080AckOkSince(pair080LastTxMs)) {
     pair080Acked = true;
-    weblogf("[gnss] PAIR080 walking nav-mode ACKed after %u attempt(s)\n",
-            (unsigned) pair080TxCount);
+    weblogf("[gnss] PAIR080 nav-mode %u ACKed after %u attempt(s)\n",
+            (unsigned) cfg.gnssNavMode, (unsigned) pair080TxCount);
   }
 
   if (enforceDa1Hz && gnssRateHz > 2 && sinceDetect >= 5000 &&
@@ -2026,8 +2044,9 @@ static void handleStatus() {
   doc["gnss1HzReady"] = pair050RateReady;
   doc["gnss1HzSaveStage"] = 0;
   doc["gnss1HzAttempts"] = pair050TxCount;
-  doc["gnssWalkModeAcked"] = pair080Acked;       // PAIR080,1 Fitness nav mode set at boot
+  doc["gnssWalkModeAcked"] = pair080Acked;       // PAIR080 nav mode set at boot
   doc["gnssWalkModeAttempts"] = pair080TxCount;
+  doc["gnssNavMode"] = cfg.gnssNavMode;          // active PAIR080 mode (1=Fitness default)
   doc["gnssVariant"] =
     (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :
     (gnssVariant == GNSS_VARIANT_HDA) ? "LC29HDA" :
@@ -2174,6 +2193,487 @@ static void handleGnssSend() {
   if (star >= 0) cmd.remove(star);
   sendGnssCommand(cmd);
   server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// ── LC29HDA firmware-upgrade API ─────────────────────────────────────────
+// Upload each of the 5 firmware blobs (DA + partition_table + bootloader +
+// main + gnss_config) via multipart POST with name=<da|partition|bootloader|
+// main|config>, then verify via GET /api/gnss/fw/status, then POST /api/gnss/
+// upgrade/arm to set the NVS flag + reboot. The walker boots into upgrade
+// mode (early-setup() entry) and runs runGnssUpgrade() on the GNSS UART.
+static const char* fwPathForName(const String& name) {
+  if (name == "da")         return "/fw_lc29h/da.bin";
+  if (name == "partition")  return "/fw_lc29h/partition_table.bin";
+  if (name == "bootloader") return "/fw_lc29h/bootloader.bin";
+  if (name == "main")       return "/fw_lc29h/main.bin";
+  if (name == "config")     return "/fw_lc29h/config.bin";
+  return nullptr;
+}
+
+static File   g_fwUploadFile;
+static String g_fwUploadName;
+static size_t g_fwUploadBytes  = 0;        // bytes written in THIS request
+static size_t g_fwUploadOffset = 0;        // start offset of this chunk in the file
+static bool   g_fwUploadOk     = false;
+static bool   g_fwUploadAuthed = false;    // gated at UPLOAD_FILE_START
+
+// Non-responsive auth check for use inside the upload callback — must NOT
+// call server.send() because the main handler still owns the response.
+// Mirrors requireAuth()'s logic (token configured? request token matches?)
+// without writing anything to the client.
+static bool checkAuthNoResponse() {
+  String configured = authTokenSnapshot();
+  if (configured.length() == 0) {
+    // First-boot recovery: on the setup AP only, treat as allowed (matches
+    // requireAuth()'s setup-AP carve-out).
+    return (WiFi.getMode() & WIFI_AP) != 0;
+  }
+  return secureEquals(requestAuthToken(), configured);
+}
+
+static void handleGnssFwUploadData() {
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    // CRITICAL: auth-check at FILE_START — by FILE_END the bytes would already
+    // be persisted to LittleFS. If unauthed, don't open the file at all; the
+    // WRITE callbacks below also bail out, so the existing firmware blob (if
+    // any) is preserved untouched. The main handler responds 401 via
+    // requireAuth() so the client gets a proper rejection.
+    g_fwUploadName    = server.arg("name");
+    g_fwUploadOffset  = (size_t) server.arg("offset").toInt();
+    g_fwUploadBytes   = 0;
+    g_fwUploadOk      = false;
+    g_fwUploadAuthed  = checkAuthNoResponse();
+    if (!g_fwUploadAuthed) {
+      weblogf("[fw-upgrade] upload REJECTED (auth) name=%s offset=%u\n",
+              g_fwUploadName.c_str(), (unsigned) g_fwUploadOffset);
+      return;
+    }
+    const char* path = fwPathForName(g_fwUploadName);
+    if (!path) {
+      weblogf("[fw-upgrade] upload: unknown name '%s'\n", g_fwUploadName.c_str());
+      return;
+    }
+    LittleFS.mkdir("/fw_lc29h");
+    // offset == 0 → truncate + start fresh (mode "w").
+    // offset  > 0 → open existing for read/write (mode "r+") and seek into
+    //               the right slot so the browser can stream 2.4 MB in ~64 KB
+    //               chunks without blowing the heap on a single multipart.
+    if (g_fwUploadOffset == 0) {
+      g_fwUploadFile = LittleFS.open(path, "w");
+    } else {
+      g_fwUploadFile = LittleFS.open(path, "r+");
+      if (g_fwUploadFile) g_fwUploadFile.seek(g_fwUploadOffset);
+    }
+    if (!g_fwUploadFile) {
+      weblogf("[fw-upgrade] upload: failed to open %s (offset=%u)\n",
+              path, (unsigned) g_fwUploadOffset);
+      return;
+    }
+    weblogf("[fw-upgrade] upload: %s -> %s @offset=%u\n",
+            g_fwUploadName.c_str(), path, (unsigned) g_fwUploadOffset);
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!g_fwUploadAuthed) return;  // discard bytes from unauthenticated request
+    if (g_fwUploadFile) {
+      size_t w = g_fwUploadFile.write(upload.buf, upload.currentSize);
+      g_fwUploadBytes += w;
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (!g_fwUploadAuthed) return;
+    if (g_fwUploadFile) {
+      g_fwUploadFile.close();
+      g_fwUploadOk = true;
+      weblogf("[fw-upgrade] upload: %s complete (%u bytes)\n",
+              g_fwUploadName.c_str(), (unsigned) g_fwUploadBytes);
+    }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    if (g_fwUploadFile) g_fwUploadFile.close();
+    weblogf("[fw-upgrade] upload: %s ABORTED\n", g_fwUploadName.c_str());
+  }
+}
+
+static void handleGnssFwUploadDone() {
+  if (!requireAuth()) return;
+  JsonDocument resp;
+  const char* path = fwPathForName(g_fwUploadName);
+  if (!path) {
+    resp["ok"]    = false;
+    resp["error"] = "name must be one of: da, partition, bootloader, main, config";
+    sendJson(400, resp);
+    return;
+  }
+  // Report the now-persisted file size so the client knows what offset to use
+  // for the next chunk (sequential chunked uploads).
+  uint32_t totalSize = 0;
+  File f = LittleFS.open(path, "r");
+  if (f) { totalSize = (uint32_t) f.size(); f.close(); }
+  resp["ok"]     = g_fwUploadOk;
+  resp["name"]   = g_fwUploadName;
+  resp["path"]   = path;
+  resp["offset"] = (uint32_t) g_fwUploadOffset;
+  resp["bytes"]  = (uint32_t) g_fwUploadBytes;
+  resp["size"]   = totalSize;
+  sendJson(g_fwUploadOk ? 200 : 500, resp);
+}
+
+// Minimal embedded upload page served at /fw-upgrade — vanilla HTML+JS, no
+// frameworks, no external resources. The browser chunks the 2.4 MB main blob
+// into 64 KB pieces and POSTs each with name+offset+file, so a single huge
+// multipart can't OOM the walker on weak WiFi. After all 5 files land, it
+// POSTs /api/gnss/upgrade/arm to reboot the walker into Download Mode.
+static const char FW_UPGRADE_PAGE[] PROGMEM = R"HTML(<!doctype html>
+<html lang="nl"><head><meta charset="utf-8">
+<title>LC29HDA Firmware Upgrade</title>
+<style>
+ body{font-family:-apple-system,sans-serif;max-width:680px;margin:1em auto;padding:0 1em;color:#222}
+ h2{margin-bottom:.2em}.hint{color:#666;font-size:13px;margin:.2em 0 1em}
+ .row{display:flex;align-items:center;margin:.5em 0;gap:.6em}
+ .row label{flex:0 0 130px;font-family:monospace;font-size:13px}
+ input[type=password]{flex:1;padding:.3em}
+ button{padding:.6em 1.2em;font-size:14px;cursor:pointer}
+ button:disabled{opacity:.5;cursor:not-allowed}
+ progress{width:100%;height:14px;margin-top:.6em}
+ .drop{border:2px dashed #aaa;padding:1.6em;text-align:center;margin:1em 0;
+       border-radius:6px;cursor:pointer;color:#666;font-size:14px}
+ .drop:hover,.drop.over{background:#eef;border-color:#5572d6;color:#333}
+ .files{margin:.6em 0;font-family:monospace;font-size:13px;line-height:1.5}
+ .files .ok{color:#0a8d3a}.files .miss{color:#b00}
+ .log{font-family:monospace;font-size:12px;white-space:pre-wrap;background:#0e0e10;color:#9cdcfe;
+      padding:.6em;margin-top:.8em;height:240px;overflow:auto;border-radius:4px}
+ .log .ok{color:#5fe07a}.log .err{color:#ff7373}.log .dim{color:#888}
+</style></head><body>
+<h2>LC29HDA firmware upgrade</h2>
+<div class="hint">Pak de Quectel <b>LC29HDANR11A04S_RSA.zip</b> uit en sleep alle 5 <b>.bin</b>-bestanden hieronder
+in een keer naar de drop-zone (of klik om in Finder met Cmd-klik 5 te selecteren). De browser herkent ze op
+naam. Daarna <b>Upload &amp; arm</b>. Na succes: <b>power-cycle de walker</b>.</div>
+<div class="row"><label>Bearer token</label><input type="password" id="tok" placeholder="paste your /api/auth token" autocomplete="current-password"></div>
+<div class="row"><button id="check" type="button">Check files op walker</button>
+ <button id="armOnly" type="button" disabled>Skip upload &amp; direct armen</button>
+ <button id="disarm" type="button" style="background:#fee;border:1px solid #b00;color:#900">Disarm (terug naar normale walker)</button></div>
+<div class="files" id="onDevice"></div>
+<div class="drop" id="drop">
+ Of: sleep hier alle 5 <b>.bin</b>-bestanden voor een verse upload
+ <input type="file" id="picker" multiple accept=".bin" style="display:none">
+</div>
+<div class="files" id="files"></div>
+<button id="go" disabled>Upload &amp; arm</button>
+<progress id="p" value="0" max="1"></progress>
+<div class="log" id="log"></div>
+<script>
+const CHUNK=65536, NAMES=['da','partition','bootloader','main','config'];
+// Map each blob slot to a filename pattern from the Quectel zip.
+const MATCH={
+ da:         /^da_uart_/i,
+ partition:  /^partition_table\.bin$/i,
+ bootloader: /^bootloader\.bin$/i,
+ main:       /^LC29H.*\.bin$/i,         // LC29HDANR11A04S_RSA.bin (or any LC29H<X>NR... in newer drops)
+ config:     /^gnss_config\.bin$/i
+};
+const $=id=>document.getElementById(id);
+const log=(m,c)=>{const e=$('log');const s=document.createElement('span');
+ if(c)s.className=c;s.textContent=m+"\n";e.appendChild(s);e.scrollTop=e.scrollHeight};
+let picked={};  // name -> File
+function classify(list){
+ picked={};
+ for(const f of list){
+  for(const k of NAMES){ if(MATCH[k].test(f.name)){ picked[k]=f; break; } }
+ }
+ // Build rows via DOM nodes + textContent so a hostile filename can't inject
+ // markup (e.g. '<img onerror=...>') into the page.
+ const el=$('files'); el.replaceChildren();
+ let allOk=true;
+ for(const k of NAMES){
+  const f=picked[k]; const row=document.createElement('div');
+  const mark=document.createElement('span');
+  mark.className=f?'ok':'miss';
+  mark.textContent=f?'✓':'✗';
+  row.appendChild(mark);
+  const rest=document.createElement('span');
+  rest.textContent=f
+   ? (' '+k.padEnd(11)+' '+f.name+' ('+f.size+' bytes)')
+   : (' '+k.padEnd(11)+' (ontbreekt)');
+  row.appendChild(rest);
+  if(!f) allOk=false;
+  el.appendChild(row);
+ }
+ $('go').disabled=!allOk;
+}
+$('drop').addEventListener('click',()=>$('picker').click());
+$('picker').addEventListener('change',e=>classify(e.target.files));
+$('drop').addEventListener('dragover',e=>{e.preventDefault();$('drop').classList.add('over');});
+$('drop').addEventListener('dragleave',()=>$('drop').classList.remove('over'));
+$('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('over');
+ classify(e.dataTransfer.files);});
+async function uploadFile(name,file,onPct){
+ let off=0;
+ while(off<file.size){
+  const end=Math.min(off+CHUNK,file.size);
+  const part=file.slice(off,end);
+  const fd=new FormData();
+  fd.append('name',name); fd.append('offset',String(off));
+  fd.append('file',part,file.name);
+  const r=await fetch('/api/gnss/fw/upload',{method:'POST',
+   headers:{'Authorization':'Bearer '+$('tok').value},body:fd});
+  if(!r.ok)throw new Error(name+' offset '+off+': HTTP '+r.status+' '+(await r.text()));
+  const j=await r.json();
+  if(!j.ok)throw new Error(name+' offset '+off+': '+(j.error||'upload failed'));
+  off=end; onPct(off/file.size);
+ }
+}
+async function run(){
+ $('go').disabled=true;
+ try{
+  const total=NAMES.reduce((s,k)=>s+picked[k].size,0); let done=0;
+  for(const k of NAMES){
+   const f=picked[k];
+   log('-- '+k+': '+f.name+' ('+f.size+' bytes)','dim');
+   const base=done;
+   await uploadFile(k,f,pct=>{$('p').value=(base+pct*f.size)/total});
+   done+=f.size;
+   log('   OK ('+f.size+' bytes)','ok');
+  }
+  log('-- arming upgrade --','dim');
+  const r=await fetch('/api/gnss/upgrade/arm',{method:'POST',
+   headers:{'Authorization':'Bearer '+$('tok').value}});
+  log(await r.text(),r.ok?'ok':'err');
+  log('','dim');
+  log('======================================================','err');
+  log('ACTIE NU: TREK DE USB-KABEL VAN DE WALKER ERUIT','err');
+  log('  -> wacht 2 seconden','err');
+  log('  -> sluit USB weer aan','err');
+  log('======================================================','err');
+  log('Waarom: de ESP32 heeft zichzelf gereboot maar dat reset','dim');
+  log('de LC29HDA-module zelf NIET. De module moet binnen 150 ms','dim');
+  log('na ZIJN OWN reset een 0xA0 zien — alleen een echte power-cycle','dim');
+  log('(USB eruit + weer in) doet dat. USB-stekker eruit halen is veilig.','dim');
+  log('','dim');
+  log('Na opnieuw aansluiten boot de walker in ~1 s in upgrade-mode,','dim');
+  log('doet de handshake, brengt WiFi terug op en deze pagina','dim');
+  log('toont vanzelf live progress (~5-15 s na replug).','dim');
+  log('','dim');
+  log('-- pollen /api/gnss/upgrade/progress --','dim');
+  // Poll the live-progress endpoint that gnss_upgrade.cpp brings up over WiFi
+  // after the timing-critical handshake. While the walker is rebooting/in
+  // early boot the fetch fails silently; we retry every 1.5 s.
+  let lastKey='';
+  while(true){
+   try{
+    const pr=await fetch('/api/gnss/upgrade/progress',{cache:'no-store'});
+    if(pr.ok){
+     const j=await pr.json();
+     const key=j.step+'|'+j.percent+'|'+(j.lastMsg||'');
+     if(key!==lastKey){
+      log('['+j.step+' '+j.percent+'%] '+(j.lastMsg||''),
+          j.finished?(j.success?'ok':'err'):'dim');
+      $('p').value=j.percent/100;
+      lastKey=key;
+     }
+     if(j.finished){
+      log('-- upgrade '+(j.success?'SUCCESS':'FAILED')+' na '+(j.elapsedMs/1000).toFixed(1)+'s --',
+          j.success?'ok':'err');
+      if(j.success) log('Power-cycle de walker om de nieuwe LC29HDA-firmware op te starten.','ok');
+      else          log('Power-cycle om te retryen (flag staat nog armed) of houd BOOT bij power-on om te ontsnappen.','err');
+      break;
+     }
+    }
+   }catch(e){ /* walker still rebooting or WiFi not back yet — keep trying */ }
+   await new Promise(r=>setTimeout(r,1500));
+  }
+ }catch(e){log('FOUT: '+e.message,'err')}finally{$('go').disabled=Object.keys(picked).length!==NAMES.length}
+}
+$('go').addEventListener('click',run);
+// Status-check: GET /api/gnss/fw/status returns per-blob sizes. If all 5 are
+// non-zero on the walker, the operator can skip the re-upload (LittleFS is
+// persistent across reboots — the only thing that needed to change after the
+// failed handshake was the timing of the 0xA0 burst).
+async function checkOnDevice(){
+ const el=$('onDevice'); el.replaceChildren();
+ const tok=$('tok').value;
+ if(!tok){
+  const row=document.createElement('div'); row.className='miss';
+  row.textContent='Vul eerst je bearer token in.';
+  el.appendChild(row); $('armOnly').disabled=true; return;
+ }
+ try{
+  const r=await fetch('/api/gnss/fw/status',{headers:{'Authorization':'Bearer '+tok}});
+  if(!r.ok){
+   const row=document.createElement('div'); row.className='miss';
+   row.textContent='HTTP '+r.status+' — token klopt niet of walker bezig?';
+   el.appendChild(row); $('armOnly').disabled=true; return;
+  }
+  const j=await r.json();
+  let allOk=true;
+  for(const k of NAMES){
+   const sz=(j.files && j.files[k])|0;
+   const row=document.createElement('div');
+   const mark=document.createElement('span');
+   mark.className=sz>0?'ok':'miss';
+   mark.textContent=sz>0?'✓':'✗';
+   row.appendChild(mark);
+   const rest=document.createElement('span');
+   rest.textContent=' '+k.padEnd(11)+(sz>0?(' '+sz+' bytes op walker'):' (niet op walker)');
+   row.appendChild(rest);
+   if(sz===0) allOk=false;
+   el.appendChild(row);
+  }
+  $('armOnly').disabled=!allOk;
+  if(allOk){
+   const ok=document.createElement('div'); ok.className='ok';
+   ok.textContent='Alle 5 firmware-blobs staan klaar — je kunt direct armen.';
+   el.appendChild(ok);
+  }
+ }catch(e){
+  const row=document.createElement('div'); row.className='miss';
+  row.textContent='FOUT: '+e.message; el.appendChild(row);
+  $('armOnly').disabled=true;
+ }
+}
+async function armAndPoll(){
+ $('armOnly').disabled=true; $('go').disabled=true;
+ try{
+  log('-- arming upgrade (files already on device) --','dim');
+  const r=await fetch('/api/gnss/upgrade/arm',{method:'POST',
+   headers:{'Authorization':'Bearer '+$('tok').value}});
+  log(await r.text(),r.ok?'ok':'err');
+  if(!r.ok) return;
+  log('','dim');
+  log('======================================================','err');
+  log('ACTIE NU: TREK DE USB-KABEL VAN DE WALKER ERUIT','err');
+  log('  -> wacht 2 seconden','err');
+  log('  -> sluit USB weer aan','err');
+  log('======================================================','err');
+  log('Waarom: de ESP32 heeft zichzelf gereboot maar dat reset','dim');
+  log('de LC29HDA-module zelf NIET. Alleen een echte power-cycle','dim');
+  log('(USB eruit + weer in) doet dat. USB-stekker eruit halen is veilig.','dim');
+  log('','dim');
+  log('-- pollen /api/gnss/upgrade/progress --','dim');
+  let lastKey='';
+  while(true){
+   try{
+    const pr=await fetch('/api/gnss/upgrade/progress',{cache:'no-store'});
+    if(pr.ok){
+     const j=await pr.json();
+     const key=j.step+'|'+j.percent+'|'+(j.lastMsg||'');
+     if(key!==lastKey){
+      log('['+j.step+' '+j.percent+'%] '+(j.lastMsg||''),
+          j.finished?(j.success?'ok':'err'):'dim');
+      $('p').value=j.percent/100; lastKey=key;
+     }
+     if(j.finished){
+      log('-- upgrade '+(j.success?'SUCCESS':'FAILED')+' na '+(j.elapsedMs/1000).toFixed(1)+'s --',
+          j.success?'ok':'err');
+      if(j.success) log('Power-cycle de walker om de nieuwe LC29HDA-firmware op te starten.','ok');
+      else          log('Power-cycle om te retryen (flag staat nog armed) of houd BOOT bij power-on om te ontsnappen.','err');
+      break;
+     }
+    }
+   }catch(e){ /* walker rebooting — keep trying */ }
+   await new Promise(r=>setTimeout(r,1500));
+  }
+ }catch(e){log('FOUT: '+e.message,'err')}
+}
+async function disarm(){
+ if(!confirm('Disarm: walker reboot direct naar normale firmware. Doorgaan?')) return;
+ try{
+  // In upgrade-mode this endpoint is unauth (single-operator private device).
+  // In normal-mode it requires bearer auth — include the token if filled in.
+  const tok=$('tok').value;
+  const r=await fetch('/api/gnss/upgrade/disarm',{method:'POST',
+   headers: tok ? {'Authorization':'Bearer '+tok} : {}});
+  log(await r.text(),r.ok?'ok':'err');
+  if(r.ok) log('Walker boot nu naar normale firmware. Geen power-cycle nodig.','ok');
+ }catch(e){log('FOUT: '+e.message,'err')}
+}
+$('check').addEventListener('click',checkOnDevice);
+$('armOnly').addEventListener('click',armAndPoll);
+$('disarm').addEventListener('click',disarm);
+</script></body></html>)HTML";
+
+static void handleGnssFwUpgradePage() {
+  // The upload page itself does nothing destructive — it only hosts the
+  // chunked uploader, and every destructive API it calls (/api/gnss/fw/upload,
+  // /api/gnss/upgrade/arm) is still gated by requireAuth(). The token input
+  // is intentionally blank (no hardcoded default in the served HTML — that
+  // would leak the bearer to anyone reaching this URL); the operator pastes
+  // their /api/auth token. We can therefore serve the page unauthenticated so
+  // initial-setup recovery still works.
+  server.sendHeader("Cache-Control", "no-store");
+  server.send_P(200, "text/html; charset=utf-8", FW_UPGRADE_PAGE);
+}
+
+static void handleGnssFwStatus() {
+  if (!requireAuth()) return;
+  JsonDocument resp;
+  prefs.begin("rtk-walker", false);
+  resp["armed"] = prefs.getBool("gnss_up", false);
+  // No prefs.end() — matches the existing single-namespace lifecycle.
+  JsonObject files = resp["files"].to<JsonObject>();
+  struct { const char* name; const char* path; } entries[] = {
+    { "da",         "/fw_lc29h/da.bin" },
+    { "partition",  "/fw_lc29h/partition_table.bin" },
+    { "bootloader", "/fw_lc29h/bootloader.bin" },
+    { "main",       "/fw_lc29h/main.bin" },
+    { "config",     "/fw_lc29h/config.bin" },
+  };
+  for (auto& e : entries) {
+    File f = LittleFS.open(e.path, "r");
+    files[e.name] = f ? (uint32_t) f.size() : (uint32_t) 0;
+    if (f) f.close();
+  }
+  sendJson(200, resp);
+}
+
+static void handleGnssUpgradeArm() {
+  if (!requireAuth()) return;
+  JsonDocument resp;
+  struct { const char* name; const char* path; } need[] = {
+    { "da",         "/fw_lc29h/da.bin" },
+    { "partition",  "/fw_lc29h/partition_table.bin" },
+    { "bootloader", "/fw_lc29h/bootloader.bin" },
+    { "main",       "/fw_lc29h/main.bin" },
+    { "config",     "/fw_lc29h/config.bin" },
+  };
+  for (auto& n : need) {
+    File f = LittleFS.open(n.path, "r");
+    if (!f || f.size() == 0) {
+      resp["ok"]    = false;
+      resp["error"] = String("missing or empty firmware file: ") + n.name + " (" + n.path + ")";
+      if (f) f.close();
+      sendJson(400, resp);
+      return;
+    }
+    f.close();
+  }
+  prefs.begin("rtk-walker", false);
+  prefs.putBool("gnss_up", true);
+  weblogf("[fw-upgrade] armed via API. Walker will reboot. Power-cycle the walker after that to enter the LC29HDA Download-Mode handshake window. Watch progress on USB-CDC (115200).\n");
+  resp["ok"]    = true;
+  resp["armed"] = true;
+  resp["next"]  = "Walker reboots now. POWER-CYCLE the walker after the reboot so the LC29HDA itself also resets into Download Mode. Then attach USB-CDC ('screen /dev/cu.usbmodemXXXX 115200') to watch progress. Hold BOOT during a later power-on to escape upgrade mode.";
+  sendJson(200, resp);
+  delay(500);
+  ESP.restart();
+}
+
+// Disarm: clear the gnss_up NVS flag and reboot back into normal walker
+// firmware. Useful when an upgrade-mode boot is stuck (handshake keeps
+// failing, operator wants to give up) or when the operator wants to back
+// out without holding the BOOT button during power-on. Available in both
+// normal-mode and upgrade-mode HTTP servers (upgrade-mode registration is
+// done in gnss_upgrade.cpp's progStartServerIfReady so a stuck walker can
+// still be rescued from the browser).
+static void handleGnssUpgradeDisarm() {
+  if (!requireAuth()) return;
+  JsonDocument resp;
+  prefs.begin("rtk-walker", false);
+  prefs.putBool("gnss_up", false);
+  weblogf("[fw-upgrade] disarmed via API. Walker will reboot into normal walker firmware.\n");
+  resp["ok"]       = true;
+  resp["disarmed"] = true;
+  resp["next"]     = "Walker reboots now into normal walker firmware. Power-cycle is NOT required.";
+  sendJson(200, resp);
+  delay(500);
+  ESP.restart();
 }
 
 static void handleLog() {
@@ -2880,6 +3380,7 @@ static void handleConfigLoraGet() {
   doc["directGnssWrite"] = cfg.loraDirectGnssWrite;
   doc["txMode"] = cfg.loraDirectGnssWrite ? "legacy_direct" : "queued";
   doc["correctionSource"] = cfg.useNtripCorrections ? "ntrip" : "lora";
+  doc["navMode"] = cfg.gnssNavMode;  // PAIR080: 0 Normal,1 Fitness,4 Stationary,5 Drone,7 Swimming,9 Bike
   coreUnlock();
   uint16_t dropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS] = {0};
   size_t dropCount = walkerLoraGetRtcmDropTypes(dropTypes, WALKER_LORA_RTCM_DROP_TYPE_SLOTS);
@@ -2979,6 +3480,14 @@ static void handleConfigLoraPost() {
     } else {
       server.send(400, "text/plain", "correctionSource lora/ntrip"); return;
     }
+  }
+  if (body["navMode"].is<int>()) {
+    int v = body["navMode"];
+    if (v != 0 && v != 1 && v != 4 && v != 5 && v != 7 && v != 9) {
+      server.send(400, "text/plain", "navMode 0=Normal 1=Fitness 4=Stationary 5=Drone 7=Swimming 9=Bike");
+      return;
+    }
+    upd.gnssNavModeSet = true; upd.gnssNavMode = (uint8_t) v;
   }
   bool rtcmDropTypesSet = false;
   uint16_t rtcmDropTypes[WALKER_LORA_RTCM_DROP_TYPE_SLOTS] = {0};
@@ -3289,6 +3798,52 @@ static void handleUploadPost() {
 
 // ── Setup ───────────────────────────────────────────────────────────
 void setup() {
+  // ── LC29HDA firmware-upgrade entry — must run VERY EARLY ────────────────
+  // The module's Download-Mode handshake window is only ~150 ms after its
+  // boot ROM starts. When the operator power-cycles the walker into upgrade
+  // mode (NVS flag "gnss_up"=true, set by /api/gnss/upgrade/arm) we skip the
+  // entire normal init and immediately start priming 0xA0 on the GNSS UART.
+  // Escape routes: POST /api/gnss/upgrade/disarm (preferred, no button), or
+  // hold BOOT at USB plug-in to keep the ESP32 ROM bootloader in download
+  // mode (then re-flash via esptool / pio run -t upload). No in-setup() BOOT
+  // polling — earlier 3 s polling loop here murdered the LC29HDA download
+  // window every time.
+  {
+    prefs.begin("rtk-walker", false);
+    bool gnssUpgradeArmed = prefs.getBool("gnss_up", false);
+    if (gnssUpgradeArmed) {
+      // CRITICAL TIMING: the LC29HDA's Download-Mode boot window is only
+      // ~150 ms wide. Anything we do before the first 0xA0 (Serial.begin,
+      // LittleFS.begin, prefs.getString, ...) is ms we cannot afford to lose,
+      // so we run the handshake IMMEDIATELY after gnssSerial.begin and defer
+      // the slow init to after the timing-critical window has passed.
+      gnssSerial.begin(GNSS_BAUD, SERIAL_8N1, GNSS_RX_PIN, GNSS_TX_PIN);
+      (void)runGnssUpgradeHandshake(gnssSerial);
+      // Now safe to do the slow stuff: the body function reads the handshake
+      // outcome via a module-internal flag and short-circuits to the "failed"
+      // status if it didn't succeed.
+      Serial.begin(115200);
+      LittleFS.begin(true);
+      String upgSsid = prefs.getString("ssid", "");
+      String upgPass = prefs.getString("pass", "");
+      bool ok = runGnssUpgradeBody(upgSsid, upgPass);
+      if (ok) {
+        // Clear the flag so the next power-cycle boots normal walker firmware
+        // (and the LC29HDA, now flashed with the new firmware, boots cleanly).
+        prefs.putBool("gnss_up", false);
+        Serial.println("[fw-upgrade] flag cleared. Power-cycle the walker to boot normal mode + new module firmware.");
+      } else {
+        Serial.println("[fw-upgrade] FAILED. Power-cycle to retry (flag still armed). Hold BOOT button during power-on to escape.");
+      }
+      // Idle forever; the operator power-cycles to retry or escape. Pump the
+      // progress HTTP server so the browser can still read the final state.
+      for (;;) {
+        gnssUpgradeServeTick();
+        delay(20);
+      }
+    }
+  }
+
   Serial.begin(115200);
   delay(200);
   webLogMux = xSemaphoreCreateRecursiveMutex();
@@ -3443,6 +3998,13 @@ void setup() {
   server.on("/api/maps/obstacles/delete", HTTP_POST, handleObstacleDelete);
   server.on("/api/log",           HTTP_GET,  handleLog);
   server.on("/api/gnss/send",     HTTP_POST, handleGnssSend);
+  // LC29HDA firmware-upgrade endpoints. Upload each blob then arm + reboot.
+  server.on("/api/gnss/fw/upload", HTTP_POST,
+            handleGnssFwUploadDone, handleGnssFwUploadData);
+  server.on("/api/gnss/fw/status", HTTP_GET,  handleGnssFwStatus);
+  server.on("/api/gnss/upgrade/arm",    HTTP_POST, handleGnssUpgradeArm);
+  server.on("/api/gnss/upgrade/disarm", HTTP_POST, handleGnssUpgradeDisarm);
+  server.on("/fw-upgrade",          HTTP_GET,  handleGnssFwUpgradePage);
   server.on("/api/i2c-scan",      HTTP_GET,  handleI2cScan);
   server.on("/api/ip5306",        HTTP_GET,  handleIp5306);
   server.on("/api/battery/raw",   HTTP_GET,  handleBatteryRaw);
@@ -3918,6 +4480,7 @@ void walkerGetSnapshot(WalkerSnapshot& out) {
   out.loraModuleReady     = lstats.moduleReady;
   out.loraBytesForwarded  = lstats.bytesForwarded;
   out.loraFramesReceived  = lstats.framesReceived;
+  out.correctionUsesNtrip = cfg.useNtripCorrections;
   coreUnlock();
   if (out.wifiUp)        out.wifiIp = WiFi.localIP().toString();
   else if (out.apMode)   out.wifiIp = WiFi.softAPIP().toString();
@@ -4003,6 +4566,11 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
     cfg.useNtripCorrections = upd.useNtripCorrections;
     correctionSourceChanged = true;
   }
+  bool navModeChanged = false;
+  if (upd.gnssNavModeSet) {
+    cfg.gnssNavMode = upd.gnssNavMode;
+    navModeChanged = true;
+  }
   saveConfig();
   if (needsReboot) {
     weblogf("[cfg] saved via TFT (effective pass length = %u); rebooting\n",
@@ -4025,6 +4593,7 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
   bool newLoraRtcmOnlyFeed = cfg.loraRtcmOnlyFeed;
   bool newLoraDirectGnssWrite = cfg.loraDirectGnssWrite;
   bool newUseNtripCorrections = cfg.useNtripCorrections;
+  uint8_t newGnssNavMode = cfg.gnssNavMode;
   coreUnlock();
 
   if (loraChanged) {
@@ -4049,6 +4618,16 @@ void walkerApplyConfig(const WalkerConfigUpdate& upd) {
     walkerLoraSetFeedToGnss(!newUseNtripCorrections);
     weblogf("[cfg] correction source=%s\n",
             newUseNtripCorrections ? "ntrip" : "lora");
+  }
+  if (navModeChanged) {
+    // Clear the boot-set PAIR080 state so the realtime pump re-asserts the
+    // new nav mode. Changing PAIR080 resets the GNSS solution, so it will
+    // re-acquire in the new model — expect a brief sats=0 / re-converge.
+    pair080Acked = false;
+    pair080TxCount = 0;
+    pair080LastTxMs = 0;
+    weblogf("[cfg] gnss nav mode=%u (re-asserting; solution will re-acquire)\n",
+            (unsigned) newGnssNavMode);
   }
   if (needsReboot) {
     delay(500);

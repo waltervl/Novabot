@@ -42,6 +42,10 @@ struct WalkerSnapshot {
   bool     loraModuleReady;     // EBYTE config acked at boot
   uint32_t loraBytesForwarded;  // total 0x31 payload bytes pushed to LC29HDA from LoRa
   uint32_t loraFramesReceived;  // valid LoRa frames seen (any cmd)
+  // Selected correction source (the one actually feeding the GNSS). true =
+  // NTRIP, false = LoRa. Drives the on-screen source indicator so it reflects
+  // the chosen source, not merely whichever modem happens to be receiving.
+  bool     correctionUsesNtrip;
 };
 
 struct WalkerConfigView {
@@ -88,6 +92,7 @@ struct WalkerConfigUpdate {
   bool loraRtcmOnlyFeedSet  = false; bool loraRtcmOnlyFeed = false;
   bool loraDirectGnssWriteSet = false; bool loraDirectGnssWrite = false;
   bool useNtripCorrectionsSet = false; bool useNtripCorrections = false;
+  bool gnssNavModeSet = false; uint8_t gnssNavMode = 1;
 };
 
 void walkerGetSnapshot(WalkerSnapshot& out);

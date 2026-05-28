@@ -397,12 +397,20 @@ async function refresh() {
     fixPill.className = 'fix-pill fix-' + fixCode;
     setText('fixLabel', FIX_LABELS[fixCode] || ('FIX ' + fixCode));
 
-    // RTK source — derived from lora.active + ntripUp
+    // RTK source — show the SELECTED correction source (correctionSource),
+    // not merely whichever modem is receiving, so it's clear whether the
+    // GNSS is being corrected via NTRIP or LoRa.
     const lora = d.lora || {};
-    let rtkSrc = 'none';
-    if (lora.active) rtkSrc = 'LoRa';
-    else if (d.ntripUp) rtkSrc = 'NTRIP';
-    else if (lora.moduleReady) rtkSrc = 'LoRa quiet';
+    let rtkSrc;
+    if (lora.correctionSource === 'ntrip') {
+      rtkSrc = d.ntripUp ? 'NTRIP' : 'NTRIP (connecting)';
+    } else if (lora.active) {
+      rtkSrc = 'LoRa';
+    } else if (lora.moduleReady) {
+      rtkSrc = 'LoRa (quiet)';
+    } else {
+      rtkSrc = 'LoRa (off)';
+    }
     setText('rtkSource', rtkSrc);
     setText('loraDiag', (lora.raw != null ? lora.raw : 0) + ' / ' + (lora.frames != null ? lora.frames : 0));
     const rtcmAge = lora.lastRtcmMsAgo != null ? (Math.round(lora.lastRtcmMsAgo / 100) / 10 + 's') : '-';

@@ -2485,22 +2485,31 @@ static void refresh_status_cb(lv_timer_t* t) {
     lv_obj_add_flag(lbl_hdop, LV_OBJ_FLAG_HIDDEN);
   }
 
-  // Single "RTK source" indicator: LoRa wins when active, NTRIP otherwise.
-  // Both colored = LoRa active (we never show both simultaneously per spec).
-  if (snap.loraActive) {
-    lv_label_set_text(lbl_ntrip, LV_SYMBOL_BARS "  LoRa " LV_SYMBOL_OK);
-    lv_obj_set_style_text_color(lbl_ntrip, COL_EMERALD, 0);
-  } else if (snap.ntripUp) {
-    lv_label_set_text(lbl_ntrip, LV_SYMBOL_UPLOAD "  NTRIP " LV_SYMBOL_OK);
-    lv_obj_set_style_text_color(lbl_ntrip, COL_EMERALD, 0);
-  } else if (snap.loraModuleReady) {
-    // LoRa module up but no recent frames — amber, hint that charger
-    // may be off or out of range.
-    lv_label_set_text(lbl_ntrip, LV_SYMBOL_BARS "  LoRa quiet");
-    lv_obj_set_style_text_color(lbl_ntrip, COL_AMBER, 0);
+  // RTK-source indicator: reflect the SELECTED correction source (the one
+  // actually feeding the GNSS), not merely whichever modem is receiving.
+  // Green = selected source is delivering; amber = selected but not (yet)
+  // flowing; dim = off.
+  if (snap.correctionUsesNtrip) {
+    if (snap.ntripUp) {
+      lv_label_set_text(lbl_ntrip, LV_SYMBOL_UPLOAD "  NTRIP " LV_SYMBOL_OK);
+      lv_obj_set_style_text_color(lbl_ntrip, COL_EMERALD, 0);
+    } else {
+      lv_label_set_text(lbl_ntrip, LV_SYMBOL_UPLOAD "  NTRIP ...");
+      lv_obj_set_style_text_color(lbl_ntrip, COL_AMBER, 0);
+    }
   } else {
-    lv_label_set_text(lbl_ntrip, LV_SYMBOL_UPLOAD "  RTK off");
-    lv_obj_set_style_text_color(lbl_ntrip, COL_DIM, 0);
+    if (snap.loraActive) {
+      lv_label_set_text(lbl_ntrip, LV_SYMBOL_BARS "  LoRa " LV_SYMBOL_OK);
+      lv_obj_set_style_text_color(lbl_ntrip, COL_EMERALD, 0);
+    } else if (snap.loraModuleReady) {
+      // LoRa selected + module up but no recent frames — amber, hint that
+      // the charger may be off or out of range.
+      lv_label_set_text(lbl_ntrip, LV_SYMBOL_BARS "  LoRa quiet");
+      lv_obj_set_style_text_color(lbl_ntrip, COL_AMBER, 0);
+    } else {
+      lv_label_set_text(lbl_ntrip, LV_SYMBOL_BARS "  LoRa off");
+      lv_obj_set_style_text_color(lbl_ntrip, COL_DIM, 0);
+    }
   }
 
   // Topbar shows the WiFi icon only — colour communicates link state:

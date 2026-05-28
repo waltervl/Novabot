@@ -211,8 +211,124 @@ assertIncludes(
 
 assertIncludes(
   mainCpp,
-  "sendGnssCommand(\"PAIR080,1\")",
-  "Walker must assert Fitness/pedestrian nav mode (PAIR080,1) at boot — Normal model drops RTK fix under handheld walking."
+  "\"PAIR080,%u\"",
+  "Walker must assert the configured nav mode (PAIR080,<navMode>) at boot — handheld walking needs Fitness, not the default Normal/driving model."
+);
+
+assertIncludes(
+  mainCpp,
+  "prefs.getUChar(\"nav_mode\", 1)",
+  "Nav mode must persist in NVS and default to 1 (Fitness) so walking RTK works out of the box."
+);
+
+assertIncludes(
+  mainCpp,
+  "doc[\"navMode\"] = cfg.gnssNavMode;",
+  "Config API must expose the runtime nav-mode selector (PAIR080)."
+);
+
+// ── LC29HDA firmware-upgrade (Download Mode UART) ────────────────────────
+const gnssUpgradeCpp = fs.readFileSync(path.join(root, "src", "gnss_upgrade.cpp"), "utf8");
+
+assertIncludes(
+  mainCpp,
+  "bool gnssUpgradeArmed = prefs.getBool(\"gnss_up\", false);",
+  "Walker must check the firmware-upgrade armed flag VERY early in setup() so the 0xA0 handshake primer fires within the LC29HDA's 150 ms Download-Mode window."
+);
+
+assertIncludes(
+  mainCpp,
+  "(void)runGnssUpgradeHandshake(gnssSerial);",
+  "Setup must call the handshake phase IMMEDIATELY after gnssSerial.begin so the 0xA0 burst fires inside the LC29HDA's ~150 ms boot window, BEFORE LittleFS.begin / prefs.getString."
+);
+assertIncludes(
+  mainCpp,
+  "runGnssUpgradeBody(upgSsid, upgPass);",
+  "Setup must call the body phase AFTER LittleFS.begin / prefs.getString, passing WiFi creds for the live-progress HTTP endpoint."
+);
+
+assertIncludes(
+  mainCpp,
+  "gnssUpgradeServeTick();",
+  "Idle loop after upgrade must pump the live-progress HTTP server so the browser keeps seeing status until power-cycle."
+);
+
+assertIncludes(
+  gnssUpgradeCpp,
+  "\"/api/gnss/upgrade/progress\"",
+  "Upgrade must expose a live-progress HTTP endpoint so the browser page can replace the screen /dev/cu.usbmodem* workflow."
+);
+
+assertIncludes(
+  mainCpp,
+  "/api/gnss/upgrade/arm",
+  "Arming the LC29HDA upgrade must be exposed via /api/gnss/upgrade/arm."
+);
+
+assertIncludes(
+  mainCpp,
+  "/api/gnss/upgrade/disarm",
+  "Walker must expose POST /api/gnss/upgrade/disarm so a stuck upgrade can be cancelled without holding BOOT during power-on."
+);
+
+assertIncludes(
+  mainCpp,
+  "server.on(\"/api/gnss/fw/upload\", HTTP_POST,",
+  "Walker must expose POST /api/gnss/fw/upload for uploading the LC29HDA firmware blobs."
+);
+
+assertIncludes(
+  gnssUpgradeCpp,
+  "txByte(0xA0)",
+  "Upgrade flow must prime 0xA0 to catch the LC29HDA Download-Mode handshake window."
+);
+
+assertIncludes(
+  gnssUpgradeCpp,
+  "0x04204000",
+  "DA start address must match the Quectel UART Download-Mode constant (0x04204000)."
+);
+
+assertIncludes(
+  gnssUpgradeCpp,
+  "isBootloader ? 0x5A : 0xA5",
+  "FW finalize byte must be 0x5A for ag3335_bootloader.bin and 0xA5 for all other blobs."
+);
+
+assertIncludes(
+  mainCpp,
+  "g_fwUploadAuthed  = checkAuthNoResponse();",
+  "Firmware upload must auth-check at UPLOAD_FILE_START — by FILE_END the bytes would already be persisted to LittleFS, leaving an unauthenticated path to overwrite the LC29HDA firmware blobs."
+);
+
+assertIncludes(
+  mainCpp,
+  "if (!g_fwUploadAuthed) return;  // discard bytes from unauthenticated request",
+  "WRITE chunks of an unauthenticated firmware upload must be discarded (auth flag set once at FILE_START gates every chunk thereafter)."
+);
+
+assertIncludes(
+  mainCpp,
+  "g_fwUploadOffset  = (size_t) server.arg(\"offset\").toInt();",
+  "Firmware upload must accept an 'offset' form field so the 2.4 MB main blob can be chunked from the browser instead of OOMing the walker on weak WiFi."
+);
+
+assertIncludes(
+  mainCpp,
+  "g_fwUploadFile = LittleFS.open(path, \"r+\");",
+  "Non-zero offsets must reopen the existing file in r+ mode + seek so chunks land at the correct position."
+);
+
+assertIncludes(
+  mainCpp,
+  "server.on(\"/fw-upgrade\",          HTTP_GET,  handleGnssFwUpgradePage);",
+  "Walker must serve the embedded chunked-upload page at /fw-upgrade so the user can drop firmware files into a browser without curl."
+);
+
+assertExcludes(
+  mainCpp,
+  "id=\"tok\" value=\"",
+  "The /fw-upgrade page must NOT embed any hardcoded bearer token as a default — that would leak it to anyone reaching the (unauthenticated) page. Use placeholder + empty value; the operator pastes their /api/auth token."
 );
 
 assertIncludes(
