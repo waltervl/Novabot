@@ -456,11 +456,13 @@ static int      lastPair001Result = -1;
 static uint32_t lastPair001AtMs = 0;
 static uint32_t pair050AckOkAtMs = 0;
 static uint32_t pair080AckOkAtMs = 0;
+static uint32_t pair511AckOkAtMs = 0;  // PAIR511 = save nav data to NVM (TTFF acceleration)
 
 static void rememberPair001Ack(int cmd, int result, uint32_t atMs) {
   if (result != 0) return;
   if (cmd == 50) pair050AckOkAtMs = atMs;
   if (cmd == 80) pair080AckOkAtMs = atMs;  // PAIR080 nav-mode set ACK
+  if (cmd == 511) pair511AckOkAtMs = atMs; // PAIR511 nav-data persist ACK
 }
 
 static bool pair050AckOkSince(uint32_t sinceMs) {
@@ -469,6 +471,10 @@ static bool pair050AckOkSince(uint32_t sinceMs) {
 
 static bool pair080AckOkSince(uint32_t sinceMs) {
   return pair080AckOkAtMs != 0 && (int32_t)(pair080AckOkAtMs - sinceMs) >= 0;
+}
+
+static bool pair511AckOkSince(uint32_t sinceMs) {
+  return pair511AckOkAtMs != 0 && (int32_t)(pair511AckOkAtMs - sinceMs) >= 0;
 }
 
 enum GnssVariant : uint8_t {
@@ -1361,6 +1367,20 @@ static uint8_t  pair080TxCount  = 0;
 static bool     pair080Acked    = false;
 static uint32_t lastRateReassertMs = 0;
 
+// PAIR511 = save navigation data (ephemeris + last position + time + almanac)
+// from RTC RAM to module NVM. Without this, every reboot is effectively cold
+// start because the LC29HDA's RTC RAM loses its ephemeris when V_BCKP is cut.
+// With periodic saves the module reads NVM on next boot and does a WARM start:
+// TTFF drops from ~5-50 min (cold) to ~5-30 sec (warm). Trigger: after the
+// module has held any valid fix (>=1) for 30 s, then every 5 min while fix
+// remains. No retry: PAIR511 is best-effort and a missed save just means the
+// next boot uses slightly older ephemeris.
+static uint32_t pair511LastTxMs        = 0;
+static uint32_t pair511FirstFixAtMs    = 0;
+static uint32_t pair511SaveCount       = 0;
+static const uint32_t PAIR511_INTERVAL_MS = 300000;  // 5 min between saves
+static const uint32_t PAIR511_WARMUP_MS   = 30000;   // 30 s after first fix
+
 static void gnssPump() {
   walkerGnssTxPump();
 
@@ -1468,6 +1488,28 @@ static void gnssPump() {
     pair080Acked = true;
     weblogf("[gnss] PAIR080 nav-mode %u ACKed after %u attempt(s)\n",
             (unsigned) cfg.gnssNavMode, (unsigned) pair080TxCount);
+  }
+
+  // PAIR511 = persist current navigation data (ephemeris + last position +
+  // time + almanac) to LC29HDA NVM so the next boot is a WARM start. See
+  // pair511* state vars above for the timing/why. Snapshot fix quality under
+  // coreLock — st.fix is touched from the parser side and isn't atomic.
+  int currentFixForSave;
+  { coreLock(); currentFixForSave = st.fix; coreUnlock(); }
+  if (currentFixForSave >= 1) {
+    if (pair511FirstFixAtMs == 0) pair511FirstFixAtMs = nowCfgMs;
+    uint32_t sinceFirstFix = nowCfgMs - pair511FirstFixAtMs;
+    if (sinceFirstFix >= PAIR511_WARMUP_MS) {
+      bool dueForSave = (pair511LastTxMs == 0) ||
+                        (nowCfgMs - pair511LastTxMs >= PAIR511_INTERVAL_MS);
+      if (dueForSave) {
+        sendGnssCommand("PAIR511");
+        pair511LastTxMs = nowCfgMs;
+        if (pair511SaveCount < UINT32_MAX) pair511SaveCount++;
+        weblogf("[gnss] PAIR511 save nav-data to NVM (#%u, fix=%d)\n",
+                (unsigned) pair511SaveCount, currentFixForSave);
+      }
+    }
   }
 
   if (enforceDa1Hz && gnssRateHz > 2 && sinceDetect >= 5000 &&
@@ -2068,6 +2110,17 @@ static void handleStatus() {
   doc["gnss1HzAttempts"] = pair050TxCount;
   doc["gnssWalkModeAcked"] = pair080Acked;       // PAIR080 nav mode set at boot
   doc["gnssWalkModeAttempts"] = pair080TxCount;
+  // PAIR511 nav-data persistence — for TTFF debugging. saveCount = total
+  // times PAIR511 was sent this session. lastSaveAgoSec = seconds since the
+  // most recent save (or -1 if never). The next reboot's TTFF should be a
+  // warm start as long as a save happened recently.
+  doc["gnssNvmSaveCount"]   = pair511SaveCount;
+  doc["gnssNvmLastSaveAgoSec"] = pair511LastTxMs == 0
+      ? -1
+      : (int) ((millis() - pair511LastTxMs) / 1000);
+  doc["gnssNvmLastSaveAckedAgoSec"] = pair511AckOkAtMs == 0
+      ? -1
+      : (int) ((millis() - pair511AckOkAtMs) / 1000);
   doc["gnssNavMode"] = cfg.gnssNavMode;          // active PAIR080 mode (1=Fitness default)
   doc["gnssVariant"] =
     (gnssVariant == GNSS_VARIANT_HEA) ? "LC29HEA" :

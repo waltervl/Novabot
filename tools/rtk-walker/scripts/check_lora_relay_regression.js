@@ -227,6 +227,26 @@ assertIncludes(
   "Config API must expose the runtime nav-mode selector (PAIR080)."
 );
 
+// PAIR511 persist nav-data to NVM — required for warm-start TTFF.
+// Without periodic PAIR511 the LC29HDA loses ephemeris on every power loss
+// (RTC RAM not battery-backed on this walker), so every reboot is a cold
+// start: TTFF 5-50 min instead of 5-30 sec warm. See AGNSS App Note 3.2.6.
+assertIncludes(
+  mainCpp,
+  "sendGnssCommand(\"PAIR511\");",
+  "Walker must periodically save navigation data (PAIR511) to LC29HDA NVM so the next boot does a warm start instead of cold start."
+);
+assertIncludes(
+  mainCpp,
+  "if (cmd == 511) pair511AckOkAtMs = atMs;",
+  "Walker must track PAIR511 ACKs so the status JSON can report when the most recent NVM save succeeded."
+);
+assertIncludes(
+  mainCpp,
+  "PAIR511_INTERVAL_MS = 300000",
+  "PAIR511 save interval must be 5 minutes — balances NVM flash wear against staleness on power loss."
+);
+
 // ── LC29HDA firmware-upgrade (Download Mode UART) ────────────────────────
 const gnssUpgradeCpp = fs.readFileSync(path.join(root, "src", "gnss_upgrade.cpp"), "utf8");
 
