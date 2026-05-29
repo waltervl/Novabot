@@ -3447,6 +3447,76 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
     t.start()
 
 
+def start_rtk_telemetry_relay(sn, mqtt_ref):
+    """Spin up a daemon thread that bridges /bestpos_parsed_data -> MQTT.
+
+    Subscribes to novabot_msgs/msg/BestPos, reads qual (GGA-style quality
+    integer: 0=no-fix, 1=GPS single, 2=DGPS, 4=RTK Fixed, 5=RTK Float) and
+    svs (satellite count), and publishes {rtk_fix_quality, rtk_sat} to
+    novabot/sensor/<SN> on change plus a 2s heartbeat so late-joining
+    subscribers always see the current value.
+    """
+    try:
+        import rclpy  # type: ignore
+        from rclpy.node import Node  # type: ignore
+        from novabot_msgs.msg import BestPos  # type: ignore
+    except ImportError as ex:
+        log(f"[RtkRelay] import failed, RTK telemetry disabled: {ex}")
+        return
+
+    def _spin():
+        try:
+            try:
+                rclpy.init()
+            except RuntimeError:
+                pass  # already initialised
+
+            class _RtkRelay(Node):
+                def __init__(self):
+                    super().__init__('rtk_telemetry_relay')
+                    self._topic = f'novabot/sensor/{sn}'
+                    self._last_qual = None
+                    self._last_sat = None
+                    self.create_subscription(
+                        BestPos, '/bestpos_parsed_data', self._on_msg, 10,
+                    )
+                    self.create_timer(2.0, self._heartbeat)
+                    log(f"[RtkRelay] subscribed /bestpos_parsed_data -> MQTT {self._topic}")
+
+                def _publish(self, q, sat):
+                    if mqtt_ref[0] is None:
+                        return
+                    try:
+                        mqtt_ref[0].publish(
+                            self._topic,
+                            json.dumps({'rtk_fix_quality': q, 'rtk_sat': sat}),
+                        )
+                    except Exception as ex:
+                        log(f"[RtkRelay] publish failed: {ex}")
+
+                def _on_msg(self, msg):
+                    q = int(msg.qual)
+                    sat = int(msg.svs)
+                    if q == self._last_qual and sat == self._last_sat:
+                        return  # debounce -- only publish on change
+                    self._last_qual = q
+                    self._last_sat = sat
+                    self._publish(q, sat)
+
+                def _heartbeat(self):
+                    if self._last_qual is None:
+                        return  # no data yet
+                    self._publish(self._last_qual, self._last_sat)
+
+            node = _RtkRelay()
+            rclpy.spin(node)
+        except Exception as ex:
+            log(f"[RtkRelay] crashed: {ex}")
+
+    t = threading.Thread(target=_spin, daemon=True, name='rtk-relay')
+    t.start()
+
+
 def _ros_publish_blade_speed_native(speed: int) -> bool:
     node = _ROS_BLADE_NODE[0]
     if node is None:
@@ -3511,10 +3581,15 @@ def main():
     # Reference to current MQTT client (for publishing responses)
     mqtt_ref = [None]
 
-    # Spin up the ROS → MQTT blade-RPM relay in a background thread. It uses
+    # Spin up the ROS -> MQTT blade-RPM relay in a background thread. It uses
     # mqtt_ref so it auto-picks-up the most recent connected client across
     # reconnects without needing its own MQTT loop.
     start_blade_telemetry_relay(sn, mqtt_ref)
+
+    # Spin up the ROS -> MQTT RTK fix-quality relay right after the blade relay.
+    # Subscribes to /bestpos_parsed_data (novabot_msgs/BestPos) and publishes
+    # {rtk_fix_quality, rtk_sat} to novabot/sensor/<SN>.
+    start_rtk_telemetry_relay(sn, mqtt_ref)
 
     def respond(cmd_name, data):
         """Publiceer een response naar de server."""
