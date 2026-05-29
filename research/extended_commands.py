@@ -3455,21 +3455,36 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
 
 
 def start_rtk_telemetry_relay(sn, mqtt_ref):
-    """Spin up a daemon thread that bridges /bestpos_parsed_data -> MQTT.
+    """Spin up a daemon node that bridges GNSS + localization state -> MQTT.
 
-    Subscribes to novabot_msgs/msg/BestPos, reads qual (GGA-style quality
-    integer: 0=no-fix, 1=GPS single, 2=DGPS, 4=RTK Fixed, 5=RTK Float) and
-    svs (satellite count), and publishes {rtk_fix_quality, rtk_sat} to
-    novabot/sensor/<SN> on change plus a 2s heartbeat so late-joining
-    subscribers always see the current value.
+    Publishes to novabot/sensor/<SN> (broker auto-merges into deviceCache):
+      - rtk_fix_quality / rtk_sat : from novabot_msgs/BestPos (.qual / .svs).
+      - heading_deg               : the localization map-frame yaw, derived from
+                                    /robot_combination_localization/odom
+                                    (nav_msgs/Odometry) orientation quaternion.
+      - gnss_track_deg / gnss_speed : the GNSS course-over-ground and horizontal
+                                    speed, from novabot_msgs/BestVel
+                                    (.trk_gnd / .hor_spd). Only meaningful while
+                                    the mower is moving.
+    Publish on change plus a 2s heartbeat so late-joining subscribers see the
+    current values. The "is the heading good" conclusion is left to the client
+    (compare heading_deg with gnss_track_deg while driving straight).
     """
     try:
+        import math  # type: ignore
         import rclpy  # type: ignore
         from rclpy.node import Node  # type: ignore
-        from novabot_msgs.msg import BestPos  # type: ignore
+        from novabot_msgs.msg import BestPos, BestVel  # type: ignore
+        from nav_msgs.msg import Odometry  # type: ignore
     except ImportError as ex:
         log(f"[RtkRelay] import failed, RTK telemetry disabled: {ex}")
         return
+
+    def _yaw_deg(q):
+        # quaternion -> yaw (Z) in degrees
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return round(math.degrees(math.atan2(siny, cosy)), 1)
 
     def _spin():
         try:
@@ -3487,36 +3502,66 @@ def start_rtk_telemetry_relay(sn, mqtt_ref):
                     self._topic = f'novabot/sensor/{sn}'
                     self._last_qual = None
                     self._last_sat = None
+                    self._last_heading = None
+                    self._last_track = None
+                    self._last_speed = None
                     self.create_subscription(
-                        BestPos, '/bestpos_parsed_data', self._on_msg, 10,
+                        BestPos, '/bestpos_parsed_data', self._on_bestpos, 10,
+                    )
+                    self.create_subscription(
+                        Odometry, '/robot_combination_localization/odom', self._on_odom, 10,
+                    )
+                    self.create_subscription(
+                        BestVel, '/bestvel_parsed_data', self._on_bestvel, 10,
                     )
                     self.create_timer(2.0, self._heartbeat)
-                    log(f"[RtkRelay] subscribed /bestpos_parsed_data -> MQTT {self._topic}")
+                    log(f"[RtkRelay] subscribed bestpos/odom/bestvel -> MQTT {self._topic}")
 
-                def _publish(self, q, sat):
+                def _pub(self, payload):
                     if mqtt_ref[0] is None:
                         return
                     try:
-                        mqtt_ref[0].publish(
-                            self._topic,
-                            json.dumps({'rtk_fix_quality': q, 'rtk_sat': sat}),
-                        )
+                        mqtt_ref[0].publish(self._topic, json.dumps(payload))
                     except Exception as ex:
                         log(f"[RtkRelay] publish failed: {ex}")
 
-                def _on_msg(self, msg):
+                def _on_bestpos(self, msg):
                     q = int(msg.qual)
                     sat = int(msg.svs)
                     if q == self._last_qual and sat == self._last_sat:
-                        return  # debounce -- only publish on change
+                        return
                     self._last_qual = q
                     self._last_sat = sat
-                    self._publish(q, sat)
+                    self._pub({'rtk_fix_quality': q, 'rtk_sat': sat})
+
+                def _on_odom(self, msg):
+                    yaw = _yaw_deg(msg.pose.pose.orientation)
+                    if yaw == self._last_heading:
+                        return
+                    self._last_heading = yaw
+                    self._pub({'heading_deg': yaw})
+
+                def _on_bestvel(self, msg):
+                    track = round(float(msg.trk_gnd), 1)
+                    speed = round(float(msg.hor_spd), 2)
+                    if track == self._last_track and speed == self._last_speed:
+                        return
+                    self._last_track = track
+                    self._last_speed = speed
+                    self._pub({'gnss_track_deg': track, 'gnss_speed': speed})
 
                 def _heartbeat(self):
-                    if self._last_qual is None:
-                        return  # no data yet
-                    self._publish(self._last_qual, self._last_sat)
+                    payload = {}
+                    if self._last_qual is not None:
+                        payload['rtk_fix_quality'] = self._last_qual
+                        payload['rtk_sat'] = self._last_sat
+                    if self._last_heading is not None:
+                        payload['heading_deg'] = self._last_heading
+                    if self._last_track is not None:
+                        payload['gnss_track_deg'] = self._last_track
+                        payload['gnss_speed'] = self._last_speed
+                    if payload:
+                        self._pub(payload)
 
             node = _RtkRelay()
             _ROS_EXECUTOR[0].add_node(node)
