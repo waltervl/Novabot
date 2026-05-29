@@ -22,6 +22,7 @@ import { parseMapZip, MapArea } from '../mqtt/mapConverter.js';
 import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
+import { markFrameUnvalidated } from '../services/frameValidation.js';
 import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase } from '../services/portableMap.js';
 import { synthesizePortableFromWalker } from '../maps/walkerBundleImporter.js';
 import { ImportStagingStore } from '../services/importStaging.js';
@@ -1177,6 +1178,8 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore', (req: AuthRequest, 
     }
 
     console.log(`[Admin] Map restore for ${sn}: ${restored} restored, ${overwritten} overwritten, ${skippedExisting} skippedExisting, ${skippedNotInBackup} skippedNotInBackup`);
+    markFrameUnvalidated(sn);
+    console.log(`[Admin] frame_unvalidated set for ${sn} after restore`);
     res.json({ ok: true, restored, overwritten, skippedExisting, skippedNotInBackup });
   } catch (err) {
     console.error('[Admin] Map restore failed:', err);
@@ -1245,6 +1248,12 @@ adminStatusRouter.post('/map-backups/:sn/:filename/restore-and-realign', async (
     });
     restored++;
   }
+
+  // Map files are now restored; the frame is not yet validated against the
+  // real charger. Lock go_to_charge until a successful re-dock, regardless of
+  // whether the realign steps below succeed.
+  markFrameUnvalidated(sn);
+  console.log(`[Admin] frame_unvalidated set for ${sn} after restore-and-realign`);
 
   // ── 3. Resolve polygon anchor (must succeed for realign to be coherent) ─
   const sensors = deviceCache.get(sn);

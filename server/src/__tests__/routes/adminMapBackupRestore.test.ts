@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import { isFrameUnvalidated, clearFrameUnvalidated } from '../../services/frameValidation.js';
 
 // ── Mock heavy deps BEFORE any import of adminStatus.ts ─────────────────────
 
@@ -214,6 +215,7 @@ describe('GET /map-backups/:sn/:filename/contents', () => {
 describe('POST /map-backups/:sn/:filename/restore', () => {
   beforeEach(() => {
     existsSpy.mockReturnValue(true);
+    clearFrameUnvalidated(SN);
   });
 
   it('inserts a new row (restored=1) when item does not exist in DB', async () => {
@@ -235,6 +237,9 @@ describe('POST /map-backups/:sn/:filename/restore', () => {
     const row = mapRepo.findBySnAndCanonical(SN, 'map0');
     expect(row).toBeDefined();
     expect(row?.map_type).toBe('work');
+
+    // Restoring sets the frame_unvalidated safety flag (locks go_to_charge).
+    expect(isFrameUnvalidated(SN)).toBe(true);
   });
 
   it('skips item (skippedExisting=1) when row EXISTS and overwrite=false', async () => {
