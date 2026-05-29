@@ -1896,11 +1896,15 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
     return;
   }
   const sensors = deviceCache.get(sn);
-  const battery = sensors?.get('battery_state') ?? '';
-  if (battery !== 'Charging') {
+  const battery = (sensors?.get('battery_state') ?? '').toUpperCase();
+  const rs = String(sensors?.get('recharge_status') ?? '');
+  // On-dock detection is case-insensitive: the mower reports 'CHARGING'
+  // (uppercase). Also accept recharge_status 9 (docked) / 1 (charging).
+  const onDock = battery === 'CHARGING' || battery === 'FULL' || rs === '9' || rs === '1';
+  if (!onDock) {
     res.status(409).json({
       ok: false,
-      error: `re-anchor must start with the mower on the dock (battery_state='Charging', got '${battery}'). Drive it onto the dock first.`,
+      error: `re-anchor must start with the mower on the dock (charging). battery_state='${battery}', recharge_status='${rs}'. Drive it onto the dock first.`,
     });
     return;
   }

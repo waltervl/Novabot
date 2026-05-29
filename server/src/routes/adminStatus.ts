@@ -3002,11 +3002,13 @@ adminStatusRouter.post(
     }
 
     const sensors = deviceCache.get(sn);
-    const battery = sensors?.get('battery_state') ?? '';
-    if (battery !== 'Charging') {
+    const battery = (sensors?.get('battery_state') ?? '').toUpperCase();
+    const rs = String(sensors?.get('recharge_status') ?? '');
+    const onDock = battery === 'CHARGING' || battery === 'FULL' || rs === '9' || rs === '1';
+    if (!onDock) {
       res.status(409).json({
         ok: false,
-        error: `auto mode requires mower currently on dock (battery_state='Charging'), got '${battery}'`,
+        error: `auto mode requires mower currently on dock (charging). battery_state='${battery}', recharge_status='${rs}'`,
       });
       return;
     }
