@@ -366,8 +366,9 @@ export default function App() {
         const serverUrl = await getServerUrl();
         if (token && serverUrl) {
           setIsAuthenticated(true);
-          // Initialize socket connection
-          initSocket(serverUrl);
+          // Initialize socket connection — pass the JWT so the server can
+          // join the socket to per-user rooms (e.g. `admin` for debug emits).
+          initSocket(serverUrl, token);
         }
       } catch {
         // No token found, stay on login
@@ -394,8 +395,8 @@ export default function App() {
   }, [appReady, authChecked]);
 
   const handleLoginSuccess = useCallback(
-    (_token: string, serverUrl: string) => {
-      initSocket(serverUrl);
+    (token: string, serverUrl: string) => {
+      initSocket(serverUrl, token);
       setIsAuthenticated(true);
     },
     [],

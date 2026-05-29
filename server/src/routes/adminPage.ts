@@ -398,9 +398,9 @@ export function adminPageHtml(): string {
       <div style="background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;position:relative">
         <canvas id="mapCanvas" width="800" height="600" style="width:100%;display:block;background:#0a0a1a"></canvas>
         <div id="polygonCalPanel" style="display:none;position:absolute;top:12px;left:12px;z-index:1000;background:rgba(15,15,30,0.95);backdrop-filter:blur(6px);border:1px solid #444;border-radius:10px;padding:14px;width:240px;box-shadow:0 6px 30px rgba(0,0,0,0.45)">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <span style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#fbbf24;font-weight:600">Polygon Offset</span>
-            <span style="cursor:pointer;color:#888" onclick="cancelPolygonCalibration()" title="Cancel">&times;</span>
+          <div id="polygonCalHeader" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;cursor:move;user-select:none" title="Drag to move">
+            <span style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#fbbf24;font-weight:600">&#x2725; Polygon Offset</span>
+            <span style="cursor:pointer;color:#888;padding:0 4px" onclick="cancelPolygonCalibration()" title="Cancel">&times;</span>
           </div>
           <div style="margin-bottom:10px;padding:6px 8px;background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:6px;font-size:10px;color:#cbd5e1;line-height:1.5">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
@@ -3955,9 +3955,54 @@ async function enterPolygonCalibration() {
   };
 
   document.getElementById('polygonCalPanel').style.display = 'block';
+  makePolygonCalPanelDraggable();
   updatePolygonCalDisplay();
   rerenderWithGhost();
   document.addEventListener('keydown', polygonCalKeyHandler);
+}
+
+// Make the polygon-offset panel draggable by its header so it doesn't block
+// the canvas. Idempotent — only binds once per page load. Position persists
+// across cancel/reopen within a single page load (reset on full reload).
+function makePolygonCalPanelDraggable() {
+  var panel = document.getElementById('polygonCalPanel');
+  if (!panel || panel.__draggable) return;
+  panel.__draggable = true;
+  var header = document.getElementById('polygonCalHeader');
+  if (!header) return;
+  var dragging = false;
+  var startX = 0, startY = 0;
+  var panelStartX = 0, panelStartY = 0;
+  header.addEventListener('mousedown', function(e) {
+    // Don't initiate drag if the user clicked the (×) close span — it
+    // carries an onclick handler we must not swallow.
+    if (e.target && e.target.getAttribute && e.target.getAttribute('onclick')) return;
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    var rect = panel.getBoundingClientRect();
+    var parentRect = panel.parentElement.getBoundingClientRect();
+    panelStartX = rect.left - parentRect.left;
+    panelStartY = rect.top - parentRect.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    var parent = panel.parentElement;
+    var parentW = parent.clientWidth;
+    var parentH = parent.clientHeight;
+    var newLeft = panelStartX + (e.clientX - startX);
+    var newTop = panelStartY + (e.clientY - startY);
+    // Keep at least a strip of the panel visible (40px) so the user can
+    // always grab it back into view.
+    newLeft = Math.max(40 - panel.offsetWidth, Math.min(parentW - 40, newLeft));
+    newTop = Math.max(0, Math.min(parentH - 40, newTop));
+    panel.style.left = newLeft + 'px';
+    panel.style.top = newTop + 'px';
+  });
+  document.addEventListener('mouseup', function() {
+    dragging = false;
+  });
 }
 
 function cancelPolygonCalibration() {
@@ -4417,8 +4462,19 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   }
   // Firmware-frame trail in cyan (mower's reported map_position over time).
   drawTrail(mowerTrail, 'rgba(34,211,238,0.85)');
-  // RTK-derived trail in lime (GPS projected via charger anchor).
-  drawTrail(gpsTrail, 'rgba(132,204,22,0.85)');
+  // RTK-derived trail in lime (GPS projected via charger anchor). During
+  // polygon-offset calibration we shift this trail by the same dx/dy as
+  // the preview polygon so the user can visually align both together with
+  // a reference point on the map.
+  var displayGpsTrail = gpsTrail;
+  if (typeof polygonCal !== 'undefined' && polygonCal
+      && (polygonCal.dx !== 0 || polygonCal.dy !== 0)
+      && Array.isArray(gpsTrail) && gpsTrail.length > 0) {
+    displayGpsTrail = gpsTrail.map(function(p) {
+      return { x: p.x + polygonCal.dx, y: p.y + polygonCal.dy };
+    });
+  }
+  drawTrail(displayGpsTrail, 'rgba(132,204,22,0.85)');
 
   if (livePose && Number.isFinite(livePose.x) && Number.isFinite(livePose.y)) {
     var px = tx(livePose.x);

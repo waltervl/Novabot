@@ -139,6 +139,8 @@ export default {
   returnHomeDesc: 'How should the mower return to the charging station?',
   endTaskReturn: 'End task & return',
   pauseTaskReturn: 'Pause task & return',
+  stopMowing: 'Stop mowing?',
+  stopMowingDesc: 'The mower will halt where it is, blades will stop, and the current session ends. The mower won’t return to the dock. You can start a new session afterwards.',
   pinchToZoom: 'Pinch to zoom \u00B7 Double-tap to reset',
 
   // ── Mapping ───────────────────────────────────────────────────

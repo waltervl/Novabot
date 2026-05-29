@@ -121,9 +121,11 @@ export default function AppSettingsScreen({
     await saveServerUrl(normalized);
     setServerUrl(normalized);
     setIsEditingServer(false);
-    // Reconnect: logout triggers full re-init with new server URL
+    // Reconnect: logout triggers full re-init with new server URL.
+    // Pass the current token so the brief pre-logout socket window still
+    // gets per-user gating (replaced by the post-login initSocket).
     disconnectSocket();
-    initSocket(normalized);
+    initSocket(normalized, await getToken());
     // Force re-login so socket hooks re-attach to the new socket
     await clearToken();
     onLogout();

@@ -7,8 +7,12 @@ let socket: Socket | null = null;
 
 /**
  * Initialize the Socket.io connection to the server.
+ *
+ * `token` is the user's JWT, passed in the `auth` handshake payload so the
+ * server can identify the user and gate per-user emits (e.g. admin-only
+ * debug events). Omit when the user is not logged in yet.
  */
-export function initSocket(serverUrl: string): Socket {
+export function initSocket(serverUrl: string, token?: string | null): Socket {
   if (socket) {
     socket.disconnect();
   }
@@ -18,6 +22,7 @@ export function initSocket(serverUrl: string): Socket {
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
+    auth: token ? { token } : undefined,
   });
   return socket;
 }

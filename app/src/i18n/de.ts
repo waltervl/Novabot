@@ -107,6 +107,8 @@ export default {
   returnHomeDesc: 'Mäher zur Ladestation zurückschicken',
   endTaskReturn: 'Beenden + zurück zur Station',
   pauseTaskReturn: 'Pause + zurück zur Station',
+  stopMowing: 'Mähen stoppen?',
+  stopMowingDesc: 'Der Mäher hält an Ort und Stelle an, die Messer stoppen und die aktuelle Sitzung wird beendet. Der Mäher kehrt nicht zur Ladestation zurück. Du kannst danach eine neue Sitzung starten.',
   settings: 'Einstellungen', experimentalFeatures: 'Experimentelle Funktionen',
   experimentalSub: 'Beta-Funktionen wie automatische Kartierung aktivieren',
   signOut: 'Abmelden', language: 'Sprache', mowerSettings: 'Mäher-Einstellungen',

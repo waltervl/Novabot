@@ -8,6 +8,8 @@ import { getDeviceHealth } from '../services/deviceHealth.js';
 import { isDeviceOnline } from '../mqtt/broker.js';
 import { db } from '../db/database.js';
 import { initBleLogger, sendBleLogHistory } from '../ble/bleLogger.js';
+import { verifyAuthToken } from '../middleware/auth.js';
+import { userRepo } from '../db/repositories/index.js';
 import { setOutlineEmitter, publishToDevice } from '../mqtt/mapSync.js';
 
 // Callback om demo mode status te checken (geregistreerd door demoSimulator)
@@ -96,6 +98,26 @@ export function initDashboardSocket(httpServer: HttpServer): void {
 
   io.on('connection', (socket) => {
     console.log(`[DASHBOARD] Client connected: ${socket.id}`);
+
+    // Per-socket auth: clients send their JWT in the `auth` handshake
+    // payload. Admin sockets join the `admin` room so the server can
+    // restrict noisy/sensitive emits (e.g. debug:pos_json) to just those
+    // sockets instead of broadcasting to every connected client.
+    try {
+      const handshakeAuth = (socket.handshake.auth || {}) as { token?: string };
+      const token = handshakeAuth.token || '';
+      if (token) {
+        const payload = verifyAuthToken(token);
+        (socket.data as { userId?: string; email?: string }).userId = payload.userId;
+        (socket.data as { userId?: string; email?: string }).email = payload.email;
+        if (userRepo.isAdmin(payload.userId)) {
+          socket.join('admin');
+          console.log(`[DASHBOARD] Admin joined: ${payload.email} (${socket.id})`);
+        }
+      }
+    } catch {
+      // Invalid/expired token — leave socket anonymous, no admin room.
+    }
 
     // Build snapshot helper — reused for initial connect + request:snapshot
     function buildSnapshot() {
@@ -320,4 +342,9 @@ export function emitPinEvent(sn: string, data: unknown): void {
 
 export function emitExtendedEvent(sn: string, command: string, data: unknown): void {
   io?.emit('extended:response', { sn, command, data, timestamp: Date.now() });
+}
+
+/** Debug-only: send the mower's /userdata/pos.json (post-dock) to admin sockets only. */
+export function emitDebugPosJson(sn: string, pos: unknown, raw: string | null): void {
+  io?.to('admin').emit('debug:pos_json', { sn, pos, raw, timestamp: Date.now() });
 }

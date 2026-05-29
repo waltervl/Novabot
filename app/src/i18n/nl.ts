@@ -137,6 +137,8 @@ export default {
   returnHomeDesc: 'Hoe moet de maaier terugkeren naar het laadstation?',
   endTaskReturn: 'Stop taak & terug',
   pauseTaskReturn: 'Pauzeer taak & terug',
+  stopMowing: 'Maaien stoppen?',
+  stopMowingDesc: 'De maaier stopt waar hij staat, de messen gaan uit en de huidige sessie wordt beëindigd. De maaier rijdt niet terug naar het station. Je kunt daarna een nieuwe maaisessie starten.',
   pinchToZoom: 'Knijp om te zoomen \u00B7 Dubbeltik om te resetten',
 
   // ── Mapping ───────────────────────────────────────────────────
