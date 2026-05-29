@@ -1913,20 +1913,32 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
     message: 're-anchor started: back ~1m -> go_to_charge -> ArUco snap realigns the frame. Poll /devices until frame_unvalidated clears.',
     estimated_duration_s: 45,
   });
-  // Fire-and-forget: drive 1m back off the dock, then go_to_charge re-docks via
-  // the full ArUco sequence, snapping the frame to charging_station.yaml.
+  // Fire-and-forget: drive ~1m straight back off the dock, then go_to_charge
+  // re-docks via the full ArUco sequence, snapping the frame to
+  // charging_station.yaml. Drive EXACTLY like the manual joystick path
+  // (socketHandler joystick:move): mst is a List [x_w*100, y_v*100, 8] where
+  // x_w = angular (0 = no turn) and y_v = linear (negative = backward), with a
+  // start_move keepalive every ~750ms and stop_move: null. The earlier
+  // { x_w: 0.2, y_v: 0 } object form commanded a TURN (diagonal), not back.
   (async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const BACK_MST = [0, -20, 8]; // x_w=0 (straight), y_v=-0.20 (backward)
     try {
-      publishToDevice(sn, { start_move: 4 });
-      await new Promise((r) => setTimeout(r, 300));
-      for (let i = 0; i < 25; i++) {
-        publishToDevice(sn, { mst: { x_w: 0.2, y_v: 0, z_g: 0 } });
-        await new Promise((r) => setTimeout(r, 200));
+      publishToDevice(sn, { start_move: 4 }); // 4 = back direction
+      await sleep(300);
+      const driveMs = 5000; // ~1m at 0.2 m/s
+      const started = Date.now();
+      let tick = 0;
+      while (Date.now() - started < driveMs) {
+        publishToDevice(sn, { mst: BACK_MST });
+        tick++;
+        if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 }); // keepalive
+        await sleep(150);
       }
-      publishToDevice(sn, { stop_move: {} });
-      await new Promise((r) => setTimeout(r, 1500));
+      publishToDevice(sn, { stop_move: null });
+      await sleep(1500);
       publishToDevice(sn, { go_to_charge: {} }, { bypassFrameGuard: true });
-      console.log(`[reanchor] ${sn}: back-1m + go_to_charge dispatched (frame re-anchor)`);
+      console.log(`[reanchor] ${sn}: back ~1m (joystick-format) + go_to_charge dispatched`);
     } catch (err) {
       console.error(`[reanchor] ${sn}: sequence failed`, err);
     }

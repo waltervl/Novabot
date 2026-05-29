@@ -3030,14 +3030,24 @@ adminStatusRouter.post(
         publishToDevice(sn, { start_move: 4 });
         await new Promise((r) => setTimeout(r, 300));
 
-        // 2. Spam mst @ 200ms × 25 = ~5s × 0.2 m/s ≈ 1m back.
-        for (let i = 0; i < 25; i++) {
-          publishToDevice(sn, { mst: { x_w: 0.2, y_v: 0, z_g: 0 } });
-          await new Promise((r) => setTimeout(r, 200));
+        // 2. Drive straight back ~1m using the EXACT manual-joystick format
+        //    (socketHandler joystick:move): mst = List [x_w*100, y_v*100, 8],
+        //    x_w=0 (no turn), y_v negative (backward), start_move keepalive
+        //    every ~750ms, stop_move: null. The old { x_w:0.2, y_v:0 } object
+        //    form commanded a turn -> mower veered diagonally.
+        {
+          const started = Date.now();
+          let tick = 0;
+          while (Date.now() - started < 5000) {
+            publishToDevice(sn, { mst: [0, -20, 8] });
+            tick++;
+            if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 });
+            await new Promise((r) => setTimeout(r, 150));
+          }
         }
 
         // 3. Exit manual mode.
-        publishToDevice(sn, { stop_move: {} });
+        publishToDevice(sn, { stop_move: null });
         await new Promise((r) => setTimeout(r, 1500));
 
         // 4. Auto-redock — full ArUco-aligned approach. robot_decision
