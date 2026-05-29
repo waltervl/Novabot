@@ -13,7 +13,7 @@ vi.mock('../../mqtt/broker.js', () => ({
 
 import { translateValue, updateDeviceData } from '../../mqtt/sensorData.js';
 import {
-  markFrameUnvalidated, clearFrameUnvalidated, isFrameUnvalidated,
+  markFrameUnvalidated, clearFrameUnvalidated, isFrameUnvalidated, noteAutoRecharge,
 } from '../../services/frameValidation.js';
 
 describe('translateValue rtk_fix_quality', () => {
@@ -45,15 +45,25 @@ describe('frame_unvalidated lifecycle in updateDeviceData', () => {
     expect(isFrameUnvalidated(SN)).toBe(true); // must stay locked
   });
 
-  it('clears only after the mower undocks and re-docks (real re-anchor)', () => {
+  it('does NOT clear on a stray bounce-redock with no auto_recharge', () => {
+    const SN = 'LFIN_DOCK_D';
+    clearFrameUnvalidated(SN);
+    markFrameUnvalidated(SN);
+    docked(SN);    // parked
+    undocked(SN);  // 1cm bounce off the dock during backward drive
+    docked(SN);    // rolled back on - but NO auto_recharge was issued
+    expect(isFrameUnvalidated(SN)).toBe(true); // must stay locked
+  });
+
+  it('clears only after an auto_recharge command followed by a docked report', () => {
     const SN = 'LFIN_DOCK_C';
     clearFrameUnvalidated(SN);
     markFrameUnvalidated(SN);
     docked(SN);                       // still parked -> stays set
     expect(isFrameUnvalidated(SN)).toBe(true);
-    undocked(SN);                     // drove back off the dock
-    expect(isFrameUnvalidated(SN)).toBe(true);
-    docked(SN);                       // re-docked via auto_recharge -> cleared
+    noteAutoRecharge(SN);             // wizard issued the deliberate dock
+    expect(isFrameUnvalidated(SN)).toBe(true); // command alone does not clear
+    docked(SN);                       // dock confirmed after auto_recharge -> cleared
     expect(isFrameUnvalidated(SN)).toBe(false);
   });
 

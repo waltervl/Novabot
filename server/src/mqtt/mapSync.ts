@@ -19,7 +19,7 @@ import { emitDeviceBound, emitDevicePaired } from '../dashboard/socketHandler.js
 import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
 import { isSnBanned } from './broker.js';
-import { isGoToChargeBlocked } from '../services/frameValidation.js';
+import { isGoToChargeBlocked, noteAutoRecharge } from '../services/frameValidation.js';
 
 const TAG = '[MAP-SYNC]';
 
@@ -175,6 +175,11 @@ export function publishToDevice(sn: string, command: Record<string, unknown>): v
   if (isGoToChargeBlocked(sn, command)) {
     console.warn(`${TAG} BLOCKED go_to_charge for ${sn}: frame unvalidated (post-restore). Re-anchor via auto_recharge first.`);
     return;
+  }
+  // Arm the re-anchor clear: an auto_recharge dock is the deliberate re-anchor.
+  // Only the docked report that follows this command clears frame_unvalidated.
+  if ('auto_recharge' in command) {
+    noteAutoRecharge(sn);
   }
 
   if (!aedesBroker) {

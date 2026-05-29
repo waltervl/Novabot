@@ -10,36 +10,36 @@
 import { deviceSettingsRepo } from '../db/repositories/deviceSettings.js';
 
 const KEY = 'frame_unvalidated';
-const NEEDS_UNDOCK_KEY = 'frame_needs_undock';
+const AUTO_RECHARGE_KEY = 'frame_auto_recharge_seen';
 const unvalidated = new Set<string>();
-// Mowers that are unvalidated AND have not yet left the dock since the flag
-// was set. A bundle is usually imported while the mower is parked on the dock,
-// so we must NOT treat that pre-existing docked state as a successful
-// re-anchor. The flag clears only after the mower undocks (drive-back) and
-// then re-docks (auto_recharge), which is the real re-anchor.
-const needsUndock = new Set<string>();
+// Mowers for which an auto_recharge (pure ArUco dock) command has been issued
+// since the flag was set. The flag clears only on a docked report AFTER such a
+// command - i.e. the wizard's deliberate re-anchor dock. This prevents stray
+// re-docks (e.g. the mower bouncing 1cm off the dock during the backward drive
+// and rolling back) from falsely clearing the flag.
+const autoRechargeSeen = new Set<string>();
 
 export function loadFrameValidationFromDb(): void {
   unvalidated.clear();
-  needsUndock.clear();
+  autoRechargeSeen.clear();
   for (const row of deviceSettingsRepo.listAll()) {
     if (row.key === KEY && row.value === '1') unvalidated.add(row.sn);
-    if (row.key === NEEDS_UNDOCK_KEY && row.value === '1') needsUndock.add(row.sn);
+    if (row.key === AUTO_RECHARGE_KEY && row.value === '1') autoRechargeSeen.add(row.sn);
   }
 }
 
 export function markFrameUnvalidated(sn: string): void {
   unvalidated.add(sn);
-  needsUndock.add(sn);
+  autoRechargeSeen.delete(sn);
   deviceSettingsRepo.upsert(sn, KEY, '1');
-  deviceSettingsRepo.upsert(sn, NEEDS_UNDOCK_KEY, '1');
+  deviceSettingsRepo.upsert(sn, AUTO_RECHARGE_KEY, '0');
 }
 
 export function clearFrameUnvalidated(sn: string): void {
   unvalidated.delete(sn);
-  needsUndock.delete(sn);
+  autoRechargeSeen.delete(sn);
   deviceSettingsRepo.upsert(sn, KEY, '0');
-  deviceSettingsRepo.upsert(sn, NEEDS_UNDOCK_KEY, '0');
+  deviceSettingsRepo.upsert(sn, AUTO_RECHARGE_KEY, '0');
 }
 
 export function isFrameUnvalidated(sn: string): boolean {
@@ -47,23 +47,25 @@ export function isFrameUnvalidated(sn: string): boolean {
 }
 
 /**
+ * Record that an auto_recharge (pure ArUco dock) command was issued for this
+ * mower. Only meaningful while unvalidated; arms the clear-on-dock so the next
+ * docked report counts as the deliberate re-anchor.
+ */
+export function noteAutoRecharge(sn: string): void {
+  if (!unvalidated.has(sn)) return;
+  autoRechargeSeen.add(sn);
+  deviceSettingsRepo.upsert(sn, AUTO_RECHARGE_KEY, '1');
+}
+
+/**
  * Feed the mower's current docked state into the re-anchor lifecycle. Clears
- * the flag only on a genuine re-dock: the mower must first leave the dock
- * (drive-back) and then return (auto_recharge). The docked state present at
- * import time does NOT clear the flag.
+ * the flag only on a docked report that follows an auto_recharge command (the
+ * wizard's deliberate re-anchor). The docked state present at import time, and
+ * stray bounces during the backward drive, do NOT clear the flag.
  */
 export function noteDockState(sn: string, docked: boolean): void {
   if (!unvalidated.has(sn)) return;
-  if (!docked) {
-    // Mower has left the dock; a subsequent re-dock now counts as the anchor.
-    if (needsUndock.has(sn)) {
-      needsUndock.delete(sn);
-      deviceSettingsRepo.upsert(sn, NEEDS_UNDOCK_KEY, '0');
-    }
-    return;
-  }
-  // docked: only a re-dock AFTER an undock validates the frame.
-  if (!needsUndock.has(sn)) {
+  if (docked && autoRechargeSeen.has(sn)) {
     clearFrameUnvalidated(sn);
   }
 }
