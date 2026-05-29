@@ -32,3 +32,13 @@ export function clearFrameUnvalidated(sn: string): void {
 export function isFrameUnvalidated(sn: string): boolean {
   return unvalidated.has(sn);
 }
+
+/**
+ * True when an outbound command must be blocked because the frame is
+ * unvalidated. Only go_to_charge is dangerous (it navigates the bad frame);
+ * auto_recharge (pure ArUco) and go_pile stay allowed. Pure predicate so it
+ * is unit-testable without importing the MQTT broker chain.
+ */
+export function isGoToChargeBlocked(sn: string, command: Record<string, unknown>): boolean {
+  return 'go_to_charge' in command && isFrameUnvalidated(sn);
+}

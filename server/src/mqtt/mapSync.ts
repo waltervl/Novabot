@@ -19,6 +19,7 @@ import { emitDeviceBound, emitDevicePaired } from '../dashboard/socketHandler.js
 import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
 import { isSnBanned } from './broker.js';
+import { isGoToChargeBlocked } from '../services/frameValidation.js';
 
 const TAG = '[MAP-SYNC]';
 
@@ -165,6 +166,17 @@ function isAesCapable(sn: string): boolean {
 }
 
 export function publishToDevice(sn: string, command: Record<string, unknown>): void {
+  // Safety: while the map frame is unvalidated (post bundle-restore, pre
+  // successful re-dock), go_to_charge navigates the wrong frame and can drive
+  // the mower anywhere. Block it at this single choke point so the app, the
+  // rain monitor, and admin tools are all covered. auto_recharge (pure ArUco)
+  // and go_pile stay allowed. Runs before the broker check so the block is
+  // unconditional.
+  if (isGoToChargeBlocked(sn, command)) {
+    console.warn(`${TAG} BLOCKED go_to_charge for ${sn}: frame unvalidated (post-restore). Re-anchor via auto_recharge first.`);
+    return;
+  }
+
   if (!aedesBroker) {
     console.error(`${TAG} Broker niet geinitialiseerd`);
     return;
