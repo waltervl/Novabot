@@ -315,6 +315,19 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
   const workStatus = s.work_status;
   const hasWork = workStatus != null && workStatus !== '0' && workStatus !== '';
 
+  const rtkFixQuality = s.rtk_fix_quality as string | undefined;
+  const hasRtkFixQuality = rtkFixQuality != null && rtkFixQuality !== '';
+  const RTK_FIX_QUALITY_COLORS: Record<string, string> = {
+    'RTK Fixed':  '#22c55e',
+    'RTK Float':  '#f59e0b',
+    'DGPS':       '#eab308',
+    'GPS':        '#9ca3af',
+    'No fix':     '#ef4444',
+  };
+  const rtkFixQualityColor = rtkFixQuality != null
+    ? (RTK_FIX_QUALITY_COLORS[rtkFixQuality] ?? '#6b7280')
+    : '#6b7280';
+
   const hasSensorData = Object.keys(s).length > 0;
 
   // ── Online chip ─────────────────────────────────────────────────────────────
@@ -397,6 +410,21 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
                     title={`RTK fix: ${mowerRtk ? 'yes' : 'no'}`}
                   >
                     RTK{mowerRtk ? '✓' : '—'}
+                  </span>
+                )}
+
+                {/* RTK fix quality badge */}
+                {hasRtkFixQuality && (
+                  <span
+                    className="inline-flex items-center gap-0.5 text-[10px] font-medium"
+                    style={{ color: rtkFixQualityColor }}
+                    title={`RTK fix quality: ${rtkFixQuality}`}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: rtkFixQualityColor }}
+                    />
+                    {rtkFixQuality}
                   </span>
                 )}
 

@@ -43,6 +43,7 @@ import { ApiClient } from '../services/api';
 import { getServerUrl } from '../services/auth';
 import { useExperimental } from '../context/ExperimentalContext';
 import { useI18n } from '../i18n';
+import { fixQualityLabel } from '../utils/fixQuality';
 import {
   bleJoystickConnect, bleJoystickDisconnect,
   bleJoystickStart, bleJoystickMove, bleJoystickStop,
@@ -126,6 +127,9 @@ export default function MappingScreen() {
   const mowerOnline = mower?.online || mowerRecentlyActive;
   const sn = mower?.sn ?? '';
   const sensors = mower?.sensors ?? {};
+  // rtk_fix_quality is not part of the derived MowerDerived sensors, so read
+  // it from the raw per-device sensor map (same source HomeScreen uses).
+  const rtkFix = fixQualityLabel((devices.get(sn)?.sensors ?? {}).rtk_fix_quality);
 
   // ── Route params (from MapScreen Edit button) ──
   const route = useRoute();
@@ -1305,6 +1309,10 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
                 <View style={[styles.checkDot, { backgroundColor: battery > 20 ? colors.green : colors.red }]} />
                 <Text style={styles.checkText}>Battery: {battery}%</Text>
               </View>
+              <View style={styles.checkRow}>
+                <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: rtkFix.color }} />
+                <Text style={[styles.checkText, { color: rtkFix.color, fontWeight: '600' }]}>RTK: {rtkFix.label}</Text>
+              </View>
               {!mappingReady && (
                 <Text style={styles.warning}>
                   {t('waitForGps', undefined) || 'Waiting for GPS fix and localization. Drive the mower a few meters to help alignment.'}
@@ -1634,6 +1642,9 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
                 </Text>
                 <Text style={styles.sensorChip}>
                   Bat: {battery}%
+                </Text>
+                <Text style={[styles.sensorChip, { color: rtkFix.color, fontWeight: '700' }]}>
+                  RTK: {rtkFix.label}
                 </Text>
                 {ifClosedCycle && (
                   <Text style={[styles.sensorChip, styles.closedChip]}>

@@ -28,6 +28,7 @@ import { useActiveMower } from '../hooks/useActiveMower';
 import { useActiveMowerContext } from '../context/ActiveMowerContext';
 import { useMowQueue } from '../context/MowQueueContext';
 import { isOpenNovaFirmware } from '../utils/firmwareCapability';
+import { fixQualityLabel } from '../utils/fixQuality';
 import { MowerPickerChevron } from '../components/MowerPickerChevron';
 import { ApiClient, type Schedule } from '../services/api';
 import { getServerUrl, getToken } from '../services/auth';
@@ -796,6 +797,23 @@ export default function HomeScreen() {
     socket.on('maps:changed', handler);
     return () => { socket.off('maps:changed', handler); };
   }, [loadHomeMeta, mower?.sn]);
+
+  // Debug: temporary alert showing /userdata/pos.json after the mower
+  // docks. Server SSH-reads the file on the docking transition and emits
+  // `debug:pos_json`. Only show for the currently-selected mower.
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+    const handler = (e: { sn: string; pos: unknown; raw: string | null; timestamp: number }) => {
+      if (!e?.sn || (mower?.sn && e.sn !== mower.sn)) return;
+      const body = e.pos != null
+        ? JSON.stringify(e.pos, null, 2)
+        : (e.raw ?? '(empty)');
+      appAlertCompat.alert(`pos.json — ${e.sn}`, body);
+    };
+    socket.on('debug:pos_json', handler);
+    return () => { socket.off('debug:pos_json', handler); };
+  }, [mower?.sn]);
 
   // ── Long-pause safety tracking ────────────────────────────────────
   // Set pauseStartedAt zodra we USER_STOP / PAUSED zien, en wis hem zodra
@@ -1798,6 +1816,16 @@ export default function HomeScreen() {
                   <Text style={styles.chipText}>{mower.rtkSat} sat</Text>
                 </View>
               )}
+              {(() => {
+                const rtkFix = fixQualityLabel(devices.get(mower.sn)?.sensors?.rtk_fix_quality);
+                if (rtkFix.label === 'No data') return null;
+                return (
+                  <View style={styles.chip}>
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: rtkFix.color }} />
+                    <Text style={[styles.chipText, { color: rtkFix.color }]}>{rtkFix.label}</Text>
+                  </View>
+                );
+              })()}
               {devices.get(mower.sn)?.sensors?.cpu_temperature != null && (
                 <View style={styles.chip}>
                   <Ionicons name="thermometer" size={11} color={colors.textDim} />
@@ -2159,10 +2187,44 @@ export default function HomeScreen() {
                   </>
                 )}
               </TouchableOpacity>
-              {/* Stop-knop weggelaten tijdens mowing — als je wil stoppen
-                  klik je Home (End task & return / Pause then dock).
-                  Een blote stop_navigation laat de maaier midden op het gazon
-                  staan wat zelden is wat je wilt; Home handelt dat netjes af. */}
+              {/* Stop — halt in place, end session, do NOT dock.
+                  Home (right) covers stop+dock; this button is for "stop here now". */}
+              <TouchableOpacity
+                style={[styles.actionButton, styles.actionButtonRed]}
+                onPress={() => {
+                  appAlertCompat.alert(
+                    t('stopMowing') || 'Stop mowing?',
+                    t('stopMowingDesc') || 'The mower will halt where it is, blades will stop, and the current session ends. The mower won’t return to the dock. You can start a new session afterwards.',
+                    [
+                      { text: t('cancel') || 'Cancel', style: 'cancel' },
+                      {
+                        text: t('stop') || 'Stop',
+                        style: 'destructive',
+                        onPress: () => {
+                          sendCommand(mower.sn, { stop_navigation: { cmd_num: ++cmdNumRef.current } }, 'stop');
+                          (async () => {
+                            try {
+                              const url = await getServerUrl();
+                              if (!url) return;
+                              const api = new ApiClient(url);
+                              await api.sendExtended(mower.sn, { stop_boundary_follow: {} });
+                            } catch { /* non-fatal */ }
+                          })();
+                          setOptimisticActivity('idle');
+                        },
+                      },
+                    ],
+                  );
+                }}
+                disabled={commandLoading !== null}
+                activeOpacity={0.7}
+              >
+                {commandLoading === 'stop' ? (
+                  <ActivityIndicator size="small" color={colors.white} />
+                ) : (
+                  <Ionicons name="stop" size={20} color={colors.white} />
+                )}
+              </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.actionButton, styles.actionButtonBlue]}
                 onPress={() => {
@@ -2369,6 +2431,12 @@ export default function HomeScreen() {
               <TouchableOpacity
                 style={[styles.actionButton, styles.actionButtonRed]}
                 onPress={() => {
+                  // `stop_to_charge` cancels the auto_recharge action
+                  // (ROS service /robot_decision/cancel_recharge). Without
+                  // it, stop_navigation alone does NOT stop a return-to-dock
+                  // because the recharge goal lives in auto_recharge_server,
+                  // not coverage_planner_server.
+                  sendCommand(mower.sn, { stop_to_charge: {} }, 'stop');
                   sendCommand(mower.sn, { stop_navigation: { cmd_num: ++cmdNumRef.current } }, 'stop');
                   // Also cancel any in-flight boundary-follow goal — a
                   // lingering server-side goal handle can otherwise keep
@@ -2381,6 +2449,7 @@ export default function HomeScreen() {
                       await api.sendExtended(mower.sn, { stop_boundary_follow: {} });
                     } catch { /* non-fatal */ }
                   })();
+                  setOptimisticActivity('idle');
                 }}
                 disabled={commandLoading !== null}
                 activeOpacity={0.7}
