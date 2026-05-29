@@ -3041,8 +3041,8 @@ adminStatusRouter.post(
         // 4. Auto-redock — full ArUco-aligned approach. robot_decision
         //    fires save_utm_origin_info on SUCCESS (result.code == 100),
         //    rewriting /userdata/pos.json with the current UTM anchor.
-        publishToDevice(sn, { go_to_charge: {} });
-        console.log(`[Admin] refresh-dock-anchor ${sn}: go_to_charge dispatched`);
+        publishToDevice(sn, { go_to_charge: {} }, { bypassFrameGuard: true });
+        console.log(`[Admin] refresh-dock-anchor ${sn}: go_to_charge dispatched (frame-guard bypassed)`);
       } catch (err) {
         console.error(`[Admin] refresh-dock-anchor ${sn}: sequence failed`, err);
       }

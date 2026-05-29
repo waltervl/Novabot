@@ -165,20 +165,26 @@ function isAesCapable(sn: string): boolean {
   return false;
 }
 
-export function publishToDevice(sn: string, command: Record<string, unknown>): void {
+export function publishToDevice(
+  sn: string,
+  command: Record<string, unknown>,
+  opts?: { bypassFrameGuard?: boolean },
+): void {
   // Safety: while the map frame is unvalidated (post bundle-restore, pre
-  // successful re-dock), go_to_charge navigates the wrong frame and can drive
-  // the mower anywhere. Block it at this single choke point so the app, the
-  // rain monitor, and admin tools are all covered. auto_recharge (pure ArUco)
-  // and go_pile stay allowed. Runs before the broker check so the block is
-  // unconditional.
-  if (isFrameNavBlocked(sn, command)) {
-    console.warn(`${TAG} BLOCKED ${Object.keys(command)[0]} for ${sn}: frame unvalidated (post-restore). Re-anchor (auto_recharge dock) first.`);
+  // successful re-dock), go_to_charge / start_navigation navigate the wrong
+  // frame and can drive the mower anywhere. Block them at this single choke
+  // point so the app, the rain monitor, and admin tools are all covered.
+  // EXCEPTION: the re-anchor dock-cycle (refresh-dock-anchor / reanchor
+  // endpoint) issues go_to_charge deliberately from the dock to trigger the
+  // ArUco snap that realigns the frame — it passes bypassFrameGuard.
+  if (!opts?.bypassFrameGuard && isFrameNavBlocked(sn, command)) {
+    console.warn(`${TAG} BLOCKED ${Object.keys(command)[0]} for ${sn}: frame unvalidated (post-restore). Re-anchor via the dock-cycle first.`);
     return;
   }
-  // Arm the re-anchor clear: an auto_recharge dock is the deliberate re-anchor.
-  // Only the docked report that follows this command clears frame_unvalidated.
-  if ('auto_recharge' in command) {
+  // Arm the re-anchor clear: a deliberate re-anchor dock (auto_recharge, or a
+  // bypassed go_to_charge from the dock-cycle) is what re-validates the frame.
+  // Only the docked report that follows clears frame_unvalidated.
+  if ('auto_recharge' in command || (opts?.bypassFrameGuard && 'go_to_charge' in command)) {
     noteAutoRecharge(sn);
   }
 

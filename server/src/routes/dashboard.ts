@@ -19,6 +19,7 @@ import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGp
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum } from '../mqtt/mapSync.js';
+import { isFrameUnvalidated } from '../services/frameValidation.js';
 import crypto from 'crypto';
 import { generateMapZipFromDb, gpsToLocal, localToGps, parseMapZip, type GpsPoint, type LocalPoint } from '../mqtt/mapConverter.js';
 import { existsSync, unlinkSync, readFileSync, readdirSync, createReadStream, statSync, watch, mkdirSync, copyFileSync } from 'fs';
@@ -1880,6 +1881,54 @@ dashboardRouter.get('/demo/:sn', (req: Request, res: Response) => {
 // ── MQTT command publishing ─────────────────────────────────────
 
 // POST /api/dashboard/command/:sn — stuur een MQTT commando naar een apparaat
+// POST /api/dashboard/reanchor/:sn — guided post-restore re-anchor (app-facing).
+// Runs the documented dock-cycle (back ~1m -> go_to_charge -> ArUco snap that
+// realigns the local frame to charging_station.yaml). The go_to_charge here
+// bypasses the frame-nav guard because it IS the deliberate re-anchor from the
+// dock; publishToDevice arms the frame_unvalidated clear on that bypassed
+// go_to_charge, so a successful re-dock (recharge_status 9) clears the flag.
+// Requires the mower to be on the dock (battery_state == Charging) so the
+// back-1m + redock is short and safe (per MAP-BACKUP-RESTORE-FLOW.md).
+dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  if (!isFrameUnvalidated(sn)) {
+    res.status(409).json({ ok: false, error: 'frame is already validated; no re-anchor needed' });
+    return;
+  }
+  const sensors = deviceCache.get(sn);
+  const battery = sensors?.get('battery_state') ?? '';
+  if (battery !== 'Charging') {
+    res.status(409).json({
+      ok: false,
+      error: `re-anchor must start with the mower on the dock (battery_state='Charging', got '${battery}'). Drive it onto the dock first.`,
+    });
+    return;
+  }
+  res.json({
+    ok: true,
+    message: 're-anchor started: back ~1m -> go_to_charge -> ArUco snap realigns the frame. Poll /devices until frame_unvalidated clears.',
+    estimated_duration_s: 45,
+  });
+  // Fire-and-forget: drive 1m back off the dock, then go_to_charge re-docks via
+  // the full ArUco sequence, snapping the frame to charging_station.yaml.
+  (async () => {
+    try {
+      publishToDevice(sn, { start_move: 4 });
+      await new Promise((r) => setTimeout(r, 300));
+      for (let i = 0; i < 25; i++) {
+        publishToDevice(sn, { mst: { x_w: 0.2, y_v: 0, z_g: 0 } });
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      publishToDevice(sn, { stop_move: {} });
+      await new Promise((r) => setTimeout(r, 1500));
+      publishToDevice(sn, { go_to_charge: {} }, { bypassFrameGuard: true });
+      console.log(`[reanchor] ${sn}: back-1m + go_to_charge dispatched (frame re-anchor)`);
+    } catch (err) {
+      console.error(`[reanchor] ${sn}: sequence failed`, err);
+    }
+  })();
+});
+
 dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
   const { command } = req.body as { command?: Record<string, unknown> };
