@@ -1,23 +1,47 @@
-/** Map an NMEA GGA fix-quality code to a display label + color.
- * 4 = RTK Fixed, 5 = RTK Float, 2 = DGPS, 1 = GPS SPS, 0 = no fix.
- * undefined/null/unknown -> "No data" (mower not reporting / stock firmware). */
+/** Map an RTK fix quality to a display label + color.
+ * Accepts either the raw NMEA GGA code (4=Fixed, 5=Float, 2=DGPS, 1=GPS, 0=no fix)
+ * OR the server-translated label string ("RTK Fixed", "RTK Float", "DGPS",
+ * "GPS", "No fix") - the app receives the translated label over the socket
+ * (forwardToDashboard sends translateValue output), while other paths may carry
+ * the raw code. undefined/null/unknown -> "No data". */
 export interface FixQualityDisplay {
   label: string;
   color: string;
 }
 
+const FIXED: FixQualityDisplay = { label: 'RTK Fixed', color: '#22c55e' };
+const FLOAT: FixQualityDisplay = { label: 'RTK Float', color: '#f59e0b' };
+const DGPS: FixQualityDisplay = { label: 'DGPS', color: '#eab308' };
+const GPS: FixQualityDisplay = { label: 'GPS', color: '#9ca3af' };
+const NOFIX: FixQualityDisplay = { label: 'No fix', color: '#ef4444' };
 const NO_DATA: FixQualityDisplay = { label: 'No data', color: '#6b7280' };
 
 export function fixQualityLabel(
   q: number | string | null | undefined,
 ): FixQualityDisplay {
-  const n = typeof q === 'string' ? parseInt(q, 10) : q;
+  if (q == null) return NO_DATA;
+  const raw = typeof q === 'string' ? q.trim() : q;
+
+  // Numeric code path (raw GGA quality).
+  const n = typeof raw === 'string' ? parseInt(raw, 10) : raw;
   switch (n) {
-    case 4: return { label: 'RTK Fixed', color: '#22c55e' };
-    case 5: return { label: 'RTK Float', color: '#f59e0b' };
-    case 2: return { label: 'DGPS', color: '#eab308' };
-    case 1: return { label: 'GPS', color: '#9ca3af' };
-    case 0: return { label: 'No fix', color: '#ef4444' };
-    default: return NO_DATA;
+    case 4: return FIXED;
+    case 5: return FLOAT;
+    case 2: return DGPS;
+    case 1: return GPS;
+    case 0: return NOFIX;
   }
+
+  // Translated-label path (server translateValue output).
+  if (typeof raw === 'string') {
+    switch (raw) {
+      case 'RTK Fixed': return FIXED;
+      case 'RTK Float': return FLOAT;
+      case 'DGPS': return DGPS;
+      case 'GPS': return GPS;
+      case 'No fix': return NOFIX;
+    }
+  }
+
+  return NO_DATA;
 }

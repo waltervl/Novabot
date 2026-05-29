@@ -42,6 +42,7 @@ import { StartMowSheet } from '../components/StartMowSheet';
 import { RainOverlay } from '../components/RainOverlay';
 import { AppActionSheet, type AppActionSheetItem } from '../components/AppActionSheet';
 import CuttingHeightPickerModal from '../components/CuttingHeightPickerModal';
+import ReanchorWizard from '../components/ReanchorWizard';
 import { useI18n } from '../i18n';
 import { getSocket } from '../services/socket';
 import type { DeviceState, MowerActivity } from '../types';
@@ -545,6 +546,16 @@ export default function HomeScreen() {
   const styles = useStyles(makeStyles);
   const hero = HERO_PALETTE[colorScheme];
   const mower = useMemo(() => deriveMower(activeMower), [activeMower]);
+  // Post-restore safety: while the map frame is unvalidated, go_to_charge would
+  // navigate the bad frame and drive the mower anywhere. Lock Go-home and show
+  // the re-anchor wizard until a successful dock clears the server-side flag.
+  const frameUnvalidated =
+    (devices.get(mower?.sn ?? '')?.sensors?.frame_unvalidated ?? '0') === '1';
+  // Auto-close the re-anchor wizard once the server clears the flag (a
+  // successful dock re-anchored the frame) so the modal does not hang open.
+  useEffect(() => {
+    if (!frameUnvalidated) setShowReanchor(false);
+  }, [frameUnvalidated]);
   // Blade-not-spinning warning gets a 15s grace period: the mower routinely
   // stops the cutter for a second or two during route re-planning and lane
   // transitions, so an instant warning flashes noise. Only show when the
@@ -665,6 +676,7 @@ export default function HomeScreen() {
     spotPolygon?: Array<{ latitude: number; longitude: number }>;
   }>(null);
   const [commandError, setCommandError] = useState('');
+  const [showReanchor, setShowReanchor] = useState(false);
   // Track which soft-error codes the user already dismissed this session so
   // the banner doesn't pop back every time report_state_robot cycles.
   const [dismissedSoftErrors, setDismissedSoftErrors] = useState<Set<number>>(new Set());
@@ -1217,6 +1229,13 @@ export default function HomeScreen() {
 
   // Go home: send go_pile first, then go_to_charge (matches Flutter app flow)
   const sendGoHome = async (sn: string) => {
+    if (frameUnvalidated) {
+      appAlertCompat.alert(
+        'Re-anchor required',
+        'The map frame is not yet validated after a restore. Dock the mower via the re-anchor flow first.',
+      );
+      return;
+    }
     setCommandLoading('home');
     setCommandError('');
     try {
@@ -1590,6 +1609,33 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        {/* Post-restore re-anchor banner (non-blocking): the map frame for THIS
+            mower is unvalidated after a bundle restore. Go-home stays locked,
+            but the app and other mowers remain usable. Tap to open the wizard. */}
+        {frameUnvalidated && (
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => setShowReanchor(true)}
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 10,
+              backgroundColor: 'rgba(245,158,11,0.12)',
+              borderWidth: 1, borderColor: 'rgba(245,158,11,0.4)',
+              borderRadius: 12, padding: 12, marginBottom: 12,
+            }}
+          >
+            <Ionicons name="warning-outline" size={20} color="#f59e0b" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#f59e0b', fontWeight: '700', fontSize: 13 }}>
+                Frame niet geankerd
+              </Text>
+              <Text style={{ color: colors.textDim, fontSize: 12 }}>
+                Kaart hersteld. Dock de maaier één keer om het frame te ankeren. Go-home is geblokkeerd tot dat lukt.
+              </Text>
+            </View>
+            <Text style={{ color: '#f59e0b', fontWeight: '700', fontSize: 13 }}>Re-anchor ›</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Mower animation scene — nickname + rename live in the picker
             chevron now, so the scene is purely the animation. */}
         <MowerScene
@@ -1817,8 +1863,10 @@ export default function HomeScreen() {
                 </View>
               )}
               {(() => {
+                // Always render so the RTK chip stays put on the battery-circle
+                // view; show "No data" greyed during a brief gap rather than
+                // disappearing.
                 const rtkFix = fixQualityLabel(devices.get(mower.sn)?.sensors?.rtk_fix_quality);
-                if (rtkFix.label === 'No data') return null;
                 return (
                   <View style={styles.chip}>
                     <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: rtkFix.color }} />
@@ -2063,7 +2111,7 @@ export default function HomeScreen() {
                   /Work:BATTERY_LOW_RECHARGE\b/.test(busyMsg);
                 const isInterruptedCoverage =
                   onDock && taskMode === 1 && pausedForRecharge;
-                const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy;
+                const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy || frameUnvalidated;
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')
                   && mower.online && !mower.hasError && !noMap && !mowerBusy
                   && !isInterruptedCoverage;
@@ -2483,6 +2531,17 @@ export default function HomeScreen() {
         {/* Serial number */}
         <Text style={styles.snText}>SN: {mower.sn}</Text>
       </ScrollView>
+
+      {/* Post-restore re-anchor wizard: opened on demand from the banner (not
+          auto-blocking, so the app + other mowers stay usable). Walks position
+          50cm -> auto_recharge (pure ArUco). The server clears frame_unvalidated
+          on a successful dock. */}
+      <ReanchorWizard
+        visible={showReanchor}
+        sn={mower.sn}
+        sensors={devices.get(mower.sn)?.sensors}
+        onClose={() => setShowReanchor(false)}
+      />
 
       {/* History modal */}
       <Modal visible={showHistory} animationType="slide" presentationStyle="pageSheet">
