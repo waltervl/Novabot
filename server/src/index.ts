@@ -82,6 +82,11 @@ import { equipmentRepo } from './db/repositories/equipment.js';
 // ── DB is al geïnitialiseerd bij import van database.ts (module-level initDb())
 // zodat module-level db.prepare() calls in sensorData.ts etc. niet falen.
 
+// ── Frame-validation state: laad de persistente frame_unvalidated vlaggen ─────
+// zodat een server-herstart go_to_charge niet stilletjes deblokkeert.
+import { loadFrameValidationFromDb } from './services/frameValidation.js';
+loadFrameValidationFromDb();
+
 // ── Firmware auto-sync (watches firmware directory → ota_versions DB) ─────────
 initFirmwareSync();
 
