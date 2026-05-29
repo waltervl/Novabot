@@ -30,12 +30,30 @@ describe('translateValue rtk_fix_quality', () => {
 });
 
 describe('frame_unvalidated lifecycle in updateDeviceData', () => {
-  it('clears the flag when the mower reports docked (recharge_status 9)', () => {
+  const docked = (sn: string) =>
+    updateDeviceData(sn, Buffer.from(JSON.stringify({ report_state_robot: { recharge_status: 9 } })));
+  const undocked = (sn: string) =>
+    updateDeviceData(sn, Buffer.from(JSON.stringify({ report_state_robot: { recharge_status: 0 } })));
+
+  it('does NOT clear while still docked at import time (regression: imported while parked)', () => {
     const SN = 'LFIN_DOCK_A';
     clearFrameUnvalidated(SN);
     markFrameUnvalidated(SN);
+    // Mower was already on the dock when the bundle was imported.
+    docked(SN);
+    docked(SN);
+    expect(isFrameUnvalidated(SN)).toBe(true); // must stay locked
+  });
+
+  it('clears only after the mower undocks and re-docks (real re-anchor)', () => {
+    const SN = 'LFIN_DOCK_C';
+    clearFrameUnvalidated(SN);
+    markFrameUnvalidated(SN);
+    docked(SN);                       // still parked -> stays set
     expect(isFrameUnvalidated(SN)).toBe(true);
-    updateDeviceData(SN, Buffer.from(JSON.stringify({ report_state_robot: { recharge_status: 9 } })));
+    undocked(SN);                     // drove back off the dock
+    expect(isFrameUnvalidated(SN)).toBe(true);
+    docked(SN);                       // re-docked via auto_recharge -> cleared
     expect(isFrameUnvalidated(SN)).toBe(false);
   });
 
