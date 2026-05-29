@@ -1,29 +1,28 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  isGoToChargeBlocked, markFrameUnvalidated, clearFrameUnvalidated,
+  isFrameNavBlocked, markFrameUnvalidated, clearFrameUnvalidated,
 } from '../../services/frameValidation.js';
 
 const SN = 'LFIN_GUARD_0001';
 
-describe('isGoToChargeBlocked (publishToDevice guard predicate)', () => {
+describe('isFrameNavBlocked (publishToDevice guard predicate)', () => {
   beforeEach(() => { clearFrameUnvalidated(SN); });
 
-  it('blocks go_to_charge while frame unvalidated', () => {
+  it('blocks frame-nav commands while frame unvalidated', () => {
     markFrameUnvalidated(SN);
-    expect(isGoToChargeBlocked(SN, { go_to_charge: {} })).toBe(true);
+    expect(isFrameNavBlocked(SN, { go_to_charge: {} })).toBe(true);
+    expect(isFrameNavBlocked(SN, { start_navigation: { area: 1 } })).toBe(true);
+    expect(isFrameNavBlocked(SN, { start_run: { area: 1 } })).toBe(true);
   });
 
-  it('does not block go_to_charge when frame is validated', () => {
-    expect(isGoToChargeBlocked(SN, { go_to_charge: {} })).toBe(false);
+  it('does not block when the frame is validated', () => {
+    expect(isFrameNavBlocked(SN, { go_to_charge: {} })).toBe(false);
+    expect(isFrameNavBlocked(SN, { start_navigation: {} })).toBe(false);
   });
 
-  it('allows auto_recharge while frame unvalidated', () => {
+  it('allows auto_recharge and go_pile even while unvalidated', () => {
     markFrameUnvalidated(SN);
-    expect(isGoToChargeBlocked(SN, { auto_recharge: { cmd_num: 1 } })).toBe(false);
-  });
-
-  it('allows go_pile while frame unvalidated', () => {
-    markFrameUnvalidated(SN);
-    expect(isGoToChargeBlocked(SN, { go_pile: {} })).toBe(false);
+    expect(isFrameNavBlocked(SN, { auto_recharge: { cmd_num: 1 } })).toBe(false);
+    expect(isFrameNavBlocked(SN, { go_pile: {} })).toBe(false);
   });
 });

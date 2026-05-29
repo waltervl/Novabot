@@ -70,12 +70,19 @@ export function noteDockState(sn: string, docked: boolean): void {
   }
 }
 
+// Commands that navigate or drive the map frame, and so are dangerous while
+// the frame is unvalidated (post bundle-restore, pre re-anchor): the mower
+// would move relative to a wrong frame and can drive anywhere. go_to_charge =
+// return-to-dock; start_navigation / start_run = start mowing. auto_recharge
+// (pure ArUco, no map nav) and go_pile (blade prep) stay allowed.
+const FRAME_BLOCKED_KEYS = ['go_to_charge', 'start_navigation', 'start_run'];
+
 /**
  * True when an outbound command must be blocked because the frame is
- * unvalidated. Only go_to_charge is dangerous (it navigates the bad frame);
- * auto_recharge (pure ArUco) and go_pile stay allowed. Pure predicate so it
- * is unit-testable without importing the MQTT broker chain.
+ * unvalidated. Pure predicate so it is unit-testable without importing the
+ * MQTT broker chain.
  */
-export function isGoToChargeBlocked(sn: string, command: Record<string, unknown>): boolean {
-  return 'go_to_charge' in command && isFrameUnvalidated(sn);
+export function isFrameNavBlocked(sn: string, command: Record<string, unknown>): boolean {
+  if (!isFrameUnvalidated(sn)) return false;
+  return FRAME_BLOCKED_KEYS.some((k) => k in command);
 }

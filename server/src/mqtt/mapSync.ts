@@ -19,7 +19,7 @@ import { emitDeviceBound, emitDevicePaired } from '../dashboard/socketHandler.js
 import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
 import { isSnBanned } from './broker.js';
-import { isGoToChargeBlocked, noteAutoRecharge } from '../services/frameValidation.js';
+import { isFrameNavBlocked, noteAutoRecharge } from '../services/frameValidation.js';
 
 const TAG = '[MAP-SYNC]';
 
@@ -172,8 +172,8 @@ export function publishToDevice(sn: string, command: Record<string, unknown>): v
   // rain monitor, and admin tools are all covered. auto_recharge (pure ArUco)
   // and go_pile stay allowed. Runs before the broker check so the block is
   // unconditional.
-  if (isGoToChargeBlocked(sn, command)) {
-    console.warn(`${TAG} BLOCKED go_to_charge for ${sn}: frame unvalidated (post-restore). Re-anchor via auto_recharge first.`);
+  if (isFrameNavBlocked(sn, command)) {
+    console.warn(`${TAG} BLOCKED ${Object.keys(command)[0]} for ${sn}: frame unvalidated (post-restore). Re-anchor (auto_recharge dock) first.`);
     return;
   }
   // Arm the re-anchor clear: an auto_recharge dock is the deliberate re-anchor.
