@@ -6,10 +6,13 @@
  * aanroepen per inkomend MQTT bericht vanuit broker.ts.
  */
 
+import { spawn } from 'node:child_process';
 import { db } from '../db/database.js';
 import { equipmentRepo } from '../db/repositories/equipment.js';
 import { detectAndDispatch, resetEventState } from '../notifications/eventDetector.js';
 import { checkAutoResume, resetAutoResumeState } from '../services/autoResume.js';
+import { resolveMowerIp } from '../services/mowerIpDiscovery.js';
+import { emitDebugPosJson } from '../dashboard/socketHandler.js';
 
 // ── Sensor definities ────────────────────────────────────────────
 
@@ -321,6 +324,15 @@ export function translateValue(field: string, rawValue: string): string {
       const n = parseInt(rawValue, 10);
       return isNaN(n) ? rawValue : String(n > 0 ? -n : n);
     }
+    case 'rtk_fix_quality':
+      switch (rawValue) {
+        case '0': return 'No fix';
+        case '1': return 'GPS';
+        case '2': return 'DGPS';
+        case '4': return 'RTK Fixed';
+        case '5': return 'RTK Float';
+        default:  return rawValue;
+      }
     default:
       return rawValue;
   }
@@ -563,6 +575,56 @@ export function getMowerErrorState(sn: string): { value: string; count: number }
 // snapshot and renders the charger icon there.
 export interface DockPose { x: number; y: number; orientation: number; capturedAt: number }
 const dockPoseBySn = new Map<string, DockPose>();
+
+// Tracks which mowers are currently in the docked state. Used to detect
+// the leading edge of a docking event (not-docked → docked) so we trigger
+// one-shot debug actions (pos.json fetch) instead of firing on every report.
+const dockedSns = new Set<string>();
+
+// Debug-only: SSH into the mower and read /userdata/pos.json, then
+// broadcast its contents to dashboard + app via Socket.io. Fire-and-forget;
+// failures are silent (logged to stderr). Triggered only on the leading
+// edge of a docking transition.
+async function fetchPosJsonAndEmit(sn: string): Promise<void> {
+  try {
+    const ip = await resolveMowerIp(sn, { awaitDiscovery: false });
+    if (!ip) return;
+    const raw = await sshCatPosJson(ip);
+    if (raw == null) return;
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(raw); } catch { /* keep raw only */ }
+    emitDebugPosJson(sn, parsed, raw);
+  } catch (e) {
+    console.error('[debug-pos] fetch failed for', sn, e);
+  }
+}
+
+function sshCatPosJson(ip: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const proc = spawn('sshpass', [
+      '-p', 'novabot', 'ssh',
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'UserKnownHostsFile=/dev/null',
+      '-o', 'ConnectTimeout=5',
+      `root@${ip}`, 'cat /userdata/pos.json',
+    ], { timeout: 15000 });
+    let out = '';
+    let err = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.stderr.on('data', (d) => { err += d.toString(); });
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        console.error('[debug-pos] ssh exit', code, err.slice(0, 200));
+        return resolve(null);
+      }
+      resolve(out);
+    });
+    proc.on('error', (e) => {
+      console.error('[debug-pos] ssh spawn error:', (e as Error).message);
+      resolve(null);
+    });
+  });
+}
 
 export function getDockPose(sn: string): DockPose | null {
   return dockPoseBySn.get(sn) ?? null;
@@ -912,7 +974,8 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
   // of hardcoded (0,0). Captures both during initial dock and on every
   // subsequent report while docked (in case localization drifts after
   // re-dock). Only stores when a valid map_position is present.
-  if (isDockedByValues(snValues)) {
+  const docked = isDockedByValues(snValues);
+  if (docked) {
     const mx = parseFloat(snValues.get('map_position_x') ?? '');
     const my = parseFloat(snValues.get('map_position_y') ?? '');
     const mo = parseFloat(snValues.get('map_position_orientation') ?? '0');
@@ -924,6 +987,19 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
         capturedAt: Date.now(),
       });
     }
+  }
+
+  // Debug: on the just-docked transition (not-docked → docked) fetch
+  // /userdata/pos.json from the mower and emit it to subscribed sockets.
+  // Per-operator opt-in via DEBUG_POS_JSON=1 (every Novabot container is
+  // single-user but each user is admin of their own DB, so an admin-role
+  // gate alone wouldn't keep this feature private). Default off; only
+  // takes effect for the operator who explicitly sets the env var.
+  if (docked && !dockedSns.has(sn)) {
+    dockedSns.add(sn);
+    if (process.env.DEBUG_POS_JSON === '1') void fetchPosJsonAndEmit(sn);
+  } else if (!docked && dockedSns.has(sn)) {
+    dockedSns.delete(sn);
   }
 
   // Charger GPS positie wordt NIET automatisch bijgewerkt — GPS jitter (2-3m) verschuift
