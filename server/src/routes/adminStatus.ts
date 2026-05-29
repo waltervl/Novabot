@@ -2927,6 +2927,11 @@ adminStatusRouter.post(
     mapRepo.setPolygonOffset(sn, 0, 0);
 
     importStaging.transition(stagingId, 'APPLIED', { applyResult: {} });
+    // The map files are now applied but the frame is not yet anchored to the
+    // real charger. Lock go_to_charge and trigger the app re-anchor wizard
+    // until a successful ArUco dock re-anchors pos.json.
+    markFrameUnvalidated(sn);
+    console.log(`[Admin] frame_unvalidated set for ${sn} after apply-verbatim`);
     importAuditRepo.append({
       sn,
       staging_id: stagingId,
