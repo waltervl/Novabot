@@ -3265,6 +3265,8 @@ def _rerun_set_server_urls():
 # reads it through the standard /api/dashboard/devices/:sn endpoint.
 
 _ROS_BLADE_NODE = [None]  # holds the live BladeRelay instance, populated once rclpy.init succeeds
+_ROS_EXECUTOR = [None]               # shared SingleThreadedExecutor (blade thread owns+spins it)
+_ROS_EXECUTOR_READY = threading.Event()  # set once the executor exists, so other relays can add nodes
 
 
 def start_blade_telemetry_relay(sn, mqtt_ref):
@@ -3437,9 +3439,14 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
                     except Exception as ex:
                         log(f"[BladeRelay] status republish failed: {ex}")
 
+            from rclpy.executors import SingleThreadedExecutor  # type: ignore
             node = _BladeRelay()
             _ROS_BLADE_NODE[0] = node
-            rclpy.spin(node)
+            ex = SingleThreadedExecutor()
+            ex.add_node(node)
+            _ROS_EXECUTOR[0] = ex
+            _ROS_EXECUTOR_READY.set()
+            ex.spin()
         except Exception as ex:
             log(f"[BladeRelay] crashed: {ex}")
 
@@ -3466,10 +3473,13 @@ def start_rtk_telemetry_relay(sn, mqtt_ref):
 
     def _spin():
         try:
-            try:
-                rclpy.init()
-            except RuntimeError:
-                pass  # already initialised
+            # The blade relay owns rclpy.init() and the shared executor.
+            # Wait for it to come up, then add our node to the SAME executor
+            # (two rclpy.spin() calls on the default context race and crash:
+            # "generator already executing"). Do NOT spin here.
+            if not _ROS_EXECUTOR_READY.wait(timeout=30.0):
+                log("[RtkRelay] shared ROS executor not ready after 30s, RTK telemetry disabled")
+                return
 
             class _RtkRelay(Node):
                 def __init__(self):
@@ -3509,7 +3519,9 @@ def start_rtk_telemetry_relay(sn, mqtt_ref):
                     self._publish(self._last_qual, self._last_sat)
 
             node = _RtkRelay()
-            rclpy.spin(node)
+            _ROS_EXECUTOR[0].add_node(node)
+            log("[RtkRelay] node added to shared executor")
+            # No spin: the blade-relay thread's executor services this node.
         except Exception as ex:
             log(f"[RtkRelay] crashed: {ex}")
 
