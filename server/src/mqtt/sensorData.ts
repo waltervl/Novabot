@@ -11,6 +11,7 @@ import { db } from '../db/database.js';
 import { equipmentRepo } from '../db/repositories/equipment.js';
 import { detectAndDispatch, resetEventState } from '../notifications/eventDetector.js';
 import { checkAutoResume, resetAutoResumeState } from '../services/autoResume.js';
+import { isFrameUnvalidated, clearFrameUnvalidated } from '../services/frameValidation.js';
 import { resolveMowerIp } from '../services/mowerIpDiscovery.js';
 import { emitDebugPosJson } from '../dashboard/socketHandler.js';
 
@@ -1047,6 +1048,19 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
     } catch (err) {
       console.warn('[AUTO-RESUME] checkAutoResume failed:', err);
     }
+  }
+
+  // Post-restore re-anchor lifecycle: clear the frame_unvalidated flag once the
+  // mower is docked (a successful auto_recharge dock re-anchors pos.json). Always
+  // surface the current flag so the app can show the wizard and lock Go-home.
+  if (isFrameUnvalidated(sn) && docked) {
+    clearFrameUnvalidated(sn);
+    console.log(`[sensor] frame_unvalidated cleared for ${sn} (docked)`);
+  }
+  const fuNow = isFrameUnvalidated(sn) ? '1' : '0';
+  if (snValues.get('frame_unvalidated') !== fuNow) {
+    snValues.set('frame_unvalidated', fuNow);
+    changes.set('frame_unvalidated', fuNow);
   }
 
   return changes.size > 0 ? changes : null;
