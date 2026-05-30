@@ -5,7 +5,7 @@ import { getServerUrl } from '../services/auth';
 import { fixQualityLabel } from '../utils/fixQuality';
 import ManualJoystick from './ManualJoystick';
 
-type Step = 'intro' | 'docking';
+type Step = 'intro' | 'await' | 'docking';
 
 interface Props {
   visible: boolean;
@@ -27,44 +27,53 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
   const [err, setErr] = useState<string | null>(null);
 
   const rtk = fixQualityLabel(sensors?.rtk_fix_quality);
+  const isFixed = rtk.label === 'RTK Fixed';
   const rsStr = String(sensors?.recharge_status ?? '');
   const bs = String(sensors?.battery_state ?? '').toLowerCase();
-  // On-dock / charging — required to start the re-anchor (the back-1m + redock
-  // must begin from the dock). "Charging"/"Charging (9)" but not
-  // "Not charging"/"Discharged".
+  // On-dock / charging — required to START (the drive-back begins from the dock).
   const docked = rsStr.includes('Charging') || rsStr.includes('9') || bs === 'charging' || bs === 'full';
   const headingRaw = sensors?.heading_deg;
   const gnssTrackRaw = sensors?.gnss_track_deg;
   const gnssSpeedRaw = sensors?.gnss_speed;
   const moving = gnssSpeedRaw != null && parseFloat(String(gnssSpeedRaw)) > 0.1;
-  const canReanchor = docked;
 
-  // Watchdog: if the docking step doesn't finish (server clears the flag) within
-  // ~2 min, return to intro with a message so the spinner never hangs forever.
+  // Watchdog: if docking doesn't finish (server clears the flag) within ~2 min,
+  // return to the await step with a message so the spinner never hangs forever.
   useEffect(() => {
     if (step !== 'docking') return;
     const t = setTimeout(() => {
-      setErr('Re-ankeren duurde te lang of is niet gelukt. Controleer de dock en probeer opnieuw.');
-      setStep('intro');
+      setErr('Docken duurde te lang of is niet gelukt. Controleer de positie en probeer opnieuw.');
+      setStep('await');
     }, 120000);
     return () => clearTimeout(t);
   }, [step]);
 
-  async function reanchorNow() {
-    if (!canReanchor) return;
+  async function callReanchor(action: 'drive' | 'spin' | 'dock', nextStep?: Step) {
     setErr(null);
-    setStep('docking');
     const url = await getServerUrl();
-    if (!url) { setErr('No server configured'); setStep('intro'); return; }
+    if (!url) { setErr('No server configured'); return; }
     const api = new ApiClient(url);
     try {
-      const r = await api.reanchor(sn);
-      if (!r.ok) { setErr(r.error ?? 'Re-anchor failed'); setStep('intro'); }
+      const r = await api.reanchor(sn, action);
+      if (!r.ok) { setErr(r.error ?? 'Re-anchor failed'); return; }
+      if (nextStep) setStep(nextStep);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Re-anchor failed');
-      setStep('intro');
     }
   }
+
+  const StatusBlock = (
+    <View style={{ gap: 4 }}>
+      <Text style={{ color: rtk.color, fontWeight: '700' }}>RTK: {rtk.label}</Text>
+      <Text style={{ color: '#cbd5e1', fontSize: 13 }}>
+        Heading: {headingRaw != null ? `${headingRaw}°` : '—'}
+      </Text>
+      <Text style={{ color: '#cbd5e1', fontSize: 13 }}>
+        GNSS-koers: {gnssTrackRaw != null && moving ? `${gnssTrackRaw}°` : '— (rij om te tonen)'}
+        {gnssSpeedRaw != null ? `  · ${gnssSpeedRaw} m/s` : ''}
+      </Text>
+    </View>
+  );
 
   return (
     <Modal visible={visible} transparent animationType="fade">
@@ -75,44 +84,40 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
           {step === 'intro' && (
             <>
               <Text style={{ color: '#cbd5e1' }}>
-                De kaart is hersteld. Doe dit:{'\n'}
-                1. Zet de maaier op de dock tot hij laadt (joystick hieronder is
-                alleen om hem naar de dock te rijden).{'\n'}
-                2. Druk één keer op Re-anchor. Daarna doet de maaier alles zelf:
-                ~1m achteruit en automatisch terug docken; de ArUco-snap lijnt het
-                frame opnieuw uit. Jij hoeft verder niets te doen.{'\n'}
-                De polygon blijft ongewijzigd; dit venster sluit vanzelf als het klaar is.
+                De kaart is hersteld. Zet de maaier op de dock tot hij laadt
+                (joystick is om hem naar de dock te rijden). Druk dan op Start:
+                de maaier rijdt ~1m van de dock af. Daarna wacht je op een RTK
+                Fixed en dok je hem. De polygon blijft ongewijzigd.
               </Text>
-
-              {/* Live status */}
-              <View style={{ gap: 4 }}>
-                <Text style={{ color: rtk.color, fontWeight: '700' }}>RTK: {rtk.label}</Text>
-                <Text style={{ color: '#cbd5e1', fontSize: 13 }}>
-                  Heading: {headingRaw != null ? `${headingRaw}°` : '—'}
-                </Text>
-                <Text style={{ color: '#cbd5e1', fontSize: 13 }}>
-                  GNSS-koers: {gnssTrackRaw != null && moving ? `${gnssTrackRaw}°` : '— (rij om te tonen)'}
-                  {gnssSpeedRaw != null ? `  · ${gnssSpeedRaw} m/s` : ''}
-                </Text>
-              </View>
-
+              {StatusBlock}
               {err && <Text style={{ color: '#ef4444', fontWeight: '700' }}>{err}</Text>}
-
-              {/* Gate: re-anchor must start with the mower on the dock */}
               {docked ? (
-                <Text style={{ color: '#22c55e', fontWeight: '700' }}>
-                  Maaier staat op de dock - klaar om te re-ankeren.
-                </Text>
+                <Text style={{ color: '#22c55e', fontWeight: '700' }}>Maaier staat op de dock - klaar om te starten.</Text>
               ) : (
-                <Text style={{ color: '#f59e0b', fontWeight: '700' }}>
-                  Zet de maaier eerst OP de dock (laden) met de joystick.
-                </Text>
+                <Text style={{ color: '#f59e0b', fontWeight: '700' }}>Zet de maaier eerst OP de dock (laden).</Text>
               )}
-
-              {/* Touch joystick — same as JoystickScreen, socket-based. */}
               <ManualJoystick sn={sn} />
+              <Btn label="Start (rij van de dock)" onPress={() => callReanchor('drive', 'await')} disabled={!docked} />
+              <Btn label="Later" onPress={onClose} secondary />
+            </>
+          )}
 
-              <Btn label="Re-anchor (auto)" onPress={reanchorNow} disabled={!canReanchor} />
+          {step === 'await' && (
+            <>
+              <Text style={{ color: '#cbd5e1' }}>
+                De maaier is van de dock. Wacht tot RTK Fixed (groen). Lukt dat niet,
+                rij met de joystick nog wat terug of draai 360°. Bij RTK Fixed: Dock.
+              </Text>
+              {StatusBlock}
+              {err && <Text style={{ color: '#ef4444', fontWeight: '700' }}>{err}</Text>}
+              {isFixed ? (
+                <Text style={{ color: '#22c55e', fontWeight: '700' }}>RTK Fixed - klaar om te docken.</Text>
+              ) : (
+                <Text style={{ color: '#f59e0b', fontWeight: '700' }}>Nog geen RTK Fixed (nu: {rtk.label}).</Text>
+              )}
+              <ManualJoystick sn={sn} />
+              <Btn label="Dock nu (ArUco)" onPress={() => callReanchor('dock', 'docking')} disabled={!isFixed} />
+              <Btn label="Draai 360°" onPress={() => callReanchor('spin')} secondary />
               <Btn label="Later" onPress={onClose} secondary />
             </>
           )}
@@ -121,11 +126,10 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
             <>
               <ActivityIndicator color="#22c55e" />
               <Text style={{ color: '#cbd5e1' }}>
-                Re-ankeren bezig: ~1m achteruit en terug docken via de ArUco-snap.
-                Dit venster sluit automatisch zodra het frame opnieuw geankerd is.
-                Lukt het docken niet, ga terug en probeer opnieuw.
+                Docken via de ArUco-snap... dit venster sluit automatisch zodra het
+                frame opnieuw geankerd is. Lukt het docken niet, ga terug en probeer opnieuw.
               </Text>
-              <Btn label="Terug" onPress={() => setStep('intro')} secondary />
+              <Btn label="Terug" onPress={() => setStep('await')} secondary />
             </>
           )}
         </View>

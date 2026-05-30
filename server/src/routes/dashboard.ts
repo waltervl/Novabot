@@ -1881,80 +1881,100 @@ dashboardRouter.get('/demo/:sn', (req: Request, res: Response) => {
 // ── MQTT command publishing ─────────────────────────────────────
 
 // POST /api/dashboard/command/:sn — stuur een MQTT commando naar een apparaat
-// POST /api/dashboard/reanchor/:sn — guided post-restore re-anchor (app-facing).
-// Runs the documented dock-cycle (back ~1m -> go_to_charge -> ArUco snap that
-// realigns the local frame to charging_station.yaml). The go_to_charge here
-// bypasses the frame-nav guard because it IS the deliberate re-anchor from the
-// dock; publishToDevice arms the frame_unvalidated clear on that bypassed
-// go_to_charge, so a successful re-dock (recharge_status 9) clears the flag.
-// Requires the mower to be on the dock (battery_state == Charging) so the
-// back-1m + redock is short and safe (per MAP-BACKUP-RESTORE-FLOW.md).
+// POST /api/dashboard/reanchor/:sn  body: { action?: 'drive' | 'spin' | 'dock' }
+// Guided post-restore re-anchor, split into steps the app drives:
+//  - 'drive' (default): from the dock, quit mapping mode + drive ~1m straight
+//    back off the dock. The app then waits for an RTK fix (offering 'spin' or
+//    the joystick) before docking.
+//  - 'spin': rotate ~360 in place to help localization acquire an RTK fix.
+//  - 'dock': quit mapping mode + go_to_charge (guide-pose mode + ArUco snap)
+//    which realigns the local frame to charging_station.yaml and clears
+//    frame_unvalidated on the re-dock.
+// go_to_charge guide-pose mode is rejected by the firmware while in MAPPING
+// mode ("guide pose mode only support no mapping mode"), so we quit_mapping_mode
+// first. It also bypasses the frame-nav guard since it IS the deliberate
+// re-anchor. Movement uses the exact joystick mst List format
+// [x_w*100, y_v*100, 8] (x_w angular, y_v linear) + start_move keepalive.
 dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
+  const action = ((req.body as { action?: string })?.action) ?? 'drive';
   if (!isFrameUnvalidated(sn)) {
     res.status(409).json({ ok: false, error: 'frame is already validated; no re-anchor needed' });
     return;
   }
-  const sensors = deviceCache.get(sn);
-  const battery = (sensors?.get('battery_state') ?? '').toUpperCase();
-  const rs = String(sensors?.get('recharge_status') ?? '');
-  // On-dock detection is case-insensitive: the mower reports 'CHARGING'
-  // (uppercase). Also accept recharge_status 9 (docked) / 1 (charging).
-  const onDock = battery === 'CHARGING' || battery === 'FULL' || rs === '9' || rs === '1';
-  if (!onDock) {
-    res.status(409).json({
-      ok: false,
-      error: `re-anchor must start with the mower on the dock (charging). battery_state='${battery}', recharge_status='${rs}'. Drive it onto the dock first.`,
-    });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const onDock = () => {
+    const s = deviceCache.get(sn);
+    const b = (s?.get('battery_state') ?? '').toUpperCase();
+    const r = String(s?.get('recharge_status') ?? '');
+    return b === 'CHARGING' || b === 'FULL' || r === '9' || r === '1';
+  };
+
+  if (action === 'drive') {
+    if (!onDock()) {
+      res.status(409).json({ ok: false, error: 'drive must start with the mower on the dock (charging). Drive it onto the dock first.' });
+      return;
+    }
+    res.json({ ok: true, action, message: 'driving ~1m off the dock; wait for RTK Fixed then POST action:dock' });
+    (async () => {
+      const BACK_MST = [0, -50, 8]; // x_w=0 (straight), y_v=-0.50 (backward)
+      try {
+        publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
+        await sleep(500);
+        publishToDevice(sn, { start_move: 4 });
+        await sleep(300);
+        const started = Date.now();
+        let tick = 0;
+        while (Date.now() - started < 12000) {
+          publishToDevice(sn, { mst: BACK_MST });
+          tick++;
+          if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 });
+          await sleep(150);
+          if (Date.now() - started > 4000 && !onDock()) break;
+        }
+        publishToDevice(sn, { stop_move: null });
+        console.log(`[reanchor] ${sn}: drove off dock (off=${!onDock()})`);
+      } catch (err) { console.error(`[reanchor] ${sn}: drive failed`, err); }
+    })();
     return;
   }
-  res.json({
-    ok: true,
-    message: 're-anchor started: back ~1m -> go_to_charge -> ArUco snap realigns the frame. Poll /devices until frame_unvalidated clears.',
-    estimated_duration_s: 45,
-  });
-  // Fire-and-forget: drive ~1m straight back off the dock, then go_to_charge
-  // re-docks via the full ArUco sequence, snapping the frame to
-  // charging_station.yaml. Drive EXACTLY like the manual joystick path
-  // (socketHandler joystick:move): mst is a List [x_w*100, y_v*100, 8] where
-  // x_w = angular (0 = no turn) and y_v = linear (negative = backward), with a
-  // start_move keepalive every ~750ms and stop_move: null. The earlier
-  // { x_w: 0.2, y_v: 0 } object form commanded a TURN (diagonal), not back.
-  (async () => {
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    // y_v = -0.50 (moderate backward). mst -20 sat at the firmware deadband and
-    // barely moved (~5cm); the joystick uses up to -100 at full back. Drive
-    // UNTIL the mower actually leaves the dock (recharge_status leaves 9 /
-    // battery no longer CHARGING) so the distance self-regulates regardless of
-    // the exact speed mapping; min 4s (clear the dock despite ~2s sensor
-    // latency), hard cap 12s.
-    const BACK_MST = [0, -50, 8];
-    const offDock = () => {
-      const s = deviceCache.get(sn);
-      const b = (s?.get('battery_state') ?? '').toUpperCase();
-      const r = String(s?.get('recharge_status') ?? '');
-      return b !== 'CHARGING' && b !== 'FULL' && r !== '9' && r !== '1';
-    };
-    try {
-      publishToDevice(sn, { start_move: 4 }); // 4 = back direction
-      await sleep(300);
-      const started = Date.now();
-      let tick = 0;
-      while (Date.now() - started < 12000) {
-        publishToDevice(sn, { mst: BACK_MST });
-        tick++;
-        if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 }); // keepalive
-        await sleep(150);
-        if (Date.now() - started > 4000 && offDock()) break;
-      }
-      publishToDevice(sn, { stop_move: null });
-      await sleep(1500);
-      publishToDevice(sn, { go_to_charge: {} }, { bypassFrameGuard: true });
-      console.log(`[reanchor] ${sn}: drove back (off-dock=${offDock()}) + go_to_charge dispatched`);
-    } catch (err) {
-      console.error(`[reanchor] ${sn}: sequence failed`, err);
-    }
-  })();
+
+  if (action === 'spin') {
+    res.json({ ok: true, action, message: 'spinning ~360 to help acquire an RTK fix' });
+    (async () => {
+      const SPIN_MST = [50, 0, 8]; // x_w=+0.50 (rotate right), y_v=0
+      try {
+        publishToDevice(sn, { start_move: 2 }); // 2 = rotate right
+        await sleep(300);
+        const started = Date.now();
+        let tick = 0;
+        while (Date.now() - started < 11000) {
+          publishToDevice(sn, { mst: SPIN_MST });
+          tick++;
+          if (tick % 5 === 0) publishToDevice(sn, { start_move: 2 });
+          await sleep(150);
+        }
+        publishToDevice(sn, { stop_move: null });
+        console.log(`[reanchor] ${sn}: 360 spin done`);
+      } catch (err) { console.error(`[reanchor] ${sn}: spin failed`, err); }
+    })();
+    return;
+  }
+
+  if (action === 'dock') {
+    res.json({ ok: true, action, message: 'docking via go_to_charge (ArUco snap); frame_unvalidated clears on re-dock' });
+    (async () => {
+      try {
+        publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
+        await sleep(500);
+        publishToDevice(sn, { go_to_charge: {} }, { bypassFrameGuard: true });
+        console.log(`[reanchor] ${sn}: quit_mapping + go_to_charge dispatched`);
+      } catch (err) { console.error(`[reanchor] ${sn}: dock failed`, err); }
+    })();
+    return;
+  }
+
+  res.status(400).json({ ok: false, error: `unknown action '${action}'` });
 });
 
 dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {

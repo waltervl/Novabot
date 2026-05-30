@@ -353,14 +353,18 @@ export class ApiClient {
     );
   }
 
-  /** Trigger the guided post-restore re-anchor: server drives the mower ~1m
-   * off the dock then go_to_charge, so the ArUco redock snap realigns the
-   * frame. Requires the mower to be on the dock (server returns 409 if not). */
-  async reanchor(sn: string): Promise<{ ok: boolean; error?: string; message?: string }> {
+  /** Guided post-restore re-anchor steps:
+   * - 'drive' (on the dock): quit mapping + drive ~1m off the dock.
+   * - 'spin': rotate ~360 to help acquire an RTK fix.
+   * - 'dock': quit mapping + go_to_charge (ArUco snap re-anchors the frame). */
+  async reanchor(
+    sn: string,
+    action: 'drive' | 'spin' | 'dock' = 'drive',
+  ): Promise<{ ok: boolean; error?: string; message?: string }> {
     return this.request<{ ok: boolean; error?: string; message?: string }>(
       'POST',
       `/api/dashboard/reanchor/${encodeURIComponent(sn)}`,
-      { body: {} },
+      { body: { action } },
     );
   }
 
