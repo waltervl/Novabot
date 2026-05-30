@@ -1922,23 +1922,35 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   // { x_w: 0.2, y_v: 0 } object form commanded a TURN (diagonal), not back.
   (async () => {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const BACK_MST = [0, -20, 8]; // x_w=0 (straight), y_v=-0.20 (backward)
+    // y_v = -0.50 (moderate backward). mst -20 sat at the firmware deadband and
+    // barely moved (~5cm); the joystick uses up to -100 at full back. Drive
+    // UNTIL the mower actually leaves the dock (recharge_status leaves 9 /
+    // battery no longer CHARGING) so the distance self-regulates regardless of
+    // the exact speed mapping; min 4s (clear the dock despite ~2s sensor
+    // latency), hard cap 12s.
+    const BACK_MST = [0, -50, 8];
+    const offDock = () => {
+      const s = deviceCache.get(sn);
+      const b = (s?.get('battery_state') ?? '').toUpperCase();
+      const r = String(s?.get('recharge_status') ?? '');
+      return b !== 'CHARGING' && b !== 'FULL' && r !== '9' && r !== '1';
+    };
     try {
       publishToDevice(sn, { start_move: 4 }); // 4 = back direction
       await sleep(300);
-      const driveMs = 5000; // ~1m at 0.2 m/s
       const started = Date.now();
       let tick = 0;
-      while (Date.now() - started < driveMs) {
+      while (Date.now() - started < 12000) {
         publishToDevice(sn, { mst: BACK_MST });
         tick++;
         if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 }); // keepalive
         await sleep(150);
+        if (Date.now() - started > 4000 && offDock()) break;
       }
       publishToDevice(sn, { stop_move: null });
       await sleep(1500);
       publishToDevice(sn, { go_to_charge: {} }, { bypassFrameGuard: true });
-      console.log(`[reanchor] ${sn}: back ~1m (joystick-format) + go_to_charge dispatched`);
+      console.log(`[reanchor] ${sn}: drove back (off-dock=${offDock()}) + go_to_charge dispatched`);
     } catch (err) {
       console.error(`[reanchor] ${sn}: sequence failed`, err);
     }

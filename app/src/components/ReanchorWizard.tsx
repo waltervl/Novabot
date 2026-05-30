@@ -39,6 +39,17 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
   const moving = gnssSpeedRaw != null && parseFloat(String(gnssSpeedRaw)) > 0.1;
   const canReanchor = docked;
 
+  // Watchdog: if the docking step doesn't finish (server clears the flag) within
+  // ~2 min, return to intro with a message so the spinner never hangs forever.
+  useEffect(() => {
+    if (step !== 'docking') return;
+    const t = setTimeout(() => {
+      setErr('Re-ankeren duurde te lang of is niet gelukt. Controleer de dock en probeer opnieuw.');
+      setStep('intro');
+    }, 120000);
+    return () => clearTimeout(t);
+  }, [step]);
+
   async function reanchorNow() {
     if (!canReanchor) return;
     setErr(null);
