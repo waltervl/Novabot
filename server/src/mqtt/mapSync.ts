@@ -8,6 +8,9 @@
  * Responses worden geparsed en opgeslagen in de `maps` tabel.
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { execFileSync } from 'child_process';
 // aedes v1.0.0 has no main field — define compatible types locally
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Aedes = { publish: (packet: any, cb: (err?: Error | null) => void) => void; [key: string]: unknown };
@@ -848,5 +851,57 @@ function upsertMapMetadata(sn: string, mapId: string, meta: Record<string, unkno
   const existing = mapRepo.findById(mapId);
   if (!existing) {
     mapRepo.create({ map_id: mapId, mower_sn: sn, map_name: mapName || null });
+  }
+}
+
+const MAPS_STORAGE = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
+
+/**
+ * Patch the charging_pose inside `<sn>_latest.zip`'s map_info.json so the app's
+ * queryEquipmentMap (which sources the charger MARKER from this ZIP, not the DB
+ * polygon) immediately reflects a re-anchored charger pose. The mower's own
+ * map_info.json is rewritten by the `recalibrate_charging_pose` extended command;
+ * this keeps the server-cached ZIP in sync without waiting for a full re-upload.
+ * Updates both csv_file/ and x3_csv_file/ copies when present. Returns true if
+ * the ZIP existed and at least one map_info.json entry was patched.
+ */
+export function patchLatestZipChargingPose(
+  sn: string,
+  pose: { x: number; y: number; orientation: number },
+): boolean {
+  // Path-traversal guard: `sn` becomes part of filesystem paths below. Restrict
+  // it to safe serial-number characters (no `.` or `/`) so it cannot escape
+  // MAPS_STORAGE. Real SNs are like "LFIN2230700238".
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(sn)) {
+    console.warn(`[reanchor] patchLatestZipChargingPose: rejecting unsafe sn '${sn}'`);
+    return false;
+  }
+  const zipPath = path.join(MAPS_STORAGE, `${sn}_latest.zip`);
+  if (!fs.existsSync(zipPath)) return false;
+  const tmpDir = path.join(MAPS_STORAGE, `tmp_chgpose_${sn}_${process.pid}`);
+  try {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    let patched = false;
+    for (const entry of ['csv_file/map_info.json', 'x3_csv_file/map_info.json']) {
+      try {
+        // execFileSync (no shell) — zipPath/entry never reach a shell, so an SN
+        // with shell metacharacters cannot inject commands.
+        execFileSync('unzip', ['-o', '-q', zipPath, entry, '-d', tmpDir], { stdio: 'ignore' });
+      } catch { continue; } // entry not in this ZIP
+      const infoPath = path.join(tmpDir, entry);
+      if (!fs.existsSync(infoPath)) continue;
+      const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+      info.charging_pose = { x: pose.x, y: pose.y, orientation: pose.orientation };
+      fs.writeFileSync(infoPath, JSON.stringify(info, null, 3) + '\n');
+      // `zip <existing> <entry>` (cwd = tmpDir) replaces just that entry in place.
+      execFileSync('zip', ['-q', zipPath, entry], { cwd: tmpDir, stdio: 'ignore' });
+      patched = true;
+    }
+    return patched;
+  } catch (err) {
+    console.error(`[reanchor] ${sn}: latest-zip charging_pose patch failed`, err);
+    return false;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }

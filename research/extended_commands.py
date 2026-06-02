@@ -3454,6 +3454,97 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
     t.start()
 
 
+# ── charging_station.yaml guard ───────────────────────────────────────────────
+# Stock novabot_mapping's MapGenerator::saveMap(type:1) reads
+#   <mapdir>/charging_station_file/charging_station.yaml
+# via an UNGUARDED  YAML::LoadFile(...)["charging_pose"].as<std::vector<double>>()
+# (Ghidra @0x4275). If that file is missing/malformed, yaml-cpp throws
+# YAML::InvalidNode and the whole node terminates -> the app sees Error 140 (then
+# 120) right after an obstacle / multi-map save. The sibling writeCharingPose
+# guards the IDENTICAL read with access() first; saveMap does not. So just keeping
+# the file present with a valid charging_pose makes the read succeed and the crash
+# disappears -- no binary patch. Corroborated by dont-wipe-charging-station-yaml.
+_CHG_POSE_RE = re.compile(r"charging_pose\s*:\s*\[([^\]]+)\]")
+
+
+def _charging_pose_yaml_ok(path):
+    """True if `path` holds charging_pose as a list of >= 2 numbers."""
+    try:
+        with open(path) as f:
+            m = _CHG_POSE_RE.search(f.read())
+    except OSError:
+        return False
+    if not m:
+        return False
+    try:
+        return len([float(x) for x in m.group(1).split(",")]) >= 2
+    except ValueError:
+        return False
+
+
+def _charging_pose_source(base):
+    """YAML content for charging_station.yaml, sourced from the recalibrate-written
+    <base>/charging_station.yaml (verbatim) or map_info.json's charging_pose. None
+    if no usable source exists yet."""
+    src = os.path.join(base, "charging_station.yaml")
+    if _charging_pose_yaml_ok(src):
+        try:
+            with open(src) as f:
+                return f.read()
+        except OSError:
+            pass
+    for sub in ("csv_file", "x3_csv_file"):
+        try:
+            with open(os.path.join(base, sub, "map_info.json")) as f:
+                cp = (json.load(f) or {}).get("charging_pose")
+            if isinstance(cp, dict) and "x" in cp and "y" in cp:
+                return "charging_pose: [%s, %s, %s]\n" % (
+                    cp["x"], cp["y"], cp.get("orientation", 0.0))
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return None
+
+
+def _ensure_charging_station_yaml():
+    maps_root = "/userdata/lfi/maps"
+    try:
+        # active map homes only (home0, home1, ...) — skip home0.bak.<ts> backups
+        homes = [d for d in os.listdir(maps_root) if d.startswith("home") and "." not in d]
+    except OSError:
+        return
+    for home in homes:
+        base = os.path.join(maps_root, home)
+        target = os.path.join(base, "charging_station_file", "charging_station.yaml")
+        if _charging_pose_yaml_ok(target):
+            continue
+        content = _charging_pose_source(base)
+        if content is None:
+            continue
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tmp = target + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(content)
+            os.replace(tmp, target)
+            log("[chg-guard] (re)created %s" % target)
+        except OSError as ex:
+            log("[chg-guard] write failed %s: %s" % (target, ex))
+
+
+def start_charging_station_guard():
+    """Background guard: keep charging_station_file/charging_station.yaml present so
+    stock save_map type:1 can never crash on a missing file (Error 140)."""
+    def _loop():
+        while True:
+            try:
+                _ensure_charging_station_yaml()
+            except Exception as ex:
+                log("[chg-guard] loop error: %s" % ex)
+            time.sleep(5)
+    threading.Thread(target=_loop, daemon=True, name="charging-station-guard").start()
+    log("[chg-guard] started — ensures charging_station.yaml for save_map type:1")
+
+
 def start_rtk_telemetry_relay(sn, mqtt_ref):
     """Spin up a daemon node that bridges GNSS + localization state -> MQTT.
 
@@ -3647,6 +3738,12 @@ def main():
     # Subscribes to /bestpos_parsed_data (novabot_msgs/BestPos) and publishes
     # {rtk_fix_quality, rtk_sat} to novabot/sensor/<SN>.
     start_rtk_telemetry_relay(sn, mqtt_ref)
+
+    # Keep charging_station.yaml present so stock save_map type:1 never crashes
+    # (Error 140) on a missing file — see start_charging_station_guard().
+    # (Test 2026-06-02 confirmed the guard does NOT block the re-anchor write —
+    # save_recharge_pos writes nothing whether the file is present or absent.)
+    start_charging_station_guard()
 
     def respond(cmd_name, data):
         """Publiceer een response naar de server."""

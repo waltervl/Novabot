@@ -4411,6 +4411,17 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
         ctx.fillStyle = '#888';
         ctx.font = '10px system-ui';
         ctx.fillText(area.toFixed(1) + ' m\\u00B2', tx(cx), ty(cy) + 10);
+      } else if (isUnicom && pts.length >= 2) {
+        // Channels (unicom) are polylines, not polygons — show their length in
+        // meters instead of an area (mapArea is in local meters).
+        var ulen = 0;
+        for (var j = 1; j < pts.length; j++) {
+          var udx = pts[j].x - pts[j - 1].x, udy = pts[j].y - pts[j - 1].y;
+          ulen += Math.sqrt(udx * udx + udy * udy);
+        }
+        ctx.fillStyle = '#888';
+        ctx.font = '10px system-ui';
+        ctx.fillText(ulen.toFixed(1) + ' m', tx(cx), ty(cy) + 10);
       }
     }
   }
@@ -4523,7 +4534,13 @@ function renderMapList(container, maps, sn) {
       area = Math.abs(area) / 2;
       areaStr = ' (' + area.toFixed(1) + ' m\\u00B2)';
     } else if (type === 'unicom' && m.mapArea) {
-      areaStr = ' (' + m.mapArea.length + ' pts)';
+      // Channels are polylines — show length in meters (mapArea is local meters) + point count.
+      var ulen = 0;
+      for (var j = 1; j < m.mapArea.length; j++) {
+        var udx = m.mapArea[j].x - m.mapArea[j - 1].x, udy = m.mapArea[j].y - m.mapArea[j - 1].y;
+        ulen += Math.sqrt(udx * udx + udy * udy);
+      }
+      areaStr = ' (' + ulen.toFixed(1) + ' m, ' + m.mapArea.length + ' pts)';
     }
     html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;'
       + 'background:rgba(255,255,255,.03);border-radius:6px;margin-bottom:4px">'

@@ -18,7 +18,7 @@ import {
 import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGpsTrail, getLocalTrail, clearLocalTrail, deviceCache, translateValue, markPinVerified, getDockPose } from '../mqtt/sensorData.js';
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
-import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum } from '../mqtt/mapSync.js';
+import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
 import { isFrameUnvalidated } from '../services/frameValidation.js';
 import crypto from 'crypto';
 import { generateMapZipFromDb, gpsToLocal, localToGps, parseMapZip, type GpsPoint, type LocalPoint } from '../mqtt/mapConverter.js';
@@ -1474,27 +1474,26 @@ dashboardRouter.post('/maps/:sn/calibrate-charger', (req: Request, res: Response
   res.json({ ok: true });
 });
 
-// POST /api/dashboard/maps/:sn/recalibrate-charging-pose — overschrijf
-// map_info.json charging_pose met de huidige gerapporteerde mower pose.
-// Gebruik scenario: na ZIP-restore of post-heading-discovery blijkt het
-// map-frame gedraaid/verschoven t.o.v. de fysieke charger. Mower duwt
-// fysiek op dock, battery_state == CHARGING, dan triggert user dit endpoint.
-// Server leest de laatste x/y/theta uit de sensor cache en stuurt
-// extended_command `recalibrate_charging_pose` met die waarden. De mower
-// schrijft het naar csv_file/ én x3_csv_file/ map_info.json.
-dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request, res: Response) => {
-  const { sn } = req.params;
-  const { force } = req.body as { force?: boolean };
-
+// Re-anchor the charger pose from the mower's live localization. Reads the
+// latest map_position from the sensor cache, validates it hard (no 0/0/0, no
+// bad localization state, no report_state_robot x==y bug), pushes
+// `recalibrate_charging_pose` to the mower (rewrites map_info.json in csv_file/
+// + x3_csv_file/), and on success ALSO patches the server's `<sn>_latest.zip`
+// map_info.json + persists the theta. The ZIP patch is essential: the app's
+// queryEquipmentMap sources the charger MARKER from that ZIP, not the DB, so
+// without it the app keeps drawing the stale charger after recalibration.
+// Shared by the operator endpoint and the re-anchor 'dock' action.
+async function recalibrateChargingPoseFromCache(
+  sn: string,
+  opts: { force?: boolean },
+): Promise<{ ok: boolean; httpStatus: number; body: Record<string, unknown>; pose?: { x: number; y: number; theta: number } }> {
   if (!isDeviceOnline(sn)) {
-    res.status(404).json({ ok: false, error: 'Device is offline' });
-    return;
+    return { ok: false, httpStatus: 404, body: { ok: false, error: 'Device is offline' } };
   }
 
   const sensors = deviceCache.get(sn);
   if (!sensors) {
-    res.status(404).json({ ok: false, error: 'No sensor data cached for this mower' });
-    return;
+    return { ok: false, httpStatus: 404, body: { ok: false, error: 'No sensor data cached for this mower' } };
   }
 
   // CRITICAL — use `map_position_*` from report_state_timer_data, NOT
@@ -1507,18 +1506,16 @@ dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request,
   const yRaw = sensors.get('map_position_y');
   const thetaRaw = sensors.get('map_position_orientation');
   if (xRaw == null || yRaw == null || thetaRaw == null) {
-    res.status(400).json({
+    return { ok: false, httpStatus: 400, body: {
       ok: false,
       error: 'Mower map_position not yet reported — need a report_state_timer_data message first. Try again in ~5s.',
-    });
-    return;
+    } };
   }
   const x = Number(xRaw);
   const y = Number(yRaw);
   const theta = Number(thetaRaw);
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(theta)) {
-    res.status(400).json({ ok: false, error: `Invalid pose: x=${xRaw} y=${yRaw} theta=${thetaRaw}` });
-    return;
+    return { ok: false, httpStatus: 400, body: { ok: false, error: `Invalid pose: x=${xRaw} y=${yRaw} theta=${thetaRaw}` } };
   }
 
   // Critical — refuse (0, 0, 0). Stock firmware reports map_position as
@@ -1528,12 +1525,11 @@ dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request,
   //   sensors{ localization_state: "Not initialized", map_position_*: 0 }
   // Reproduced 2026-05-02 on LFIN1231000211.
   if (x === 0 && y === 0 && theta === 0) {
-    res.status(400).json({
+    return { ok: false, httpStatus: 400, body: {
       ok: false,
       error: 'Mower reported (0, 0, 0) — placeholder for uninitialized localization. Drive the mower a short distance off the dock so localization initializes (heading discovery), let it return to dock, then retry.',
       hint: 'Stock firmware needs a drive-back cycle before localization is valid. While docked at boot, map_position is always zero.',
-    });
-    return;
+    } };
   }
 
   // Hard guard on localization state — refuse known-bad states. Stock
@@ -1546,34 +1542,31 @@ dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request,
   const locState = (sensors.get('localization_state') ?? '').toString();
   const locBad = /^(not[ _]?initialized|initializing|lost|failed|error)$/i.test(locState) || locState === '';
   if (locBad) {
-    res.status(400).json({
+    return { ok: false, httpStatus: 400, body: {
       ok: false,
       error: `Mower localization is "${locState || 'unknown'}". Pose values are not trustworthy yet. Drive the mower briefly off the dock, return, then retry.`,
       localization_state: locState,
-    });
-    return;
+    } };
   }
 
   // Defensive: if somehow x and y are bit-identical the caller hit the
   // report_state_robot bug upstream. Refuse the write.
   if (xRaw === yRaw && x !== 0) {
-    res.status(400).json({
+    return { ok: false, httpStatus: 400, body: {
       ok: false,
       error: `Suspicious pose — x and y are exactly equal (${x}). Mower firmware is reporting bogus localization. Wait for a fresh timer_data update and retry.`,
-    });
-    return;
+    } };
   }
 
-  // Safety: user must confirm by passing force=true OR mower must be docked.
+  // Safety: caller must confirm by passing force=true OR mower must be docked.
   const batteryState = (sensors.get('battery_state') ?? '').toUpperCase();
-  const onDock = batteryState === 'CHARGING';
-  if (!onDock && !force) {
-    res.status(400).json({
+  const onDockNow = batteryState === 'CHARGING';
+  if (!onDockNow && !opts.force) {
+    return { ok: false, httpStatus: 400, body: {
       ok: false,
       error: `Battery state is '${batteryState}', not CHARGING. Put mower on dock first, or POST with {"force": true} to override.`,
       batteryState,
-    });
-    return;
+    } };
   }
 
   // Wire up extended-response listener BEFORE publishing to avoid race.
@@ -1601,20 +1594,44 @@ dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request,
 
   console.log(`[CALIBRATE-POSE] ${sn}: x=${x} y=${y} theta=${theta} result=${JSON.stringify(result)}`);
   if (result.timeout) {
-    res.status(504).json({ ok: false, error: 'Mower did not respond within 8s', pose: { x, y, theta } });
-    return;
+    return { ok: false, httpStatus: 504, body: { ok: false, error: 'Mower did not respond within 8s', pose: { x, y, theta } }, pose: { x, y, theta } };
   }
 
-  // Persist the operator-confirmed theta so subsequent sync_map / regenerate
-  // calls do NOT clobber the mower yaml with a freshly-drifted live IMU
-  // reading. Without this, getPolygonAnchor falls back to the live sensor
-  // value, which differs by tens of degrees on every reboot / drive cycle
-  // and makes the mower miss the dock or drive into off-polygon obstacles.
+  let zipPatched = false;
   if (result.ok) {
+    // Persist the operator-confirmed theta so subsequent sync_map / regenerate
+    // calls do NOT clobber the mower yaml with a freshly-drifted live IMU
+    // reading. Without this, getPolygonAnchor falls back to the live sensor
+    // value, which differs by tens of degrees on every reboot / drive cycle
+    // and makes the mower miss the dock or drive into off-polygon obstacles.
     mapRepo.setPolygonChargingOrientation(sn, theta);
+    // Sync the app-facing charger marker (read from `<sn>_latest.zip`, not the
+    // DB polygon) so queryEquipmentMap immediately reflects the re-anchor.
+    zipPatched = patchLatestZipChargingPose(sn, { x, y, orientation: theta });
+    console.log(`[CALIBRATE-POSE] ${sn}: latest-zip charging_pose patched=${zipPatched}`);
   }
 
-  res.json({ ok: result.ok, pose: { x, y, theta }, respond: result.respond });
+  return {
+    ok: result.ok,
+    httpStatus: 200,
+    body: { ok: result.ok, pose: { x, y, theta }, zipPatched, respond: result.respond },
+    pose: { x, y, theta },
+  };
+}
+
+// POST /api/dashboard/maps/:sn/recalibrate-charging-pose — overschrijf
+// map_info.json charging_pose met de huidige gerapporteerde mower pose.
+// Gebruik scenario: na ZIP-restore of post-heading-discovery blijkt het
+// map-frame gedraaid/verschoven t.o.v. de fysieke charger. Mower duwt
+// fysiek op dock, battery_state == CHARGING, dan triggert user dit endpoint.
+// Server leest de laatste x/y/theta uit de sensor cache en stuurt
+// extended_command `recalibrate_charging_pose` met die waarden. De mower
+// schrijft het naar csv_file/ én x3_csv_file/ map_info.json.
+dashboardRouter.post('/maps/:sn/recalibrate-charging-pose', async (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const { force } = req.body as { force?: boolean };
+  const out = await recalibrateChargingPoseFromCache(sn, { force: force === true });
+  res.status(out.httpStatus).json(out.body);
 });
 
 // POST /api/dashboard/maps/:sn/import-zip — importeer kaarten uit een Novabot ZIP
@@ -1887,13 +1904,27 @@ dashboardRouter.get('/demo/:sn', (req: Request, res: Response) => {
 //    back off the dock. The app then waits for an RTK fix (offering 'spin' or
 //    the joystick) before docking.
 //  - 'spin': rotate ~360 in place to help localization acquire an RTK fix.
-//  - 'dock': quit mapping mode + go_to_charge (guide-pose mode + ArUco snap)
-//    which realigns the local frame to charging_station.yaml and clears
-//    frame_unvalidated on the re-dock.
-// go_to_charge guide-pose mode is rejected by the firmware while in MAPPING
-// mode ("guide pose mode only support no mapping mode"), so we quit_mapping_mode
-// first. It also bypasses the frame-nav guard since it IS the deliberate
-// re-anchor. Movement uses the exact joystick mst List format
+//  - 'dock': quit mapping mode + auto_recharge (the LOCAL visual ArUco dock the
+//    mower does right after mapping — homes on the charger's ArUco/QR marker
+//    nearby, WITHOUT a map-frame guide pose). The docked report (recharge_status
+//    9) then clears frame_unvalidated via noteDockState.
+// What actually re-anchors the frame (Ghidra + live-verified, see
+// research/documents/reanchor-polygon-charging-pose-diagnosis.md): localization is
+// GPS/RTK only (no ArUco input), and the UTM origin is RE-DERIVED from GPS on a
+// re-init when the rover has a CLEAN RTK Fixed. The drive-off + wait-for-Fixed is
+// what supplies that clean Fixed; the localization then re-locks with a correct
+// origin and the docked position naturally matches the canonical charger pose.
+// We deliberately do NOT recalibrate the charging_pose from the live docked
+// position here: that bakes a wrong pose into the marker whenever the frame is
+// bad (e.g. the rover is on RTK Float, which LFIN2230700238 hits while charging).
+// The standalone POST /maps/:sn/recalibrate-charging-pose remains for explicit
+// operator use when the rover is confirmed Fixed.
+// We deliberately do NOT use go_to_charge here: its guide-pose mode GPS-navigates
+// to where the still-unvalidated map frame *thinks* the charger is — exactly the
+// frame the re-anchor is fixing — so it drives to the wrong spot (user-confirmed).
+// auto_recharge is purely visual. quit_mapping_mode first so the dock isn't
+// rejected in MAPPING mode; publishToDevice arms the frame_unvalidated clear on
+// auto_recharge. Movement (drive) uses the exact joystick mst List format
 // [x_w*100, y_v*100, 8] (x_w angular, y_v linear) + start_move keepalive.
 dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
@@ -1962,13 +1993,27 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   }
 
   if (action === 'dock') {
-    res.json({ ok: true, action, message: 'docking via go_to_charge (ArUco snap); frame_unvalidated clears on re-dock' });
+    res.json({ ok: true, action, message: 'visual ArUco dock via auto_recharge; the docked report clears frame_unvalidated' });
     (async () => {
       try {
         publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
         await sleep(500);
-        publishToDevice(sn, { go_to_charge: {} }, { bypassFrameGuard: true });
-        console.log(`[reanchor] ${sn}: quit_mapping + go_to_charge dispatched`);
+        // auto_recharge = the local visual ArUco dock (same as post-mapping), NOT
+        // go_to_charge — see the route comment above. Purely visual: it homes on
+        // the charger's QR/ArUco marker nearby instead of GPS-navigating to the
+        // (wrong, unvalidated) map-frame charger pose.
+        publishToDevice(sn, { auto_recharge: { cmd_num: getNextCmdNum(sn) } });
+        console.log(`[reanchor] ${sn}: quit_mapping + auto_recharge (visual ArUco dock) dispatched`);
+        // The docked report (recharge_status 9) clears frame_unvalidated via
+        // noteDockState (armed by auto_recharge). We intentionally do NOT
+        // recalibrate the charging_pose here: the real re-anchor is the
+        // localization re-deriving its UTM origin on a CLEAN RTK Fixed (the
+        // drive-off + wait-for-Fixed), after which the docked position naturally
+        // matches the canonical charger pose. Writing charging_pose from the live
+        // docked map_position is unsafe — if the frame is bad (e.g. the rover is
+        // on RTK Float, which happens while charging on LFIN2230700238), it bakes
+        // a ~2 m-off pose into the marker. See
+        // research/documents/reanchor-polygon-charging-pose-diagnosis.md.
       } catch (err) { console.error(`[reanchor] ${sn}: dock failed`, err); }
     })();
     return;
