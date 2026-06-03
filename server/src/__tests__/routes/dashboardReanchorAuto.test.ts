@@ -84,6 +84,12 @@ vi.mock('../../services/demoSimulator.js', () => ({
 
 vi.mock('../../mqtt/sensorData.js', () => ({
   deviceCache: new Map<string, Map<string, string>>(),
+  // Faithful enough for the re-anchor gate: maps the raw GGA quality code to
+  // the display label (4 = RTK Fixed, 5 = RTK Float), passthrough otherwise.
+  translateValue: (field: string, raw: string) =>
+    field === 'rtk_fix_quality'
+      ? ({ '0': 'No fix', '1': 'GPS', '2': 'DGPS', '4': 'RTK Fixed', '5': 'RTK Float' } as Record<string, string>)[raw] ?? raw
+      : raw,
 }));
 
 import { dashboardRouter } from '../../routes/dashboard.js';
@@ -102,7 +108,10 @@ function setCache(fields: Record<string, string>): void {
 
 const DOCKED_FIXED = {
   battery_state: 'CHARGING',
-  rtk_fix_quality: 'RTK Fixed',
+  // deviceCache holds the RAW relay value: GGA quality code 4 = RTK Fixed (NOT
+  // the display label). The gate must translate before comparing — regression
+  // for the always-409 bug where it compared '4' === 'RTK Fixed'.
+  rtk_fix_quality: '4',
   latitude: '52.1234567', // live RTK position is cached under 'latitude'/'longitude'
   longitude: '4.7654321',
   map_position_x: '0.05',
@@ -132,12 +141,26 @@ describe('POST /reanchor/:sn action:auto — precondition gates', () => {
     expect(r.body.error).toMatch(/on the dock/i);
   });
 
-  it('409 when on the dock but not RTK Fixed', async () => {
+  it('409 when on the dock but not RTK Fixed (raw code 5 = Float)', async () => {
     markFrameUnvalidated(SN);
-    setCache({ ...DOCKED_FIXED, rtk_fix_quality: 'RTK Float' });
+    setCache({ ...DOCKED_FIXED, rtk_fix_quality: '5' }); // 5 = RTK Float
     const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'auto' });
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/Fixed/i);
+  });
+
+  it('accepts the translated label too (RTK Fixed string passthrough)', async () => {
+    vi.useFakeTimers();
+    try {
+      markFrameUnvalidated(SN);
+      setCache({ ...DOCKED_FIXED, rtk_fix_quality: 'RTK Fixed' });
+      const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'auto' });
+      expect(r.status).toBe(200);
+      await vi.advanceTimersByTimeAsync(50);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('200 + starts when on the dock and RTK Fixed; status goes to check', async () => {

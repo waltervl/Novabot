@@ -1954,9 +1954,12 @@ function reanchorRtkFixed(sn: string): boolean {
   const s = deviceCache.get(sn);
   const fq = s?.get('rtk_fix_quality');
   const rtk = s?.get('rtk');
-  // When the LoRa relay publishes a quality string, require a real Fixed.
-  // Mowers without the relay only expose the rtk bool, so accept that as fallback.
-  if (fq != null && fq !== '') return fq === 'RTK Fixed';
+  // deviceCache stores the RAW relay value: the GGA quality code (4 = RTK
+  // Fixed, 5 = RTK Float), not the display label. translateValue maps it to
+  // the same 'RTK Fixed' string the app shows, so compare on the translated
+  // value (translateValue is a passthrough if it's already a label). Mowers
+  // without the LoRa relay only expose the rtk bool, so accept that as fallback.
+  if (fq != null && fq !== '') return translateValue('rtk_fix_quality', fq) === 'RTK Fixed';
   return rtk === 'true';
 }
 function reanchorMapPos(sn: string): { x: number; y: number } {
