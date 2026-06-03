@@ -27,6 +27,18 @@ export interface CommandResult {
   error?: string;
 }
 
+/** Progress of the server-orchestrated auto re-anchor (Novabot-cq3). */
+export type ReanchorPhase =
+  | 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'dock' | 'verify' | 'done' | 'error';
+export interface ReanchorStatus {
+  phase: ReanchorPhase;
+  message: string;
+  ok?: boolean;
+  error?: string;
+  pose?: { x: number; y: number };
+  ts: number;
+}
+
 export interface LocalPoint { x: number; y: number }
 
 export interface MapData {
@@ -353,19 +365,32 @@ export class ApiClient {
     );
   }
 
-  /** Guided post-restore re-anchor steps:
-   * - 'drive' (on the dock): quit mapping + drive ~1m off the dock.
-   * - 'spin': rotate ~360 to help acquire an RTK fix.
-   * - 'dock': quit mapping + go_to_charge (ArUco snap re-anchors the frame). */
+  /** Post-restore re-anchor (server-orchestrated):
+   * - 'auto' (default): the whole sequence — reanchor_pos with the docked Fixed
+   *   GPS, drive ~1m back to re-lock, visual ArUco dock, then self-verify the
+   *   docked position is on the origin before clearing frame_unvalidated. Poll
+   *   getReanchorStatus() for progress.
+   * - 'verify': manual backup — re-check the docked position against the origin
+   *   alone (after the operator joysticked the mower back onto the dock).
+   * - 'drive'/'spin'/'dock': legacy single-step diagnostics. */
   async reanchor(
     sn: string,
-    action: 'drive' | 'spin' | 'dock' = 'drive',
+    action: 'auto' | 'verify' | 'drive' | 'spin' | 'dock' = 'auto',
   ): Promise<{ ok: boolean; error?: string; message?: string }> {
     return this.request<{ ok: boolean; error?: string; message?: string }>(
       'POST',
       `/api/dashboard/reanchor/${encodeURIComponent(sn)}`,
       { body: { action } },
     );
+  }
+
+  /** Auto re-anchor progress, polled by the re-anchor wizard. */
+  async getReanchorStatus(sn: string): Promise<ReanchorStatus> {
+    const r = await this.request<{ ok: boolean; status: ReanchorStatus }>(
+      'GET',
+      `/api/dashboard/reanchor/${encodeURIComponent(sn)}/status`,
+    );
+    return r.status;
   }
 
   async clearError(sn: string): Promise<{ ok: boolean }> {

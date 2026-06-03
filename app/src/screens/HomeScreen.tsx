@@ -2533,9 +2533,11 @@ export default function HomeScreen() {
       </ScrollView>
 
       {/* Post-restore re-anchor wizard: opened on demand from the banner (not
-          auto-blocking, so the app + other mowers stay usable). Walks position
-          50cm -> auto_recharge (pure ArUco). The server clears frame_unvalidated
-          on a successful dock. */}
+          auto-blocking, so the app + other mowers stay usable). One button runs
+          the server-orchestrated auto flow (reanchor_pos -> drive back -> re-lock
+          -> ArUco dock -> self-verify), with a manual joystick + verify backup.
+          The server clears frame_unvalidated only when the docked position lands
+          back on the origin. */}
       <ReanchorWizard
         visible={showReanchor}
         sn={mower.sn}
