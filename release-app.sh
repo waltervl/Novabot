@@ -18,6 +18,18 @@ set -e
 
 cd "$(dirname "$0")"
 
+# EAS --local on macOS fails when its build working dir sits behind a symlink
+# (the default temp dir resolves via /tmp -> /private/tmp). CMake/ninja then mix
+# the logical and physical paths and can't find react-native-worklets'
+# libworklets.so, failing with:
+#   ninja: error: '.../libworklets.so', needed by '.../libexpo-modules-core.so',
+#   missing and no known rule to make it
+# Pin the working dir to a real (non-symlinked) path under $HOME so the build is
+# reproducible regardless of the caller's TMPDIR. See reanimated#9151 / expo#42893.
+export EAS_LOCAL_BUILD_WORKINGDIR="${EAS_LOCAL_BUILD_WORKINGDIR:-$HOME/tmp/eas-build}"
+mkdir -p "$EAS_LOCAL_BUILD_WORKINGDIR"
+echo "EAS local build working dir: $EAS_LOCAL_BUILD_WORKINGDIR"
+
 VERSION=$(node -p "require('./app/app.json').expo.version")
 echo "Building APK for v${VERSION}..."
 
