@@ -73,6 +73,7 @@
           }
         }
       ],
+      "./plugins/withSerialNativeBuild",
       "expo-secure-store",
       "expo-localization",
       [
