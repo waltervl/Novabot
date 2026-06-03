@@ -2804,49 +2804,103 @@ def handle_calibration_drive(params, respond):
     t.start()
 
 
-def handle_reset_utm_origin(params, respond):
-    """Force a clean localization re-init via /reset_utm_origin_info.
+def handle_reanchor_pos(params, respond):
+    """Re-anchor the localization UTM origin to a given GPS — NO lock, NO restart.
 
-    NON-DESTRUCTIVE: the service (std_srvs/Empty, served by
-    robot_combination_localization) clears only the localization's UTM-origin /
-    lock state (initTaskData) so it re-derives the origin from GPS on the next
-    motion + clean RTK Fixed. It does NOT touch the map (CSV polygons,
-    charging_pose) — unlike the stock api_reset_map which wipes the map.
+    Writes /userdata/pos.json (utm_origin + wgs84_origin) = the supplied GPS
+    (the charger/dock location, captured while docked on RTK Fixed) and then
+    calls /load_utm_origin_info so the RUNNING localization re-reads it live.
+    Unlike the older set_pos_origin this does NOT chmod 0444 (no lock — the
+    stock firmware never locks pos.json, and with a reliable RTK the GPS-fix
+    derive is correct anyway) and does NOT restart the node.
 
-    Use case: post-restore re-anchor when the localization frame initialized on
-    a bad fix (e.g. RTK Float while charging on LFIN2230700238). After calling
-    this, drive the mower ~1m on a CONFIRMED RTK Fixed so it re-locks with a
-    correct origin; the docked position then matches the canonical charger pose.
+    pos.json's utm_origin is used by loadUtmOriginInfoCallback verbatim (it sets
+    the in-memory origin x/y directly), so we write a PRECISE UTM here, not a
+    coarse seed.
+
+    After this the localization goes "Not initialized"; drive ~1m on a CLEAN RTK
+    Fixed to re-lock, then the docked position lands on ~(0,0) = the charger.
     Full analysis: research/documents/reanchor-polygon-charging-pose-diagnosis.md
 
-    Off by default — only runs when explicitly invoked. The wizard does NOT call
-    this automatically yet; it is here so the post-restore flow can force the
-    re-init if the automatic GPS re-derive (loc-lost / map-load) does not fire.
+    Payload: {"lat": float, "lng": float}
     """
+    import json as _json, math as _math, os as _os
+    lat = params.get("lat")
+    lng = params.get("lng")
+    if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
+        respond("reanchor_pos_respond", {"result": 1, "error": "lat/lng required"})
+        return
+
+    # WGS84 -> UTM (Karney/Snyder, precise; validated to ~2mm vs stored origins)
+    def _g2u(lat_d, lon_d):
+        a = 6378137.0; f = 1 / 298.257223563; k0 = 0.9996
+        e2 = f * (2 - f); ep2 = e2 / (1 - e2)
+        zone = int((lon_d + 180) / 6) + 1
+        lon0 = _math.radians(6 * zone - 183)
+        latr = _math.radians(lat_d); lonr = _math.radians(lon_d)
+        N = a / _math.sqrt(1 - e2 * _math.sin(latr) ** 2)
+        T = _math.tan(latr) ** 2; C = ep2 * _math.cos(latr) ** 2
+        A = _math.cos(latr) * (lonr - lon0)
+        M = a * ((1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256) * latr
+                 - (3 * e2 / 8 + 3 * e2 ** 2 / 32 + 45 * e2 ** 3 / 1024) * _math.sin(2 * latr)
+                 + (15 * e2 ** 2 / 256 + 45 * e2 ** 3 / 1024) * _math.sin(4 * latr)
+                 - (35 * e2 ** 3 / 3072) * _math.sin(6 * latr))
+        x = k0 * N * (A + (1 - T + C) * A ** 3 / 6
+                      + (5 - 18 * T + T ** 2 + 72 * C - 58 * ep2) * A ** 5 / 120) + 500000.0
+        y = k0 * (M + N * _math.tan(latr) * (A ** 2 / 2
+                  + (5 - T + 9 * C + 4 * C ** 2) * A ** 4 / 24
+                  + (61 - 58 * T + T ** 2 + 600 * C - 330 * ep2) * A ** 6 / 720))
+        return zone, x, y
+
+    zone, x, y = _g2u(float(lat), float(lng))
+    ts = 0
     try:
-        result = ros2_run(
-            ["ros2", "service", "call", "/reset_utm_origin_info",
-             "std_srvs/srv/Empty", "'{}'"],
+        with open("/userdata/pos.json") as f:
+            ts = float(_json.load(f).get("time_stamp", 0))
+    except Exception:
+        pass
+    payload = {
+        "time_stamp": ts,
+        "utm_origin": {"utm_zone": zone, "x": x, "y": y, "z": 0},
+        "wgs84_origin": {"latitude": float(lat), "longitude": float(lng)},
+    }
+    try:
+        try:
+            _os.chmod("/userdata/pos.json", 0o644)  # unlock if a prior set_pos_origin locked it
+        except Exception:
+            pass
+        with open("/userdata/pos.json", "w") as f:
+            _json.dump(payload, f, indent=3)
+            f.write("\n")
+        # deliberately leave 0644 — no lock
+    except Exception as e:
+        respond("reanchor_pos_respond", {"result": 1, "error": f"write failed: {e}"})
+        return
+
+    try:
+        r = ros2_run(
+            ["ros2", "service", "call", "/load_utm_origin_info",
+             "localization_msgs/srv/LoadUtmOriginInfo", "'{utm_info_path: /userdata/pos.json}'"],
             timeout=15,
         )
-        ok = result.returncode == 0
-        log(f"reset_utm_origin: rc={result.returncode} out={result.stdout.strip()[:200]}")
-        respond("reset_utm_origin_respond", {
+        ok = r.returncode == 0 and ("result=True" in r.stdout or "Load success" in r.stdout)
+        log(f"reanchor_pos: utm=({x:.2f},{y:.2f}) zone={zone} load rc={r.returncode} out={r.stdout.strip()[:150]}")
+        respond("reanchor_pos_respond", {
             "result": 0 if ok else 1,
-            "stdout": result.stdout.strip()[:300],
-            "stderr": "" if ok else result.stderr.strip()[:200],
+            "utm_origin": {"x": x, "y": y, "utm_zone": zone},
+            "wgs84_origin": {"latitude": float(lat), "longitude": float(lng)},
+            "load_stdout": r.stdout.strip()[:250],
         })
     except subprocess.TimeoutExpired:
-        log("reset_utm_origin timeout")
-        respond("reset_utm_origin_respond", {"result": 1, "error": "timeout"})
+        respond("reanchor_pos_respond", {"result": 1, "error": "load_utm_origin_info timeout"})
     except Exception as e:
-        log(f"reset_utm_origin error: {e}")
-        respond("reset_utm_origin_respond", {"result": 1, "error": str(e)})
+        log(f"reanchor_pos load error: {e}")
+        respond("reanchor_pos_respond", {"result": 1, "error": f"load failed: {e}"})
 
 
 COMMANDS = {
     "is_opennova": handle_is_opennova,
-    "reset_utm_origin": handle_reset_utm_origin,
+    "reanchor_pos": handle_reanchor_pos,
     "set_robot_reboot": handle_reboot,
     "get_system_info": handle_system_info,
     "verify_pin": handle_verify_pin,
