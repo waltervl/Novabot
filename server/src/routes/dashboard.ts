@@ -2031,31 +2031,67 @@ async function runAutoReanchor(sn: string): Promise<void> {
       return;
     }
 
-    // 3. relock — drive ~1m straight back off the dock
+    // 3-4. relock — drive off the dock, then ESCALATE motion until the
+    // localization reaches RUNNING + Fixed. A single ~1m straight drive usually
+    // gives the GPS-track heading the localization needs, but live testing showed
+    // 1m is sometimes not enough (localization stays "Not initialized"). So if it
+    // does not lock we spin ~360 in place (no added distance, safe for the ArUco
+    // dock range) and then drive a little further, before falling back to the
+    // manual joystick. Each leg re-checks so we stop as soon as it locks.
+    const relockOk = () =>
+      (deviceCache.get(sn)?.get('localization_state') ?? '') === 'RUNNING' && reanchorRtkFixed(sn);
+    const pollRelock = (ms: number) => poll(relockOk, ms, 1500);
+    // Drive straight back. untilOffDock: stop as soon as the mower leaves the
+    // dock (first leg ≈ 1m); otherwise drive the full window (the extra leg).
+    const driveBack = async (ms: number, untilOffDock: boolean): Promise<void> => {
+      publishToDevice(sn, { start_move: 4 });
+      await sleep(300);
+      const t0 = Date.now();
+      let tick = 0;
+      while (Date.now() - t0 < ms) {
+        publishToDevice(sn, { mst: [0, -50, 8] }); // x_w=0 (straight), y_v=-0.50 (backward)
+        tick++;
+        if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 });
+        await sleep(150);
+        if (untilOffDock && Date.now() - t0 > 4000 && !reanchorOnDock(sn)) break;
+      }
+      publishToDevice(sn, { stop_move: null });
+    };
+    const spin360 = async (): Promise<void> => {
+      publishToDevice(sn, { start_move: 2 }); // 2 = rotate right in place
+      await sleep(300);
+      const t0 = Date.now();
+      let tick = 0;
+      while (Date.now() - t0 < 12000) { // ~360 deg at x_w 0.50
+        publishToDevice(sn, { mst: [50, 0, 8] }); // x_w=+0.50 (rotate), y_v=0
+        tick++;
+        if (tick % 5 === 0) publishToDevice(sn, { start_move: 2 });
+        await sleep(150);
+      }
+      publishToDevice(sn, { stop_move: null });
+    };
+
     setReanchor(sn, 'relock', 'Achteruit rijden om te re-locken...');
     publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
     await sleep(500);
-    publishToDevice(sn, { start_move: 4 });
-    await sleep(300);
-    const dStart = Date.now();
-    let tick = 0;
-    while (Date.now() - dStart < 12000) {
-      publishToDevice(sn, { mst: [0, -50, 8] }); // x_w=0 (straight), y_v=-0.50 (backward)
-      tick++;
-      if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 });
-      await sleep(150);
-      if (Date.now() - dStart > 4000 && !reanchorOnDock(sn)) break;
-    }
-    publishToDevice(sn, { stop_move: null });
+    await driveBack(12000, true);
 
-    // 4. wait re-lock — localization RUNNING + RTK Fixed against the new origin
     setReanchor(sn, 'wait', 'Wachten op re-lock (RUNNING + Fixed)...');
-    const relocked = await poll(
-      () => (deviceCache.get(sn)?.get('localization_state') ?? '') === 'RUNNING' && reanchorRtkFixed(sn),
-      45000, 2000,
-    );
-    if (!relocked) {
-      setReanchor(sn, 'error', 'Re-lock duurde te lang. Rij handmatig met de joystick terug naar de dock en druk Verifieer.', { error: 'relock_timeout' });
+    let isRelocked = await pollRelock(15000);
+    if (!isRelocked) {
+      setReanchor(sn, 'relock', 'Nog niet gelockt — de maaier draait 360 graden...');
+      await spin360();
+      setReanchor(sn, 'wait', 'Wachten op re-lock na draaien...');
+      isRelocked = await pollRelock(15000);
+    }
+    if (!isRelocked) {
+      setReanchor(sn, 'relock', 'Nog niet gelockt — nog een stukje achteruit...');
+      await driveBack(4000, false);
+      setReanchor(sn, 'wait', 'Wachten op re-lock na extra stukje...');
+      isRelocked = await pollRelock(20000);
+    }
+    if (!isRelocked) {
+      setReanchor(sn, 'error', 'Kon niet re-locken (geen RUNNING+Fixed) na rijden en draaien. Rij handmatig met de joystick terug naar de dock en druk Verifieer.', { error: 'relock_timeout' });
       return;
     }
 
