@@ -35,6 +35,7 @@ import { DemoBanner } from '../components/DemoBanner';
 import { useDemo } from '../context/DemoContext';
 import { useI18n } from '../i18n';
 import { isOpenNovaFirmware } from '../utils/firmwareCapability';
+import { fixQualityLabel } from '../utils/fixQuality';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const JOYSTICK_SIZE = Math.min(SCREEN_W * 0.65, 260);
@@ -486,6 +487,14 @@ export default function JoystickScreen() {
               <Text style={[styles.statusText, { color: colors.textMuted, marginLeft: 8 }]}>
                 {battery}%
               </Text>
+              {(() => {
+                const rtk = fixQualityLabel(mower.sensors?.rtk_fix_quality);
+                return (
+                  <Text style={[styles.statusText, { color: rtk.color, fontWeight: '700', marginLeft: 8 }]}>
+                    RTK: {rtk.label}
+                  </Text>
+                );
+              })()}
             </View>
           )}
         </View>
