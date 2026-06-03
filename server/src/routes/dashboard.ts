@@ -19,7 +19,7 @@ import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGp
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
-import { isFrameUnvalidated } from '../services/frameValidation.js';
+import { isFrameUnvalidated, clearFrameUnvalidated } from '../services/frameValidation.js';
 import crypto from 'crypto';
 import { generateMapZipFromDb, gpsToLocal, localToGps, parseMapZip, type GpsPoint, type LocalPoint } from '../mqtt/mapConverter.js';
 import { existsSync, unlinkSync, readFileSync, readdirSync, createReadStream, statSync, watch, mkdirSync, copyFileSync } from 'fs';
@@ -1898,37 +1898,200 @@ dashboardRouter.get('/demo/:sn', (req: Request, res: Response) => {
 // ── MQTT command publishing ─────────────────────────────────────
 
 // POST /api/dashboard/command/:sn — stuur een MQTT commando naar een apparaat
-// POST /api/dashboard/reanchor/:sn  body: { action?: 'drive' | 'spin' | 'dock' }
-// Guided post-restore re-anchor, split into steps the app drives:
-//  - 'drive' (default): from the dock, quit mapping mode + drive ~1m straight
-//    back off the dock. The app then waits for an RTK fix (offering 'spin' or
-//    the joystick) before docking.
-//  - 'spin': rotate ~360 in place to help localization acquire an RTK fix.
-//  - 'dock': quit mapping mode + auto_recharge (the LOCAL visual ArUco dock the
-//    mower does right after mapping — homes on the charger's ArUco/QR marker
-//    nearby, WITHOUT a map-frame guide pose). The docked report (recharge_status
-//    9) then clears frame_unvalidated via noteDockState.
-// What actually re-anchors the frame (Ghidra + live-verified, see
+// POST /api/dashboard/reanchor/:sn  body: { action?: 'auto' | 'verify' | 'drive' | 'spin' | 'dock' }
+// Post-restore re-anchor. After a bundle import the saved map frame no longer
+// agrees with the live UTM frame, so frame_unvalidated is set and nav is blocked
+// until the frame is re-anchored on the dock.
+//
+// 'auto' (the wizard's one-button path) orchestrates the whole sequence on the
+// server and reports progress via GET /reanchor/:sn/status:
+//   1. precheck      — mower must be on the dock (charging) AND on a real RTK Fixed
+//   2. reanchor_pos  — write /userdata/pos.json origin = the docked Fixed GPS
+//                      (precise WGS84->UTM, no lock) + /load_utm_origin_info live
+//                      (no localization restart). Sent over the extended channel.
+//   3. relock        — drive ~1m straight back so localization re-inits and
+//                      re-locks against the freshly loaded origin
+//   4. wait re-lock  — poll until localization RUNNING + RTK Fixed
+//   5. dock          — auto_recharge (visual ArUco dock, no map-frame guide pose)
+//   6. verify        — the docked map_position must land within ~0.4 m of the
+//                      origin; only then is frame_unvalidated cleared. Otherwise
+//                      the flag stays set and the wizard offers the manual backup.
+//
+// Manual backup (when re-lock or docking times out): the app keeps the joystick
+// available, and 'verify' re-runs step 6 alone after the operator has joysticked
+// the mower back onto the dock — clearing the flag only if it lands on the origin.
+//
+// Why this works (Ghidra + live-verified, see
 // research/documents/reanchor-polygon-charging-pose-diagnosis.md): localization is
-// GPS/RTK only (no ArUco input), and the UTM origin is RE-DERIVED from GPS on a
-// re-init when the rover has a CLEAN RTK Fixed. The drive-off + wait-for-Fixed is
-// what supplies that clean Fixed; the localization then re-locks with a correct
-// origin and the docked position naturally matches the canonical charger pose.
-// We deliberately do NOT recalibrate the charging_pose from the live docked
-// position here: that bakes a wrong pose into the marker whenever the frame is
-// bad (e.g. the rover is on RTK Float, which LFIN2230700238 hits while charging).
-// The standalone POST /maps/:sn/recalibrate-charging-pose remains for explicit
-// operator use when the rover is confirmed Fixed.
-// We deliberately do NOT use go_to_charge here: its guide-pose mode GPS-navigates
-// to where the still-unvalidated map frame *thinks* the charger is — exactly the
-// frame the re-anchor is fixing — so it drives to the wrong spot (user-confirmed).
-// auto_recharge is purely visual. quit_mapping_mode first so the dock isn't
-// rejected in MAPPING mode; publishToDevice arms the frame_unvalidated clear on
-// auto_recharge. Movement (drive) uses the exact joystick mst List format
-// [x_w*100, y_v*100, 8] (x_w angular, y_v linear) + start_move keepalive.
+// GPS/RTK only (no ArUco input). reanchor_pos sets the origin to the dock's GPS,
+// /load_utm_origin_info makes it authoritative, and the drive-off + wait-for-Fixed
+// makes localization re-lock against it, so the docked position matches the
+// canonical charger pose. We deliberately do NOT recalibrate the charging_pose
+// from the live docked position (that bakes a wrong pose in when the frame is bad,
+// e.g. RTK Float while charging), and do NOT use go_to_charge (it GPS-navigates to
+// where the still-unvalidated frame *thinks* the charger is). The legacy
+// 'drive' / 'spin' / 'dock' single-step actions remain for diagnostics.
+// Movement uses the exact joystick mst List format [x_w*100, y_v*100, 8]
+// (x_w angular, y_v linear) + start_move keepalive.
+
+// ── auto re-anchor progress (polled by the wizard) ──────────────
+type ReanchorPhase = 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'dock' | 'verify' | 'done' | 'error';
+interface ReanchorStat { phase: ReanchorPhase; message: string; ok?: boolean; error?: string; pose?: { x: number; y: number }; ts: number; }
+const reanchorStatus = new Map<string, ReanchorStat>();
+function setReanchor(sn: string, phase: ReanchorPhase, message: string, extra: Partial<ReanchorStat> = {}): void {
+  reanchorStatus.set(sn, { phase, message, ts: Date.now(), ...extra });
+  console.log(`[reanchor-auto] ${sn}: [${phase}] ${message}${extra.error ? ` (err=${extra.error})` : ''}`);
+}
+
+// Live readers off the device cache used by both the auto flow and verify.
+function reanchorOnDock(sn: string): boolean {
+  const s = deviceCache.get(sn);
+  const b = (s?.get('battery_state') ?? '').toUpperCase();
+  const r = String(s?.get('recharge_status') ?? '');
+  return b === 'CHARGING' || b === 'FULL' || r === '9' || r === '1';
+}
+function reanchorRtkFixed(sn: string): boolean {
+  const s = deviceCache.get(sn);
+  const fq = s?.get('rtk_fix_quality');
+  const rtk = s?.get('rtk');
+  // When the LoRa relay publishes a quality string, require a real Fixed.
+  // Mowers without the relay only expose the rtk bool, so accept that as fallback.
+  if (fq != null && fq !== '') return fq === 'RTK Fixed';
+  return rtk === 'true';
+}
+function reanchorMapPos(sn: string): { x: number; y: number } {
+  const s = deviceCache.get(sn);
+  return { x: parseFloat(s?.get('map_position_x') ?? 'NaN'), y: parseFloat(s?.get('map_position_y') ?? 'NaN') };
+}
+const REANCHOR_TOLERANCE_M = 0.4; // docked map_position must land this close to origin
+
+// Self-verify the docked frame: if map_position is within tolerance of the origin
+// the re-anchor took, clear frame_unvalidated; otherwise leave it set.
+function reanchorVerifyAndClear(sn: string): { ok: boolean; pose: { x: number; y: number }; dist: number } {
+  const pose = reanchorMapPos(sn);
+  const dist = Math.hypot(pose.x, pose.y);
+  const ok = Number.isFinite(dist) && dist <= REANCHOR_TOLERANCE_M;
+  if (ok) clearFrameUnvalidated(sn);
+  return { ok, pose, dist };
+}
+
+// Full server-side orchestration for action:'auto'. Fire-and-forget; the wizard
+// polls GET /reanchor/:sn/status. Each phase updates reanchorStatus.
+async function runAutoReanchor(sn: string): Promise<void> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const poll = async (cond: () => boolean, timeoutMs: number, stepMs = 2000): Promise<boolean> => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) { if (cond()) return true; await sleep(stepMs); }
+    return cond();
+  };
+  try {
+    // 1. precheck — on the dock + a real RTK Fixed
+    setReanchor(sn, 'check', 'Controle: maaier op de dock en RTK Fixed?');
+    if (!reanchorOnDock(sn)) {
+      setReanchor(sn, 'error', 'Maaier staat niet op de dock (laden). Dok hem eerst, dan opnieuw.', { error: 'not_docked' });
+      return;
+    }
+    if (!reanchorRtkFixed(sn)) {
+      setReanchor(sn, 'error', 'Nog geen RTK Fixed. Wacht tot de fix Fixed is en probeer opnieuw.', { error: 'not_fixed' });
+      return;
+    }
+
+    // 2. reanchor_pos — origin = the docked Fixed GPS, loaded live (no restart)
+    setReanchor(sn, 'anchor', 'Origin op de dock zetten (pos.json herschrijven)...');
+    // The live RTK position is cached under 'latitude'/'longitude' (set from the
+    // mower's location report). 'gps_latitude' is not populated in production but
+    // kept as a defensive fallback. When docked + Fixed this is the dock's WGS84,
+    // which the mower-side reanchor_pos converts to UTM for the new origin.
+    const s0 = deviceCache.get(sn);
+    const lat = parseFloat((s0?.get('latitude') ?? s0?.get('gps_latitude') ?? 'NaN'));
+    const lng = parseFloat((s0?.get('longitude') ?? s0?.get('gps_longitude') ?? 'NaN'));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      setReanchor(sn, 'error', 'Geen geldige GPS-coordinaten van de maaier.', { error: 'no_gps' });
+      return;
+    }
+    const { publishToExtended, onExtendedResponse, offExtendedResponse } = await import('../mqtt/mapSync.js');
+    const anchored = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const handler = (data: Record<string, unknown>): void => {
+        const resp = data.reanchor_pos_respond as { result?: number } | undefined;
+        if (!resp || settled) return;
+        settled = true;
+        offExtendedResponse(sn, handler);
+        resolve(resp.result === 0);
+      };
+      onExtendedResponse(sn, handler);
+      publishToExtended(sn, { reanchor_pos: { lat, lng } });
+      setTimeout(() => { if (!settled) { settled = true; offExtendedResponse(sn, handler); resolve(false); } }, 15000);
+    });
+    if (!anchored) {
+      setReanchor(sn, 'error', 'Origin schrijven faalde (geen of negatieve reactie van de maaier).', { error: 'reanchor_failed' });
+      return;
+    }
+
+    // 3. relock — drive ~1m straight back off the dock
+    setReanchor(sn, 'relock', 'Achteruit rijden om te re-locken...');
+    publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
+    await sleep(500);
+    publishToDevice(sn, { start_move: 4 });
+    await sleep(300);
+    const dStart = Date.now();
+    let tick = 0;
+    while (Date.now() - dStart < 12000) {
+      publishToDevice(sn, { mst: [0, -50, 8] }); // x_w=0 (straight), y_v=-0.50 (backward)
+      tick++;
+      if (tick % 5 === 0) publishToDevice(sn, { start_move: 4 });
+      await sleep(150);
+      if (Date.now() - dStart > 4000 && !reanchorOnDock(sn)) break;
+    }
+    publishToDevice(sn, { stop_move: null });
+
+    // 4. wait re-lock — localization RUNNING + RTK Fixed against the new origin
+    setReanchor(sn, 'wait', 'Wachten op re-lock (RUNNING + Fixed)...');
+    const relocked = await poll(
+      () => (deviceCache.get(sn)?.get('localization_state') ?? '') === 'RUNNING' && reanchorRtkFixed(sn),
+      45000, 2000,
+    );
+    if (!relocked) {
+      setReanchor(sn, 'error', 'Re-lock duurde te lang. Rij handmatig met de joystick terug naar de dock en druk Verifieer.', { error: 'relock_timeout' });
+      return;
+    }
+
+    // 5. dock — visual ArUco dock (no map-frame guide pose). suppressReanchorArm:
+    // the passive docked-report clear must not fire here — step 6's self-verify
+    // (docked map_position must land on the origin) is the sole authority.
+    setReanchor(sn, 'dock', 'Docken (visuele ArUco)...');
+    publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
+    await sleep(500);
+    publishToDevice(sn, { auto_recharge: { cmd_num: getNextCmdNum(sn) } }, { suppressReanchorArm: true });
+    const docked = await poll(() => reanchorOnDock(sn), 150000, 3000);
+    if (!docked) {
+      setReanchor(sn, 'error', 'Docken duurde te lang. Dok handmatig met de joystick en druk Verifieer.', { error: 'dock_timeout' });
+      return;
+    }
+
+    // 6. verify — docked map_position must land on the origin, else keep the flag
+    await sleep(4000); // let map_position settle after docking
+    setReanchor(sn, 'verify', 'Controle: gedockt op de origin?');
+    const v = reanchorVerifyAndClear(sn);
+    if (v.ok) {
+      setReanchor(sn, 'done', `Geslaagd. Gedockt op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m.`, { ok: true, pose: v.pose });
+    } else {
+      setReanchor(sn, 'error', `Buiten tolerantie: dock op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m, ${Number.isFinite(v.dist) ? v.dist.toFixed(2) : '?'} m van origin. Probeer opnieuw.`, { error: 'verify_failed', pose: v.pose });
+    }
+  } catch (err) {
+    setReanchor(sn, 'error', `Onverwachte fout: ${err instanceof Error ? err.message : String(err)}`, { error: 'exception' });
+  }
+}
+
+// GET /api/dashboard/reanchor/:sn/status — auto re-anchor progress for the wizard
+dashboardRouter.get('/reanchor/:sn/status', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  res.json({ ok: true, status: reanchorStatus.get(sn) ?? { phase: 'idle', message: '', ts: 0 } });
+});
+
 dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
-  const action = ((req.body as { action?: string })?.action) ?? 'drive';
+  const action = ((req.body as { action?: string })?.action) ?? 'auto';
   if (!isFrameUnvalidated(sn)) {
     res.status(409).json({ ok: false, error: 'frame is already validated; no re-anchor needed' });
     return;
@@ -1940,6 +2103,45 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
     const r = String(s?.get('recharge_status') ?? '');
     return b === 'CHARGING' || b === 'FULL' || r === '9' || r === '1';
   };
+
+  // 'auto' — the wizard's one-button path. Fire-and-forget; the wizard polls
+  // GET /reanchor/:sn/status for progress (see runAutoReanchor above).
+  if (action === 'auto') {
+    if (!onDock()) {
+      res.status(409).json({ ok: false, error: 'auto re-anchor must start with the mower on the dock (charging).' });
+      return;
+    }
+    if (!reanchorRtkFixed(sn)) {
+      res.status(409).json({ ok: false, error: 'auto re-anchor needs a real RTK Fixed; wait for the fix to go Fixed.' });
+      return;
+    }
+    setReanchor(sn, 'check', 'Re-anchor gestart...');
+    res.json({ ok: true, action, message: 'auto re-anchor started; poll GET /reanchor/:sn/status' });
+    void runAutoReanchor(sn);
+    return;
+  }
+
+  // 'verify' — manual backup. After the operator joysticks the mower back onto
+  // the dock, re-run the docked-on-origin check alone and clear the flag if it
+  // passes. Does not move the mower.
+  if (action === 'verify') {
+    res.json({ ok: true, action, message: 'verifying docked position against origin' });
+    (async () => {
+      setReanchor(sn, 'verify', 'Controle: gedockt op de origin?');
+      if (!onDock()) {
+        setReanchor(sn, 'error', 'Maaier staat niet op de dock. Dok hem eerst.', { error: 'not_docked' });
+        return;
+      }
+      await sleep(3000); // let map_position settle
+      const v = reanchorVerifyAndClear(sn);
+      if (v.ok) {
+        setReanchor(sn, 'done', `Geslaagd. Gedockt op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m.`, { ok: true, pose: v.pose });
+      } else {
+        setReanchor(sn, 'error', `Buiten tolerantie: dock op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m, ${Number.isFinite(v.dist) ? v.dist.toFixed(2) : '?'} m van origin.`, { error: 'verify_failed', pose: v.pose });
+      }
+    })();
+    return;
+  }
 
   if (action === 'drive') {
     if (!onDock()) {

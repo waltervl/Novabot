@@ -171,7 +171,7 @@ function isAesCapable(sn: string): boolean {
 export function publishToDevice(
   sn: string,
   command: Record<string, unknown>,
-  opts?: { bypassFrameGuard?: boolean },
+  opts?: { bypassFrameGuard?: boolean; suppressReanchorArm?: boolean },
 ): void {
   // Safety: while the map frame is unvalidated (post bundle-restore, pre
   // successful re-dock), go_to_charge / start_navigation navigate the wrong
@@ -187,7 +187,11 @@ export function publishToDevice(
   // Arm the re-anchor clear: a deliberate re-anchor dock (auto_recharge, or a
   // bypassed go_to_charge from the dock-cycle) is what re-validates the frame.
   // Only the docked report that follows clears frame_unvalidated.
-  if ('auto_recharge' in command || (opts?.bypassFrameGuard && 'go_to_charge' in command)) {
+  // EXCEPTION: the auto re-anchor flow passes suppressReanchorArm — it owns the
+  // clear itself via a position self-verify (docked map_position must land on the
+  // origin), so the passive docked-report clear must NOT race ahead of it and
+  // clear the flag on a wrong-position dock. See runAutoReanchor in dashboard.ts.
+  if (!opts?.suppressReanchorArm && ('auto_recharge' in command || (opts?.bypassFrameGuard && 'go_to_charge' in command))) {
     noteAutoRecharge(sn);
   }
 
