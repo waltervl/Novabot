@@ -504,6 +504,21 @@ function polygonAreaM2(points: Array<{ lat: number; lng: number }>): number {
   return Math.abs(area) / 2;
 }
 
+/** Length of a polyline in meters on GPS coords (for unicom channels) */
+function polylineLengthM(points: Array<{ lat: number; lng: number }>): number {
+  if (points.length < 2) return 0;
+  const MpD = 111320;
+  const centerLat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+  const cosLat = Math.cos(centerLat * Math.PI / 180);
+  let len = 0;
+  for (let i = 1; i < points.length; i++) {
+    const dx = (points[i].lng - points[i - 1].lng) * MpD * cosLat;
+    const dy = (points[i].lat - points[i - 1].lat) * MpD;
+    len += Math.sqrt(dx * dx + dy * dy);
+  }
+  return len;
+}
+
 // ── Click-to-place charger component ────────────────────────────
 function ChargerPlacer({ onPlace }: { onPlace: (lat: number, lng: number) => void }) {
   useMapEvents({
@@ -1955,6 +1970,10 @@ export function MowerMap({ sn, lat, lng, heading, signals, mowing, pathDirection
                 {(() => {
                   const area = polygonAreaM2(m.mapArea);
                   return area > 0 ? <span>{area.toFixed(0)} m&sup2;</span> : null;
+                })()}
+                {m.mapType === 'unicom' && (() => {
+                  const len = polylineLengthM(m.mapArea);
+                  return len > 0 ? <span>{len.toFixed(1)} m</span> : null;
                 })()}
                 {m.createdAt && (
                   <span>{new Date(m.createdAt).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
