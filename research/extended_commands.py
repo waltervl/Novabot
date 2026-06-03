@@ -2804,8 +2804,49 @@ def handle_calibration_drive(params, respond):
     t.start()
 
 
+def handle_reset_utm_origin(params, respond):
+    """Force a clean localization re-init via /reset_utm_origin_info.
+
+    NON-DESTRUCTIVE: the service (std_srvs/Empty, served by
+    robot_combination_localization) clears only the localization's UTM-origin /
+    lock state (initTaskData) so it re-derives the origin from GPS on the next
+    motion + clean RTK Fixed. It does NOT touch the map (CSV polygons,
+    charging_pose) — unlike the stock api_reset_map which wipes the map.
+
+    Use case: post-restore re-anchor when the localization frame initialized on
+    a bad fix (e.g. RTK Float while charging on LFIN2230700238). After calling
+    this, drive the mower ~1m on a CONFIRMED RTK Fixed so it re-locks with a
+    correct origin; the docked position then matches the canonical charger pose.
+    Full analysis: research/documents/reanchor-polygon-charging-pose-diagnosis.md
+
+    Off by default — only runs when explicitly invoked. The wizard does NOT call
+    this automatically yet; it is here so the post-restore flow can force the
+    re-init if the automatic GPS re-derive (loc-lost / map-load) does not fire.
+    """
+    try:
+        result = ros2_run(
+            ["ros2", "service", "call", "/reset_utm_origin_info",
+             "std_srvs/srv/Empty", "'{}'"],
+            timeout=15,
+        )
+        ok = result.returncode == 0
+        log(f"reset_utm_origin: rc={result.returncode} out={result.stdout.strip()[:200]}")
+        respond("reset_utm_origin_respond", {
+            "result": 0 if ok else 1,
+            "stdout": result.stdout.strip()[:300],
+            "stderr": "" if ok else result.stderr.strip()[:200],
+        })
+    except subprocess.TimeoutExpired:
+        log("reset_utm_origin timeout")
+        respond("reset_utm_origin_respond", {"result": 1, "error": "timeout"})
+    except Exception as e:
+        log(f"reset_utm_origin error: {e}")
+        respond("reset_utm_origin_respond", {"result": 1, "error": str(e)})
+
+
 COMMANDS = {
     "is_opennova": handle_is_opennova,
+    "reset_utm_origin": handle_reset_utm_origin,
     "set_robot_reboot": handle_reboot,
     "get_system_info": handle_system_info,
     "verify_pin": handle_verify_pin,
