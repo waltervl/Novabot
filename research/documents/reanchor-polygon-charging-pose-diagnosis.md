@@ -1,5 +1,20 @@
 # Re-anchor after ArUco dock — root cause + mechanism (2026-06-02)
 
+> **⚠️ SUPERSEDED — historical only. Authoritative doc: `docs/reference/REANCHOR.md`.**
+>
+> This was the FIRST-DAY diagnosis (2026-06-02), written before the root cause
+> was known. Its "Firmware architecture" facts are correct and still useful, but
+> its conclusion — *"re-anchor = recalibrate the charging_pose to the live docked
+> map_position"* (the "## Re-anchor mechanism" section below) — is **WRONG** and
+> was the approach that moved the charger marker ~2 m off.
+>
+> What was actually wrong: the mower was on **RTK Float** (weak charger LoRa
+> antenna starved RTCM), so the "live docked map_position" of ~(2.0) was itself
+> off by ~2 m. Recalibrating the marker to that bad position bakes the error in.
+> The real fix re-anchors the **frame** (`reanchor_pos` → `pos.json` origin from
+> the dock's clean RTK-**Fixed** GPS), after which the mower docks at ~(0,0) and
+> the marker matches. Read `docs/reference/REANCHOR.md`, not the mechanism below.
+
 Mower: LFIN2230700238 (.244). Symptom: after a successful ArUco dock the app
 shows the charger marker ~2 m away from where the mower physically docked, even
 after page refresh. User wants the **polygon re-anchored after the ArUco dock**.

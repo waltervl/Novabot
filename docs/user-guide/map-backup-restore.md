@@ -5,6 +5,16 @@
 > `map-frame-realign-after-reboot.md`, `polygon-rotation-bug.md`, the apply-polygon-offset
 > recovery procedure — those covered ad-hoc patches; this is the structured flow.
 
+> **⚠️ Re-anchor step: see `docs/reference/REANCHOR.md` (authoritative).**
+> The descriptions in this file of the post-restore frame fix as an *"ArUco
+> re-alignment / ArUco snap"* are **WRONG and superseded**. Localization is
+> GPS/RTK only and has no ArUco input; ArUco only drives the final visual dock
+> approach. Re-anchoring re-derives the UTM origin in `pos.json` from the dock's
+> RTK-**Fixed** GPS (`reanchor_pos` + `/load_utm_origin_info`) and lets the mower
+> re-lock by driving — it is NOT an ArUco trick and does NOT recalibrate the
+> charger marker. The `refresh-dock-anchor` endpoint below is the older flow;
+> the current one-button path is `POST /api/dashboard/reanchor/:sn` (`auto`).
+
 ## What this covers
 
 A complete backup of all map state (polygons, raster, dock pose, UTM anchor) and
@@ -26,9 +36,10 @@ local map frame has shifted between export and restore.
 - **pos.json** (`/userdata/pos.json`): UTM ↔ local frame anchor. Sets where the
   local frame's `(0,0)` sits in world coordinates.
 - **Local map frame**: the coordinate system in which all polygons and dock
-  poses are expressed on the mower. After each `novabot_launch` restart the
-  frame's anchor can shift; ArUco re-alignment on the next docking pulls it
-  back to where `charging_station.yaml` says the dock is.
+  poses are expressed on the mower. Its world anchor is the UTM origin in
+  `pos.json`. Re-anchoring after a restore re-derives that origin from the
+  dock's RTK-Fixed GPS (`reanchor_pos`); see `docs/reference/REANCHOR.md`. (It
+  is NOT pulled back by "ArUco re-alignment" — localization has no ArUco input.)
 
 ## Endpoints (server side)
 
@@ -85,10 +96,10 @@ local map frame has shifted between export and restore.
 │     navigates back through the full ArUco docking sequence.       │
 │   - Skip: do later. Do not mow until completed.                   │
 │                                                                   │
-│   During the redock the ArUco alignment snaps the mower's local   │
-│   frame to the dock pose stored in charging_station.yaml. After   │
-│   that snap, polygons (in the bundle's original frame) and the    │
-│   mower's perception line up to within ~5cm + a few degrees.      │
+│   The redock re-locks localization; it is NOT an "ArUco snap".    │
+│   Localization is GPS/RTK only. Reliable path: the auto re-anchor │
+│   (reanchor_pos = pos.json origin from the Fixed dock GPS, then    │
+│   drive to re-lock). See docs/reference/REANCHOR.md.              │
 └───────────────────────────────────────────────────────────────────┘
                               ▼
 ┌───────────────────────────────────────────────────────────────────┐
@@ -110,19 +121,23 @@ The bundle restore puts polygon CSVs back in their EXPORT-TIME frame. If the
 current local frame disagrees, polygons drawn on disk no longer map to the
 physical garden the mower is in.
 
-The fix is not to overwrite pos.json (which gets rewritten by localization
-anyway), nor to recompute polygon coordinates blindly. The fix is to let
-the mower's own docking flow re-anchor the frame via ArUco visual alignment:
-- Mower drives to charger via Nav2 → ArUco markers come into view
-- ArUco solves the relative pose mower↔charger with sub-cm precision
-- charging_station.yaml says where the charger sits in the local frame
-- → mower's pose in local frame now equals the yaml's dock pose
-- → frame is realigned. Polygons in bundle frame now sit in physical reality.
+The fix re-anchors the UTM origin in `pos.json` to the dock's true RTK-**Fixed**
+GPS, then lets the mower re-lock by driving. **This is GPS/RTK, not ArUco** —
+localization has no ArUco input (ArUco only drives the final visual dock
+approach). The reliable, explicit version is `reanchor_pos` +
+`/load_utm_origin_info`, orchestrated by `POST /api/dashboard/reanchor/:sn`
+(`auto`). See `docs/reference/REANCHOR.md` for the full mechanism, the
+debunked theories, and why the marker must NOT be recalibrated to chase a bad
+frame.
 
 Verified 2026-05-21 on LFIN2230700238: after verbatim restore the mower
-reported `map_position = (-2.02, 0.35, -1.59)`. Bundle charging_pose was
-`(0, 0.06, -1.518)`. After a single manual dock cycle: `map_position =
-(0.004, 0.110, -1.643)`. Frame realigned to within 5cm and 7°.
+reported `map_position = (-2.02, 0.35, -1.59)`; bundle charging_pose was
+`(0, 0.06, -1.518)`. After a dock cycle: `map_position = (0.004, 0.110, -1.643)`
+≈ origin. **Why it worked (correct attribution):** the drive-off re-init let
+`gpsCallback` re-derive the origin from the live GPS — the implicit version of
+what `reanchor_pos` now does explicitly. It was NOT an "ArUco snap". (And on a
+day the rover was on RTK Float, that same drive re-anchored onto a ~2 m-off fix
+— which is the whole reason `reanchor_pos` now gates on a real Fixed.)
 
 ## Why we do not ship pos.json in apply-verbatim
 
@@ -188,10 +203,12 @@ Our open `mower/robot_decision.py:2309` calls `save_utm_origin()` on
 `result.code == 100` SUCCESS. The stock binary has the
 `save_utm_origin_info` ROS service registered but our live test on
 LFIN2230700238 (stock binary) showed pos.json mtime unchanged across a
-successful manual dock cycle. The frame still realigned via ArUco snap, so
-end-result is fine, but the documented pos.json refresh mechanism only
-fires when the open-decision drop-in is active (which it currently is not
-on any production mower per [project-open-mqtt-node.md](../../memory/project-open-mqtt-node.md)).
+manual dock cycle. The frame still came back to ~origin — **not via an
+"ArUco snap"** (localization has no ArUco input) but because the drive-off
+re-init let `gpsCallback` re-derive the origin from the live GPS. The current
+re-anchor does this explicitly and works on the stock binary too:
+`reanchor_pos` writes pos.json + calls `/load_utm_origin_info` directly, so it
+does not depend on the open-decision drop-in. See `docs/reference/REANCHOR.md`.
 
 ## Quick reference
 
