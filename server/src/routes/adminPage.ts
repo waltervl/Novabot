@@ -81,6 +81,10 @@ export function adminPageHtml(): string {
   .help-item b{color:#fff;font-weight:600}
   .help-item.warn b{color:#fbbf24}
   .help-note{font-size:11.5px;color:#94a3b8;padding:8px 0 2px;line-height:1.5}
+  /* Language switch buttons (header) */
+  .langbtn{background:transparent;color:#888;border:1px solid #333;border-radius:6px;padding:5px 9px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s}
+  .langbtn:hover{color:#ccc;background:#222}
+  .langbtn.active{background:#2563eb;color:#fff;border-color:#2563eb}
   .container{max-width:1200px;margin:0 auto;padding:20px}
   h1{color:#00d4aa;font-size:24px;margin-bottom:4px}
   h2{color:#7c3aed;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
@@ -231,9 +235,17 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
     var src = origText.get(node);
     if (src === undefined){ src = trimmed; origText.set(node, src); }
     var t = tr(src, lang);
+    var prefix = '';
+    if (t === null){
+      // Fallback: strip a leading run of non-letters (emoji/icons/symbols/space)
+      // and translate the remaining core, so "⚡ Charger" -> "⚡ Laadstation",
+      // "🔗 Paired Set" -> "🔗 Gekoppelde set", "🤖 Mower" -> "🤖 Maaier".
+      var m = src.match(/^([^\\p{L}]+)(\\p{L}[\\s\\S]*)$/u);
+      if (m){ var ct = tr(m[2], lang); if (ct !== null){ t = ct; prefix = m[1]; } }
+    }
     if (t !== null){
       var lead = raw.match(/^\\s*/)[0]; var tail = raw.match(/\\s*$/)[0];
-      var next = lead + t + tail;
+      var next = lead + prefix + t + tail;
       if (node.nodeValue !== next) node.nodeValue = next;
     }
   }
@@ -259,15 +271,19 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
     for (var j=0;j<nodes.length;j++) translateText(nodes[j], lang);
   }
   function applyAll(lang){ curLang = lang; try { walk(document.body, lang); } catch(e){} }
+  function setLangBtn(lang){
+    var btns = document.querySelectorAll('#langSwitch .langbtn');
+    for (var i=0;i<btns.length;i++) btns[i].classList.toggle('active', btns[i].getAttribute('data-lang') === lang);
+  }
   window.__setLang = function(lang){
     if (LANGS.indexOf(lang) < 0) lang = 'en';
     try { localStorage.setItem('adminLang', lang); } catch(e){}
     applyAll(lang);
-    var sel = document.getElementById('langSelect'); if (sel) sel.value = lang;
+    setLangBtn(lang);
   };
   function init(){
     curLang = pickLang();
-    var sel = document.getElementById('langSelect'); if (sel) sel.value = curLang;
+    setLangBtn(curLang);
     applyAll(curLang);
     var obs = new MutationObserver(function(muts){
       for (var i=0;i<muts.length;i++){
@@ -341,12 +357,12 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
       <div class="chips" id="serverInfo"><span class="chip">Loading...</span></div>
     </div>
     <div style="display:flex;gap:6px">
-      <select id="langSelect" data-no-i18n onchange="window.__setLang(this.value)" title="Language / Taal / Langue / Sprache" style="background:#222;color:#cbd5e1;border:1px solid #444;border-radius:8px;padding:6px 8px;font-size:13px;cursor:pointer">
-        <option value="en">English</option>
-        <option value="nl">Nederlands</option>
-        <option value="fr">Français</option>
-        <option value="de">Deutsch</option>
-      </select>
+      <div id="langSwitch" data-no-i18n title="Language / Taal / Langue / Sprache" style="display:flex;gap:2px;margin-right:4px">
+        <button class="langbtn" data-lang="en" onclick="window.__setLang('en')">EN</button>
+        <button class="langbtn" data-lang="nl" onclick="window.__setLang('nl')">NL</button>
+        <button class="langbtn" data-lang="fr" onclick="window.__setLang('fr')">FR</button>
+        <button class="langbtn" data-lang="de" onclick="window.__setLang('de')">DE</button>
+      </div>
       <button class="btn" style="background:#2563eb" onclick="openHelp()" title="Wat doet elke knop?">? Help</button>
       <button class="btn" style="background:#333" onclick="logout()">Logout</button>
       <button class="btn btn-purple" onclick="loadAll()">↻</button>
@@ -773,6 +789,36 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
       <div id="account">Loading...</div>
     </div>
 
+    <div class="card" style="border:1px solid rgba(245,158,11,.3);background:linear-gradient(135deg,rgba(245,158,11,.06),rgba(124,58,237,.04))">
+      <h2 style="color:#f59e0b;display:flex;align-items:center;gap:8px">💚 Support OpenNova</h2>
+      <p style="font-size:13px;color:#ccc;margin-bottom:14px;line-height:1.6">
+        OpenNova is free and open-source. If it saved your mower from a dead Novabot cloud or helped you skip a subscription, a small tip keeps the lights on.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+        <a href="https://buymeacoffee.com/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:8px;text-decoration:none;color:#fbbf24;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
+          <span style="font-size:20px">☕</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">Buy Me a Coffee</div>
+            <div style="font-size:11px;color:#999;margin-top:2px">One-off tip</div>
+          </div>
+        </a>
+        <a href="https://paypal.me/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(0,112,186,.12);border:1px solid rgba(0,112,186,.3);border-radius:8px;text-decoration:none;color:#60a5fa;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
+          <span style="font-size:20px">💳</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">PayPal</div>
+            <div style="font-size:11px;color:#999;margin-top:2px">Any amount</div>
+          </div>
+        </a>
+        <a href="https://github.com/sponsors/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.3);border-radius:8px;text-decoration:none;color:#c4b5fd;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
+          <span style="font-size:20px">⭐</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">GitHub Sponsors</div>
+            <div style="font-size:11px;color:#999;margin-top:2px">Recurring monthly</div>
+          </div>
+        </a>
+      </div>
+    </div>
+
     <div class="card" style="border:1px solid rgba(34,197,94,.25);background:rgba(34,197,94,.03)">
       <h2 style="color:#86efac">Resources &amp; Help</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">Documentation, source code, and community channels. Bookmark these — there is no LFI cloud support left, so the wiki + GitHub issues are how problems get solved.</p>
@@ -981,35 +1027,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
       </div>
     </div>
 
-    <div class="card" style="border:1px solid rgba(245,158,11,.3);background:linear-gradient(135deg,rgba(245,158,11,.06),rgba(124,58,237,.04))">
-      <h2 style="color:#f59e0b;display:flex;align-items:center;gap:8px">💚 Support OpenNova</h2>
-      <p style="font-size:13px;color:#ccc;margin-bottom:14px;line-height:1.6">
-        OpenNova is free and open-source. If it saved your mower from a dead Novabot cloud or helped you skip a subscription, a small tip keeps the lights on.
-      </p>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
-        <a href="https://buymeacoffee.com/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:8px;text-decoration:none;color:#fbbf24;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
-          <span style="font-size:20px">☕</span>
-          <div style="flex:1">
-            <div style="font-weight:600;font-size:13px">Buy Me a Coffee</div>
-            <div style="font-size:11px;color:#999;margin-top:2px">One-off tip</div>
-          </div>
-        </a>
-        <a href="https://paypal.me/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(0,112,186,.12);border:1px solid rgba(0,112,186,.3);border-radius:8px;text-decoration:none;color:#60a5fa;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
-          <span style="font-size:20px">💳</span>
-          <div style="flex:1">
-            <div style="font-weight:600;font-size:13px">PayPal</div>
-            <div style="font-size:11px;color:#999;margin-top:2px">Any amount</div>
-          </div>
-        </a>
-        <a href="https://github.com/sponsors/rvbcrs" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:12px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.3);border-radius:8px;text-decoration:none;color:#c4b5fd;transition:transform .15s" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='translateY(0)'">
-          <span style="font-size:20px">⭐</span>
-          <div style="flex:1">
-            <div style="font-weight:600;font-size:13px">GitHub Sponsors</div>
-            <div style="font-size:11px;color:#999;margin-top:2px">Recurring monthly</div>
-          </div>
-        </a>
-      </div>
-    </div>
+<!-- Support OpenNova card moved to just under the Account card (top of Settings). -->
 
     <div class="card">
       <details style="padding:8px 12px;background:rgba(239,68,68,.04);border:1px solid rgba(239,68,68,.15);border-radius:8px">
