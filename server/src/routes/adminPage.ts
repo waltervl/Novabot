@@ -593,7 +593,7 @@ export function adminPageHtml(): string {
           <div style="font-size:12px;font-weight:600;color:#67e8f9">Portable Map Bundle <span style="background:rgba(16,185,129,.15);color:#86efac;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:6px">RECOMMENDED</span></div>
         </div>
         <div style="font-size:11px;color:#94a3b8;line-height:1.6;margin-bottom:8px">
-          Export the polygons + a complete rasterized map (map.pgm/png/yaml + per-map) as a portable .novabotmap bundle. Single restore path: "Restore to mower" pushes the bundle verbatim (no rotation, pos.json untouched). After the restore, re-anchor in the app (Re-anchor wizard): the mower re-derives its pos.json UTM origin from the dock's RTK-Fixed GPS and re-locks by driving (GPS/RTK, not an "ArUco snap"). Auto-snapshots every successful save_map (last 20 retained per mower).
+          Export the polygons + a complete rasterized map (map.pgm/png/yaml + per-map) as a portable .novabotmap bundle. Single restore path: "Restore to mower" pushes the bundle verbatim (no rotation, pos.json untouched). After the restore, re-anchor in the app (Re-anchor wizard): the mower re-derives its pos.json UTM origin from the dock's RTK-Fixed GPS and re-locks by driving (GPS/RTK, not an "ArUco snap"). Auto-snapshots whenever the mower syncs a changed map to the server (last 20 retained per mower).
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <button onclick="exportPortableBundle()" style="padding:7px 18px;background:rgba(34,211,238,.2);color:#67e8f9;border:1px solid rgba(34,211,238,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Export bundle</button>

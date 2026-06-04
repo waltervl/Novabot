@@ -624,6 +624,29 @@ export function handleExtendedResponse(sn: string, payload: string): void {
   } catch { /* ignore */ }
 }
 
+// ── Auto portable-snapshot on map change ─────────────────────────────────────
+// Debounced per SN: when the mower commits a CHANGED map to the DB we wait for
+// the burst (map0 + map1 + unicom all arrive within a few seconds) to settle,
+// then create one portable backup. createBackup reads the DB + live mower files,
+// so by firing after the commit (not on the MQTT respond) the data is present.
+const _autoSnapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function scheduleAutoSnapshot(sn: string): void {
+  const existing = _autoSnapTimers.get(sn);
+  if (existing) clearTimeout(existing);
+  _autoSnapTimers.set(sn, setTimeout(() => {
+    _autoSnapTimers.delete(sn);
+    // Dynamic import: portableBackup imports from this module, so a static
+    // import would be circular.
+    void import('../services/portableBackup.js')
+      .then(({ createBackup }) => createBackup(sn, 'auto-save_map'))
+      .then((entry) => {
+        if (entry) console.log(`${TAG} auto-snapshot saved for ${sn}: ${entry.filename}`);
+        else console.warn(`${TAG} auto-snapshot skipped for ${sn} (no DB map/charger anchor yet)`);
+      })
+      .catch((e) => console.warn(`${TAG} auto-snapshot failed for ${sn}: ${(e as Error)?.message ?? e}`));
+  }, 10000));
+}
+
 // ── Device responses (Dart/Receive_mqtt/<SN>) ────────────────────────────────
 
 type DeviceResponseHandler = (data: Record<string, unknown>) => void;
@@ -804,15 +827,27 @@ function handleMapOutlineResponse(sn: string, data: unknown): void {
   // Sla op in database (lokale coördinaten)
   const displayName = mapName || mapType || `Map ${mapId.slice(0, 8)}`;
 
+  const _newArea = JSON.stringify(localPoints);
+  const _prevRow = mapRepo.findByIdAndMower(mapId, sn);
   mapRepo.upsert({
     map_id: mapId,
     mower_sn: sn,
     map_name: displayName,
-    map_area: JSON.stringify(localPoints),
+    map_area: _newArea,
     map_max_min: JSON.stringify(bounds),
   });
 
   console.log(`${TAG} Kaart "${displayName}" (${mapId}) opgeslagen: ${localPoints.length} punten (lokaal), bounds: ${JSON.stringify(bounds)}`);
+
+  // Auto-snapshot a portable backup when the map content actually CHANGED (a
+  // real save), not on every reconnect/resync. Debounced per SN so a multi-map
+  // sync (map0 + map1 + unicom) coalesces into ONE snapshot, fired after the
+  // last commit — by then the DB has the data createBackup needs. This replaces
+  // the old broker.ts save_recharge_pos_respond trigger, which fired ~4s before
+  // the map reached the DB and silently skipped ("no work polygon in DB").
+  if (!_prevRow || _prevRow.map_area !== _newArea) {
+    scheduleAutoSnapshot(sn);
+  }
 
   // Stuur live outline naar dashboard via Socket.io (GPS + lokaal)
   outlineEmitter?.(sn, points, localPoints);
