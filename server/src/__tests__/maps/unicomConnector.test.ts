@@ -100,3 +100,11 @@ describe('fillMissingUnicomPaths', () => {
     expect(after).toBe(before);
   });
 });
+
+describe('charging-pose orientation persistence', () => {
+  it('round-trips through the polygon_charging_orientation store', () => {
+    const sn = 'TESTSN0002';
+    mapRepo.setPolygonChargingOrientation(sn, 1.6227);
+    expect(mapRepo.getPolygonChargingOrientation(sn)).toBeCloseTo(1.6227, 4);
+  });
+});
