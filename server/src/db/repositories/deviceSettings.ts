@@ -12,6 +12,7 @@ export interface DeviceSettingRow {
 
 export class DeviceSettingsRepository {
   private _listAll = db.prepare('SELECT sn, key, value, updated_at FROM device_settings');
+  private _findBySn = db.prepare('SELECT sn, key, value, updated_at FROM device_settings WHERE sn = ?');
   private _upsert = db.prepare(`
     INSERT INTO device_settings (sn, key, value, updated_at) VALUES (?, ?, ?, datetime('now'))
     ON CONFLICT(sn, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
@@ -19,6 +20,10 @@ export class DeviceSettingsRepository {
 
   listAll(): DeviceSettingRow[] {
     return this._listAll.all() as DeviceSettingRow[];
+  }
+
+  findBySn(sn: string): DeviceSettingRow[] {
+    return this._findBySn.all(sn) as DeviceSettingRow[];
   }
 
   upsert(sn: string, key: string, value: string): void {

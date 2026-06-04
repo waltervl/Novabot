@@ -17,7 +17,8 @@ type Aedes = { publish: (packet: any, cb: (err?: Error | null) => void) => void;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AedesPublishPacket = { topic: string; payload: Buffer | string; qos: 0 | 1 | 2; retain: boolean; [key: string]: any };
 import { v4 as uuidv4 } from 'uuid';
-import { mapRepo, equipmentRepo, userRepo, deviceRepo } from '../db/repositories/index.js';
+import { mapRepo, equipmentRepo, userRepo, deviceRepo, deviceSettingsRepo } from '../db/repositories/index.js';
+import { selectParaRepush } from './paraRepush.js';
 import { emitDeviceBound, emitDevicePaired } from '../dashboard/socketHandler.js';
 import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
@@ -547,6 +548,19 @@ function autoBindDevice(sn: string, attempt = 0): void {
  * Wordt aangeroepen vanuit broker.ts authenticate handler.
  * Wacht 3 seconden zodat het apparaat tijd heeft om te settlen.
  */
+/**
+ * Her-push de opgeslagen `set_para_info`-instellingen naar de maaier — vooral
+ * `obstacle_avoidance_sensitivity`. De firmware persisteert ze niet over een
+ * reboot heen; de cloud is de bron van waarheid en her-stuurt ze bij connect.
+ * Filter + numerieke conversie in `selectParaRepush` (paraRepush.ts).
+ */
+function republishParaSettings(sn: string): void {
+  const para = selectParaRepush(deviceSettingsRepo.findBySn(sn));
+  if (!para) return;
+  console.log(`${TAG} Her-push opgeslagen para-settings naar ${sn}: ${JSON.stringify(para)}`);
+  publishToDevice(sn, { set_para_info: para });
+}
+
 export function onMowerConnected(sn: string): void {
   if (pendingRequests.has(sn)) return;
 
@@ -576,6 +590,10 @@ export function onMowerConnected(sn: string): void {
       // in het ota_upgrade_cmd commando.
       console.log(`${TAG} Maaier ${sn} verbonden — kaarten opvragen...`);
       requestMapList(sn);
+
+      // Door de gebruiker gekozen para-settings (o.a. obstacle_avoidance_sensitivity)
+      // opnieuw toepassen — de firmware persisteert ze niet over een reboot heen.
+      republishParaSettings(sn);
 
       // OpenNova firmware detectie: alleen onze firmware heeft extended_commands.py
       publishToExtended(sn, { is_opennova: {} });
