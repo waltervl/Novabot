@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { pointInPolygon, pointInAnyPolygon, generateUnicomPath, type XY }
+import { pointInPolygon, pointInAnyPolygon, generateUnicomPath, type XY,
+  fillMissingUnicomPaths }
   from '../../maps/unicomConnector.js';
+import { mapRepo } from '../../db/repositories/maps.js';
 
 const square = (cx: number, cy: number, h: number): XY[] => [
   { x: cx - h, y: cy - h }, { x: cx + h, y: cy - h },
@@ -47,5 +49,42 @@ describe('generateUnicomPath', () => {
     const a = square(0, 0, 1);
     const b = square(1.5, 0, 1);
     expect(generateUnicomPath(a, b, [], 0.25)).toEqual([]);
+  });
+});
+
+describe('fillMissingUnicomPaths', () => {
+  const sn = 'TESTSN0001';
+  it('fills a 0-byte inter-zone connector with an in-union path', () => {
+    const a = JSON.stringify(square(0, 0, 2));
+    const b = JSON.stringify(square(3, 0, 2)); // overlaps a in x[1,2]
+    mapRepo.upsert({ map_id: 'w0', mower_sn: sn, map_name: 'map0', map_area: a,
+      file_name: 'map0_work.csv', file_size: null, map_type: 'work', canonical_name: 'map0' });
+    mapRepo.upsert({ map_id: 'w1', mower_sn: sn, map_name: 'map1', map_area: b,
+      file_name: 'map1_work.csv', file_size: null, map_type: 'work', canonical_name: 'map1' });
+    mapRepo.upsert({ map_id: 'u01', mower_sn: sn, map_name: 'map0tomap1_0_unicom', map_area: null,
+      file_name: 'map0tomap1_0_unicom.csv', file_size: null, map_type: 'unicom',
+      canonical_name: 'map0tomap1_0_unicom' });
+
+    const filled = fillMissingUnicomPaths(sn);
+    expect(filled).toBe(1);
+
+    const rows = mapRepo.findAllByMowerSnAndType(sn, 'unicom');
+    const u = rows.find((r) => r.canonical_name === 'map0tomap1_0_unicom')!;
+    expect(u.map_area).toBeTruthy();
+    const pts = JSON.parse(u.map_area as string) as XY[];
+    expect(pts.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('leaves map*tocharge connectors untouched', () => {
+    mapRepo.upsert({ map_id: 'uc', mower_sn: sn, map_name: 'map0tocharge_unicom',
+      map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 0, y: -1 }]),
+      file_name: 'map0tocharge_unicom.csv', file_size: null, map_type: 'unicom',
+      canonical_name: 'map0tocharge_unicom' });
+    const before = mapRepo.findAllByMowerSnAndType(sn, 'unicom')
+      .find((r) => r.canonical_name === 'map0tocharge_unicom')!.map_area;
+    fillMissingUnicomPaths(sn);
+    const after = mapRepo.findAllByMowerSnAndType(sn, 'unicom')
+      .find((r) => r.canonical_name === 'map0tocharge_unicom')!.map_area;
+    expect(after).toBe(before);
   });
 });

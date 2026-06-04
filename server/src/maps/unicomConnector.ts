@@ -1,3 +1,5 @@
+import { mapRepo } from '../db/repositories/maps.js';
+
 export interface XY { x: number; y: number; }
 
 /** Ray-casting point-in-polygon (even-odd). */
@@ -54,4 +56,40 @@ export function generateUnicomPath(
     if (pointInAnyPolygon(p, workPolys)) path.push(p);
   }
   return path;
+}
+
+/**
+ * For every inter-zone unicom (`map<i>tomap<j>_<n>_unicom`) that has no path
+ * yet (cloud imports them 0-byte), generate a clipped connector path between
+ * the two work zones and persist it. Returns the number of connectors filled.
+ * No-op for single-zone maps, for map*tocharge channels, and for connectors
+ * that already have a path (snapshot/native restores).
+ */
+export function fillMissingUnicomPaths(sn: string): number {
+  const workRows = mapRepo.findAllByMowerSnAndType(sn, 'work').filter((w) => w.map_area);
+  if (workRows.length < 2) return 0;
+  const byIdx = new Map<number, XY[]>();
+  for (const w of workRows) {
+    const m = (w.canonical_name ?? '').match(/^map(\d+)$/);
+    if (m) byIdx.set(parseInt(m[1], 10), JSON.parse(w.map_area as string) as XY[]);
+  }
+  const workPolys = [...byIdx.values()];
+  let filled = 0;
+  for (const u of mapRepo.findAllByMowerSnAndType(sn, 'unicom')) {
+    if (u.map_area) continue;
+    const m = (u.canonical_name ?? '').match(/^map(\d+)tomap(\d+)_\d+_unicom$/);
+    if (!m) continue;
+    const from = byIdx.get(parseInt(m[1], 10));
+    const to = byIdx.get(parseInt(m[2], 10));
+    if (!from || !to) continue;
+    const path = generateUnicomPath(from, to, workPolys);
+    if (path.length < 2) {
+      console.warn(`[unicom] ${sn}: ${u.canonical_name} clipped to empty — skipped`);
+      continue;
+    }
+    mapRepo.updateAreaAndBoundsById(u.map_id, JSON.stringify(path), '{}');
+    filled++;
+    console.log(`[unicom] ${sn}: filled ${u.canonical_name} (${path.length} pts)`);
+  }
+  return filled;
 }
