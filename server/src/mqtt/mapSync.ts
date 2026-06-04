@@ -20,7 +20,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { mapRepo, equipmentRepo, userRepo, deviceRepo, deviceSettingsRepo } from '../db/repositories/index.js';
 import { selectParaRepush } from './paraRepush.js';
 import { emitDeviceBound, emitDevicePaired } from '../dashboard/socketHandler.js';
-import { gpsToLocal, generateMapZipFromDb, type GpsPoint, type LocalPoint } from './mapConverter.js';
+import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
 import { isSnBanned, isDeviceOnline } from './broker.js';
 import { isFrameNavBlocked, noteAutoRecharge } from '../services/frameValidation.js';
@@ -563,67 +563,104 @@ function republishParaSettings(sn: string): void {
 }
 
 /**
- * Push de in de DB opgeslagen kaart naar de maaier via DEZELFDE sync_map
- * mechaniek die de admin "Import bundle" → restore gebruikt — maar ZONDER
- * realign: geen charger-GPS overschrijven, geen frame_unvalidated, geen
- * on-dock/RTK-FIX eis. De cloud-GPS uit de kaart blijft behouden.
+ * Push een bundel's mower-files VERBATIM naar de maaier via `write_map_files`
+ * — exact de push-mechaniek van de admin "Import bundle" → apply-verbatim route
+ * (de single restore path). csv_files + charging_station.yaml + rasters worden
+ * ongewijzigd naar de maaier geschreven; pos.json wordt NIET aangeraakt (de
+ * dock-cyclus her-ankert het frame — dus geen realign, cloud-GPS blijft
+ * behouden). `restart_mapping:false` voorkomt de iceoryx-shm leak die
+ * novabot_mapping-bounces veroorzaakt. Alleen als de bundel geen whole-area
+ * raster bevat valt het terug op save_map type:1 + regenerate_per_map_files om
+ * de raster on-device te genereren.
  *
- * Sequentie (gelijk aan restore-and-realign, minus de realign-stappen):
- *   1. `<SN>_latest.zip` (her)genereren — verrijkt uit backup indien aanwezig,
- *      anders direct uit de DB.
- *   2. `sync_map` extended command → maaier downloadt de zip via HTTP + past toe.
- *   3. Wacht op `sync_map_respond` (result===0), max 8s.
- *   4. `save_map type:1` → maaier rendert map.yaml/pgm/png uit de verse CSVs.
- *   5. `regenerate_per_map_files` → per-map slot files (Nav2 start_navigation).
- *
- * Vereist OpenNova-firmware (extended commands) + maaier online. Wordt fire-and
- * -forget aangeroepen; bij offline/timeout blijft de pending-vlag staan zodat
- * `onMowerConnected` het later opnieuw probeert.
+ * Gedeeld door de apply-verbatim HTTP-handler (adminStatus.ts) en de
+ * cloud-import push (pushMapToMowerVerbatim) zodat beide identiek pushen.
  */
-export async function pushMapToMowerViaSyncMap(
+export function applyVerbatimToMower(
   sn: string,
-): Promise<{ ok: boolean; offline?: boolean; timeout?: boolean; noMaps?: boolean }> {
+  mowerFiles: {
+    csvFiles: Record<string, string>;
+    chargingStationYaml?: string | null;
+    mapFilesText?: Record<string, string>;
+    mapFilesB64?: Record<string, string>;
+  },
+): void {
+  const writePayload: Record<string, unknown> = {
+    csv_files: mowerFiles.csvFiles,
+    charging_station_yaml: mowerFiles.chargingStationYaml ?? null,
+    restart_mapping: false,
+  };
+  if (mowerFiles.mapFilesText && Object.keys(mowerFiles.mapFilesText).length > 0) {
+    writePayload.map_files_text = mowerFiles.mapFilesText;
+  }
+  if (mowerFiles.mapFilesB64 && Object.keys(mowerFiles.mapFilesB64).length > 0) {
+    writePayload.map_files_b64 = mowerFiles.mapFilesB64;
+  }
+  publishToExtended(sn, { write_map_files: writePayload });
+
+  const hasWholeRaster = !!(mowerFiles.mapFilesB64 && mowerFiles.mapFilesB64['map.pgm']);
+  if (!hasWholeRaster) {
+    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+    console.log(`${TAG} apply-verbatim ${sn}: geen raster in bundel — save_map type:1 (fallback)`);
+    setTimeout(() => {
+      publishToExtended(sn, { regenerate_per_map_files: {} });
+      console.log(`${TAG} apply-verbatim ${sn}: regenerate_per_map_files (fallback)`);
+    }, 3000);
+  } else {
+    console.log(`${TAG} apply-verbatim ${sn}: complete raster — on-device save_map/regen overgeslagen`);
+  }
+}
+
+/**
+ * Push de geïmporteerde kaart naar de maaier via DEZELFDE route als de admin
+ * "Import bundle" knop: lees de (server-side gegenereerde) bundel → parseBundle
+ * → write_map_files (apply-verbatim, geen realign). Wordt fire-and-forget
+ * aangeroepen; bij offline blijft de pending-vlag staan zodat
+ * `onMowerConnected` het opnieuw probeert zodra de maaier verbindt.
+ *
+ * @param filename optionele bundel-naam; standaard de nieuwste backup van de SN.
+ */
+export async function pushMapToMowerVerbatim(
+  sn: string,
+  filename?: string,
+): Promise<{ ok: boolean; offline?: boolean; noBundle?: boolean; noFiles?: boolean }> {
   if (!sn.startsWith('LFIN')) return { ok: false };
 
-  // 1. Zorg dat <SN>_latest.zip de huidige DB/backup weerspiegelt.
+  let buf: Buffer | null = null;
   try {
-    const { regenerateLatestZipFromBackup } = await import('../services/mapBackup.js');
-    const zipPath = regenerateLatestZipFromBackup(sn) ?? generateMapZipFromDb(sn, 0);
-    if (!zipPath) return { ok: false, noMaps: true };
+    const { listBackups, readBackup } = await import('../services/portableBackup.js');
+    const fname = filename ?? listBackups(sn)[0]?.filename;
+    if (!fname) return { ok: false, noBundle: true };
+    buf = readBackup(sn, fname);
   } catch (err) {
-    console.warn(`${TAG} pushMapToMowerViaSyncMap: zip-regen mislukt voor ${sn}:`, err);
-    return { ok: false };
+    console.warn(`${TAG} pushMapToMowerVerbatim: backup lezen mislukt voor ${sn}:`, err);
+    return { ok: false, noBundle: true };
+  }
+  if (!buf) return { ok: false, noBundle: true };
+
+  let mowerFiles: {
+    csvFiles: Record<string, string>;
+    chargingStationYaml?: string | null;
+    mapFilesText?: Record<string, string>;
+    mapFilesB64?: Record<string, string>;
+  } | undefined;
+  try {
+    const { parseBundle } = await import('../services/portableMap.js');
+    const parsed = await parseBundle(buf);
+    mowerFiles = parsed.mowerFiles;
+  } catch (err) {
+    console.warn(`${TAG} pushMapToMowerVerbatim: parseBundle mislukt voor ${sn}:`, err);
+    return { ok: false, noFiles: true };
+  }
+  if (!mowerFiles?.csvFiles || Object.keys(mowerFiles.csvFiles).length === 0) {
+    return { ok: false, noFiles: true };
   }
 
   if (!isDeviceOnline(sn)) return { ok: false, offline: true };
 
-  // 2-3. sync_map + wacht op respond.
-  const result = await new Promise<{ ok: boolean; timeout?: boolean }>((resolve) => {
-    let settled = false;
-    const handler = (data: Record<string, unknown>) => {
-      const respond = data.sync_map_respond as Record<string, unknown> | undefined;
-      if (!respond || settled) return;
-      settled = true;
-      offExtendedResponse(sn, handler);
-      resolve({ ok: respond.result === 0 });
-    };
-    onExtendedResponse(sn, handler);
-    publishToExtended(sn, { sync_map: {} });
-    setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      offExtendedResponse(sn, handler);
-      resolve({ ok: false, timeout: true });
-    }, 8000);
-  });
-
-  // 4-5. Re-render map artifacts + per-map slot files (alleen na succes).
-  if (result.ok) {
-    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
-    setTimeout(() => publishToExtended(sn, { regenerate_per_map_files: {} }), 3000);
-    console.log(`${TAG} sync_map push OK voor ${sn} (save_map type:1 + regenerate_per_map_files verzonden)`);
-  }
-  return result;
+  applyVerbatimToMower(sn, mowerFiles);
+  console.log(`${TAG} Kaart naar ${sn} gepusht via apply-verbatim (write_map_files)`);
+  return { ok: true };
 }
 
 export function onMowerConnected(sn: string): void {
@@ -661,19 +698,19 @@ export function onMowerConnected(sn: string): void {
       republishParaSettings(sn);
 
       // Uitgestelde map-push: een cloud-import wachtte tot de maaier online was.
-      // Push nu de geïmporteerde kaart via sync_map en wis de vlag bij succes.
+      // Push nu de geïmporteerde kaart via apply-verbatim en wis de vlag bij succes.
       if (hasPendingMapSync(sn)) {
-        console.log(`${TAG} Pending map-sync voor ${sn} — kaart pushen via sync_map...`);
-        pushMapToMowerViaSyncMap(sn)
+        console.log(`${TAG} Pending map-push voor ${sn} — kaart pushen via apply-verbatim...`);
+        pushMapToMowerVerbatim(sn)
           .then((r) => {
             if (r.ok) {
               clearPendingMapSync(sn);
-              console.log(`${TAG} Pending map-sync voltooid voor ${sn}`);
+              console.log(`${TAG} Pending map-push voltooid voor ${sn}`);
             } else {
-              console.log(`${TAG} Pending map-sync nog niet gelukt voor ${sn} (${r.timeout ? 'timeout' : r.noMaps ? 'geen kaarten' : 'mislukt'}) — opnieuw bij volgende connect`);
+              console.log(`${TAG} Pending map-push nog niet gelukt voor ${sn} (${r.offline ? 'offline' : r.noBundle ? 'geen bundel' : r.noFiles ? 'geen mower-files' : 'mislukt'}) — opnieuw bij volgende connect`);
             }
           })
-          .catch((e) => console.warn(`${TAG} Pending map-sync fout voor ${sn}:`, e));
+          .catch((e) => console.warn(`${TAG} Pending map-push fout voor ${sn}:`, e));
       }
 
       // OpenNova firmware detectie: alleen onze firmware heeft extended_commands.py

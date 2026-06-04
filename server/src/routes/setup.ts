@@ -510,30 +510,35 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               // map.pgm/png/yaml + per-map + csvs) from the freshly imported
               // polygons, so cloud re-imports produce a working costmap bundle
               // without needing the mower online. Best-effort, non-fatal.
+              let cloudBundleFile: string | undefined;
               try {
                 const { createBundleFromDb } = await import('../services/portableBackup.js');
                 const entry = await createBundleFromDb(mower.sn, 'cloud-import');
-                if (entry) console.log(`[Setup] Auto-bundle generated for ${mower.sn}: ${entry.filename} (${entry.bytes} B)`);
+                if (entry) {
+                  cloudBundleFile = entry.filename;
+                  console.log(`[Setup] Auto-bundle generated for ${mower.sn}: ${entry.filename} (${entry.bytes} B)`);
+                }
               } catch (bundleErr) {
                 console.warn(`[Setup] Auto-bundle generation failed (non-fatal):`, bundleErr);
               }
 
-              // Push the freshly imported map onto the mower via the same
-              // sync_map mechanism the admin "Import bundle" → restore uses
-              // (no realign: cloud GPS is kept, no dock/RTK-FIX requirement).
+              // Push the freshly imported map onto the mower via the SAME route
+              // the admin "Import bundle" button uses: apply-verbatim
+              // (write_map_files — csv_file/ + charging_station.yaml + rasters,
+              // verbatim, pos.json untouched → no realign, cloud GPS kept).
               // If the mower is offline now (typical on first-time import), a
               // pending flag is set and onMowerConnected pushes it on connect.
               try {
-                const { pushMapToMowerViaSyncMap } = await import('../mqtt/mapSync.js');
+                const { pushMapToMowerVerbatim } = await import('../mqtt/mapSync.js');
                 const { markPendingMapSync, clearPendingMapSync } = await import('../services/pendingMapSync.js');
                 markPendingMapSync(mower.sn);
-                void pushMapToMowerViaSyncMap(mower.sn)
+                void pushMapToMowerVerbatim(mower.sn, cloudBundleFile)
                   .then((r) => {
                     if (r.ok) {
                       clearPendingMapSync(mower.sn);
-                      console.log(`[Setup] Map pushed to ${mower.sn} via sync_map`);
+                      console.log(`[Setup] Map pushed to ${mower.sn} via apply-verbatim`);
                     } else {
-                      console.log(`[Setup] Map push deferred for ${mower.sn} (${r.offline ? 'offline' : r.timeout ? 'timeout' : r.noMaps ? 'no maps' : 'pending'}) — will push on next connect`);
+                      console.log(`[Setup] Map push deferred for ${mower.sn} (${r.offline ? 'offline' : r.noBundle ? 'no bundle' : r.noFiles ? 'no mower files' : 'pending'}) — will push on next connect`);
                     }
                   })
                   .catch((e) => console.warn(`[Setup] Map push error for ${mower.sn}:`, e));

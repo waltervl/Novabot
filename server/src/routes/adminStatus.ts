@@ -13,7 +13,7 @@ import fs from 'fs';
 import { execSync } from 'child_process';
 import { db } from '../db/database.js';
 import { isDeviceOnline, banishSn, unbanSn, listBannedSns } from '../mqtt/broker.js';
-import { awaitCommand, publishToDevice, publishToExtended, onExtendedResponse, offExtendedResponse } from '../mqtt/mapSync.js';
+import { awaitCommand, publishToDevice, publishToExtended, onExtendedResponse, offExtendedResponse, applyVerbatimToMower } from '../mqtt/mapSync.js';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo, walkerBundleRepo } from '../db/repositories/index.js';
 import type { WalkerBundleRow } from '../db/repositories/index.js';
 import { AuthRequest } from '../types/index.js';
@@ -2858,39 +2858,16 @@ adminStatusRouter.post(
     // bundle pos.json restored caused localization to report (-1.67, 0.88)
     // while mower was physically on dock at (~0, 0.06). Let the mower's
     // own docking flow refresh pos.json instead.
-    const writePayload: Record<string, unknown> = {
-      csv_files: mowerFiles.csvFiles,
-      charging_station_yaml: mowerFiles.chargingStationYaml ?? null,
-      restart_mapping: false,
-    };
-    if (mowerFiles.mapFilesText && Object.keys(mowerFiles.mapFilesText).length > 0) {
-      writePayload.map_files_text = mowerFiles.mapFilesText;
-    }
-    if (mowerFiles.mapFilesB64 && Object.keys(mowerFiles.mapFilesB64).length > 0) {
-      writePayload.map_files_b64 = mowerFiles.mapFilesB64;
-    }
-    publishToExtended(sn, { write_map_files: writePayload });
-
-    // The bundle now ships a complete, correct occupancy grid (whole map.pgm +
-    // every mapN.pgm, generated server-side by the faithful map_generator
-    // reimplementation). write_map_files lands those on disk and
-    // coverage_planner loads map_yaml fresh from disk per task, so the
-    // restored raster is used directly. The firmware's own save_map type:1 +
-    // regenerate_per_map_files were only ever needed to GENERATE the raster
-    // on-device when the bundle lacked one — running them now would overwrite
-    // our raster and re-introduce the save_map 118/120 failure surface. So
-    // only fall back to them when the bundle has no whole-area pgm.
-    const hasWholeRaster = !!(mowerFiles.mapFilesB64 && mowerFiles.mapFilesB64['map.pgm']);
-    if (!hasWholeRaster) {
-      publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
-      console.log(`[Admin] apply-verbatim ${sn}: no raster in bundle — save_map type:1 dispatched (fallback)`);
-      setTimeout(() => {
-        publishToExtended(sn, { regenerate_per_map_files: {} });
-        console.log(`[Admin] apply-verbatim ${sn}: regenerate_per_map_files dispatched (fallback)`);
-      }, 3000);
-    } else {
-      console.log(`[Admin] apply-verbatim ${sn}: complete raster shipped — skipping on-device save_map/regen`);
-    }
+    // Push verbatim — shared with the cloud-import map push so both routes
+    // write to the mower identically (write_map_files + raster fallback,
+    // pos.json untouched). restart_mapping:false avoids the iceoryx-shm leak.
+    // The bundle ships a complete occupancy grid (whole map.pgm + every
+    // mapN.pgm, generated server-side); write_map_files lands those on disk and
+    // coverage_planner loads map_yaml fresh per task, so the restored raster is
+    // used directly. The firmware's own save_map type:1 + regenerate_per_map_files
+    // were only ever needed to GENERATE the raster on-device when the bundle
+    // lacked one — applyVerbatimToMower only falls back to them in that case.
+    applyVerbatimToMower(sn, mowerFiles);
 
     // Update server DB so dashboard map view reflects what's now on disk.
     // Polygon points come from the bundle untransformed (same frame as
