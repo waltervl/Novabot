@@ -73,17 +73,29 @@ describe('fillMissingUnicomPaths', () => {
     expect(u.map_area).toBeTruthy();
     const pts = JSON.parse(u.map_area as string) as XY[];
     expect(pts.length).toBeGreaterThanOrEqual(2);
+    // Every persisted point must lie inside the work-union (the two zones).
+    expect(pts.every((p) => pointInAnyPolygon(p, [JSON.parse(a), JSON.parse(b)]))).toBe(true);
   });
 
-  it('leaves map*tocharge connectors untouched', () => {
-    mapRepo.upsert({ map_id: 'uc', mower_sn: sn, map_name: 'map0tocharge_unicom',
+  it('leaves map*tocharge connectors untouched (regex skip, not early return)', () => {
+    // Self-contained SN with its OWN two indexed work zones so the function
+    // proceeds past the byIdx guard, plus a map*tocharge row. This proves the
+    // tocharge channel is skipped by the regex, not by an early return.
+    const sn3 = 'TESTSN0003';
+    mapRepo.upsert({ map_id: 'w30', mower_sn: sn3, map_name: 'map0',
+      map_area: JSON.stringify(square(0, 0, 2)),
+      file_name: 'map0_work.csv', file_size: null, map_type: 'work', canonical_name: 'map0' });
+    mapRepo.upsert({ map_id: 'w31', mower_sn: sn3, map_name: 'map1',
+      map_area: JSON.stringify(square(3, 0, 2)),
+      file_name: 'map1_work.csv', file_size: null, map_type: 'work', canonical_name: 'map1' });
+    mapRepo.upsert({ map_id: 'uc3', mower_sn: sn3, map_name: 'map0tocharge_unicom',
       map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 0, y: -1 }]),
       file_name: 'map0tocharge_unicom.csv', file_size: null, map_type: 'unicom',
       canonical_name: 'map0tocharge_unicom' });
-    const before = mapRepo.findAllByMowerSnAndType(sn, 'unicom')
+    const before = mapRepo.findAllByMowerSnAndType(sn3, 'unicom')
       .find((r) => r.canonical_name === 'map0tocharge_unicom')!.map_area;
-    fillMissingUnicomPaths(sn);
-    const after = mapRepo.findAllByMowerSnAndType(sn, 'unicom')
+    fillMissingUnicomPaths(sn3);
+    const after = mapRepo.findAllByMowerSnAndType(sn3, 'unicom')
       .find((r) => r.canonical_name === 'map0tocharge_unicom')!.map_area;
     expect(after).toBe(before);
   });

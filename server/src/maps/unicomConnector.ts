@@ -67,12 +67,17 @@ export function generateUnicomPath(
  */
 export function fillMissingUnicomPaths(sn: string): number {
   const workRows = mapRepo.findAllByMowerSnAndType(sn, 'work').filter((w) => w.map_area);
-  if (workRows.length < 2) return 0;
   const byIdx = new Map<number, XY[]>();
   for (const w of workRows) {
     const m = (w.canonical_name ?? '').match(/^map(\d+)$/);
     if (m) byIdx.set(parseInt(m[1], 10), JSON.parse(w.map_area as string) as XY[]);
   }
+  // Guard on indexed zones (canonical `map<n>` rows), not the raw row count: a
+  // work row with a null/non-canonical name must not let the guard pass while
+  // byIdx is too small to connect anything.
+  if (byIdx.size < 2) return 0;
+  // Clip the connector against the indexed work zones only — these are the
+  // canonical `map<n>` polygons byIdx was built from.
   const workPolys = [...byIdx.values()];
   let filled = 0;
   for (const u of mapRepo.findAllByMowerSnAndType(sn, 'unicom')) {
