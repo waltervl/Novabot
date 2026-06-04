@@ -5,6 +5,8 @@ export function pointInPolygon(p: XY, poly: XY[]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    // The (yi > p.y) !== (yj > p.y) parity check already rejects horizontal
+    // edges (yi === yj), so the 1e-12 epsilon only guards near-horizontal ones.
     const intersect = ((yi > p.y) !== (yj > p.y))
       && (p.x < ((xj - xi) * (p.y - yi)) / (yj - yi + 1e-12) + xi);
     if (intersect) inside = !inside;
@@ -27,6 +29,8 @@ export function generateUnicomPath(
   fromPts: XY[], toPts: XY[], workPolys: XY[][], stepM = 0.25,
 ): XY[] {
   if (fromPts.length === 0 || toPts.length === 0) return [];
+  // Destination centroid is the target: LFI work zones are convex/overlapping,
+  // so the centroid is always inside the zone and a safe aim point.
   const target: XY = {
     x: toPts.reduce((s, p) => s + p.x, 0) / toPts.length,
     y: toPts.reduce((s, p) => s + p.y, 0) / toPts.length,
@@ -41,9 +45,11 @@ export function generateUnicomPath(
   const path: XY[] = [];
   for (let s = 0; s <= steps; s++) {
     const t = s / steps;
+    // Path goes from->to: start at `closest` (source zone), end at `target`
+    // (destination centroid), matching the (fromPts, toPts) contract.
     const p: XY = {
-      x: target.x + t * (closest.x - target.x),
-      y: target.y + t * (closest.y - target.y),
+      x: closest.x + t * (target.x - closest.x),
+      y: closest.y + t * (target.y - closest.y),
     };
     if (pointInAnyPolygon(p, workPolys)) path.push(p);
   }
