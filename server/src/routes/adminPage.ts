@@ -64,6 +64,22 @@ export function adminPageHtml(): string {
   .modal-btn-ok{background:#7c3aed;color:#fff}
   .modal-btn-danger{background:#ef4444;color:#fff}
   .modal-btn-success{background:#22c55e;color:#fff}
+  /* Help popup: wider, scrollable reference of every button */
+  .help-box{background:#1a1a2e;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:0;max-width:780px;width:92%;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .help-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid rgba(255,255,255,.08)}
+  .help-head h3{margin:0;font-size:16px;font-weight:700;color:#fff}
+  .help-x{background:rgba(255,255,255,.08);color:#cbd5e1;border:0;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer}
+  .help-body{padding:8px 22px 20px;overflow-y:auto}
+  .help-body details{border:1px solid rgba(255,255,255,.07);border-radius:10px;margin-top:10px;background:rgba(15,23,42,.4)}
+  .help-body summary{cursor:pointer;padding:11px 14px;font-weight:700;color:#a78bfa;font-size:13px;list-style:none}
+  .help-body summary::-webkit-details-marker{display:none}
+  .help-body summary::before{content:'▸ ';color:#7c3aed}
+  .help-body details[open] summary::before{content:'▾ '}
+  .help-body .help-sec{padding:2px 14px 12px}
+  .help-item{font-size:12.5px;color:#cbd5e1;line-height:1.5;padding:5px 0;border-top:1px solid rgba(255,255,255,.05)}
+  .help-item b{color:#fff;font-weight:600}
+  .help-item.warn b{color:#fbbf24}
+  .help-note{font-size:11.5px;color:#94a3b8;padding:8px 0 2px;line-height:1.5}
   .container{max-width:1200px;margin:0 auto;padding:20px}
   h1{color:#00d4aa;font-size:24px;margin-bottom:4px}
   h2{color:#7c3aed;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
@@ -240,8 +256,130 @@ export function adminPageHtml(): string {
       <div class="chips" id="serverInfo"><span class="chip">Loading...</span></div>
     </div>
     <div style="display:flex;gap:6px">
+      <button class="btn" style="background:#2563eb" onclick="openHelp()" title="Wat doet elke knop?">? Help</button>
       <button class="btn" style="background:#333" onclick="logout()">Logout</button>
       <button class="btn btn-purple" onclick="loadAll()">↻</button>
+    </div>
+  </div>
+
+  <!-- Help popup: plain-language description of every button, grouped by tab.
+       Opened via the "? Help" button in the header (openHelp/closeHelp). -->
+  <div id="helpOverlay" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeHelp()">
+    <div class="help-box">
+      <div class="help-head">
+        <h3>Help — wat doet elke knop?</h3>
+        <button class="help-x" onclick="closeHelp()">×</button>
+      </div>
+      <div class="help-body">
+        <div class="help-note">Klik een sectie open. Knopnamen staan zoals op het scherm; de uitleg is in het Nederlands.</div>
+
+        <details open><summary>Header &amp; algemeen</summary><div class="help-sec">
+          <div class="help-item"><b>? Help</b> — opent dit overzicht.</div>
+          <div class="help-item"><b>Logout</b> — logt je uit en wist de opgeslagen token in deze browser.</div>
+          <div class="help-item"><b>↻ (paars)</b> — ververst alle gegevens op het paneel.</div>
+          <div class="help-item"><b>Tabs (Devices / Console / Mower Debug / Maps / Firmware / Settings)</b> — wisselen tussen de secties.</div>
+        </div></details>
+
+        <details><summary>Devices — apparaten</summary><div class="help-sec">
+          <div class="help-item"><b>↻</b> — ververst de apparatenlijst.</div>
+          <div class="help-item"><b>Activate</b> — stelt deze maaier in als de actieve maaier (standaard doel voor commando's).</div>
+          <div class="help-item"><b>Deactivate</b> — zet de actieve maaier uit; geen maaier meer als standaard geselecteerd.</div>
+          <div class="help-item"><b>Bind</b> — koppelt een gevonden apparaat aan je account.</div>
+          <div class="help-item"><b>Remove</b> — verwijdert het apparaat uit de database.</div>
+          <div class="help-item"><b>⋯</b> — menu met extra acties (Unbind, Delete + Banish).</div>
+          <div class="help-item"><b>Unbind</b> — ontkoppelt het apparaat van je account (blijft in de DB).</div>
+          <div class="help-item warn"><b>Delete + Banish</b> — verwijdert het apparaat én blokkeert 2 uur opnieuw verbinden. Gebruik dit als je via de officiële Novabot-app opnieuw wilt provisionen.</div>
+          <div class="help-item"><b>✏️ (LoRa-chip)</b> — wijzigt LoRa-adres en -kanaal live via MQTT en verifieert het.</div>
+          <div class="help-item"><b>? (LoRa-chip)</b> — vraagt het LoRa-adres/kanaal op bij een apparaat waar dit nog onbekend is.</div>
+          <div class="help-item"><b>Unban now</b> — heft de MQTT-blokkade van een verbannen apparaat direct op.</div>
+          <div class="help-item"><b>Cancel (pending)</b> — annuleert een gereserveerde LoRa-koppeling.</div>
+        </div></details>
+
+        <details><summary>Console — server-logs</summary><div class="help-sec">
+          <div class="help-item"><b>Clear</b> — wist de getoonde logregels (alleen lokaal in de browser).</div>
+          <div class="help-item"><b>Copy</b> — kopieert de zichtbare logregels naar het klembord.</div>
+          <div class="help-item"><b>Filters (Mower/Charger/App/HTTP/System) + zoekbalk</b> — filteren de logstroom lokaal.</div>
+        </div></details>
+
+        <details><summary>Mower Debug (via extended_commands)</summary><div class="help-sec">
+          <div class="help-note">Vereist custom firmware (≥ v6.0.2-custom-24). Loopt via het extended-commands kanaal.</div>
+          <div class="help-item"><b>List log sources</b> — toont welke logbestanden op de maaier beschikbaar zijn.</div>
+          <div class="help-item"><b>Path files info</b> — info over de geplande-pad bestanden en de csv_file-map.</div>
+          <div class="help-item"><b>System info</b> — systeeminformatie van de maaier ophalen (zonder SSH).</div>
+          <div class="help-item"><b>Fetch</b> — haalt logregels van een ROS-bron op (met niveau- en zoekfilter).</div>
+          <div class="help-item"><b>Copy visible / Clear</b> — kopieer of wis de getoonde debug-uitvoer.</div>
+        </div></details>
+
+        <details><summary>Maps — Map Viewer</summary><div class="help-sec">
+          <div class="help-item"><b>↻</b> — ververst en hertekent de kaart van de geselecteerde maaier.</div>
+          <div class="help-item"><b>Calibrate Polygon Offset</b> — paneel om de hele kaart-polygoon in cm te verschuiven met live preview. Gebruik als de vorm klopt maar systematisch een paar cm verschoven ligt.</div>
+          <div class="help-item">↳ <b>pijlen / Reset / Cancel</b> — verschuiven de preview (Shift = 10 cm) of resetten/sluiten zonder opslaan.</div>
+          <div class="help-item warn">↳ <b>Apply</b> — slaat de verschuiving op en synct de héle kaart opnieuw naar de maaier (niet ongedaan te maken zonder opnieuw Apply).</div>
+          <div class="help-item"><b>Delete (per kaart)</b> — verwijdert die specifieke kaart van deze maaier.</div>
+        </div></details>
+
+        <details><summary>Maps — Portable Map Bundle</summary><div class="help-sec">
+          <div class="help-item"><b>Export bundle</b> — downloadt de polygonen + complete kaart als draagbaar <b>.novabotmap</b>-bestand (om te bewaren of te delen).</div>
+          <div class="help-item"><b>Import bundle…</b> — importeert een bundel (van de maaier of de RTK-walker) en start de herstelwizard.</div>
+          <div class="help-item"><b>Snapshot now</b> — maakt nu een back-up-momentopname van de huidige kaart.</div>
+          <div class="help-item"><b>Rebuild bundle (DB)</b> — bouwt een complete bundel uit de opgeslagen polygonen in de database, zonder de maaier nodig te hebben.</div>
+          <div class="help-item"><b>Import CSV zip…</b> — maakt een herstelbare bundel uit een zip van een csv_file-map.</div>
+          <div class="help-item"><b>↻ Refresh</b> — ververst de lijst met opgeslagen momentopnamen.</div>
+          <div class="help-item"><b>Restore / ⬇ / × (per snapshot)</b> — zet die momentopname terug op de maaier / downloadt / verwijdert.</div>
+        </div></details>
+
+        <details><summary>Maps — Herstelwizard (import)</summary><div class="help-sec">
+          <div class="help-item"><b>Restore to mower (verbatim)</b> — zet de bundel 1-op-1 terug op de maaier (geen rotatie, pos.json blijft ongemoeid).</div>
+          <div class="help-item"><b>Show preview overlay</b> — toont een satellietkaart-voorbeeld van waar de polygonen landen.</div>
+          <div class="help-item"><b>Rotatie (auto / 0° / 90° / …)</b> — draaien het kaartvoorbeeld om het op de luchtfoto te laten kloppen vóór bevestigen.</div>
+          <div class="help-item warn"><b>Confirm + apply</b> — past de geïmporteerde polygoon toe; wist bestaande kaarten en synct opnieuw.</div>
+          <div class="help-item"><b>Start drive backward + RTK lock</b> / <b>Snapshot anchor</b> — alleen voor oude bundels zonder kaartbestanden: ~1m achteruit voor een RTK-fix, dan de dock-GPS als anker opslaan.</div>
+          <div class="help-item"><b>Cancel</b> — annuleert de lopende import.</div>
+          <div class="help-note"><b>Her-ankeren na restore</b> gebeurt in de <b>app</b> (Re-anker-wizard): de maaier leidt z'n pos.json-origin opnieuw af uit de gedockte RTK-Fixed GPS en re-lockt door te rijden. Dat is GPS/RTK — géén "ArUco-snap" en het verschuift de charger-marker niet. Zie docs/reference/REANCHOR.md.</div>
+        </div></details>
+
+        <details><summary>Maps — Walker Maps</summary><div class="help-sec">
+          <div class="help-item"><b>↻</b> — ververst de door de RTK-walker geüploade kaartbundels.</div>
+          <div class="help-item"><b>Assign to mower…</b> — wijst een gewandelde kaartbundel toe aan een gekozen maaier en past hem toe.</div>
+          <div class="help-item"><b>Download / Delete</b> — downloadt of verwijdert de walker-bundel.</div>
+        </div></details>
+
+        <details><summary>Firmware</summary><div class="help-sec">
+          <div class="help-item"><b>Check for Updates</b> — controleert of er nieuwe firmware (maaier/charger) in het manifest staat.</div>
+          <div class="help-item"><b>Download (per update)</b> — downloadt die firmware (~35 MB) naar de server zodat je hem via OTA kunt uitrollen.</div>
+          <div class="help-item"><b>↻ (Available Firmware)</b> — synct en herlaadt de lokaal beschikbare firmwareversies.</div>
+          <div class="help-item"><b>Delete (per versie)</b> — verwijdert die firmwareversie van de server.</div>
+          <div class="help-item"><b>Refresh from manifest / Download to server (Walker)</b> — haalt RTK-walker firmware uit het manifest en downloadt de .bin naar de server.</div>
+          <div class="help-item warn"><b>Start Update</b> — start de OTA-update van het geselecteerde apparaat naar de gekozen versie. Het apparaat herstart tijdens de update.</div>
+        </div></details>
+
+        <details><summary>Settings — Netwerk &amp; systeem</summary><div class="help-sec">
+          <div class="help-item"><b>Start / Stop (dnsmasq)</b> — start/stopt de ingebouwde DNS-server die *.lfibot.com naar deze server omleidt.</div>
+          <div class="help-item"><b>Re-check DNS</b> — controleert of de LFI-domeinen naar deze lokale server wijzen i.p.v. de cloud.</div>
+          <div class="help-item"><b>Restart mDNS</b> — herstart de mDNS-aankondiger (opennova.local) zonder de container te herstarten.</div>
+          <div class="help-item"><b>Download iOS Profile / Android Certificate</b> — certificaat-installatie zodat de app deze server vertrouwt.</div>
+          <div class="help-item"><b>Connect &amp; Import (Cloud Import)</b> — (her)importeert apparaten + kaarten uit de Novabot-cloud; behoudt lokaal bewerkte data.</div>
+        </div></details>
+
+        <details><summary>Settings — Remote support &amp; debug</summary><div class="help-sec">
+          <div class="help-item"><b>Start / Stop Sharing (Remote Debug)</b> — streamt je MQTT-logs realtime naar een relay-URL zodat iemand kan meekijken.</div>
+          <div class="help-item"><b>Remote support OFF/ON</b> — staat (na jouw goedkeuring) een bash-sessie in je container toe om te helpen.</div>
+          <div class="help-item"><b>Kill Active Session</b> — beëindigt direct de actieve remote-support-sessie.</div>
+          <div class="help-item"><b>Receive Logs: Clear / Copy / Refresh / Clear All</b> — beheer van ontvangen logs (lokaal wissen, kopiëren, verversen, of op de server wissen).</div>
+        </div></details>
+
+        <details><summary>Settings — Debug &amp; gevaarzone</summary><div class="help-sec">
+          <div class="help-item warn"><b>Recalibrate Charging Pose</b> — schrijft de huidige maaierpositie weg als charger-marker (3 files). Dit is een <b>aparte</b> operatie en <b>geen</b> her-ankeren: alleen gebruiken als de polygoonvorm klopt maar de dock-pose verschoven is, én het frame bevestigd RTK-Fixed is. Verschuift het frame niet.</div>
+          <div class="help-item"><b>Clear trail (Position Validation)</b> — wist de opgenomen dubbele positie-trail (firmware map_position vs. RTK-GPS).</div>
+          <div class="help-item warn"><b>Factory Reset</b> — verwijdert permanent ALLES (account, apparaten, kaarten, schema's, instellingen) en start opnieuw met de setup. Niet ongedaan te maken.</div>
+        </div></details>
+
+        <details><summary>Eerste opstart / Login</summary><div class="help-sec">
+          <div class="help-item"><b>Connect &amp; Import from Cloud</b> — eerste opstart: cloud-login, lokaal admin-account aanmaken en apparaten + kaarten importeren.</div>
+          <div class="help-item"><b>Skip cloud import</b> — maakt een leeg lokaal account (admin@local / admin) zonder cloud-import.</div>
+          <div class="help-item"><b>Login</b> — inloggen met je OpenNova-account.</div>
+        </div></details>
+      </div>
     </div>
   </div>
 
@@ -455,7 +593,7 @@ export function adminPageHtml(): string {
           <div style="font-size:12px;font-weight:600;color:#67e8f9">Portable Map Bundle <span style="background:rgba(16,185,129,.15);color:#86efac;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:6px">RECOMMENDED</span></div>
         </div>
         <div style="font-size:11px;color:#94a3b8;line-height:1.6;margin-bottom:8px">
-          Export the polygons + a complete rasterized map (map.pgm/png/yaml + per-map) as a portable .novabotmap bundle. Single restore path: "Restore to mower" pushes the bundle verbatim (no rotation, pos.json untouched), then you dock-cycle the mower (1m back + ArUco redock) so the dock heading + charger pos refresh and the charger-relative map lines up. Auto-snapshots every successful save_map (last 20 retained per mower).
+          Export the polygons + a complete rasterized map (map.pgm/png/yaml + per-map) as a portable .novabotmap bundle. Single restore path: "Restore to mower" pushes the bundle verbatim (no rotation, pos.json untouched). After the restore, re-anchor in the app (Re-anchor wizard): the mower re-derives its pos.json UTM origin from the dock's RTK-Fixed GPS and re-locks by driving (GPS/RTK, not an "ArUco snap"). Auto-snapshots every successful save_map (last 20 retained per mower).
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <button onclick="exportPortableBundle()" style="padding:7px 18px;background:rgba(34,211,238,.2);color:#67e8f9;border:1px solid rgba(34,211,238,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Export bundle</button>
@@ -844,6 +982,20 @@ export function adminPageHtml(): string {
 let token = localStorage.getItem('admin_token') || '';
 
 // Modern modal dialogs (replaces alert/confirm)
+function openHelp() {
+  var o = document.getElementById('helpOverlay');
+  if (!o) return;
+  o.style.display = 'flex';
+  requestAnimationFrame(function(){ o.classList.add('show'); });
+}
+function closeHelp() {
+  var o = document.getElementById('helpOverlay');
+  if (!o) return;
+  o.classList.remove('show');
+  setTimeout(function(){ o.style.display = 'none'; }, 200);
+}
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeHelp(); });
+
 function showModal(title, msg, buttons) {
   return new Promise(function(resolve) {
     var overlay = document.createElement('div');
@@ -3337,14 +3489,15 @@ function renderPortableImportWizard(sn, state) {
     if (portableVerbatimRestore) {
       // Single restore path. The bundle carries a complete map (csv_file/ +
       // server-generated map.pgm/png/yaml + per-map). Restore pushes it to the
-      // mower 1-to-1 (no Δ rotation, pos.json untouched); the dock-cycle
-      // (1m back + ArUco redock) then refreshes the dock heading + charger pos
-      // so the charger-relative map is valid in the live frame.
+      // mower 1-to-1 (no Δ rotation, pos.json untouched). Re-anchoring then
+      // happens in the app's Re-anchor wizard: the mower re-derives its pos.json
+      // UTM origin from the dock's RTK-Fixed GPS and re-locks by driving
+      // (GPS/RTK only — NOT an ArUco snap). See docs/reference/REANCHOR.md.
       var xsn = portableSourceSn && !portableSourceSnMatches;
       html += '<div style="flex-basis:100%;font-size:10px;color:' + (xsn ? '#fbbf24' : '#86efac') + ';margin-bottom:4px">'
-        + (xsn ? 'Bundle source ' + portableSourceSn + ' differs from target — pos.json is left untouched so this is safe; verify after the dock-cycle. '
+        + (xsn ? 'Bundle source ' + portableSourceSn + ' differs from target — pos.json is left untouched so this is safe; re-anchor in the app afterward. '
                : 'Complete bundle (csv + rasterized map.pgm/png/yaml + per-map). ')
-        + 'Restore pushes it to the mower, then you dock-cycle (1m back + ArUco redock).</div>';
+        + 'Restore pushes it to the mower 1-to-1; re-anchor afterward in the app (Re-anchor wizard).</div>';
       html += '<button onclick="portableApplyVerbatim()" style="padding:6px 12px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Restore to mower</button>';
     } else {
       html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">Legacy bundle with no map files — falls back to the drive+realign flow.</div>';
@@ -3384,7 +3537,7 @@ function renderPortableImportWizard(sn, state) {
 
 async function portableApplyVerbatim() {
   var sn = document.getElementById('mapMowerSelect').value;
-  var msg = 'Restore to mower: pushes csv_file/ + the rasterized map.pgm/png/yaml (+ per-map) back 1-to-1. No rotation, pos.json left untouched. After this you dock-cycle (1m back + ArUco redock) so the dock heading + charger pos refresh. Continue?';
+  var msg = 'Restore to mower: pushes csv_file/ + the rasterized map.pgm/png/yaml (+ per-map) back 1-to-1. No rotation, pos.json left untouched. After this, re-anchor in the app (Re-anchor wizard): the mower re-derives its pos.json origin from the dock RTK-Fixed GPS and re-locks by driving. Continue?';
   if (!(await appConfirm(msg, { okText: 'Restore to mower' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-verbatim', {
     method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
@@ -3393,7 +3546,7 @@ async function portableApplyVerbatim() {
   if (!j.ok) {
     // Cross-SN block — let the operator force if they really know what they're doing.
     if (j.sourceSn && j.targetSn && j.sourceSn !== j.targetSn) {
-      var forceMsg = "Bundle was made on " + j.sourceSn + ", not " + j.targetSn + ". The map is charger-relative and pos.json is left untouched, so this is generally safe; the dock-cycle re-anchors the frame. Continue?";
+      var forceMsg = "Bundle was made on " + j.sourceSn + ", not " + j.targetSn + ". The map is charger-relative and pos.json is left untouched, so this is generally safe; re-anchor in the app afterward. Continue?";
       if (!(await appConfirm(forceMsg, { destructive: true, okText: 'Force verbatim' }))) {
         portableCheckActive(sn);
         return;
@@ -3427,14 +3580,19 @@ async function portableApplyVerbatim() {
   if (j.requires_dock_anchor_refresh) await promptDockAnchorRefresh(sn);
 }
 
-// After any restore, the mower's pos.json (UTM anchor) no longer matches
-// reality. The mower's own docking flow rewrites pos.json on a successful
-// dock cycle — we just need to nudge the user (or the mower) through one.
+// After a restore the saved frame no longer matches the live UTM frame.
+// Re-anchoring re-derives pos.json's UTM origin from the dock's RTK-Fixed GPS;
+// the app's Re-anchor wizard (reanchor_pos + /load_utm_origin_info) is the
+// authoritative path. This older admin flow drives ~1m so localization
+// re-derives the origin from GPS on a clean fix — it is NOT an "ArUco snap",
+// and stock firmware does NOT save_utm_origin on docking. See
+// docs/reference/REANCHOR.md.
 async function promptDockAnchorRefresh(sn) {
   var explanation =
-    'Polygons restored, but the mower\\'s UTM anchor is stale until the next docking. ' +
-    'Without a refresh, the local frame may be 1-2m off from physical reality and ' +
-    'polygons would land in the wrong spot. Pick one:';
+    'Polygons restored, but the mower\\'s UTM anchor is stale until you re-anchor. ' +
+    'Without it the local frame may be 1-2m off and polygons land in the wrong spot. ' +
+    'The app\\'s Re-anchor wizard is the recommended path (it re-derives pos.json from ' +
+    'the dock RTK-Fixed GPS). Or pick one here:';
   var choice = await appModal({
     title: 'Dock anchor refresh required',
     body: explanation,
@@ -3495,7 +3653,7 @@ async function pollDockAnchorAuto(sn) {
         bodyEl.style.whiteSpace = 'pre-line';
       }
       if (battery === 'Charging' && elapsed > 10) {
-        if (bodyEl) bodyEl.textContent += '\\n\\nDocked! UTM anchor refreshed via save_utm_origin.';
+        if (bodyEl) bodyEl.textContent += '\\n\\nDocked. The drive should have re-derived the UTM origin from GPS. If the frame is still off, re-anchor in the app (Re-anchor wizard).';
         return;
       }
     } catch (e) { /* keep polling */ }
