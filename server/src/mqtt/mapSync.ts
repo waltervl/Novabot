@@ -20,10 +20,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { mapRepo, equipmentRepo, userRepo, deviceRepo, deviceSettingsRepo } from '../db/repositories/index.js';
 import { selectParaRepush } from './paraRepush.js';
 import { emitDeviceBound, emitDevicePaired } from '../dashboard/socketHandler.js';
-import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
+import { gpsToLocal, generateMapZipFromDb, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
-import { isSnBanned } from './broker.js';
+import { isSnBanned, isDeviceOnline } from './broker.js';
 import { isFrameNavBlocked, noteAutoRecharge } from '../services/frameValidation.js';
+import { hasPendingMapSync, clearPendingMapSync } from '../services/pendingMapSync.js';
 
 const TAG = '[MAP-SYNC]';
 
@@ -561,6 +562,70 @@ function republishParaSettings(sn: string): void {
   publishToDevice(sn, { set_para_info: para });
 }
 
+/**
+ * Push de in de DB opgeslagen kaart naar de maaier via DEZELFDE sync_map
+ * mechaniek die de admin "Import bundle" → restore gebruikt — maar ZONDER
+ * realign: geen charger-GPS overschrijven, geen frame_unvalidated, geen
+ * on-dock/RTK-FIX eis. De cloud-GPS uit de kaart blijft behouden.
+ *
+ * Sequentie (gelijk aan restore-and-realign, minus de realign-stappen):
+ *   1. `<SN>_latest.zip` (her)genereren — verrijkt uit backup indien aanwezig,
+ *      anders direct uit de DB.
+ *   2. `sync_map` extended command → maaier downloadt de zip via HTTP + past toe.
+ *   3. Wacht op `sync_map_respond` (result===0), max 8s.
+ *   4. `save_map type:1` → maaier rendert map.yaml/pgm/png uit de verse CSVs.
+ *   5. `regenerate_per_map_files` → per-map slot files (Nav2 start_navigation).
+ *
+ * Vereist OpenNova-firmware (extended commands) + maaier online. Wordt fire-and
+ * -forget aangeroepen; bij offline/timeout blijft de pending-vlag staan zodat
+ * `onMowerConnected` het later opnieuw probeert.
+ */
+export async function pushMapToMowerViaSyncMap(
+  sn: string,
+): Promise<{ ok: boolean; offline?: boolean; timeout?: boolean; noMaps?: boolean }> {
+  if (!sn.startsWith('LFIN')) return { ok: false };
+
+  // 1. Zorg dat <SN>_latest.zip de huidige DB/backup weerspiegelt.
+  try {
+    const { regenerateLatestZipFromBackup } = await import('../services/mapBackup.js');
+    const zipPath = regenerateLatestZipFromBackup(sn) ?? generateMapZipFromDb(sn, 0);
+    if (!zipPath) return { ok: false, noMaps: true };
+  } catch (err) {
+    console.warn(`${TAG} pushMapToMowerViaSyncMap: zip-regen mislukt voor ${sn}:`, err);
+    return { ok: false };
+  }
+
+  if (!isDeviceOnline(sn)) return { ok: false, offline: true };
+
+  // 2-3. sync_map + wacht op respond.
+  const result = await new Promise<{ ok: boolean; timeout?: boolean }>((resolve) => {
+    let settled = false;
+    const handler = (data: Record<string, unknown>) => {
+      const respond = data.sync_map_respond as Record<string, unknown> | undefined;
+      if (!respond || settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: respond.result === 0 });
+    };
+    onExtendedResponse(sn, handler);
+    publishToExtended(sn, { sync_map: {} });
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      resolve({ ok: false, timeout: true });
+    }, 8000);
+  });
+
+  // 4-5. Re-render map artifacts + per-map slot files (alleen na succes).
+  if (result.ok) {
+    publishToDevice(sn, { save_map: { type: 1, mapName: 'map', totalArea: 0 } });
+    setTimeout(() => publishToExtended(sn, { regenerate_per_map_files: {} }), 3000);
+    console.log(`${TAG} sync_map push OK voor ${sn} (save_map type:1 + regenerate_per_map_files verzonden)`);
+  }
+  return result;
+}
+
 export function onMowerConnected(sn: string): void {
   if (pendingRequests.has(sn)) return;
 
@@ -594,6 +659,22 @@ export function onMowerConnected(sn: string): void {
       // Door de gebruiker gekozen para-settings (o.a. obstacle_avoidance_sensitivity)
       // opnieuw toepassen — de firmware persisteert ze niet over een reboot heen.
       republishParaSettings(sn);
+
+      // Uitgestelde map-push: een cloud-import wachtte tot de maaier online was.
+      // Push nu de geïmporteerde kaart via sync_map en wis de vlag bij succes.
+      if (hasPendingMapSync(sn)) {
+        console.log(`${TAG} Pending map-sync voor ${sn} — kaart pushen via sync_map...`);
+        pushMapToMowerViaSyncMap(sn)
+          .then((r) => {
+            if (r.ok) {
+              clearPendingMapSync(sn);
+              console.log(`${TAG} Pending map-sync voltooid voor ${sn}`);
+            } else {
+              console.log(`${TAG} Pending map-sync nog niet gelukt voor ${sn} (${r.timeout ? 'timeout' : r.noMaps ? 'geen kaarten' : 'mislukt'}) — opnieuw bij volgende connect`);
+            }
+          })
+          .catch((e) => console.warn(`${TAG} Pending map-sync fout voor ${sn}:`, e));
+      }
 
       // OpenNova firmware detectie: alleen onze firmware heeft extended_commands.py
       publishToExtended(sn, { is_opennova: {} });

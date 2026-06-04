@@ -517,6 +517,29 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               } catch (bundleErr) {
                 console.warn(`[Setup] Auto-bundle generation failed (non-fatal):`, bundleErr);
               }
+
+              // Push the freshly imported map onto the mower via the same
+              // sync_map mechanism the admin "Import bundle" → restore uses
+              // (no realign: cloud GPS is kept, no dock/RTK-FIX requirement).
+              // If the mower is offline now (typical on first-time import), a
+              // pending flag is set and onMowerConnected pushes it on connect.
+              try {
+                const { pushMapToMowerViaSyncMap } = await import('../mqtt/mapSync.js');
+                const { markPendingMapSync, clearPendingMapSync } = await import('../services/pendingMapSync.js');
+                markPendingMapSync(mower.sn);
+                void pushMapToMowerViaSyncMap(mower.sn)
+                  .then((r) => {
+                    if (r.ok) {
+                      clearPendingMapSync(mower.sn);
+                      console.log(`[Setup] Map pushed to ${mower.sn} via sync_map`);
+                    } else {
+                      console.log(`[Setup] Map push deferred for ${mower.sn} (${r.offline ? 'offline' : r.timeout ? 'timeout' : r.noMaps ? 'no maps' : 'pending'}) — will push on next connect`);
+                    }
+                  })
+                  .catch((e) => console.warn(`[Setup] Map push error for ${mower.sn}:`, e));
+              } catch (pushErr) {
+                console.warn(`[Setup] Map push setup failed (non-fatal):`, pushErr);
+              }
             }
           }
         }
