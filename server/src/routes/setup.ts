@@ -20,6 +20,7 @@ import path from 'path';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo } from '../db/repositories/index.js';
 import { isSetupComplete, invalidateSetupCache } from '../middleware/setupGuard.js';
 import { importCloudWorkRecords } from '../services/cloudWorkRecordsImport.js';
+import { fillMissingUnicomPaths } from '../maps/unicomConnector.js';
 // LFI cloud helpers were extracted to `src/services/lfiCloud.ts` on 2026-04-23
 // so cloud-api routes can import them without reaching into `routes/setup.ts`
 // (the cloud-api freeze forbids that direction). Re-export here so existing
@@ -427,10 +428,19 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               console.warn(`[Setup] ⚠ ${importErrors} map(s) failed to import for ${mower.sn}`);
             }
 
-            // Geen auto-generatie van unicom paddata meer.
-            // LFI cloud slaat inter-map unicom channels op als 0-byte CSV — by design.
-            // De app checkt alleen fileName.startsWith("mapX") voor zone selectie,
-            // NIET of er daadwerkelijk paddata is. Metadata-only records zijn voldoende.
+            // Reconstruct inter-zone unicom connector paths. LFI ships these
+            // channels 0-byte (path data lives only on a natively-mapped
+            // mower). Without a path the connector is dropped by the bundle
+            // filter, leaving multi-zone maps with unbridged necks that the
+            // costmap inflation seals shut. We fill them with a union-clipped
+            // path so the bundle keeps a navigable corridor. (Reverses the
+            // mower-breaking half of f6191a46; see spec 2026-06-05.)
+            try {
+              const n = fillMissingUnicomPaths(mower.sn);
+              if (n > 0) console.log(`[Setup] Reconstructed ${n} unicom connector(s) for ${mower.sn}`);
+            } catch (e) {
+              console.warn(`[Setup] unicom reconstruction failed (non-fatal):`, e);
+            }
 
             // Import chargingPose for map calibration
             const machineField = mapVal?.machineExtendedField as Record<string, unknown> | undefined;
@@ -454,6 +464,12 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 console.log(`[Setup] Charger GPS imported: lat=${poseY}, lng=${poseX}`);
               } else {
                 console.log(`[Setup] ChargingPose is local meters (x=${poseX}, y=${poseY})`);
+              }
+              // Preserve the cloud charging-pose orientation so the generated
+              // bundle keeps it (createBundleFromDb reads polygon_charging_orientation).
+              const poseOrient = parseFloat((chargingPose.orientation as string) ?? 'NaN');
+              if (Number.isFinite(poseOrient) && poseOrient !== 0) {
+                mapRepo.setPolygonChargingOrientation(mower.sn, poseOrient);
               }
             }
 
