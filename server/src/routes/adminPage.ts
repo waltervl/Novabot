@@ -2,6 +2,7 @@
  * Admin page — self-contained HTML with login + status dashboard.
  * No build step needed — pure inline HTML/CSS/JS.
  */
+import { ADMIN_I18N } from './adminI18n.js';
 
 export function adminPageHtml(): string {
   return `<!DOCTYPE html>
@@ -200,6 +201,90 @@ export function adminPageHtml(): string {
 </style>
 </head>
 <body>
+<!-- i18n: client-side translate-by-source-string layer (EN/NL/FR/DE). The dict
+     (server/src/routes/adminI18n.ts) maps rendered source text to 4 languages.
+     The applier walks the LIVE DOM (so JS-rendered content is covered too) and a
+     MutationObserver translates dynamically-added nodes. Source is English,
+     except the "? Help" popup (Dutch). Switch via #langSelect in the header. -->
+<script>
+window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
+(function(){
+  var T = window.__ADMIN_I18N__ || {};
+  var LANGS = ['en','nl','fr','de'];
+  var origText = new WeakMap();
+  var origAttr = new WeakMap();
+  var curLang = 'en';
+  function pickLang(){
+    try { var s = localStorage.getItem('adminLang'); if (s && LANGS.indexOf(s) >= 0) return s; } catch(e){}
+    var n = (navigator.language || 'en').slice(0,2).toLowerCase();
+    return LANGS.indexOf(n) >= 0 ? n : 'en';
+  }
+  function tr(src, lang){ var e = T[src]; if (!e) return null; var v = e[lang]; return (typeof v === 'string' && v) ? v : null; }
+  var SKIP = { SCRIPT:1, STYLE:1, TEXTAREA:1, CODE:1, PRE:1, OPTION:1 };
+  function skipNode(p){
+    while (p){ if (p.nodeType === 1 && (SKIP[p.tagName] || (p.getAttribute && p.getAttribute('data-no-i18n') !== null))) return true; p = p.parentNode; }
+    return false;
+  }
+  function translateText(node, lang){
+    var raw = node.nodeValue; if (!raw) return;
+    var trimmed = raw.trim(); if (!trimmed) return;
+    var src = origText.get(node);
+    if (src === undefined){ src = trimmed; origText.set(node, src); }
+    var t = tr(src, lang);
+    if (t !== null){
+      var lead = raw.match(/^\\s*/)[0]; var tail = raw.match(/\\s*$/)[0];
+      var next = lead + t + tail;
+      if (node.nodeValue !== next) node.nodeValue = next;
+    }
+  }
+  var ATTRS = ['placeholder','title','aria-label'];
+  function translateAttrs(el, lang){
+    if (!el || el.nodeType !== 1 || !el.getAttribute) return;
+    if (el.getAttribute('data-no-i18n') !== null) return;
+    var store = origAttr.get(el); if (store === undefined){ store = {}; origAttr.set(el, store); }
+    for (var i=0;i<ATTRS.length;i++){
+      var a = ATTRS[i]; var cur = el.getAttribute(a); if (cur == null) continue;
+      var src = store[a]; if (src === undefined){ src = cur.trim(); store[a] = src; }
+      var t = tr(src, lang); if (t !== null && el.getAttribute(a) !== t) el.setAttribute(a, t);
+    }
+  }
+  function walk(root, lang){
+    if (root.nodeType === 1){
+      translateAttrs(root, lang);
+      if (root.querySelectorAll){ var els = root.querySelectorAll('[placeholder],[title],[aria-label]'); for (var i=0;i<els.length;i++) translateAttrs(els[i], lang); }
+    }
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var nodes = []; var n;
+    while ((n = w.nextNode())){ if (!skipNode(n.parentNode)) nodes.push(n); }
+    for (var j=0;j<nodes.length;j++) translateText(nodes[j], lang);
+  }
+  function applyAll(lang){ curLang = lang; try { walk(document.body, lang); } catch(e){} }
+  window.__setLang = function(lang){
+    if (LANGS.indexOf(lang) < 0) lang = 'en';
+    try { localStorage.setItem('adminLang', lang); } catch(e){}
+    applyAll(lang);
+    var sel = document.getElementById('langSelect'); if (sel) sel.value = lang;
+  };
+  function init(){
+    curLang = pickLang();
+    var sel = document.getElementById('langSelect'); if (sel) sel.value = curLang;
+    applyAll(curLang);
+    var obs = new MutationObserver(function(muts){
+      for (var i=0;i<muts.length;i++){
+        var added = muts[i].addedNodes;
+        for (var k=0;k<added.length;k++){
+          var nd = added[k];
+          if (nd.nodeType === 1) walk(nd, curLang);
+          else if (nd.nodeType === 3 && !skipNode(nd.parentNode)) translateText(nd, curLang);
+        }
+      }
+    });
+    obs.observe(document.body, { childList:true, subtree:true });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
 
 <!-- Login (hidden when first-time setup is shown) -->
 <div id="login" class="login-box" style="display:none">
@@ -256,6 +341,12 @@ export function adminPageHtml(): string {
       <div class="chips" id="serverInfo"><span class="chip">Loading...</span></div>
     </div>
     <div style="display:flex;gap:6px">
+      <select id="langSelect" data-no-i18n onchange="window.__setLang(this.value)" title="Language / Taal / Langue / Sprache" style="background:#222;color:#cbd5e1;border:1px solid #444;border-radius:8px;padding:6px 8px;font-size:13px;cursor:pointer">
+        <option value="en">English</option>
+        <option value="nl">Nederlands</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+      </select>
       <button class="btn" style="background:#2563eb" onclick="openHelp()" title="Wat doet elke knop?">? Help</button>
       <button class="btn" style="background:#333" onclick="logout()">Logout</button>
       <button class="btn btn-purple" onclick="loadAll()">↻</button>
