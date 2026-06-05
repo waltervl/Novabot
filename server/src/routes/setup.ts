@@ -538,19 +538,29 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               // If the mower is offline now (typical on first-time import), a
               // pending flag is set and onMowerConnected pushes it on connect.
               try {
-                const { pushMapToMowerVerbatim } = await import('../mqtt/mapSync.js');
-                const { markPendingMapSync, clearPendingMapSync } = await import('../services/pendingMapSync.js');
-                markPendingMapSync(mower.sn);
-                void pushMapToMowerVerbatim(mower.sn, cloudBundleFile)
-                  .then((r) => {
-                    if (r.ok) {
-                      clearPendingMapSync(mower.sn);
-                      console.log(`[Setup] Map pushed to ${mower.sn} via apply-verbatim`);
-                    } else {
-                      console.log(`[Setup] Map push deferred for ${mower.sn} (${r.offline ? 'offline' : r.noBundle ? 'no bundle' : r.noFiles ? 'no mower files' : 'pending'}) — will push on next connect`);
-                    }
-                  })
-                  .catch((e) => console.warn(`[Setup] Map push error for ${mower.sn}:`, e));
+                // Only push (and mark pending) when we actually generated a
+                // fresh bundle this import. Without a bundle, pushing with no
+                // filename would fall back to listBackups(sn)[0] = the newest
+                // EXISTING backup, which could be a stale, unrelated map for
+                // this SN. Remember the exact bundle so the deferred re-push
+                // targets it, not the newest-backup heuristic.
+                if (cloudBundleFile) {
+                  const { pushMapToMowerVerbatim } = await import('../mqtt/mapSync.js');
+                  const { markPendingMapSync, clearPendingMapSync } = await import('../services/pendingMapSync.js');
+                  markPendingMapSync(mower.sn, cloudBundleFile);
+                  void pushMapToMowerVerbatim(mower.sn, cloudBundleFile)
+                    .then((r) => {
+                      if (r.ok) {
+                        clearPendingMapSync(mower.sn);
+                        console.log(`[Setup] Map pushed to ${mower.sn} via apply-verbatim`);
+                      } else {
+                        console.log(`[Setup] Map push deferred for ${mower.sn} (${r.offline ? 'offline' : r.noBundle ? 'no bundle' : r.noFiles ? 'no mower files' : 'pending'}) — will push on next connect`);
+                      }
+                    })
+                    .catch((e) => console.warn(`[Setup] Map push error for ${mower.sn}:`, e));
+                } else {
+                  console.warn(`[Setup] No fresh bundle for ${mower.sn} — skipping map push (no stale-backup fallback)`);
+                }
               } catch (pushErr) {
                 console.warn(`[Setup] Map push setup failed (non-fatal):`, pushErr);
               }

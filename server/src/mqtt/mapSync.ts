@@ -24,7 +24,7 @@ import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
 import { isSnBanned, isDeviceOnline } from './broker.js';
 import { isFrameNavBlocked, noteAutoRecharge } from '../services/frameValidation.js';
-import { hasPendingMapSync, clearPendingMapSync } from '../services/pendingMapSync.js';
+import { hasPendingMapSync, clearPendingMapSync, getPendingMapSync } from '../services/pendingMapSync.js';
 
 const TAG = '[MAP-SYNC]';
 
@@ -700,8 +700,12 @@ export function onMowerConnected(sn: string): void {
       // Uitgestelde map-push: een cloud-import wachtte tot de maaier online was.
       // Push nu de geïmporteerde kaart via apply-verbatim en wis de vlag bij succes.
       if (hasPendingMapSync(sn)) {
-        console.log(`${TAG} Pending map-push voor ${sn} — kaart pushen via apply-verbatim...`);
-        pushMapToMowerVerbatim(sn)
+        // Push de EXACT onthouden bundle (niet de nieuwste backup-heuristiek).
+        // getPendingMapSync geeft undefined terug bij een legacy-vlag → dan valt
+        // pushMapToMowerVerbatim alsnog terug op de nieuwste backup.
+        const pendingBundle = getPendingMapSync(sn);
+        console.log(`${TAG} Pending map-push voor ${sn} — kaart pushen via apply-verbatim${pendingBundle ? ` (${pendingBundle})` : ''}...`);
+        pushMapToMowerVerbatim(sn, pendingBundle)
           .then((r) => {
             if (r.ok) {
               clearPendingMapSync(sn);

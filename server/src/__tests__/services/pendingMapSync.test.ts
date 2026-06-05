@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { markPendingMapSync, clearPendingMapSync, hasPendingMapSync } from '../../services/pendingMapSync.js';
+import {
+  markPendingMapSync,
+  clearPendingMapSync,
+  hasPendingMapSync,
+  getPendingMapSync,
+} from '../../services/pendingMapSync.js';
 
 describe('pendingMapSync', () => {
   it('is false for an unknown mower', () => {
@@ -24,5 +29,28 @@ describe('pendingMapSync', () => {
     markPendingMapSync('LFIN_D');
     expect(hasPendingMapSync('LFIN_C')).toBe(false);
     expect(hasPendingMapSync('LFIN_D')).toBe(true);
+  });
+
+  it('remembers the bundle filename for a targeted re-push', () => {
+    markPendingMapSync('LFIN_E', 'LFIN_E_cloud-import_20260605.zip');
+    expect(hasPendingMapSync('LFIN_E')).toBe(true);
+    expect(getPendingMapSync('LFIN_E')).toBe('LFIN_E_cloud-import_20260605.zip');
+  });
+
+  it('returns undefined filename when marked without one (legacy flag)', () => {
+    markPendingMapSync('LFIN_F');
+    expect(hasPendingMapSync('LFIN_F')).toBe(true);
+    expect(getPendingMapSync('LFIN_F')).toBeUndefined();
+  });
+
+  it('forgets the filename after clear', () => {
+    markPendingMapSync('LFIN_G', 'bundle.zip');
+    clearPendingMapSync('LFIN_G');
+    expect(hasPendingMapSync('LFIN_G')).toBe(false);
+    expect(getPendingMapSync('LFIN_G')).toBeUndefined();
+  });
+
+  it('getPendingMapSync is undefined for an unknown mower', () => {
+    expect(getPendingMapSync('LFIN_NONE2')).toBeUndefined();
   });
 });
