@@ -3,6 +3,7 @@ import { Clock, Ruler, TreePine, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { WorkRecord } from '../../types';
 import { fetchWorkRecords } from '../../api/client';
+import { formatCutGrassHeightCm } from '../../utils/workRecords';
 
 interface Props {
   sn: string;
@@ -17,6 +18,7 @@ export function WorkHistory({ sn }: Props) {
   const [loading, setLoading] = useState(true);
 
   const loadMore = useCallback(async (offset: number, append: boolean) => {
+    if (!append) setLoading(true);
     try {
       const data = await fetchWorkRecords(sn, PAGE_SIZE, offset);
       setRecords(prev => append ? [...prev, ...data.records] : data.records);
@@ -26,8 +28,10 @@ export function WorkHistory({ sn }: Props) {
   }, [sn]);
 
   useEffect(() => {
-    setLoading(true);
-    loadMore(0, false);
+    const timer = window.setTimeout(() => {
+      loadMore(0, false);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [sn, loadMore]);
 
   const hasMore = records.length < total;
@@ -64,6 +68,7 @@ function RecordRow({ record }: { record: WorkRecord }) {
   const d = new Date(date.includes('T') || date.includes(' ') ? date : date + 'Z');
   const dateStr = isNaN(d.getTime()) ? date : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
   const timeStr = isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const cutGrassHeightCm = formatCutGrassHeightCm(record.cutGrassHeight);
 
   const statusColor = record.workStatus === 'complete' || record.workStatus === 'COMPLETE'
     ? 'text-emerald-400' : record.workStatus === 'cancelled' || record.workStatus === 'CANCELLED'
@@ -97,10 +102,10 @@ function RecordRow({ record }: { record: WorkRecord }) {
             {t('history.area', { area: record.workArea.toFixed(0) })}
           </span>
         )}
-        {record.cutGrassHeight != null && record.cutGrassHeight > 0 && (
+        {cutGrassHeightCm != null && (
           <span className="inline-flex items-center gap-1">
             <Ruler className="w-3 h-3 text-yellow-400" />
-            {t('history.height', { cm: (record.cutGrassHeight / 10).toFixed(1) })}
+            {t('history.height', { cm: cutGrassHeightCm })}
           </span>
         )}
         {record.mapNames && (

@@ -156,9 +156,10 @@ const STYLE = `
  * a `?ts=...` query parameter.
  */
 export function renderMowerMapSvg(sn: string): string {
-  const maps = readMaps(sn);
-  const trail = getLocalTrail(sn).map(p => ({ x: p.x, y: p.y }));
-  const { pose, theta } = readMowerPose(sn);
+  const mowerSn = sn.toUpperCase();
+  const maps = readMaps(mowerSn);
+  const trail = getLocalTrail(mowerSn).map(p => ({ x: p.x, y: p.y }));
+  const { pose, theta } = readMowerPose(mowerSn);
   const charger: Pt = { x: 0, y: 0 };
 
   const allPts: Pt[][] = [];
@@ -209,7 +210,7 @@ export function renderMowerMapSvg(sn: string): string {
       </g>`;
   }
 
-  const progress = readProgressLabel(sn);
+  const progress = readProgressLabel(mowerSn);
   const badge = progress
     ? `<g>
          <rect x="12" y="${SVG_H - 32}" width="${Math.max(80, progress.length * 8)}" height="22" rx="4" fill="#0f172a" opacity="0.78" />
@@ -217,12 +218,12 @@ export function renderMowerMapSvg(sn: string): string {
        </g>`
     : '';
 
-  const titleLabel = `<text class="label" x="12" y="20">Mower ${sn}</text>`;
+  const titleLabel = `<text class="label" x="12" y="20">Mower ${mowerSn}</text>`;
 
   // Status badge — always visible, top-right. Shows work-status text +
   // recharge state + battery so the picture-entity is never empty even when
   // no work map / trail / mower-pose data is available.
-  const status = readStatusBadge(sn);
+  const status = readStatusBadge(mowerSn);
   const statusBadge = status
     ? `<g>
          <rect x="${SVG_W - Math.max(120, status.length * 7) - 12}" y="10"

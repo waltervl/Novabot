@@ -60,6 +60,20 @@ describe('renderMowerMapSvg', () => {
     expect(out).toContain('<polygon');
   });
 
+  it('normalizes lowercase URL SNs before map lookup', () => {
+    vi.mocked(mapRepo.findWithArea).mockImplementation((sn: string) => (
+      sn === SN
+        ? [row('map0', 'work', [{x: 0, y: 0}, {x: 4, y: 0}, {x: 4, y: 4}, {x: 0, y: 4}])]
+        : []
+    ));
+
+    const out = renderMowerMapSvg(SN.toLowerCase());
+
+    expect(mapRepo.findWithArea).toHaveBeenCalledWith(SN);
+    expect(out).toContain('class="work-fill"');
+    expect(out).not.toContain('No work map yet');
+  });
+
   it('renders obstacles dashed red and unicom as polylines', () => {
     vi.mocked(mapRepo.findWithArea).mockReturnValue([
       row('map0_0_obstacle', 'obstacle', [{x: 1, y: 1}, {x: 2, y: 1}, {x: 2, y: 2}]),
