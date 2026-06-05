@@ -340,6 +340,25 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 continue;
               }
               if (!csvUrl) {
+                // Inter-zone unicom channels arrive 0-byte with no URL (LFI by
+                // design). Persist them metadata-only so fillMissingUnicomPaths
+                // can reconstruct their path later — without the record there is
+                // nothing to fill. Work/obstacle items still require a URL.
+                if (mapType === 'unicom') {
+                  const mapId = uuidv4();
+                  const rawAlias = typeof item.alias === 'string' ? item.alias.trim() : '';
+                  const alias = rawAlias === '' ? null : rawAlias;
+                  const mapData = {
+                    map_id: mapId, mower_sn: mower.sn, map_name: alias,
+                    map_area: null, file_name: fileName, file_size: null, map_type: 'unicom',
+                  };
+                  const inserted = merge
+                    ? mapRepo.insertIfMissing(mapData)
+                    : (mapRepo.upsert(mapData), true);
+                  if (inserted) mapsImported++;
+                  console.log(`[Setup] ✓ Imported: ${fileName} (unicom, metadata only — no URL, inter-map channel)`);
+                  continue;
+                }
                 console.warn(`[Setup] Skipping ${fileName}: no download URL in cloud response`);
                 importErrors++;
                 continue;
