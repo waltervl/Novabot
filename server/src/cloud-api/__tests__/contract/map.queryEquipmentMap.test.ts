@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { buildTestApp, seedUser, seedEquipment, signJwt } from '../testHarness.js';
 import { queryEquipmentMapResponseSchema } from '../../serializers/mapDto.js';
+import { mapRepo } from '../../../db/repositories/index.js';
 
 describe('GET /api/nova-file-server/map/queryEquipmentMap — contract', () => {
   it('returns data=null, md5=null, machineExtendedField=null when mower has no maps', async () => {
@@ -93,5 +94,55 @@ describe('GET /api/nova-file-server/map/queryEquipmentMap — contract', () => {
     expect(resp.body.value.data).toBeNull();
     expect(resp.body.value.md5).toBeNull();
     expect(resp.body.value.machineExtendedField).toBeNull();
+  });
+
+  it('keeps metadata-only inter-map unicom downloadable as an empty CSV', async () => {
+    const app = buildTestApp();
+    const user = seedUser();
+    seedEquipment({ user, snMower: 'LFIN0001', snCharger: 'LFIC0001', isActive: true });
+    const token = signJwt(user);
+
+    mapRepo.create({
+      map_id: 'work-map0',
+      mower_sn: 'LFIN0001',
+      map_name: 'Front',
+      map_type: 'work',
+      file_name: 'map0_work.csv',
+      canonical_name: 'map0',
+      map_area: JSON.stringify([
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+        { x: 0, y: 10 },
+      ]),
+    });
+    mapRepo.create({
+      map_id: 'unicom-map0-map1',
+      mower_sn: 'LFIN0001',
+      map_name: 'map0tomap1_0_unicom',
+      map_type: 'unicom',
+      file_name: 'map0tomap1_0_unicom.csv',
+      canonical_name: 'map0tomap1_0_unicom',
+      map_area: null,
+      file_size: 0,
+    });
+
+    const queryResp = await request(app)
+      .get('/api/nova-file-server/map/queryEquipmentMap')
+      .set('Authorization', token)
+      .query({ sn: 'LFIN0001' });
+
+    expect(queryResp.status).toBe(200);
+    expect(queryResp.body.value.data.unicom.map((u: { fileName: string }) => u.fileName))
+      .toContain('map0tomap1_0_unicom.csv');
+
+    const csvResp = await request(app)
+      .get('/api/nova-file-server/map/downloadMapFile')
+      .set('Authorization', token)
+      .query({ sn: 'LFIN0001', fileName: 'map0tomap1_0_unicom.csv' });
+
+    expect(csvResp.status).toBe(200);
+    expect(csvResp.headers['content-type']).toMatch(/text\/csv/);
+    expect(csvResp.text).toBe('');
   });
 });

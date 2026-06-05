@@ -20,6 +20,7 @@ import path from 'path';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo } from '../db/repositories/index.js';
 import { isSetupComplete, invalidateSetupCache } from '../middleware/setupGuard.js';
 import { importCloudWorkRecords } from '../services/cloudWorkRecordsImport.js';
+import { supportsMowerFileWrites } from '../services/mowerFileCapability.js';
 // LFI cloud helpers were extracted to `src/services/lfiCloud.ts` on 2026-04-23
 // so cloud-api routes can import them without reaching into `routes/setup.ts`
 // (the cloud-api freeze forbids that direction). Re-export here so existing
@@ -339,8 +340,28 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 continue;
               }
               if (!csvUrl) {
-                console.warn(`[Setup] Skipping ${fileName}: no download URL in cloud response`);
-                importErrors++;
+                if (mapType === 'unicom') {
+                  const mapId = uuidv4();
+                  const rawAlias = typeof item.alias === 'string' ? item.alias.trim() : '';
+                  const alias = rawAlias === '' ? null : rawAlias;
+                  const mapData = {
+                    map_id: mapId,
+                    mower_sn: mower.sn,
+                    map_name: alias,
+                    map_area: null,
+                    file_name: fileName,
+                    file_size: null,
+                    map_type: 'unicom',
+                  };
+                  const inserted = merge
+                    ? mapRepo.insertIfMissing(mapData)
+                    : (mapRepo.upsert(mapData), true);
+                  if (inserted) mapsImported++;
+                  console.log(`[Setup] ✓ Imported: ${fileName} (unicom, metadata only — cloud response has no URL)`);
+                } else {
+                  console.warn(`[Setup] Skipping ${fileName}: no download URL in cloud response`);
+                  importErrors++;
+                }
                 continue;
               }
 
@@ -490,6 +511,17 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                     mapInfoObj[csvName] = { map_size: Math.round(Math.abs(a / 2) * 100) / 100 };
                   }
                 }
+                const metadataOnlyUnicoms = mapRepo.findAllByMowerSnAndType(mower.sn, 'unicom')
+                  .filter((m) => !m.map_area);
+                for (const m of metadataOnlyUnicoms) {
+                  const rawName = (m.file_name && !m.file_name.endsWith('.zip'))
+                    ? m.file_name
+                    : (m.canonical_name ? `${m.canonical_name}.csv` : (m.map_name ? `${m.map_name}.csv` : null));
+                  if (!rawName) continue;
+                  const csvName = path.basename(rawName.endsWith('.csv') ? rawName : `${rawName}.csv`);
+                  if (csvName.includes('..')) continue;
+                  fs.writeFileSync(path.join(csvDir, csvName), '');
+                }
                 if (chargingPose?.x) {
                   mapInfoObj['charging_pose'] = { x: parseFloat(chargingPose.x), y: parseFloat(chargingPose.y), orientation: parseFloat(chargingPose.orientation ?? '0') };
                 }
@@ -544,7 +576,9 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 // EXISTING backup, which could be a stale, unrelated map for
                 // this SN. Remember the exact bundle so the deferred re-push
                 // targets it, not the newest-backup heuristic.
-                if (cloudBundleFile) {
+                if (!supportsMowerFileWrites(mower.sn, mower.version ?? null)) {
+                  console.warn(`[Setup] ${mower.sn} is stock/unknown firmware — cloud import restored the server/app copy only; skipping automatic mower file push`);
+                } else if (cloudBundleFile) {
                   const { pushMapToMowerVerbatim } = await import('../mqtt/mapSync.js');
                   const { markPendingMapSync, clearPendingMapSync } = await import('../services/pendingMapSync.js');
                   markPendingMapSync(mower.sn, cloudBundleFile);

@@ -22,6 +22,33 @@ fs.mkdirSync(TRACKS_PATH, { recursive: true });
 // multer stores fragment files in the maps storage dir
 const upload = multer({ dest: STORAGE_PATH });
 
+function csvBaseName(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const safe = path.basename(value);
+  if (safe !== value || /\.zip$/i.test(safe)) return null;
+  return safe.endsWith('.csv') ? safe.slice(0, -4) : safe;
+}
+
+function hasUsableLineArea(mapArea: string | null): boolean {
+  if (!mapArea) return false;
+  try {
+    const points = JSON.parse(mapArea) as unknown;
+    return Array.isArray(points) && points.length >= 2;
+  } catch {
+    return false;
+  }
+}
+
+function findMetadataOnlyUnicom(sn: string, fileName: string): MapRow | undefined {
+  const requested = csvBaseName(fileName);
+  if (!requested) return undefined;
+  return mapRepo.findAllByMowerSnAndType(sn, 'unicom').find((row) => {
+    if (hasUsableLineArea(row.map_area)) return false;
+    return [row.canonical_name, row.file_name, row.map_name]
+      .some((candidate) => csvBaseName(candidate) === requested);
+  });
+}
+
 /**
  * Genereer CSV content uit database lokale coördinaten.
  * DB bevat al lokale x,y meters (charger = 0,0) — output direct als CSV.
@@ -436,6 +463,15 @@ mapRouter.get('/downloadMapFile', authMiddleware, (req: AuthRequest, res: Respon
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
     res.send(csvGenerated);
+    return;
+  }
+
+  const metadataOnlyUnicom = findMetadataOnlyUnicom(sn!, safeName);
+  if (metadataOnlyUnicom) {
+    console.log(`[MAP] downloadMapFile: ${sn}/${safeName} metadata-only unicom (0 bytes)`);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.send('');
     return;
   }
 

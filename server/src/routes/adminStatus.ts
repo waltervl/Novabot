@@ -23,13 +23,18 @@ import { startMdnsAdvertiser, stopMdnsAdvertiser, getActiveAdvertisement } from 
 import { listBackups, backupPath, regenerateLatestZipFromBackup } from '../services/mapBackup.js';
 import { getPolygonAnchor } from '../services/anchor.js';
 import { markFrameUnvalidated } from '../services/frameValidation.js';
-import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase } from '../services/portableMap.js';
+import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase, type ParsedBundle } from '../services/portableMap.js';
 import { synthesizePortableFromWalker } from '../maps/walkerBundleImporter.js';
 import { ImportStagingStore } from '../services/importStaging.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
 import { classifyBundle, type ClassifyResult } from '../services/bundleClassifier.js';
 import { importAuditRepo } from '../db/repositories/importAudit.js';
 import { deriveHeading } from '../services/driveCalibration.js';
+import {
+  getMowerFileCapability,
+  MOWER_FILE_WRITE_UNSUPPORTED_CODE,
+  MOWER_FILE_WRITE_UNSUPPORTED_MESSAGE,
+} from '../services/mowerFileCapability.js';
 import {
   deviceCache,
   getValidationTrail,
@@ -88,6 +93,17 @@ const importStaging = new ImportStagingStore(
   path.resolve(process.env.STORAGE_PATH ?? './storage', 'imports'),
 );
 const bundleUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+function mowerFileUnsupportedPayload(sn: string) {
+  const capability = getMowerFileCapability(sn);
+  return {
+    ok: false,
+    code: MOWER_FILE_WRITE_UNSUPPORTED_CODE,
+    error: capability.reason ?? MOWER_FILE_WRITE_UNSUPPORTED_MESSAGE,
+    targetSn: sn,
+    ...capability,
+  };
+}
 
 // Multer middleware exposed so index.ts can mount the same handler on a
 // public (no-auth) path for the walker upload. Walker has no good way to
@@ -1492,14 +1508,16 @@ adminStatusRouter.post('/maps/:sn/portable-backups/:filename/restore', async (re
   const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, session.stagingId);
   fs.writeFileSync(path.join(dir, 'bundle.json'), JSON.stringify(parsed));
   const sourceSn = parsed.metadata?.sourceSn ?? null;
+  const capability = getMowerFileCapability(sn);
   res.json({
     ok: true,
     stagingId: session.stagingId,
     state: session.state,
-    exactRestore: !!(parsed.mowerFiles && parsed.metadata?.originalChargingPose),
+    exactRestore: parsedExactRestore(parsed),
     verbatimRestore: !!(parsed.mowerFiles?.csvFiles && Object.keys(parsed.mowerFiles.csvFiles).length > 0),
     sourceSn,
     sourceSnMatches: sourceSn === sn,
+    ...capability,
     note: 'staging created — POST /apply-verbatim (single restore path; dock-cycle after)',
   });
 });
@@ -1605,12 +1623,12 @@ adminStatusRouter.get('/maps/:sn/export-portable', async (req: AuthRequest, res:
       alias: o.map_name ?? '',
       points: JSON.parse(o.map_area as string),
     })),
-    unicom: unicom.filter((u) => u.map_area).map((u) => {
-      const m = (u.canonical_name ?? '').match(/^map\d+to(.+?)_?unicom$/);
+    unicom: unicom.map((u) => {
+      const canonical = (u.canonical_name ?? u.file_name ?? u.map_name ?? '').replace(/\.csv$/, '');
       return {
-        canonical: u.canonical_name ?? '',
-        targetMapName: m?.[1] ?? 'charge',
-        points: JSON.parse(u.map_area as string),
+        canonical,
+        targetMapName: bundleUnicomTargetName(canonical),
+        points: u.map_area ? JSON.parse(u.map_area as string) : [],
       };
     }),
     csvFilesRaw: mowerData.csvFiles,
@@ -1642,6 +1660,95 @@ async function isWalkerBundleBuffer(buf: Buffer): Promise<boolean> {
     return j.sourceType === 'walker';
   } catch {
     return false;
+  }
+}
+
+function parsedExactRestore(parsed: ParsedBundle): boolean {
+  return !!(parsed.mowerFiles && parsed.metadata?.originalChargingPose
+    && Number.isFinite(parsed.metadata.originalChargingPose.orientation));
+}
+
+function parsedVerbatimRestore(parsed: ParsedBundle): boolean {
+  return !!(parsed.mowerFiles && (
+    parsed.mowerFiles.posJson ||
+    (parsed.mowerFiles.mapFilesText && Object.keys(parsed.mowerFiles.mapFilesText).length > 0) ||
+    (parsed.mowerFiles.mapFilesB64 && Object.keys(parsed.mowerFiles.mapFilesB64).length > 0)
+  ));
+}
+
+function bundleUnicomTargetName(canonical: string): string {
+  const inter = canonical.match(/^map\d+to(map\d+)_\d+_unicom$/);
+  if (inter) return inter[1];
+  if (/^map\d+tocharge_unicom$/.test(canonical)) return 'charge';
+  const fallback = canonical.match(/^map\d+to(.+?)_?unicom$/);
+  return fallback?.[1] ?? 'charge';
+}
+
+function importParsedBundleServerCopy(sn: string, parsed: ParsedBundle) {
+  db.prepare(`DELETE FROM maps WHERE mower_sn = ?`).run(sn);
+  const ins = db.prepare(
+    `INSERT INTO maps (mower_sn, map_id, map_name, map_type, file_name, map_area, canonical_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const workPolys = parsed.polygons && parsed.polygons.length > 0
+    ? parsed.polygons
+    : [parsed.polygon];
+  for (let i = 0; i < workPolys.length; i++) {
+    const wp = workPolys[i];
+    ins.run(sn, `imp_work_${i}`, wp.alias, 'work', `${wp.name}.csv`, JSON.stringify(wp.points), wp.name);
+  }
+  for (let i = 0; i < parsed.obstacles.length; i++) {
+    const o = parsed.obstacles[i];
+    ins.run(sn, `imp_obs_${i}`, o.alias, 'obstacle', `${o.name}.csv`, JSON.stringify(o.points), o.name);
+  }
+  for (let i = 0; i < parsed.unicom.length; i++) {
+    const u = parsed.unicom[i];
+    const mapArea = u.points.length >= 2 ? JSON.stringify(u.points) : null;
+    ins.run(sn, `imp_uni_${i}`, u.targetMapName, 'unicom', `${u.name}.csv`, mapArea, u.name);
+  }
+
+  const origOrient = parsed.metadata?.originalChargingPose?.orientation;
+  if (typeof origOrient === 'number' && Number.isFinite(origOrient)) {
+    mapRepo.setPolygonChargingOrientation(sn, origOrient);
+  }
+  mapRepo.setPolygonOffset(sn, 0, 0);
+  return {
+    work: workPolys.length,
+    obstacles: parsed.obstacles.length,
+    unicom: parsed.unicom.length,
+  };
+}
+
+async function writeLatestZipFromCsvFiles(sn: string, csvFiles?: Record<string, string>): Promise<number | null> {
+  if (!csvFiles || Object.keys(csvFiles).length === 0) return null;
+  const storage = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
+  fs.mkdirSync(storage, { recursive: true });
+  const tmpDir = path.join(storage, `tmp_server_copy_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+  const csvDir = path.join(tmpDir, 'csv_file');
+  fs.mkdirSync(csvDir, { recursive: true });
+  let written = 0;
+  try {
+    for (const [name, content] of Object.entries(csvFiles)) {
+      const safeName = path.basename(name);
+      if (!safeName || safeName !== name || safeName.includes('..')) continue;
+      fs.writeFileSync(path.join(csvDir, safeName), content);
+      written++;
+    }
+    if (written === 0) return null;
+    const zipPath = path.join(storage, `${sn}_latest.zip`);
+    if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+    const archiver = (await import('archiver')).default;
+    await new Promise<void>((resolve, reject) => {
+      const output = fs.createWriteStream(zipPath);
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      output.on('close', resolve);
+      archive.on('error', reject);
+      archive.pipe(output);
+      archive.directory(csvDir, 'csv_file');
+      archive.finalize();
+    });
+    return fs.statSync(zipPath).size;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 
@@ -1712,14 +1819,10 @@ adminStatusRouter.post(
     });
     // Exact-restore = bundle ships verbatim mower files + valid charging_pose.
     // Verbatim-restore = full mower state ALSO ships (pos.json + map.yaml/pgm).
-    const exactRestore = !!(parsed.mowerFiles && parsed.metadata?.originalChargingPose
-      && Number.isFinite(parsed.metadata.originalChargingPose.orientation));
-    const verbatimRestore = !!(parsed.mowerFiles && (
-      parsed.mowerFiles.posJson ||
-      (parsed.mowerFiles.mapFilesText && Object.keys(parsed.mowerFiles.mapFilesText).length > 0) ||
-      (parsed.mowerFiles.mapFilesB64 && Object.keys(parsed.mowerFiles.mapFilesB64).length > 0)
-    ));
+    const exactRestore = parsedExactRestore(parsed);
+    const verbatimRestore = parsedVerbatimRestore(parsed);
     const sourceSnMatches = parsed.metadata?.sourceSn === sn;
+    const capability = getMowerFileCapability(sn);
     res.json({
       ok: true,
       stagingId: session.stagingId,
@@ -1729,6 +1832,7 @@ adminStatusRouter.post(
       sourceSn: parsed.metadata?.sourceSn ?? null,
       sourceSnMatches,
       walkerSynth,
+      ...capability,
     });
   },
 );
@@ -1818,6 +1922,7 @@ adminStatusRouter.post(
       reason: 'walker bundle synthesized',
     });
 
+    const capability = getMowerFileCapability(sn);
     res.json({
       ok: true,
       stagingId: session.stagingId,
@@ -1826,6 +1931,7 @@ adminStatusRouter.post(
       exactRestore: true,
       sourceSn: sn,
       sourceSnMatches: true,
+      ...capability,
       note: 'walker bundle synthesized into portable bundle. POST /apply-verbatim next.',
       polygons: synth.transformedPolygons.map((p) => ({
         name: p.name,
@@ -2158,6 +2264,7 @@ adminStatusRouter.post(
 
     walkerBundleRepo.markAssigned(row.id, sn, new Date().toISOString());
 
+    const capability = getMowerFileCapability(sn);
     res.json({
       ok: true,
       stagingId: session.stagingId,
@@ -2166,6 +2273,7 @@ adminStatusRouter.post(
       exactRestore: true,
       sourceSn: sn,
       sourceSnMatches: true,
+      ...capability,
       note: 'walker bundle synthesized into portable bundle. POST /apply-verbatim next.',
       polygons: synth.transformedPolygons.map((p) => ({
         name: p.name,
@@ -2195,17 +2303,13 @@ adminStatusRouter.get('/maps/:sn/import-portable/active', (req: AuthRequest, res
   let sourceSnMatches = false;
   try {
     const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, active.stagingId);
-    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8'));
-    exactRestore = !!(parsed?.mowerFiles && parsed?.metadata?.originalChargingPose
-      && Number.isFinite(parsed.metadata.originalChargingPose.orientation));
-    verbatimRestore = !!(parsed?.mowerFiles && (
-      parsed.mowerFiles.posJson ||
-      (parsed.mowerFiles.mapFilesText && Object.keys(parsed.mowerFiles.mapFilesText).length > 0) ||
-      (parsed.mowerFiles.mapFilesB64 && Object.keys(parsed.mowerFiles.mapFilesB64).length > 0)
-    ));
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8')) as ParsedBundle;
+    exactRestore = parsedExactRestore(parsed);
+    verbatimRestore = parsedVerbatimRestore(parsed);
     sourceSn = parsed?.metadata?.sourceSn ?? null;
     sourceSnMatches = sourceSn === sn;
   } catch { /* bundle missing — leave flags false */ }
+  const capability = getMowerFileCapability(sn);
   res.json({
     stagingId: active.stagingId,
     state: active.state,
@@ -2213,6 +2317,7 @@ adminStatusRouter.get('/maps/:sn/import-portable/active', (req: AuthRequest, res
     verbatimRestore,
     sourceSn,
     sourceSnMatches,
+    ...capability,
   });
 });
 
@@ -2571,6 +2676,10 @@ adminStatusRouter.post(
       res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
       return;
     }
+    if (!getMowerFileCapability(sn).mowerFileApplySupported) {
+      res.status(409).json(mowerFileUnsupportedPayload(sn));
+      return;
+    }
 
     importStaging.transition(stagingId, 'USER_CONFIRMED', {});
     importAuditRepo.append({ sn, staging_id: stagingId, from_state: 'PREVIEW_SHOWN', to_state: 'USER_CONFIRMED', reason: null });
@@ -2625,7 +2734,7 @@ adminStatusRouter.post(
     db.prepare(`DELETE FROM maps WHERE mower_sn = ?`).run(sn);
     const ins = db.prepare(
       `INSERT INTO maps (mower_sn, map_id, map_name, map_type, file_name, map_area, canonical_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    );
+);
     const workPolygons: Array<{ name: string; alias: string; points: { x: number; y: number }[] }> =
       Array.isArray(parsed.polygons) && parsed.polygons.length > 0 ? parsed.polygons : [parsed.polygon];
     for (let wi = 0; wi < workPolygons.length; wi++) {
@@ -2761,6 +2870,62 @@ adminStatusRouter.post(
   },
 );
 
+// POST /api/admin-status/maps/:sn/import-portable/:stagingId/import-server-copy
+//
+// Stock-safe restore path: update only the server DB + app-facing latest ZIP.
+// This does NOT write any files to the mower, so mowing only works if the same
+// map files already exist on the mower.
+adminStatusRouter.post(
+  '/maps/:sn/import-portable/:stagingId/import-server-copy',
+  async (req: AuthRequest, res: Response) => {
+    const { sn, stagingId } = req.params;
+    const session = importStaging.get(stagingId);
+    if (!session || session.sn !== sn) {
+      res.status(404).json({ ok: false, error: 'unknown staging session' });
+      return;
+    }
+    if (session.state !== 'UPLOADED') {
+      res.status(409).json({ ok: false, error: `wrong state ${session.state}` });
+      return;
+    }
+
+    const dir = path.join(process.env.STORAGE_PATH ?? './storage', 'imports', sn, stagingId);
+    let parsed: ParsedBundle;
+    try {
+      parsed = JSON.parse(fs.readFileSync(path.join(dir, 'bundle.json'), 'utf8')) as ParsedBundle;
+    } catch (err) {
+      res.status(500).json({ ok: false, error: `failed to read bundle: ${(err as Error).message}` });
+      return;
+    }
+
+    try {
+      const restored = importParsedBundleServerCopy(sn, parsed);
+      const latestZipBytes = await writeLatestZipFromCsvFiles(sn, parsed.mowerFiles?.csvFiles);
+      importStaging.transition(stagingId, 'APPLIED', {
+        applyResult: { warning: 'server-copy-only; mower files were not written' },
+      });
+      importAuditRepo.append({
+        sn,
+        staging_id: stagingId,
+        from_state: 'UPLOADED',
+        to_state: 'APPLIED',
+        reason: 'server-copy-only',
+      });
+      res.json({
+        ok: true,
+        state: 'APPLIED',
+        mode: 'server-copy',
+        restored,
+        latestZipBytes,
+        ...getMowerFileCapability(sn),
+        message: 'Imported into the server/app copy only. Mower files were not written; mowing works only if these maps already exist on the mower.',
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: `server-copy import failed: ${(err as Error).message}` });
+    }
+  },
+);
+
 // POST /api/admin-status/maps/:sn/import-portable/:stagingId/apply-verbatim
 //
 // Same-mower full state restore. Pushes csv_files + charging_station.yaml +
@@ -2820,6 +2985,10 @@ adminStatusRouter.post(
         ok: false,
         error: 'bundle has no mowerFiles — was exported before the verbatim feature shipped',
       });
+      return;
+    }
+    if (!getMowerFileCapability(sn).mowerFileApplySupported) {
+      res.status(409).json(mowerFileUnsupportedPayload(sn));
       return;
     }
 

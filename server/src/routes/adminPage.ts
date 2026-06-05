@@ -1730,6 +1730,10 @@ async function api(path, method='GET', body=null) {
     throw new Error(errMsg);
   }
   var d = await r.json();
+  if (d && (d.code === 401 || d.code === 403)) {
+    logout();
+    throw new Error(d.message || 'Unauthorized');
+  }
   if (!r.ok) throw new Error(d.error || d.message || 'Server error: ' + r.status);
   return d;
 }
@@ -3072,6 +3076,15 @@ var portableExactRestore = false;
 var portableVerbatimRestore = false;
 var portableSourceSn = null;
 var portableSourceSnMatches = false;
+var portableMowerFileApplySupported = false;
+
+function portableSyncCapability(j) {
+  portableMowerFileApplySupported = !!(j && (j.mowerFileApplySupported || j.isOpenNova));
+}
+
+function portableServerCopyWarningText() {
+  return 'Stock/unknown firmware detected. Importing this bundle restores only the server/app copy; it does not write map files to the mower. Mowing will only work if these maps already exist on the mower.';
+}
 
 async function manualPortableBackup() {
   var sn = document.getElementById('mapMowerSelect').value;
@@ -3158,22 +3171,28 @@ async function loadPortableBackups() {
 
 async function restorePortableBackup(filename) {
   var sn = document.getElementById('mapMowerSelect').value;
-  if (!(await appConfirm('Restore this snapshot? Current map state on mower will be replaced.', { okText: 'Restore' }))) return;
+  if (!(await appConfirm('Restore this snapshot? OpenNova/custom can restore it to the mower; stock firmware can only restore the server/app copy.', { okText: 'Restore' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(filename) + '/restore', {
     method: 'POST', headers: { 'Authorization': token },
   });
   var j = await r.json();
   if (!j.ok) { await appAlert('Restore failed: ' + j.error, { accent: 'danger' }); return; }
   portableStagingId = j.stagingId;
+  portableExactRestore = !!j.exactRestore;
   portableVerbatimRestore = !!j.verbatimRestore;
   portableSourceSn = j.sourceSn || null;
   portableSourceSnMatches = !!j.sourceSnMatches;
+  portableSyncCapability(j);
   // Single restore path: push the complete bundle verbatim (no Δ rotation,
   // pos.json untouched), then dock-cycle. Works regardless of source SN since
   // pos.json is never overwritten and the map is charger-relative.
-  if (portableVerbatimRestore) {
+  if (portableVerbatimRestore && portableMowerFileApplySupported) {
     await portableApplyVerbatim();
+  } else if (portableVerbatimRestore) {
+    renderPortableImportWizard(sn, j.state || 'UPLOADED');
+    await appAlert(portableServerCopyWarningText(), { accent: 'warning' });
   } else {
+    renderPortableImportWizard(sn, j.state || 'UPLOADED');
     await appAlert('Restore staged but bundle has no map files. Use the Import bundle wizard.', { accent: 'warning' });
   }
 }
@@ -3201,6 +3220,7 @@ async function portableCheckActive(sn) {
       portableVerbatimRestore = !!j.verbatimRestore;
       portableSourceSn = j.sourceSn || null;
       portableSourceSnMatches = !!j.sourceSnMatches;
+      portableSyncCapability(j);
       renderPortableImportWizard(sn, j.state || 'UPLOADED');
     } else {
       portableStagingId = null;
@@ -3208,6 +3228,7 @@ async function portableCheckActive(sn) {
       portableVerbatimRestore = false;
       portableSourceSn = null;
       portableSourceSnMatches = false;
+      portableMowerFileApplySupported = false;
       var panel = document.getElementById('portableImportPanel');
       if (panel) panel.style.display = 'none';
       if (portableRtkPoll) { clearInterval(portableRtkPoll); portableRtkPoll = null; }
@@ -3231,6 +3252,7 @@ async function startPortableImport() {
   portableVerbatimRestore = !!j.verbatimRestore;
   portableSourceSn = j.sourceSn || null;
   portableSourceSnMatches = !!j.sourceSnMatches;
+  portableSyncCapability(j);
   renderPortableImportWizard(sn, 'UPLOADED');
 }
 
@@ -3477,10 +3499,17 @@ async function assignWalkerBundle(b) {
   portableExactRestore = !!resp.exactRestore;
   portableSourceSnMatches = true;
   portableSourceSn = resp.sourceSn || null;
+  portableSyncCapability(resp);
+  renderPortableImportWizard(picked, resp.state || 'UPLOADED');
 
   var polygonSummary = (resp.polygons || [])
     .map(function(p) { return '· ' + (p.alias || p.name) + ' (' + p.pointCount + ' pts)'; })
     .join('\\n');
+  if (!portableMowerFileApplySupported) {
+    await appAlert('Walker bundle staged for ' + picked + '.\\n\\n' + portableServerCopyWarningText(), { accent: 'warning' });
+    loadWalkerBundles();
+    return;
+  }
   var msg = 'Walker bundle staged for ' + picked + '.\\n\\n' +
             (polygonSummary || '(no polygon details returned)') + '\\n\\n' +
             'Apply verbatim now? The dock-anchor refresh modal will follow.';
@@ -3603,14 +3632,24 @@ function renderPortableImportWizard(sn, state) {
       // UTM origin from the dock's RTK-Fixed GPS and re-locks by driving
       // (GPS/RTK only — NOT an ArUco snap). See docs/reference/REANCHOR.md.
       var xsn = portableSourceSn && !portableSourceSnMatches;
-      html += '<div style="flex-basis:100%;font-size:10px;color:' + (xsn ? '#fbbf24' : '#86efac') + ';margin-bottom:4px">'
-        + (xsn ? 'Bundle source ' + portableSourceSn + ' differs from target — pos.json is left untouched so this is safe; re-anchor in the app afterward. '
-               : 'Complete bundle (csv + rasterized map.pgm/png/yaml + per-map). ')
-        + 'Restore pushes it to the mower 1-to-1; re-anchor afterward in the app (Re-anchor wizard).</div>';
-      html += '<button onclick="portableApplyVerbatim()" style="padding:6px 12px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Restore to mower</button>';
+      if (portableMowerFileApplySupported) {
+        html += '<div style="flex-basis:100%;font-size:10px;color:' + (xsn ? '#fbbf24' : '#86efac') + ';margin-bottom:4px">'
+          + (xsn ? 'Bundle source ' + portableSourceSn + ' differs from target — pos.json is left untouched so this is safe; re-anchor in the app afterward. '
+                 : 'Complete bundle (csv + rasterized map.pgm/png/yaml + per-map). ')
+          + 'Restore pushes it to the mower 1-to-1; re-anchor afterward in the app (Re-anchor wizard).</div>';
+        html += '<button onclick="portableApplyVerbatim()" style="padding:6px 12px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Restore to mower</button>';
+      } else {
+        html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">' + portableServerCopyWarningText() + '</div>';
+        html += '<button onclick="portableImportServerCopy()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Import server copy only</button>';
+      }
     } else {
-      html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">Legacy bundle with no map files — falls back to the drive+realign flow.</div>';
-      html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Start drive backward + RTK lock</button>';
+      if (portableMowerFileApplySupported) {
+        html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">Legacy bundle with no map files — falls back to the drive+realign flow.</div>';
+        html += '<button onclick="portableStartDrive()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">1. Start drive backward + RTK lock</button>';
+      } else {
+        html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">' + portableServerCopyWarningText() + '</div>';
+        html += '<button onclick="portableImportServerCopy()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Import server copy only</button>';
+      }
     }
   }
   if (state === 'AUTO_DOCK') {
@@ -3644,8 +3683,45 @@ function renderPortableImportWizard(sn, state) {
   portableStartRtkPoll(sn);
 }
 
+async function portableImportServerCopy() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!(await appConfirm(portableServerCopyWarningText() + '\\n\\nContinue with server/app copy only?', { okText: 'Import server copy' }))) return;
+  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/import-server-copy', {
+    method: 'POST',
+    headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+  });
+  var j = await r.json();
+  if (!j.ok) {
+    await appAlert('Server-copy import failed: ' + (j.error || 'unknown'), { accent: 'danger' });
+    portableCheckActive(sn);
+    return;
+  }
+  var restored = j.restored || {};
+  await appAlert(
+    'Server/app copy imported.\\n\\n' +
+    'work maps: ' + (restored.work || 0) + '\\n' +
+    'obstacles: ' + (restored.obstacles || 0) + '\\n' +
+    'channels: ' + (restored.unicom || 0) + '\\n\\n' +
+    'Mower files were not written.',
+    { accent: 'warning' }
+  );
+  document.getElementById('portableImportPanel').style.display = 'none';
+  portableStagingId = null;
+  portableExactRestore = false;
+  portableVerbatimRestore = false;
+  portableSourceSn = null;
+  portableSourceSnMatches = false;
+  portableMowerFileApplySupported = false;
+  loadMaps();
+}
+
 async function portableApplyVerbatim() {
   var sn = document.getElementById('mapMowerSelect').value;
+  if (!portableMowerFileApplySupported) {
+    await appAlert(portableServerCopyWarningText(), { accent: 'warning' });
+    renderPortableImportWizard(sn, 'UPLOADED');
+    return;
+  }
   var msg = 'Restore to mower: pushes csv_file/ + the rasterized map.pgm/png/yaml (+ per-map) back 1-to-1. No rotation, pos.json left untouched. After this, re-anchor in the app (Re-anchor wizard): the mower re-derives its pos.json origin from the dock RTK-Fixed GPS and re-locks by driving. Continue?';
   if (!(await appConfirm(msg, { okText: 'Restore to mower' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/apply-verbatim', {
@@ -3653,6 +3729,12 @@ async function portableApplyVerbatim() {
   });
   var j = await r.json();
   if (!j.ok) {
+    if (j.code === 'MOWER_FILE_WRITE_UNSUPPORTED') {
+      portableSyncCapability(j);
+      await appAlert(j.error || portableServerCopyWarningText(), { accent: 'warning' });
+      renderPortableImportWizard(sn, 'UPLOADED');
+      return;
+    }
     // Cross-SN block — let the operator force if they really know what they're doing.
     if (j.sourceSn && j.targetSn && j.sourceSn !== j.targetSn) {
       var forceMsg = "Bundle was made on " + j.sourceSn + ", not " + j.targetSn + ". The map is charger-relative and pos.json is left untouched, so this is generally safe; re-anchor in the app afterward. Continue?";
@@ -3685,6 +3767,9 @@ async function portableApplyVerbatim() {
   portableStagingId = null;
   portableExactRestore = false;
   portableVerbatimRestore = false;
+  portableSourceSn = null;
+  portableSourceSnMatches = false;
+  portableMowerFileApplySupported = false;
   loadMaps();
   if (j.requires_dock_anchor_refresh) await promptDockAnchorRefresh(sn);
 }
@@ -3776,6 +3861,10 @@ async function pollDockAnchorAuto(sn) {
 
 async function portableStartDrive() {
   var sn = document.getElementById('mapMowerSelect').value;
+  if (!portableMowerFileApplySupported) {
+    await appAlert(portableServerCopyWarningText(), { accent: 'warning' });
+    return;
+  }
   if (!(await appConfirm('Mower will drive 1m BACKWARD off the dock then wait for RTK FIX. Ensure clear path behind the mower. Continue?', { destructive: true, okText: 'Drive' }))) return;
   var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/import-portable/' + portableStagingId + '/start-drive', {
     method: 'POST', headers: { 'Authorization': token },
@@ -3867,6 +3956,10 @@ function portableNudgeRotation(delta) {
 
 async function portableConfirm() {
   var sn = document.getElementById('mapMowerSelect').value;
+  if (!portableMowerFileApplySupported) {
+    await appAlert(portableServerCopyWarningText(), { accent: 'warning' });
+    return;
+  }
   if (!(await appConfirm('Apply imported polygon? This wipes existing maps for this SN and triggers sync_map.', { destructive: true, okText: 'Apply' }))) return;
   var body = {};
   if (portableRotateDeg !== null) body.rotateDeg = portableRotateDeg;
@@ -3891,6 +3984,11 @@ async function portableCancel() {
   });
   document.getElementById('portableImportPanel').style.display = 'none';
   portableStagingId = null;
+  portableExactRestore = false;
+  portableVerbatimRestore = false;
+  portableSourceSn = null;
+  portableSourceSnMatches = false;
+  portableMowerFileApplySupported = false;
 }
 
 // ── Map Recovery functions ────────────────────────────────────────────────────

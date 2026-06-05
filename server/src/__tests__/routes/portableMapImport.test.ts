@@ -58,6 +58,7 @@ vi.mock('../../mqtt/mapSync.js', () => ({
   publishToExtended: vi.fn(),
   onExtendedResponse: vi.fn(),
   offExtendedResponse: vi.fn(),
+  applyVerbatimToMower: vi.fn(),
   notifyRespond: vi.fn(),
   setDemoInterceptor: vi.fn(),
   onMowerConnected: vi.fn(),
@@ -111,7 +112,8 @@ vi.mock('../../mqtt/mapConverter.js', () => ({
 // ── Now import the router + deps ─────────────────────────────────────────────
 import { adminStatusRouter } from '../../routes/adminStatus.js';
 import { db } from '../../db/database.js';
-import { mapRepo } from '../../db/repositories/index.js';
+import { equipmentRepo, mapRepo } from '../../db/repositories/index.js';
+import { exportBundle, parseBundle } from '../../services/portableMap.js';
 import * as mapSyncMock from '../../mqtt/mapSync.js';
 import * as sensorDataMock from '../../mqtt/sensorData.js';
 
@@ -176,6 +178,43 @@ describe('GET /export-portable', () => {
     expect(res.headers['content-type']).toMatch(/zip/);
     expect((res.body as Buffer).length).toBeGreaterThan(200);
   });
+
+  it('keeps metadata-only inter-map unicoms in the portable bundle manifest', async () => {
+    mapRepo.create({
+      map_id: 'u-inter-map0-map1',
+      mower_sn: SN,
+      map_name: 'map0tomap1_0_unicom',
+      map_type: 'unicom',
+      file_name: 'map0tomap1_0_unicom.csv',
+      canonical_name: 'map0tomap1_0_unicom',
+      map_area: null,
+      file_size: 0,
+    });
+    let capturedListener: ((data: Record<string, unknown>) => void) | null = null;
+    vi.mocked(mapSyncMock.onExtendedResponse).mockImplementationOnce((_sn: string, fn: (data: Record<string, unknown>) => void) => {
+      capturedListener = fn;
+    });
+    vi.mocked(mapSyncMock.publishToExtended).mockImplementationOnce(() => {
+      setTimeout(() => capturedListener?.({ read_map_files_respond: { result: 1 } }), 5);
+    });
+
+    const res = await request(app)
+      .get(`/api/admin-status/maps/${SN}/export-portable`)
+      .buffer()
+      .parse((r, cb) => {
+        const chunks: Buffer[] = [];
+        r.on('data', (c: Buffer) => chunks.push(c));
+        r.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+
+    vi.mocked(mapSyncMock.publishToExtended).mockReset();
+    vi.mocked(mapSyncMock.onExtendedResponse).mockReset();
+    expect(res.status).toBe(200);
+    const parsed = await parseBundle(res.body as Buffer);
+    const channel = parsed.unicom.find((u) => u.name === 'map0tomap1_0_unicom');
+    expect(channel).toBeDefined();
+    expect(channel?.points).toEqual([]);
+  });
 });
 
 describe('POST /import-portable', () => {
@@ -218,6 +257,49 @@ describe('POST /import-portable', () => {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+async function makeVerbatimBundle(sourceSn = SN): Promise<Buffer> {
+  return exportBundle({
+    sn: sourceSn,
+    chargerLat: 52.14,
+    chargerLng: 6.23,
+    rtkQuality: null,
+    chargingPose: { x: 0, y: 0, orientation: 0 },
+    workMaps: [{
+      canonical: 'map0',
+      alias: 'Front',
+      points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }],
+    }],
+    obstacles: [],
+    unicom: [{
+      canonical: 'map0tocharge_unicom',
+      targetMapName: 'charge',
+      points: [{ x: -1, y: 0 }, { x: 0, y: 0 }],
+    }],
+    csvFilesRaw: {
+      'map0_work.csv': '0,0\n10,0\n10,10\n0,10\n',
+      'map0tocharge_unicom.csv': '-1,0\n0,0\n',
+      'map_info.json': JSON.stringify({ charging_pose: { x: 0, y: 0, orientation: 0 } }),
+    },
+    chargingStationYaml: 'charging_pose: [0, 0, 0]\n',
+    mapFilesText: {
+      'map.yaml': 'image: map.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n',
+    },
+    mapFilesB64: {
+      'map.pgm': Buffer.from('P5\n1 1\n255\n\0', 'binary').toString('base64'),
+    },
+  });
+}
+
+async function stageVerbatimBundle(targetSn: string): Promise<string> {
+  const zip = await makeVerbatimBundle(targetSn);
+  const res = await request(app)
+    .post(`/api/admin-status/maps/${targetSn}/import-portable`)
+    .attach('bundle', zip, 'verbatim.novabotmap');
+  expect(res.status).toBe(200);
+  expect(res.body.verbatimRestore).toBe(true);
+  return res.body.stagingId as string;
+}
+
 /** Export a bundle from SN_ANCHOR then upload it to targetSn; returns stagingId. */
 async function uploadBundle(targetSn: string): Promise<string> {
   const expRes = await request(app)
@@ -249,6 +331,53 @@ function seedSensorCache(sn: string, lat: string, lng: string): void {
 function getSensorMap(sn: string): Map<string, string> {
   return (sensorDataMock.deviceCache as Map<string, Map<string, string>>).get(sn)!;
 }
+
+describe('POST /apply-verbatim firmware capability', () => {
+  it('rejects stock firmware before write_map_files is attempted', async () => {
+    const sn = 'LFIN_STOCK_VERBATIM';
+    equipmentRepo.create({
+      equipment_id: `eq-${sn}`,
+      mower_sn: sn,
+      charger_sn: 'LFIC_STOCK_VERBATIM',
+      mower_version: '5.7.1',
+    });
+    const stagingId = await stageVerbatimBundle(sn);
+
+    vi.mocked(mapSyncMock.applyVerbatimToMower).mockClear();
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/apply-verbatim`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.code).toBe('MOWER_FILE_WRITE_UNSUPPORTED');
+    expect(res.body.error).toMatch(/OpenNova|custom firmware/i);
+    expect(vi.mocked(mapSyncMock.applyVerbatimToMower)).not.toHaveBeenCalled();
+  });
+
+  it('allows stock firmware to import the server/app copy without mower writes', async () => {
+    const sn = 'LFIN_STOCK_SERVER_COPY';
+    equipmentRepo.create({
+      equipment_id: `eq-${sn}`,
+      mower_sn: sn,
+      charger_sn: 'LFIC_STOCK_SERVER_COPY',
+      mower_version: '5.7.1',
+    });
+    const stagingId = await stageVerbatimBundle(sn);
+
+    vi.mocked(mapSyncMock.applyVerbatimToMower).mockClear();
+    vi.mocked(mapSyncMock.publishToExtended).mockClear();
+    const res = await request(app)
+      .post(`/api/admin-status/maps/${sn}/import-portable/${stagingId}/import-server-copy`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.mode).toBe('server-copy');
+    expect(mapRepo.findAllByMowerSnAndType(sn, 'work')).toHaveLength(1);
+    expect(mapRepo.findAllByMowerSnAndType(sn, 'unicom')).toHaveLength(1);
+    expect(vi.mocked(mapSyncMock.applyVerbatimToMower)).not.toHaveBeenCalled();
+    expect(vi.mocked(mapSyncMock.publishToExtended)).not.toHaveBeenCalled();
+  });
+});
 
 /** Drive through set-anchor for a given SN (sensors already seeded). */
 async function runSetAnchor(sn: string, stagingId: string): Promise<void> {
