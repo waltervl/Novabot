@@ -42,6 +42,16 @@ rechte lijnen waren onrealistisch op het dashboard). Sindsdien:
 3. De geïmporteerde bundle heeft geen connectors → smalle halzen knijpen dicht
    onder inflatie → fragmentatie → kan niet maaien.
 
+**Dieper gat (gevonden 2026-06-05 na de eerste release):** de inter-zone
+connector-RECORDS worden bij import vaak niet eens aangemaakt. `setup.ts` slaat
+in de import-loop een item zonder download-URL over (`if (!csvUrl) … continue`,
+regel 342). LFI levert de inter-zone connectors 0-byte **zonder URL**, dus ze
+worden geskipt en belanden niet in de DB. David's DB bevestigt dit (alleen
+`map0tocharge`). Gevolg: `fillMissingUnicomPaths` heeft geen records om te vullen.
+**Extra fix vereist:** no-URL unicom-items als metadata-record aanmaken (spiegelt
+de bestaande download-fail-unicom-tak op regel 408-420), zodat de fill ze daarna
+kan vullen.
+
 Controle: `.244` werkt omdat z'n bundle van een **snapshot van de live maaier**
 kwam (`createBackup` → `read_map_files`), waar de firmware de connector-paden al
 had ingevuld. Het snapshot-pad blijft dus ongemoeid; alleen het
