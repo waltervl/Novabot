@@ -254,13 +254,24 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
   // sensor is the one source of truth for the edge-cutting activity.
   const isEdgeCutting = s.edge_active === '1' && !isOnDock;
 
+  // Mapping detection mirrors MappingScreen (the authoritative one): trust
+  // msg + task_mode, and treat the post-save echo (Work:FINISHED / Work:WAIT)
+  // as DONE. start_edit_or_assistant_map_flag is unreliable — mqtt_node leaves
+  // it '1' indefinitely after a save, and msg/task_mode freeze on the last
+  // report_state_robot (the periodic report_state_timer_data carries neither),
+  // so the raw flag stranded HomeScreen on 'mapping' forever after an obstacle
+  // add even though the mower itself had already left mapping mode.
+  const inMappingMode = taskMode === 2 || taskMode === 3 || msg.includes('Mode:MAPPING');
+  const isMappingPostSave = msg.includes('Work:FINISHED') || msg.includes('Work:WAIT');
+  const isMappingActive = inMappingMode && !isMappingPostSave;
+
   let activity: MowerActivity = 'idle';
   if (isOffline) activity = 'idle';
   else if (hasError && !isOnDock) activity = 'error';
   else if (isDockFailed && !isOnDock) activity = 'error';
   else if (isEdgeCutting) activity = 'edge_cutting';
   else if (isCoverageRunning) activity = 'mowing';
-  else if (s.start_edit_or_assistant_map_flag === '1' && taskMode !== 1) activity = 'mapping';
+  else if (isMappingActive) activity = 'mapping';
   else if (isCoveragePaused) activity = 'paused';
   else if (isReturning && !isOnDock) activity = 'returning';
   else if (isOnDock) activity = 'charging';
@@ -1175,7 +1186,13 @@ export default function HomeScreen() {
   const bounceAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   // Auto-incrementing cmd_num for commands (matches Flutter app behavior)
-  const cmdNumRef = useRef(0);
+  // Seed from the clock so cmd_num is always large + monotonically advancing and
+  // never resets to a low value on an app reload. The firmware dedups commands on
+  // cmd_num (`if (novabot_cmd_num != cmd_num)` — a repeat is silently ignored), so
+  // a reset-to-0 counter collided with the mower's last value and made
+  // resume_navigation a silent no-op. Mirrors the Novabot app's global monotonic
+  // cmd_num counter.
+  const cmdNumRef = useRef(Date.now() % 100000);
 
   useEffect(() => {
     if (!mower) return;
@@ -1254,6 +1271,65 @@ export default function HomeScreen() {
       setCommandError(e instanceof Error ? e.message : 'Command failed');
     } finally {
       setCommandLoading(null);
+    }
+  };
+
+  // Resume an interrupted coverage (paused mid-mow, or returned to the dock for
+  // rain / low battery). resume_navigation continues the existing cov_path — a
+  // fresh start_navigation would restart from 0%. cmd_num must be unique or the
+  // firmware dedups it away (see cmdNumRef seed). If rain is forecast within ~3h
+  // we ask first, exactly like the start flow: the server's rain monitor would
+  // otherwise immediately re-pause the resume and the mower never leaves the
+  // dock. "Ignore & resume" sets the per-session rain-ignore flag.
+  const resumeCoverage = async (sn: string) => {
+    const send = async (ignoreRain: boolean) => {
+      try {
+        setCommandLoading('start');
+        const url = await getServerUrl();
+        if (!url) return;
+        const api = new ApiClient(url);
+        if (ignoreRain) {
+          try { await api.setRainIgnoreSession(sn, true); }
+          catch (e) { console.log('[HomeScreen] rain-ignore-session POST failed:', e); }
+        }
+        await api.sendCommand(sn, { resume_navigation: { cmd_num: ++cmdNumRef.current } });
+        setOptimisticActivity('mowing');
+      } catch (e) {
+        console.log('[HomeScreen] resume_navigation failed:', e);
+      } finally {
+        setCommandLoading(null);
+      }
+    };
+    // Rain forecast check — mirrors StartMowSheet.fetchIncomingRain.
+    let rain: { mm: number; prob: number } | null = null;
+    try {
+      const url = await getServerUrl();
+      if (url) {
+        const res = await fetch(`${url}/api/dashboard/rain-forecast/${encodeURIComponent(sn)}`);
+        const data = await res.json() as { available?: boolean; upcoming?: Array<{ time: string; mm: number; prob: number }> };
+        if (data.available && data.upcoming?.length) {
+          const now = Date.now();
+          const horizon = 3 * 60 * 60 * 1000;
+          for (const h of data.upcoming) {
+            const at = new Date(h.time).getTime();
+            if (at < now || at - now > horizon) continue;
+            if (h.mm >= 0.1 || h.prob >= 50) { rain = { mm: h.mm, prob: h.prob }; break; }
+          }
+        }
+      }
+    } catch { /* no forecast available — resume without prompting */ }
+
+    if (rain) {
+      appAlertCompat.alert(
+        t('rainWarningTitle') || 'Rain forecast',
+        t('rainResumeBody') || 'Rain is expected soon. Resume anyway and ignore rain for this session? Otherwise the mower stays on the dock.',
+        [
+          { text: t('cancel') || 'Cancel', style: 'cancel' },
+          { text: t('rainIgnoreResume') || 'Ignore rain & resume', onPress: () => { void send(true); } },
+        ],
+      );
+    } else {
+      void send(false);
     }
   };
 
@@ -2109,12 +2185,22 @@ export default function HomeScreen() {
                 const pausedForRecharge =
                   /Work:USER_RECHARGE_STOP\b/.test(busyMsg) ||
                   /Work:BATTERY_LOW_RECHARGE\b/.test(busyMsg);
+                // Manual "Pause task & return" (e.g. rain): the firmware sets
+                // Work:USER_STOP / Work:PAUSED and keeps it across the return-to-
+                // dock (verified live on .100: msg stays "Work:USER_STOP" while
+                // charging). Same resumable state as the recharge pause, so offer
+                // the dock-side "Continue" (resume_navigation) here too.
+                const pausedByUser =
+                  /Work:USER_STOP\b/.test(busyMsg) ||
+                  /Work:PAUSED\b/.test(busyMsg);
                 const isInterruptedCoverage =
-                  onDock && taskMode === 1 && pausedForRecharge;
+                  onDock && taskMode === 1 && (pausedForRecharge || pausedByUser);
                 const startDisabled = !mower.online || mower.hasError || noMap || mowerBusy || frameUnvalidated;
+                // Keep the chevron (start-modes) reachable even when "Continue"
+                // is shown, so the user can always start a fresh session instead
+                // of resuming — never a dead-end.
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')
-                  && mower.online && !mower.hasError && !noMap && !mowerBusy
-                  && !isInterruptedCoverage;
+                  && mower.online && !mower.hasError && !noMap && !mowerBusy;
                 return (
                   <View style={[styles.splitButtonWrap, startDisabled && { opacity: 1 }]}>
                     <TouchableOpacity
@@ -2132,20 +2218,7 @@ export default function HomeScreen() {
                         // (the latter would restart from 0% and dump the
                         // already-mowed cov_path).
                         if (isInterruptedCoverage) {
-                          try {
-                            setCommandLoading('start');
-                            const url = await getServerUrl();
-                            if (!url) return;
-                            const api = new ApiClient(url);
-                            await api.sendCommand(mower.sn, {
-                              resume_navigation: { cmd_num: ++cmdNumRef.current },
-                            });
-                            setOptimisticActivity('mowing');
-                          } catch (e) {
-                            console.log('[HomeScreen] resume_navigation failed:', e);
-                          } finally {
-                            setCommandLoading(null);
-                          }
+                          await resumeCoverage(mower.sn);
                           return;
                         }
                         setStartMowInitialMapId(null);
