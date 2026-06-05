@@ -40,6 +40,12 @@ import MessagesScreen from './MessagesScreen';
 import { useDemo } from '../context/DemoContext';
 import { StartMowSheet } from '../components/StartMowSheet';
 import { RainOverlay } from '../components/RainOverlay';
+import {
+  ReturnReasonModal,
+  deriveReturnReason,
+  RETURN_REASON_META,
+  type ReturnReason,
+} from '../components/ReturnReasonModal';
 import { AppActionSheet, type AppActionSheetItem } from '../components/AppActionSheet';
 import CuttingHeightPickerModal from '../components/CuttingHeightPickerModal';
 import ReanchorWizard from '../components/ReanchorWizard';
@@ -731,6 +737,48 @@ export default function HomeScreen() {
       if (activityOverrideTimer.current) clearTimeout(activityOverrideTimer.current);
     }
   }, [mower?.activity, activityOverride]);
+
+  // Auto-show the return-reason modal once per new reason while the mower is
+  // returning / charging / paused. Reset the guard when it goes actively
+  // off-dock (mowing/edge_cutting) or truly idle, so a future return re-pops.
+  const effectiveActivity = activityOverride ?? mower?.activity ?? null;
+  const returnReason = deriveReturnReason(
+    mower ? devices.get(mower.sn)?.sensors : undefined,
+    mower?.hasError ?? false,
+  );
+  useEffect(() => {
+    if (effectiveActivity === 'mowing' || effectiveActivity === 'edge_cutting' || effectiveActivity === 'idle') {
+      lastShownReasonRef.current = null;
+      return;
+    }
+    const onDockState =
+      effectiveActivity === 'returning' || effectiveActivity === 'charging' || effectiveActivity === 'paused';
+    if (onDockState && returnReason && returnReason !== lastShownReasonRef.current) {
+      lastShownReasonRef.current = returnReason;
+      setReasonModalVisible(true);
+    }
+  }, [effectiveActivity, returnReason]);
+
+  // Request a fresh snapshot once when entering returning/charging so the
+  // server-side rain_paused flag is current for the reason derivation.
+  useEffect(() => {
+    if (effectiveActivity === 'returning' || effectiveActivity === 'charging') {
+      if (snapshotRequestedForRef.current !== effectiveActivity) {
+        snapshotRequestedForRef.current = effectiveActivity;
+        getSocket()?.emit('request:snapshot');
+      }
+    } else {
+      snapshotRequestedForRef.current = null;
+    }
+  }, [effectiveActivity]);
+  // ── Return-reason modal: explain WHY the mower returned to the dock ──
+  const [reasonModalVisible, setReasonModalVisible] = useState(false);
+  // Tracks the reason we last auto-showed so we don't re-pop the modal for the
+  // same ongoing reason. Reset to null when the mower goes actively off-dock.
+  const lastShownReasonRef = useRef<ReturnReason>(null);
+  // Fire a single fresh snapshot request per transition into returning/charging
+  // so the server-side rain_paused flag is current when we derive the reason.
+  const snapshotRequestedForRef = useRef<MowerActivity | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showAlerts, setShowAlerts] = useState(false);
   const [activeMapPolygon, setActiveMapPolygon] = useState<Array<{ x: number; y: number }>>([]);
@@ -1753,6 +1801,27 @@ export default function HomeScreen() {
               <Text style={styles.bladeStuckBannerText}>{t('bladesNotSpinning')}</Text>
             </View>
           )}
+
+          {/* Return-reason chip — appears when the modal has been dismissed but
+              the mower is still back on the dock. Tap to re-open the modal. */}
+          {returnReason && !reasonModalVisible &&
+            (displayActivity === 'returning' || displayActivity === 'charging' || displayActivity === 'paused') && (
+              <TouchableOpacity
+                style={styles.returnReasonChip}
+                onPress={() => setReasonModalVisible(true)}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={RETURN_REASON_META[returnReason].icon}
+                  size={16}
+                  color={RETURN_REASON_META[returnReason].color}
+                />
+                <Text style={[styles.returnReasonChipText, { color: RETURN_REASON_META[returnReason].color }]}>
+                  {t('rrReturnedShort') || 'Waarom teruggekeerd?'}
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color={colors.textDim} />
+              </TouchableOpacity>
+            )}
 
           {/* Progress bar — ook tijdens terugkeren naar de dock, zodat je de
               laatste coverage-state blijft zien totdat een volgende taak start.
@@ -2859,6 +2928,16 @@ export default function HomeScreen() {
         </View>
         <MessagesScreen />
       </Modal>
+
+      {/* Return-reason modal — explains WHY the mower is back on the dock. */}
+      <ReturnReasonModal
+        visible={reasonModalVisible}
+        reason={returnReason}
+        online={mower.online}
+        loading={commandLoading !== null}
+        onDismiss={() => setReasonModalVisible(false)}
+        onResume={() => { setReasonModalVisible(false); resumeCoverage(mower.sn); }}
+      />
     </View>
   );
 }
@@ -3278,6 +3357,24 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   bladeStuckBannerText: {
     fontSize: 12,
     color: c.red,
+    fontWeight: '600',
+    flex: 1,
+  },
+  returnReasonChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 6,
+    alignSelf: 'stretch',
+  },
+  returnReasonChipText: {
+    fontSize: 12,
     fontWeight: '600',
     flex: 1,
   },

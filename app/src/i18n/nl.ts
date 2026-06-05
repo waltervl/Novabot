@@ -266,4 +266,22 @@ export default {
   noChargerFound: 'Geen laadstation gevonden',
   provisionCharger: 'Configureer eerst een laadstation voordat je een maaier koppelt.',
   bladesNotSpinning: 'Maaier rijdt maar messen draaien NIET — check messenkop / hoogte, of zet de maaier uit en weer aan',
+
+  // ── Return-reason modal ───────────────────────────────────────
+  rrRainTitle: 'Teruggekeerd: regen',
+  rrRainDesc: 'De maaier is naar het laadstation gereden omdat er regen werd gedetecteerd. Hervat om de regenpauze te negeren.',
+  rrRainResume: 'Negeer regen & hervat',
+  rrBatteryTitle: 'Opladen — lage batterij',
+  rrBatteryDesc: 'De maaier laadt op en hervat automatisch zodra de accu vol is.',
+  rrTimeTitle: 'Tijdslimiet bereikt',
+  rrTimeDesc: 'De ingestelde maaitijd is bereikt. Je kunt het maaien hervatten.',
+  rrManualTitle: 'Handmatig teruggestuurd',
+  rrManualDesc: 'De maaier is handmatig naar het laadstation gestuurd. Je kunt het maaien hervatten.',
+  rrFinishedTitle: 'Maaien voltooid',
+  rrFinishedDesc: 'Het maaien is voltooid en de maaier staat weer op het laadstation.',
+  rrErrorTitle: 'Teruggekeerd door storing',
+  rrErrorDesc: 'De maaier is teruggekeerd door een storing. Los de storing op en probeer opnieuw.',
+  rrResume: 'Hervat',
+  rrDismiss: 'Sluiten',
+  rrReturnedShort: 'Waarom teruggekeerd?',
 };

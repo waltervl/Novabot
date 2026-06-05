@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { db } from '../db/database.js';
 import { equipmentRepo } from '../db/repositories/equipment.js';
+import { scheduleRepo } from '../db/repositories/schedules.js';
 import { detectAndDispatch, resetEventState } from '../notifications/eventDetector.js';
 import { checkAutoResume, resetAutoResumeState } from '../services/autoResume.js';
 import { isFrameUnvalidated, noteDockState } from '../services/frameValidation.js';
@@ -1082,6 +1083,13 @@ export function getDeviceSnapshot(sn: string): Record<string, string> | null {
   for (const [field, rawValue] of snValues) {
     result[field] = translateValue(field, rawValue);
   }
+  // Rain-pause flag: a rain pause now sets Work:USER_STOP (same as a manual
+  // pause), so this flag is the only way the app can tell rain apart from a
+  // manual pause. Only mowers (LFIN*) have rain sessions.
+  result.rain_paused =
+    sn.startsWith('LFIN') && scheduleRepo.findRainSessionByMower(sn, 'paused')
+      ? '1'
+      : '0';
   return result;
 }
 

@@ -268,4 +268,22 @@ export default {
   noChargerFound: 'No charger found',
   provisionCharger: 'Provision a charger first before pairing a mower.',
   bladesNotSpinning: 'Mower is driving but blades are NOT spinning — check cutter head / height, or power-cycle the mower',
+
+  // ── Return-reason modal ───────────────────────────────────────
+  rrRainTitle: 'Returned: rain',
+  rrRainDesc: 'The mower drove back to the dock because rain was detected. Resume to ignore the rain pause.',
+  rrRainResume: 'Ignore rain & resume',
+  rrBatteryTitle: 'Charging — low battery',
+  rrBatteryDesc: 'The mower is charging and will resume automatically once the battery is full.',
+  rrTimeTitle: 'Time limit reached',
+  rrTimeDesc: 'The configured mowing time has been reached. You can resume mowing.',
+  rrManualTitle: 'Sent back manually',
+  rrManualDesc: 'The mower was sent back to the dock manually. You can resume mowing.',
+  rrFinishedTitle: 'Mowing finished',
+  rrFinishedDesc: 'Mowing is finished and the mower is back on the dock.',
+  rrErrorTitle: 'Returned due to a fault',
+  rrErrorDesc: 'The mower returned because of a fault. Resolve the fault and try again.',
+  rrResume: 'Resume',
+  rrDismiss: 'Close',
+  rrReturnedShort: 'Why did it return?',
 };
