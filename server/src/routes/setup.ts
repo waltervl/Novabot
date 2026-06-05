@@ -20,7 +20,6 @@ import path from 'path';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo } from '../db/repositories/index.js';
 import { isSetupComplete, invalidateSetupCache } from '../middleware/setupGuard.js';
 import { importCloudWorkRecords } from '../services/cloudWorkRecordsImport.js';
-import { fillMissingUnicomPaths } from '../maps/unicomConnector.js';
 // LFI cloud helpers were extracted to `src/services/lfiCloud.ts` on 2026-04-23
 // so cloud-api routes can import them without reaching into `routes/setup.ts`
 // (the cloud-api freeze forbids that direction). Re-export here so existing
@@ -340,25 +339,6 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
                 continue;
               }
               if (!csvUrl) {
-                // Inter-zone unicom channels arrive 0-byte with no URL (LFI by
-                // design). Persist them metadata-only so fillMissingUnicomPaths
-                // can reconstruct their path later — without the record there is
-                // nothing to fill. Work/obstacle items still require a URL.
-                if (mapType === 'unicom') {
-                  const mapId = uuidv4();
-                  const rawAlias = typeof item.alias === 'string' ? item.alias.trim() : '';
-                  const alias = rawAlias === '' ? null : rawAlias;
-                  const mapData = {
-                    map_id: mapId, mower_sn: mower.sn, map_name: alias,
-                    map_area: null, file_name: fileName, file_size: null, map_type: 'unicom',
-                  };
-                  const inserted = merge
-                    ? mapRepo.insertIfMissing(mapData)
-                    : (mapRepo.upsert(mapData), true);
-                  if (inserted) mapsImported++;
-                  console.log(`[Setup] ✓ Imported: ${fileName} (unicom, metadata only — no URL, inter-map channel)`);
-                  continue;
-                }
                 console.warn(`[Setup] Skipping ${fileName}: no download URL in cloud response`);
                 importErrors++;
                 continue;
@@ -447,19 +427,13 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               console.warn(`[Setup] ⚠ ${importErrors} map(s) failed to import for ${mower.sn}`);
             }
 
-            // Reconstruct inter-zone unicom connector paths. LFI ships these
-            // channels 0-byte (path data lives only on a natively-mapped
-            // mower). Without a path the connector is dropped by the bundle
-            // filter, leaving multi-zone maps with unbridged necks that the
-            // costmap inflation seals shut. We fill them with a union-clipped
-            // path so the bundle keeps a navigable corridor. (Reverses the
-            // mower-breaking half of f6191a46; see spec 2026-06-05.)
-            try {
-              const n = fillMissingUnicomPaths(mower.sn);
-              if (n > 0) console.log(`[Setup] Reconstructed ${n} unicom connector(s) for ${mower.sn}`);
-            } catch (e) {
-              console.warn(`[Setup] unicom reconstruction failed (non-fatal):`, e);
-            }
+            // NOTE: we do NOT synthesize inter-zone unicom connector paths.
+            // LFI ships them 0-byte by design; overlapping work zones are
+            // already connected, so no driven/synthetic path is needed. A
+            // synthetic straight line/route can cut through real hazards
+            // (e.g. a staircase) — proven unsafe, so removed. The firmware
+            // only ever RECORDS the driven inter-zone path; it never generates
+            // one. (Earlier reconstruction attempt reverted 2026-06-05.)
 
             // Import chargingPose for map calibration
             const machineField = mapVal?.machineExtendedField as Record<string, unknown> | undefined;

@@ -1,7 +1,13 @@
 # Unicom connector-reconstructie bij cloud-import (Approach C) — Design
 
 **Datum:** 2026-06-05
-**Status:** Ontwerp — wacht op review vóór implementatieplan
+**Status:** ⚠️ TERUGGEDRAAID (2026-06-05). Deze aanpak (synthetische unicom-connectors)
+was FOUT en GEVAARLIJK. David's zones overlappen → al verbonden → geen unicoms nodig;
+de firmware genereert inter-zone unicoms niet (die worden gereden). De gegenereerde
+rechte lijn liep dwars door een **trap**. De echte maaifout-oorzaak was de
+`charging_pose.orientation` (0 i.p.v. 93°), gefixt door de re-import — daarna maaide de
+maaier live. Alleen de oriëntatie-fix is behouden; de unicom-generatie is verwijderd.
+Zie `docs/reference/COSTMAP-UNICOM-NAV.md` (correctie bovenaan).
 
 ## Doel
 
