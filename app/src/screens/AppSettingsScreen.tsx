@@ -389,6 +389,7 @@ export default function AppSettingsScreen({
         <Section title="ACTIONS">
           {onGoToMowerSettings && (
             <TouchableOpacity
+              testID="settings-mower"
               style={styles.actionRow}
               onPress={onGoToMowerSettings}
               activeOpacity={0.7}
@@ -400,6 +401,7 @@ export default function AppSettingsScreen({
           )}
           {onGoToOta && (
             <TouchableOpacity
+              testID="settings-ota"
               style={styles.actionRow}
               onPress={onGoToOta}
               activeOpacity={0.7}

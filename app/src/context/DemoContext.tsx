@@ -100,8 +100,15 @@ const DemoContext = createContext<DemoState>({
   demoHistory: [],
 });
 
-export function DemoProvider({ children }: { children: React.ReactNode }) {
-  const [enabled, setEnabled] = useState(false);
+export function DemoProvider({
+  children,
+  initialEnabled = false,
+}: {
+  children: React.ReactNode;
+  /** Boot directly into demo mode (used by fastlane snapshot runs). */
+  initialEnabled?: boolean;
+}) {
+  const [enabled, setEnabled] = useState(initialEnabled);
   const [actIdx, setActIdx] = useState(1); // start at 'mowing'
 
   const toggle = useCallback(() => setEnabled((v) => !v), []);

@@ -283,7 +283,7 @@ export default function ScheduleScreen() {
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.title}>{t('schedules')}</Text>
-          <TouchableOpacity style={styles.addButton} onPress={() => handleAdd()} activeOpacity={0.7}>
+          <TouchableOpacity testID="schedule-add" style={styles.addButton} onPress={() => handleAdd()} activeOpacity={0.7}>
             <Ionicons name="add" size={22} color={colors.white} />
           </TouchableOpacity>
         </View>

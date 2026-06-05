@@ -1202,6 +1202,7 @@ export default function MapScreen() {
               </TouchableOpacity>
             )}
             <TouchableOpacity
+              testID="map-create"
               onPress={() => (navigation as any).navigate('Mapping')}
               style={styles.addButton}
               activeOpacity={0.7}

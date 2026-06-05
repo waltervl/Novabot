@@ -36,6 +36,7 @@ import type {
 } from './src/navigation/types';
 import { getToken, getServerUrl } from './src/services/auth';
 import { initSocket, disconnectSocket } from './src/services/socket';
+import { SNAPSHOT_MODE } from './src/lib/snapshot';
 import { useAppUpdateCheck } from './src/hooks/useAppUpdateCheck';
 import { UpdatePromptModal } from './src/components/UpdatePromptModal';
 
@@ -77,6 +78,8 @@ const Tab = createBottomTabNavigator<MainTabParams>();
 
 function UpdateGate() {
   const { latest, dismiss } = useAppUpdateCheck();
+  // Never interrupt a screenshot run with the update modal.
+  if (SNAPSHOT_MODE) return null;
   if (!latest) return null;
   return <UpdatePromptModal latest={latest} onClose={dismiss} />;
 }
@@ -215,20 +218,20 @@ function MainTabs({ onLogout, onGoToProvision }: { onLogout: () => void; onGoToP
         },
       })}
     >
-      <Tab.Screen name="Home" component={HomeScreen} options={{ tabBarLabel: t('tabHome') }} />
+      <Tab.Screen name="Home" component={HomeScreen} options={{ tabBarLabel: t('tabHome'), tabBarButtonTestID: 'tab-home' }} />
       <Tab.Screen
         name="Map"
         component={MapTabScreen}
-        options={{ tabBarLabel: t('tabMap') }}
+        options={{ tabBarLabel: t('tabMap'), tabBarButtonTestID: 'tab-map' }}
         listeners={({ navigation }) => ({
           tabPress: () => {
             (navigation as any).navigate('Map', { screen: 'MapMain' });
           },
         })}
       />
-      <Tab.Screen name="Control" component={JoystickScreen} options={{ tabBarLabel: t('tabControl') }} />
-      <Tab.Screen name="Camera" component={CameraScreen} options={{ tabBarLabel: t('tabCamera') }} />
-      <Tab.Screen name="Schedules" component={ScheduleScreen} options={{ tabBarLabel: t('tabSchedule') }} />
+      <Tab.Screen name="Control" component={JoystickScreen} options={{ tabBarLabel: t('tabControl'), tabBarButtonTestID: 'tab-control' }} />
+      <Tab.Screen name="Camera" component={CameraScreen} options={{ tabBarLabel: t('tabCamera'), tabBarButtonTestID: 'tab-camera' }} />
+      <Tab.Screen name="Schedules" component={ScheduleScreen} options={{ tabBarLabel: t('tabSchedule'), tabBarButtonTestID: 'tab-schedules' }} />
 
       {/* Settings — always last, reset nested stack to root on tab press */}
       <Tab.Screen
@@ -237,7 +240,7 @@ function MainTabs({ onLogout, onGoToProvision }: { onLogout: () => void; onGoToP
         // The same effect is achieved here via the tabPress listener below,
         // which always resets the nested stack back to SettingsMain when the
         // user taps the tab.
-        options={{ tabBarLabel: t('tabSettings') }}
+        options={{ tabBarLabel: t('tabSettings'), tabBarButtonTestID: 'tab-settings' }}
         listeners={({ navigation }) => ({
           tabPress: () => {
             (navigation as any).navigate('AppSettings', { screen: 'SettingsMain' });
@@ -354,12 +357,19 @@ function StatusBarThemed() {
 
 export default function App() {
   const [appReady, setAppReady] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // In snapshot mode start authenticated so the UI test lands on the main
+  // tabs (demo data) instead of the login screen, which needs a live server.
+  const [isAuthenticated, setIsAuthenticated] = useState(SNAPSHOT_MODE);
   const [authChecked, setAuthChecked] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<MainTabParams>>(null);
 
   // Check for existing token on mount
   useEffect(() => {
+    // Snapshot runs are pre-authenticated and have no server; skip the check.
+    if (SNAPSHOT_MODE) {
+      setAuthChecked(true);
+      return;
+    }
     (async () => {
       try {
         const token = await getToken();
@@ -417,7 +427,7 @@ export default function App() {
 
   return (
     <ThemeProvider>
-    <DemoProvider>
+    <DemoProvider initialEnabled={SNAPSHOT_MODE}>
     <I18nProvider>
     <ExperimentalProvider>
     <MapLabelsProvider>
