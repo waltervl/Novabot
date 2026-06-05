@@ -1,0 +1,47 @@
+# Snapfile — fastlane snapshot config for the OpenNova iOS app.
+# Run from this folder:  cd manuals/OpenNova && fastlane snapshot
+# (paths below are relative to manuals/OpenNova/, pointing at the repo's app/.)
+#
+# Prereq (run once, and again after every `expo prebuild`):
+#   ruby fastlane/setup_snapshot.rb     # registers the OpenNovaUITests target
+
+# Build through the CocoaPods workspace, not the bare project.
+workspace("../../app/ios/OpenNova.xcworkspace")
+
+# Shared scheme created by fastlane/setup_snapshot.rb (Test action = Release).
+scheme("OpenNovaUITests")
+
+# Single 6.9" phone — enough for a manual.
+devices(["iPhone 16 Pro Max"])
+
+# English only (app i18n defaults to 'en'; SecureStore is empty on reinstall).
+languages(["en-US"])
+
+output_directory("./fastlane/screenshots")
+clear_previous_screenshots(true)
+
+# Reuse the cached Release build (set up by setup_snapshot.rb verification).
+derived_data_path("../../app/ios/build/snapshot-dd")
+
+# Clean 9:41 / full battery / full signal status bar.
+override_status_bar(true)
+
+# Fresh install per run so no persisted token/language leaks in.
+# app_identifier is required for the uninstall step in non-interactive mode.
+app_identifier("com.ramonvanbruggen.opennova")
+reinstall_app(true)
+
+# Release build so the embedded JS bundle is used (Debug needs Metro running).
+configuration("Release")
+
+# Bake snapshot mode into the JS bundle: skips login + boots demo data.
+# Expo inlines EXPO_PUBLIC_* env vars at bundle time; this build setting is
+# exported to the "Bundle React Native code and images" phase as an env var.
+xcargs("EXPO_PUBLIC_SNAPSHOT=1")
+
+# Deterministic ordering; one sim at a time keeps the status-bar override sane.
+concurrent_simulators(false)
+
+number_of_retries(1)
+
+# For all options run:  fastlane action snapshot

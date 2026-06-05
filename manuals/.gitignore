@@ -1,0 +1,7 @@
+# Transient fastlane snapshot output (regenerated on each run)
+*/fastlane/screenshots/
+*/fastlane/test_output/
+*/fastlane/report.xml
+
+# macOS
+.DS_Store

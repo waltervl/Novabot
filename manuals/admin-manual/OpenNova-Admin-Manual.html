@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenNova — Admin Panel Manual</title>
+<style>
+  :root{
+    --emerald:#10b981; --emerald-d:#059669; --emerald-l:#ecfdf5;
+    --ink:#0f172a; --body:#334155; --muted:#64748b; --line:#e2e8f0;
+    --bg:#ffffff; --panel:#f8fafc;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  body{
+    margin:0; background:var(--bg); color:var(--body);
+    font-family:-apple-system,"SF Pro Text","SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;
+    font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,h4{color:var(--ink); line-height:1.2; margin:0;}
+  p{margin:0 0 .6em;}
+  .wrap{max-width:980px; margin:0 auto; padding:0 32px;}
+
+  /* ── Cover ───────────────────────────────────────────────── */
+  .cover{
+    min-height:100vh; display:flex; flex-direction:column; justify-content:center;
+    padding:64px 56px; color:#fff; position:relative; overflow:hidden;
+    background:radial-gradient(1200px 700px at 80% -10%, #134e4a 0%, transparent 60%),
+               linear-gradient(160deg,#0b1220 0%, #0f172a 45%, #064e3b 120%);
+  }
+  .cover .badge{
+    display:inline-flex; align-items:center; gap:9px; align-self:flex-start;
+    background:rgba(16,185,129,.16); border:1px solid rgba(16,185,129,.45);
+    color:#6ee7b7; font-weight:600; font-size:13px; letter-spacing:.04em;
+    padding:7px 14px; border-radius:999px; text-transform:uppercase;
+  }
+  .cover .dot{width:9px;height:9px;border-radius:50%;background:var(--emerald);box-shadow:0 0 12px var(--emerald);}
+  .cover h1{color:#fff; font-size:68px; font-weight:800; letter-spacing:-.02em; margin:22px 0 10px;}
+  .cover .sub{font-size:23px; color:#cbd5e1; font-weight:500; max-width:620px;}
+  .cover .meta{margin-top:38px; display:flex; gap:28px; color:#94a3b8; font-size:14px; flex-wrap:wrap;}
+  .cover .meta b{color:#e2e8f0; font-weight:600;}
+  .cover .heroshot{
+    margin-top:54px; max-width:760px; border-radius:12px; overflow:hidden;
+    border:1px solid rgba(255,255,255,.10); box-shadow:0 40px 80px rgba(0,0,0,.55);
+    transform:rotate(-1.2deg);
+  }
+  .cover .heroshot img{width:100%; display:block;}
+
+  /* ── Section bands ───────────────────────────────────────── */
+  section{padding:44px 0 8px;}
+  .band{display:flex; align-items:baseline; gap:16px; margin-bottom:8px; padding-bottom:14px; border-bottom:2px solid var(--line);}
+  .band .num{font-size:14px; font-weight:800; color:var(--emerald-d); letter-spacing:.12em; white-space:nowrap;}
+  .band h2{font-size:27px; font-weight:750; letter-spacing:-.01em;}
+  .band .lead{color:var(--muted); font-size:14.5px; margin-left:auto; max-width:380px; text-align:right;}
+
+  /* ── Screen blocks (wide / landscape) ────────────────────── */
+  .screen{padding:30px 0; border-bottom:1px solid var(--line); break-inside:avoid;}
+  .screen:last-child{border-bottom:none;}
+  .screen .kicker{font-size:12.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--emerald-d);}
+  .screen h3{font-size:22px; font-weight:700; margin:5px 0 11px;}
+  .screen p{color:var(--body); font-size:15px; max-width:880px;}
+
+  /* macOS-style browser window frame */
+  .window{
+    margin:18px 0 4px; border-radius:12px; overflow:hidden;
+    border:1px solid var(--line); background:#0b1220;
+    box-shadow:0 22px 48px rgba(15,23,42,.20);
+  }
+  .window .bar{display:flex; align-items:center; gap:8px; padding:10px 14px; background:#111827;}
+  .window .bar i{width:11px; height:11px; border-radius:50%; display:inline-block;}
+  .window .bar .r{background:#ff5f57;} .window .bar .y{background:#febc2e;} .window .bar .g{background:#28c840;}
+  .window .bar .url{
+    margin-left:14px; background:#1e293b; color:#94a3b8; font-size:12px;
+    padding:4px 14px; border-radius:7px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  .window img{width:100%; display:block;}
+
+  .tags{display:flex; flex-wrap:wrap; gap:8px; margin-top:14px;}
+  .tag{background:var(--emerald-l); color:var(--emerald-d); border:1px solid #a7f3d0;
+    font-size:12.5px; font-weight:600; padding:4px 11px; border-radius:999px;}
+
+  /* ── Intro + TOC ─────────────────────────────────────────── */
+  .intro{padding:54px 0 10px;}
+  .intro h2{font-size:30px; margin-bottom:14px;}
+  .intro p{font-size:16px; max-width:760px; color:var(--body);}
+  .note{margin-top:22px; background:var(--emerald-l); border:1px solid #a7f3d0; border-radius:14px;
+    padding:16px 20px; color:#065f46; font-size:14.5px;}
+  .note b{color:#064e3b;}
+  .toc{margin-top:34px; columns:2; column-gap:48px;}
+  .toc .grp{break-inside:avoid; margin-bottom:18px;}
+  .toc .grp h4{font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:8px;}
+  .toc a{display:flex; justify-content:space-between; gap:10px; text-decoration:none; color:var(--ink);
+    font-size:14.5px; padding:5px 0; border-bottom:1px dotted var(--line);}
+  .toc a span:last-child{color:var(--emerald-d); font-variant-numeric:tabular-nums;}
+
+  footer{padding:40px 0 60px; color:var(--muted); font-size:13px; text-align:center; border-top:2px solid var(--line); margin-top:30px;}
+
+  /* ── Print ───────────────────────────────────────────────── */
+  @page{ size:A4; margin:14mm 13mm; }
+  @media print{
+    .cover{min-height:auto; height:268mm; break-after:page;}
+    .intro{break-after:page;}
+    .screen{padding:14px 0;}
+    .window{box-shadow:none;}
+    .band .lead{display:none;}
+    a{color:inherit;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ Cover ══════════════════════════════════════════════════ -->
+<div class="cover">
+  <span class="badge"><span class="dot"></span> OpenNova Server</span>
+  <h1>Admin Panel</h1>
+  <div class="sub">The built-in web console for your local mower server — every tab explained.</div>
+  <div class="meta">
+    <div>Server version <b>v2026.0604.1242</b></div>
+    <div>Interface <b>Web</b></div>
+    <div>Edition <b>June 2026</b></div>
+  </div>
+  <div class="heroshot"><img src="img/01-devices.png" alt=""></div>
+</div>
+
+<!-- ══ Intro + TOC ════════════════════════════════════════════ -->
+<div class="wrap intro">
+  <h2>About the admin panel</h2>
+  <p>The admin panel is the OpenNova server's built-in web console, served at
+  <code>http://&lt;your-server&gt;/admin</code>. From one page you manage every paired
+  mower and charger, watch the live server log, pull diagnostics off a mower without SSH,
+  view and back up maps, push firmware over the air, and configure networking,
+  certificates and your account. Log in with the e-mail and password you set during
+  first-time setup. Six tabs run across the top: Devices, Console, Mower Debug, Maps,
+  Firmware and Settings.</p>
+  <div class="note">
+    <b>About these screenshots.</b> Captured from a live server with two real
+    mower + charger sets. Your own panel shows your devices and data — the layout and
+    controls are identical. The chips beside the logo (version · uptime · memory) are
+    always visible, as is the language switcher and the per-card refresh arrow.
+  </div>
+
+  <div class="toc">
+    <div class="grp">
+      <h4>1 · Devices</h4>
+      <a href="#devices"><span>Paired devices</span><span>01</span></a>
+      <a href="#serverupdate"><span>Server updates</span><span>02</span></a>
+    </div>
+    <div class="grp">
+      <h4>2 · Console</h4>
+      <a href="#console"><span>Live server console</span><span>03</span></a>
+    </div>
+    <div class="grp">
+      <h4>3 · Mower Debug</h4>
+      <a href="#mowerdebug"><span>Remote diagnostics</span><span>04</span></a>
+    </div>
+    <div class="grp">
+      <h4>4 · Maps</h4>
+      <a href="#mapviewer"><span>Map viewer</span><span>05</span></a>
+      <a href="#mapbundle"><span>Backup &amp; restore</span><span>06</span></a>
+    </div>
+    <div class="grp">
+      <h4>5 · Firmware</h4>
+      <a href="#firmware"><span>Firmware updates</span><span>07</span></a>
+    </div>
+    <div class="grp">
+      <h4>6 · Settings</h4>
+      <a href="#account"><span>Account, support &amp; resources</span><span>08</span></a>
+      <a href="#network"><span>Network, DNS &amp; certificate</span><span>09</span></a>
+      <a href="#remote"><span>Cloud import &amp; remote support</span><span>10</span></a>
+      <a href="#danger"><span>Danger zone</span><span>11</span></a>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 1 · Devices ════════════════════════════════════════════ -->
+<section class="wrap" id="sec1">
+  <div class="band"><span class="num">SECTION 1</span><h2>Devices</h2>
+    <span class="lead">The default landing tab — every paired machine at a glance.</span></div>
+
+  <div class="screen" id="devices">
+    <div class="kicker">01 · Devices</div>
+    <h3>Paired devices</h3>
+    <p>The Devices tab lists every mower and charger paired with your account, grouped
+    into <b>paired sets</b>. Each row shows the serial number, device type, firmware
+    version with a <b>Stock</b> or <b>OpenNova</b> badge, the LoRa address/channel the
+    pair uses, and a live <b>Online / offline</b> pill driven by MQTT status reports.
+    The <b>Activate / Deactivate</b> button chooses which set is the active pair. This is
+    the only tab most users ever need.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Devices</span></div><img src="img/01-devices.png" alt="Devices tab"></div>
+    <div class="tags"><span class="tag">Paired sets</span><span class="tag">Online status</span><span class="tag">LoRa addr / channel</span><span class="tag">Stock vs OpenNova</span></div>
+  </div>
+
+  <div class="screen" id="serverupdate">
+    <div class="kicker">02 · Devices</div>
+    <h3>Server updates</h3>
+    <p>When a newer server image is available on Docker Hub, a banner appears across the
+    top of the panel. It shows the running version, the available version and when it was
+    pushed; <b>How to update</b> explains the upgrade, or you can dismiss it. This is how
+    you know the local <i>server</i> itself — not the mower — has an update waiting.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Devices</span></div><img src="img/02-server-update.png" alt="Server update banner"></div>
+    <div class="tags"><span class="tag">Self-update banner</span><span class="tag">Docker Hub</span></div>
+  </div>
+</section>
+
+<!-- ══ 2 · Console ════════════════════════════════════════════ -->
+<section class="wrap" id="sec2">
+  <div class="band"><span class="num">SECTION 2</span><h2>Console</h2>
+    <span class="lead">Watch the server work in real time.</span></div>
+
+  <div class="screen" id="console">
+    <div class="kicker">03 · Console</div>
+    <h3>Live server console</h3>
+    <p>The Console tab streams the server's live log — the same lines you'd see in
+    <code>docker logs</code> — colour-coded by source. Toggle the <b>Mower / Charger /
+    App / HTTP / System</b> filters to focus on what matters, search by serial number,
+    and use <b>Clear</b>, <b>Copy</b> and <b>Auto-scroll</b>. When something misbehaves,
+    open this tab, reproduce the problem, and copy the exact lines into a bug report.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Console</span></div><img src="img/03-console.png" alt="Console tab"></div>
+    <div class="tags"><span class="tag">Live logs</span><span class="tag">Source filters</span><span class="tag">Copy for bug reports</span></div>
+  </div>
+</section>
+
+<!-- ══ 3 · Mower Debug ════════════════════════════════════════ -->
+<section class="wrap" id="sec3">
+  <div class="band"><span class="num">SECTION 3</span><h2>Mower Debug</h2>
+    <span class="lead">Pull diagnostics off the mower without SSH.</span></div>
+
+  <div class="screen" id="mowerdebug">
+    <div class="kicker">04 · Mower Debug</div>
+    <h3>Remote diagnostics</h3>
+    <p>Mower Debug fetches live logs and diagnostics straight from the mower over MQTT —
+    no SSH needed (it requires custom firmware ≥ <code>v6.0.2-custom-24</code>). Pick a
+    mower, then use <b>List log sources</b>, <b>Path files info</b> or <b>System info</b>.
+    The <b>Fetch log lines</b> panel grabs a chosen log (for example <code>mqtt_error</code>)
+    with a line limit, severity level and grep filter, and a live client-side filter plus
+    <b>Errors only / Warns</b> toggles narrow the result further.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Mower Debug</span></div><img src="img/04-mower-debug.png" alt="Mower Debug tab"></div>
+    <div class="tags"><span class="tag">Logs without SSH</span><span class="tag">get_ros_log</span><span class="tag">System info</span></div>
+  </div>
+</section>
+
+<!-- ══ 4 · Maps ═══════════════════════════════════════════════ -->
+<section class="wrap" id="sec4">
+  <div class="band"><span class="num">SECTION 4</span><h2>Maps</h2>
+    <span class="lead">Inspect, calibrate and back up every saved lawn.</span></div>
+
+  <div class="screen" id="mapviewer">
+    <div class="kicker">05 · Maps</div>
+    <h3>Map viewer</h3>
+    <p>The Maps tab visualises every map stored on the server. The Map Viewer draws the
+    work-area boundary (green), no-go <b>obstacles</b> (red, with their name and area), the
+    charging dock, and the <b>unicom</b> channel that links a zone to the dock. Pick a
+    mower from the dropdown; <b>Calibrate Polygon Offset</b> nudges the polygon if the
+    saved map and the live GPS frame drift apart.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Maps</span></div><img src="img/05-maps-viewer.png" alt="Map viewer"></div>
+    <div class="tags"><span class="tag">Boundary &amp; obstacles</span><span class="tag">Unicom channel</span><span class="tag">Polygon offset</span></div>
+  </div>
+
+  <div class="screen" id="mapbundle">
+    <div class="kicker">06 · Maps</div>
+    <h3>Backup &amp; restore</h3>
+    <p>Below the viewer is the full map list (each entry deletable) and the
+    <b>Portable Map Bundle</b> tools — the recommended way to back up and move a lawn.
+    <b>Export bundle</b> saves the polygons plus a complete rasterized map as a portable
+    <code>.novabotmap</code> file; restoring pushes it back to a mower verbatim (after
+    which you re-anchor in the app). The server also keeps the last 20 <b>auto-snapshots</b>
+    per mower, and <b>Walker Maps</b> lists survey bundles uploaded by the RTK walker.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Maps</span></div><img src="img/06-maps-bundle.png" alt="Map bundle backup"></div>
+    <div class="tags"><span class="tag">Portable bundle</span><span class="tag">Auto-snapshots</span><span class="tag">Walker maps</span></div>
+  </div>
+</section>
+
+<!-- ══ 5 · Firmware ═══════════════════════════════════════════ -->
+<section class="wrap" id="sec5">
+  <div class="band"><span class="num">SECTION 5</span><h2>Firmware</h2>
+    <span class="lead">Over-the-air updates for mowers and chargers.</span></div>
+
+  <div class="screen" id="firmware">
+    <div class="kicker">07 · Firmware</div>
+    <h3>Firmware updates</h3>
+    <p>The Firmware tab manages over-the-air updates for both mowers and chargers.
+    <b>Available Firmware</b> lists every version the server knows about with its device
+    type, MD5 and changelog; drop new files into the server's firmware folder and they
+    appear here automatically. Under <b>Update Device</b>, pick a target and a version and
+    click <b>Start Update</b> — progress then streams in from the mower over MQTT.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Firmware</span></div><img src="img/07-firmware.png" alt="Firmware tab"></div>
+    <div class="tags"><span class="tag">OTA</span><span class="tag">Changelogs</span><span class="tag">Update device</span></div>
+  </div>
+</section>
+
+<!-- ══ 6 · Settings ═══════════════════════════════════════════ -->
+<section class="wrap" id="sec6">
+  <div class="band"><span class="num">SECTION 6</span><h2>Settings</h2>
+    <span class="lead">Everything that isn't a per-device operation.</span></div>
+
+  <div class="screen" id="account">
+    <div class="kicker">08 · Settings</div>
+    <h3>Account, support &amp; resources</h3>
+    <p>The Settings tab opens with your <b>Account</b> summary — e-mail, admin role,
+    registered/seen device counts and map count. The <b>Support OpenNova</b> card offers
+    tip options (it's free and open-source), and <b>Resources &amp; Help</b> links the
+    User Guide &amp; Wiki, source code, issue tracker, Docker image, releases and
+    discussions.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Settings</span></div><img src="img/08-settings-account.png" alt="Settings — account"></div>
+    <div class="tags"><span class="tag">Account</span><span class="tag">Support</span><span class="tag">Help links</span></div>
+  </div>
+
+  <div class="screen" id="network">
+    <div class="kicker">09 · Settings</div>
+    <h3>Network, DNS &amp; certificate</h3>
+    <p><b>Network &amp; DNS</b> confirms that the app and mower resolve the cloud
+    hostnames to your local server instead of the internet — each domain shows the IP it
+    points to, with a built-in <code>dnsmasq</code> server you can start if you don't run
+    your own. <b>System Tools</b> can soft-restart the mDNS advertiser (the
+    <code>opennova.local</code> name). <b>Certificate Setup</b> walks you through installing
+    the OpenNova CA on your phone so the official app trusts the local HTTPS server.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Settings</span></div><img src="img/09-settings-network.png" alt="Settings — network & certificate"></div>
+    <div class="tags"><span class="tag">DNS redirect check</span><span class="tag">mDNS</span><span class="tag">CA certificate</span></div>
+  </div>
+
+  <div class="screen" id="remote">
+    <div class="kicker">10 · Settings</div>
+    <h3>Cloud import &amp; remote support</h3>
+    <p><b>Cloud Import</b> pulls your devices in from the original Novabot cloud using your
+    app credentials, for a smooth migration. The <b>Remote Debug</b> cards let you share
+    your MQTT logs in real time with someone who can help, or receive logs from users who
+    are sharing theirs; <b>Remote Support — Operator</b> connects you to an
+    approval-gated session for a user who asked for help.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Settings</span></div><img src="img/10-settings-remote.png" alt="Settings — cloud import & remote support"></div>
+    <div class="tags"><span class="tag">Cloud migration</span><span class="tag">Remote debug</span><span class="tag">Remote support</span></div>
+  </div>
+
+  <div class="screen" id="danger">
+    <div class="kicker">11 · Settings</div>
+    <h3>Danger zone</h3>
+    <p>At the very bottom sits the <b>Danger Zone</b>. <b>Factory Reset</b> permanently
+    deletes your account, all devices, maps and settings and starts fresh — there is no
+    undo, which is why it's deliberately tucked away last. A manual
+    "recalibrate charging pose" debug action lives just above it for advanced use.</p>
+    <div class="window"><div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span class="url">your-server/admin · Settings</span></div><img src="img/11-settings-danger.png" alt="Settings — danger zone"></div>
+    <div class="tags"><span class="tag">Factory reset</span><span class="tag">Irreversible</span></div>
+  </div>
+</section>
+
+<footer class="wrap">
+  OpenNova — local cloud replacement for your robot mower &amp; charging station ·
+  Admin Panel Manual · Server v2026.0604.1242 · June 2026
+</footer>
+
+</body>
+</html>

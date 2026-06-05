@@ -1,0 +1,15 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Generate manual/App Store screenshots (English, iPhone 16 Pro Max, demo data)"
+  lane :snapshots do
+    # Ensure the OpenNovaUITests target + scheme exist in the prebuild-generated
+    # ios/ project. Idempotent — safe to run before every capture, and the only
+    # step needed to recover after an `expo prebuild`. xcodeproj is already on
+    # fastlane's gem path, so we run it in-process rather than shelling out.
+    UI.message("Registering OpenNovaUITests target into ios/OpenNova.xcodeproj…")
+    load File.expand_path("setup_snapshot.rb", __dir__)
+
+    capture_screenshots
+  end
+end

@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenNova — User Manual</title>
+<style>
+  :root{
+    --emerald:#10b981; --emerald-d:#059669; --emerald-l:#ecfdf5;
+    --ink:#0f172a; --body:#334155; --muted:#64748b; --line:#e2e8f0;
+    --bg:#ffffff; --panel:#f8fafc; --frame:#0b1220;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  body{
+    margin:0; background:var(--bg); color:var(--body);
+    font-family:-apple-system,"SF Pro Text","SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;
+    font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,h4{color:var(--ink); line-height:1.2; margin:0;}
+  p{margin:0 0 .6em;}
+  .wrap{max-width:900px; margin:0 auto; padding:0 28px;}
+
+  /* ── Cover ───────────────────────────────────────────────── */
+  .cover{
+    min-height:100vh; display:flex; flex-direction:column; justify-content:center;
+    padding:64px 56px; color:#fff; position:relative; overflow:hidden;
+    background:radial-gradient(1200px 700px at 80% -10%, #134e4a 0%, transparent 60%),
+               linear-gradient(160deg,#0b1220 0%, #0f172a 45%, #064e3b 120%);
+  }
+  .cover .badge{
+    display:inline-flex; align-items:center; gap:9px; align-self:flex-start;
+    background:rgba(16,185,129,.16); border:1px solid rgba(16,185,129,.45);
+    color:#6ee7b7; font-weight:600; font-size:13px; letter-spacing:.04em;
+    padding:7px 14px; border-radius:999px; text-transform:uppercase;
+  }
+  .cover .dot{width:9px;height:9px;border-radius:50%;background:var(--emerald);box-shadow:0 0 12px var(--emerald);}
+  .cover h1{color:#fff; font-size:68px; font-weight:800; letter-spacing:-.02em; margin:22px 0 10px;}
+  .cover .sub{font-size:23px; color:#cbd5e1; font-weight:500; max-width:560px;}
+  .cover .meta{margin-top:38px; display:flex; gap:28px; color:#94a3b8; font-size:14px; flex-wrap:wrap;}
+  .cover .meta b{color:#e2e8f0; font-weight:600;}
+  .cover .hero{position:absolute; right:-40px; bottom:-30px; display:flex; gap:16px; opacity:.96; transform:rotate(-6deg);}
+  .cover .hero .ph{width:150px; border-radius:22px; border:5px solid #1e293b; box-shadow:0 30px 60px rgba(0,0,0,.5);}
+  .cover .hero .ph:nth-child(2){margin-top:50px;}
+
+  /* ── Section bands ───────────────────────────────────────── */
+  section{padding:46px 0 8px;}
+  .band{display:flex; align-items:baseline; gap:16px; margin-bottom:8px; padding-bottom:14px; border-bottom:2px solid var(--line);}
+  .band .num{font-size:14px; font-weight:800; color:var(--emerald-d); letter-spacing:.12em;}
+  .band h2{font-size:27px; font-weight:750; letter-spacing:-.01em;}
+  .band .lead{color:var(--muted); font-size:14.5px; margin-left:auto; max-width:380px; text-align:right;}
+
+  /* ── Screen blocks ───────────────────────────────────────── */
+  .screen{display:flex; gap:38px; align-items:center; padding:30px 0; border-bottom:1px solid var(--line); break-inside:avoid;}
+  .screen:last-child{border-bottom:none;}
+  .screen .shot{flex:0 0 248px;}
+  .device{
+    width:248px; padding:11px; border-radius:40px; background:linear-gradient(160deg,#111827,#0b1220);
+    box-shadow:0 20px 45px rgba(15,23,42,.28), inset 0 0 0 1px rgba(255,255,255,.05);
+    position:relative;
+  }
+  .device::before{content:""; position:absolute; top:18px; left:50%; transform:translateX(-50%);
+    width:78px; height:20px; background:#0b1220; border-radius:999px; z-index:2;}
+  .device img{width:100%; display:block; border-radius:30px;}
+  .screen .copy{flex:1; min-width:0;}
+  .screen .copy .kicker{font-size:12.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--emerald-d);}
+  .screen .copy h3{font-size:22px; font-weight:700; margin:5px 0 11px;}
+  .screen .copy p{color:var(--body); font-size:15px;}
+  .tags{display:flex; flex-wrap:wrap; gap:8px; margin-top:14px;}
+  .tag{background:var(--emerald-l); color:var(--emerald-d); border:1px solid #a7f3d0;
+    font-size:12.5px; font-weight:600; padding:4px 11px; border-radius:999px;}
+  .screen.flip{flex-direction:row-reverse;}
+
+  /* ── Intro + TOC ─────────────────────────────────────────── */
+  .intro{padding:54px 0 10px;}
+  .intro h2{font-size:30px; margin-bottom:14px;}
+  .intro p{font-size:16px; max-width:680px; color:var(--body);}
+  .note{margin-top:22px; background:var(--emerald-l); border:1px solid #a7f3d0; border-radius:14px;
+    padding:16px 20px; color:#065f46; font-size:14.5px;}
+  .note b{color:#064e3b;}
+  .toc{margin-top:34px; columns:2; column-gap:48px;}
+  .toc .grp{break-inside:avoid; margin-bottom:18px;}
+  .toc .grp h4{font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:8px;}
+  .toc a{display:flex; justify-content:space-between; gap:10px; text-decoration:none; color:var(--ink);
+    font-size:14.5px; padding:5px 0; border-bottom:1px dotted var(--line);}
+  .toc a span:last-child{color:var(--emerald-d); font-variant-numeric:tabular-nums;}
+
+  footer{padding:40px 0 60px; color:var(--muted); font-size:13px; text-align:center; border-top:2px solid var(--line); margin-top:30px;}
+
+  /* ── Print ───────────────────────────────────────────────── */
+  @page{ size:A4; margin:15mm 14mm; }
+  @media print{
+    .cover{min-height:auto; height:265mm; break-after:page;}
+    .intro{break-after:page;}
+    .screen{padding:18px 0;}
+    .device{box-shadow:none; border:1px solid #cbd5e1;}
+    .band .lead{display:none;}
+    a{color:inherit;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ══ Cover ══════════════════════════════════════════════════ -->
+<div class="cover">
+  <span class="badge"><span class="dot"></span> OpenNova App</span>
+  <h1>User Manual</h1>
+  <div class="sub">Your robot mower &amp; charging station, fully local — every screen explained.</div>
+  <div class="meta">
+    <div>App version <b>1.1.15</b></div>
+    <div>Platform <b>iOS</b></div>
+    <div>Edition <b>June 2026</b></div>
+  </div>
+  <div class="hero">
+    <img class="ph" src="img/01-home.png" alt="">
+    <img class="ph" src="img/04-map.png" alt="">
+  </div>
+</div>
+
+<!-- ══ Intro + TOC ════════════════════════════════════════════ -->
+<div class="wrap intro">
+  <h2>About this app</h2>
+  <p>OpenNova replaces the manufacturer's cloud with a server that runs on your own
+  network, so your robot mower and charging station keep working completely offline.
+  The app connects to that local server to show live status, build maps of your lawn,
+  schedule and start mowing, drive the mower by hand, watch its cameras, and keep its
+  firmware up to date.</p>
+  <div class="note">
+    <b>About the screenshots.</b> Some screens are shown with built-in demo data
+    (a sample mower named <i>LFIN0000DEMO</i>); others were captured from a real
+    mower. The layout and controls are identical to what you'll see on your own device.
+  </div>
+
+  <div class="toc">
+    <div class="grp">
+      <h4>1 · Your dashboard</h4>
+      <a href="#home"><span>Home — mower dashboard</span><span>01</span></a>
+      <a href="#rain"><span>Rain-aware mowing</span><span>02</span></a>
+      <a href="#multimower"><span>Multiple mowers</span><span>03</span></a>
+    </div>
+    <div class="grp">
+      <h4>2 · Maps &amp; mowing</h4>
+      <a href="#map"><span>Map — work areas</span><span>04</span></a>
+      <a href="#multimap"><span>Multiple maps &amp; zones</span><span>05</span></a>
+      <a href="#createmap"><span>Create a map</span><span>06</span></a>
+    </div>
+    <div class="grp">
+      <h4>3 · Hands-on control</h4>
+      <a href="#manual"><span>Manual control (joystick)</span><span>07</span></a>
+      <a href="#camera"><span>Camera</span><span>08</span></a>
+    </div>
+    <div class="grp">
+      <h4>4 · Automate</h4>
+      <a href="#schedules"><span>Schedules</span><span>09</span></a>
+      <a href="#editor"><span>Schedule editor</span><span>10</span></a>
+    </div>
+    <div class="grp">
+      <h4>5 · Stay informed</h4>
+      <a href="#history"><span>Mowing history</span><span>11</span></a>
+      <a href="#messages"><span>Messages &amp; alerts</span><span>12</span></a>
+    </div>
+    <div class="grp">
+      <h4>6 · Configure</h4>
+      <a href="#settings"><span>Settings</span><span>13</span></a>
+      <a href="#mowersettings"><span>Mower settings</span><span>14</span></a>
+      <a href="#firmware"><span>Firmware updates</span><span>15</span></a>
+      <a href="#appupdate"><span>App updates</span><span>16</span></a>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 1 · Your dashboard ═════════════════════════════════════ -->
+<section class="wrap" id="sec1">
+  <div class="band"><span class="num">SECTION 1</span><h2>Your dashboard</h2>
+    <span class="lead">The home base for status, weather and switching between machines.</span></div>
+
+  <div class="screen" id="home">
+    <div class="shot"><div class="device"><img src="img/01-home.png" alt="Home dashboard"></div></div>
+    <div class="copy">
+      <div class="kicker">01 · Home</div>
+      <h3>Mower dashboard</h3>
+      <p>The Home screen is your mower's dashboard. At a glance you see the connected
+      mower — its name, firmware version and online dot — and its live state. The large
+      ring shows the battery level and current activity (here <i>Idle</i> at 78%), and the
+      chips beneath report Wi-Fi signal, RTK satellite count and localization quality.</p>
+      <p>The <b>Actions</b> bar starts mowing or sends the mower home. When no map exists
+      yet, it prompts you to create one first.</p>
+      <div class="tags"><span class="tag">Live status</span><span class="tag">Battery &amp; activity</span><span class="tag">Start / go home</span></div>
+    </div>
+  </div>
+
+  <div class="screen flip" id="rain">
+    <div class="shot"><div class="device"><img src="img/02-rain.png" alt="Rain forecast on Home"></div></div>
+    <div class="copy">
+      <div class="kicker">02 · Weather</div>
+      <h3>Rain-aware mowing</h3>
+      <p>OpenNova checks the local weather forecast and warns you before rain. The
+      <b>Rain expected</b> panel shows the hourly chance of precipitation and when it will
+      be dry again (here, dry at ~23:00), so scheduled runs aren't started on wet grass.</p>
+      <p>The animated scene at the top mirrors the mower's real state — here parked and
+      charging at the dock at night.</p>
+      <div class="tags"><span class="tag">Hourly forecast</span><span class="tag">Avoids wet grass</span></div>
+    </div>
+  </div>
+
+  <div class="screen" id="multimower">
+    <div class="shot"><div class="device"><img src="img/03-multi-mower.png" alt="Device picker"></div></div>
+    <div class="copy">
+      <div class="kicker">03 · Devices</div>
+      <h3>Multiple mowers</h3>
+      <p>Own more than one machine? Tap the name at the top to open the device picker and
+      switch between them — each mower is listed with its firmware version, and you can add
+      a new device from here.</p>
+      <p>Every mower keeps its own maps, schedules, settings and history, so switching is
+      instant and nothing gets mixed up.</p>
+      <div class="tags"><span class="tag">Switch machines</span><span class="tag">Add device</span><span class="tag">Per-mower data</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 2 · Maps & mowing ══════════════════════════════════════ -->
+<section class="wrap" id="sec2">
+  <div class="band"><span class="num">SECTION 2</span><h2>Maps &amp; mowing</h2>
+    <span class="lead">Define where the mower works, then start it with one tap.</span></div>
+
+  <div class="screen" id="map">
+    <div class="shot"><div class="device"><img src="img/04-map.png" alt="Map work area"></div></div>
+    <div class="copy">
+      <div class="kicker">04 · Map</div>
+      <h3>Work areas</h3>
+      <p>The Map tab shows the areas the mower has learned. Each zone is drawn as a polygon
+      with its size and any no-go obstacles — here a <b>Tree</b> marker inside the 49.5 m²
+      Front Yard. The card below shows the area size and estimated mowing time and offers
+      one-tap <b>Start Mowing</b> or <b>Schedule</b>.</p>
+      <p>Pinch to zoom and double-tap to reset the view. The localization readout confirms
+      the mower knows where it is.</p>
+      <div class="tags"><span class="tag">Boundaries</span><span class="tag">Obstacles</span><span class="tag">Start mowing</span></div>
+    </div>
+  </div>
+
+  <div class="screen flip" id="multimap">
+    <div class="shot"><div class="device"><img src="img/05-multi-map.png" alt="Multiple maps"></div></div>
+    <div class="copy">
+      <div class="kicker">05 · Zones</div>
+      <h3>Multiple maps &amp; zones</h3>
+      <p>When several areas are mapped, swipe between them — the header shows
+      <b>Map 1 of 2</b>. Each zone can be started, scheduled, renamed or deleted on its
+      own, and shows its size and an estimated mowing time.</p>
+      <p>The mower icon marks the charging dock relative to the boundary, so you can see how
+      the area sits around the base.</p>
+      <div class="tags"><span class="tag">Swipe zones</span><span class="tag">Per-zone actions</span></div>
+    </div>
+  </div>
+
+  <div class="screen" id="createmap">
+    <div class="shot"><div class="device"><img src="img/06-create-map.png" alt="Create map"></div></div>
+    <div class="copy">
+      <div class="kicker">06 · Mapping</div>
+      <h3>Create a map</h3>
+      <p>Before mowing, the mower needs a map of your lawn. The Create Map screen first runs
+      a <b>readiness check</b> — GPS, localization, MQTT link, battery and RTK — so you know
+      the mower is ready to record a boundary.</p>
+      <p>Then choose a mapping mode — <b>Work Area</b>, <b>Obstacle</b> or
+      <b>Map Channel</b> — and drive the boundary yourself with the joystick, or let the
+      mower map automatically.</p>
+      <div class="tags"><span class="tag">Readiness check</span><span class="tag">Work area / obstacle</span><span class="tag">Manual or auto</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 3 · Hands-on control ═══════════════════════════════════ -->
+<section class="wrap" id="sec3">
+  <div class="band"><span class="num">SECTION 3</span><h2>Hands-on control</h2>
+    <span class="lead">Drive the mower yourself and see through its cameras.</span></div>
+
+  <div class="screen" id="manual">
+    <div class="shot"><div class="device"><img src="img/07-manual-control.png" alt="Manual control"></div></div>
+    <div class="copy">
+      <div class="kicker">07 · Control</div>
+      <h3>Manual control (joystick)</h3>
+      <p>Manual Control lets you drive the mower yourself. Drag the on-screen joystick toward
+      Forward, Back, Left or Right and pick a <b>Slow</b>, <b>Normal</b> or <b>Fast</b>
+      speed. A live camera feed at the top helps you see where you're going, and the header
+      confirms the mower is connected with an <b>RTK Fixed</b> GPS lock.</p>
+      <p>Use it to reposition the mower, or to drive the boundary while mapping.</p>
+      <div class="tags"><span class="tag">Joystick</span><span class="tag">Speed presets</span><span class="tag">Live camera</span></div>
+    </div>
+  </div>
+
+  <div class="screen flip" id="camera">
+    <div class="shot"><div class="device"><img src="img/08-camera.png" alt="Camera"></div></div>
+    <div class="copy">
+      <div class="kicker">08 · Camera</div>
+      <h3>Camera</h3>
+      <p>The Camera screen streams live video from the mower. Switch between the available
+      feeds — <b>Front</b> colour, <b>ToF Gray</b>, <b>ToF Depth</b> and the <b>ArUco</b>
+      marker view used for docking. The chips show battery, Wi-Fi, satellite count and
+      heading.</p>
+      <p>The live camera service runs on OpenNova firmware on the mower.</p>
+      <div class="tags"><span class="tag">Front / depth feeds</span><span class="tag">Docking view</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 4 · Automate ═══════════════════════════════════════════ -->
+<section class="wrap" id="sec4">
+  <div class="band"><span class="num">SECTION 4</span><h2>Automate</h2>
+    <span class="lead">Set it and forget it with repeating schedules.</span></div>
+
+  <div class="screen" id="schedules">
+    <div class="shot"><div class="device"><img src="img/09-schedules.png" alt="Schedules"></div></div>
+    <div class="copy">
+      <div class="kicker">09 · Schedules</div>
+      <h3>Schedules</h3>
+      <p>Schedules automate mowing. Each entry shows the day, start time and duration, plus
+      the cutting height and path direction it will use, with a switch to enable or disable
+      it without deleting it.</p>
+      <p>Tap the <b>+</b> button to add a new schedule.</p>
+      <div class="tags"><span class="tag">Per-day timing</span><span class="tag">Enable / disable</span></div>
+    </div>
+  </div>
+
+  <div class="screen flip" id="editor">
+    <div class="shot"><div class="device"><img src="img/10-schedule-editor.png" alt="Schedule editor"></div></div>
+    <div class="copy">
+      <div class="kicker">10 · Editor</div>
+      <h3>Schedule editor</h3>
+      <p>When creating or editing a schedule you choose the <b>work area</b> (or all areas),
+      the <b>repeat</b> pattern (specific weekdays or every N days), the days, the start
+      time and duration, the <b>cutting height</b>, and the <b>path direction</b> the mower
+      follows.</p>
+      <p>Tap <b>Create</b> to save it to the list.</p>
+      <div class="tags"><span class="tag">Weekdays / interval</span><span class="tag">Height &amp; direction</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 5 · Stay informed ══════════════════════════════════════ -->
+<section class="wrap" id="sec5">
+  <div class="band"><span class="num">SECTION 5</span><h2>Stay informed</h2>
+    <span class="lead">Review what happened and get notified when something needs you.</span></div>
+
+  <div class="screen" id="history">
+    <div class="shot"><div class="device"><img src="img/11-history.png" alt="Mowing history"></div></div>
+    <div class="copy">
+      <div class="kicker">11 · History</div>
+      <h3>Mowing history</h3>
+      <p>A log of every mowing session — the date, the outcome (<b>Finished</b>,
+      <b>Interrupted Artificially</b> when you stopped it, or <b>Interrupted Abnormally</b>
+      on an error), the duration, the area covered and which map was used.</p>
+      <p>Handy for tracking coverage over time and for diagnosing why a run stopped early.</p>
+      <div class="tags"><span class="tag">Per-session log</span><span class="tag">Area covered</span><span class="tag">Outcome</span></div>
+    </div>
+  </div>
+
+  <div class="screen flip" id="messages">
+    <div class="shot"><div class="device"><img src="img/12-messages.png" alt="Messages"></div></div>
+    <div class="copy">
+      <div class="kicker">12 · Messages</div>
+      <h3>Messages &amp; alerts</h3>
+      <p>The Messages inbox collects alerts from the mower and charger. Each card shows the
+      source and a plain-language explanation — here an <b>Error 8</b> (LoRa disconnect)
+      that can affect localization.</p>
+      <p>Important alerts are also pushed to your phone as notifications, so you don't have
+      to keep the app open.</p>
+      <div class="tags"><span class="tag">Error explanations</span><span class="tag">Push notifications</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 6 · Configure ══════════════════════════════════════════ -->
+<section class="wrap" id="sec6">
+  <div class="band"><span class="num">SECTION 6</span><h2>Configure</h2>
+    <span class="lead">App preferences, mower behaviour and keeping everything up to date.</span></div>
+
+  <div class="screen" id="settings">
+    <div class="shot"><div class="device"><img src="img/13-settings.png" alt="Settings"></div></div>
+    <div class="copy">
+      <div class="kicker">13 · Settings</div>
+      <h3>Settings</h3>
+      <p>App settings. Choose the <b>appearance</b> (Auto, Light or Dark) and the mower
+      colour shown on the dashboard, see or change the local <b>server URL</b> and its
+      connection status, and check the installed app version and your account.</p>
+      <p>The <b>Actions</b> list jumps to Mower Settings and Firmware Updates.</p>
+      <div class="tags"><span class="tag">Theme</span><span class="tag">Server URL</span><span class="tag">Account</span></div>
+    </div>
+  </div>
+
+  <div class="screen flip" id="mowersettings">
+    <div class="shot"><div class="device"><img src="img/14-mower-settings.png" alt="Mower settings"></div></div>
+    <div class="copy">
+      <div class="kicker">14 · Mower settings</div>
+      <h3>Mower settings</h3>
+      <p>Hardware settings sent to the mower: the default <b>cutting height</b> (2–9 cm),
+      the <b>obstacle-avoidance</b> sensitivity (Low for more coverage, Medium for a
+      balanced result, High for maximum avoidance) and the default <b>mowing direction</b>.</p>
+      <p>These become the defaults used when you start a job or build a schedule.</p>
+      <div class="tags"><span class="tag">Cutting height</span><span class="tag">Obstacle avoidance</span><span class="tag">Direction</span></div>
+    </div>
+  </div>
+
+  <div class="screen" id="firmware">
+    <div class="shot"><div class="device"><img src="img/15-firmware.png" alt="Firmware updates"></div></div>
+    <div class="copy">
+      <div class="kicker">15 · Firmware</div>
+      <h3>Firmware updates</h3>
+      <p>Firmware Updates shows the current <b>mower</b> and <b>charger</b> firmware versions
+      and their status. Firmware uploaded to your local server appears here and can be
+      installed over the air — no cables, no manufacturer cloud.</p>
+      <div class="tags"><span class="tag">Mower &amp; charger</span><span class="tag">Over-the-air</span></div>
+    </div>
+  </div>
+
+  <div class="screen flip" id="appupdate">
+    <div class="shot"><div class="device"><img src="img/16-app-update.png" alt="App update"></div></div>
+    <div class="copy">
+      <div class="kicker">16 · App updates</div>
+      <h3>App updates</h3>
+      <p>When a newer app version is available, OpenNova shows the <b>changelog</b> and lets
+      you open the release page to update. You can <b>skip</b> a version or be reminded
+      <b>later</b>.</p>
+      <div class="tags"><span class="tag">Changelog</span><span class="tag">Skip / later</span></div>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  OpenNova — local cloud replacement for your robot mower &amp; charging station ·
+  User Manual · App v1.1.15 · June 2026
+</footer>
+
+</body>
+</html>
