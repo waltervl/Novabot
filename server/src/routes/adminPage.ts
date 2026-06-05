@@ -1715,11 +1715,50 @@ fetch('/api/dashboard/mqtt-logs')
   })
   .catch(function() {});
 
+function isAuthFailurePayload(d) {
+  return d && (d.code === 401 || d.code === 403);
+}
+
+function endAdminSession(message) {
+  token = '';
+  localStorage.removeItem('admin_token');
+  var login = document.getElementById('login');
+  var app = document.getElementById('app');
+  var setup = document.getElementById('firstTimeSetup');
+  var err = document.getElementById('loginErr');
+  if (login) login.style.display = 'block';
+  if (app) app.style.display = 'none';
+  if (setup) setup.style.display = 'none';
+  if (err) err.textContent = message || '';
+}
+
+function authExpiredError() {
+  return new Error('AUTH_EXPIRED');
+}
+
+function isAuthExpiredError(e) {
+  return e && e.message === 'AUTH_EXPIRED';
+}
+
+async function fetchJsonAuth(url, opts) {
+  const r = await fetch(url, opts || {});
+  const d = await r.json().catch(function() { return null; });
+  if (r.status === 401 || r.status === 403 || isAuthFailurePayload(d)) {
+    endAdminSession('Session expired — please log in again');
+    throw authExpiredError();
+  }
+  if (!r.ok) throw new Error((d && (d.error || d.message)) || 'Server error: ' + r.status);
+  return d || {};
+}
+
 async function api(path, method='GET', body=null) {
   const opts = { method, headers: { 'Authorization': token, 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch('/api/admin-status' + path, opts);
-  if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
+  if (r.status === 401 || r.status === 403) {
+    endAdminSession('Session expired — please log in again');
+    throw authExpiredError();
+  }
   var ct = r.headers.get('content-type') || '';
   if (!ct.includes('json')) {
     var txt = await r.text();
@@ -1730,9 +1769,9 @@ async function api(path, method='GET', body=null) {
     throw new Error(errMsg);
   }
   var d = await r.json();
-  if (d && (d.code === 401 || d.code === 403)) {
-    logout();
-    throw new Error(d.message || 'Unauthorized');
+  if (isAuthFailurePayload(d)) {
+    endAdminSession('Session expired — please log in again');
+    throw authExpiredError();
   }
   if (!r.ok) throw new Error(d.error || d.message || 'Server error: ' + r.status);
   return d;
@@ -1761,10 +1800,7 @@ async function doLogin() {
 }
 
 function logout() {
-  token = '';
-  localStorage.removeItem('admin_token');
-  document.getElementById('login').style.display = 'block';
-  document.getElementById('app').style.display = 'none';
+  endAdminSession('');
 }
 
 function dot(on) { return '<span class="dot '+(on?'dot-on':'dot-off')+'"></span>'; }
@@ -2103,12 +2139,16 @@ async function loadMyDevices() {
   try {
     const [d, pendingResp, bannedResp] = await Promise.all([
       api('/devices'),
-      fetch('/api/dashboard/lora/pending', { headers: { 'Authorization': token } })
-        .then(function(r) { return r.ok ? r.json() : { ok: false, pending: [] }; })
-        .catch(function() { return { ok: false, pending: [] }; }),
-      fetch('/api/admin-status/banned-devices', { headers: { 'Authorization': token } })
-        .then(function(r) { return r.ok ? r.json() : { banned: [] }; })
-        .catch(function() { return { banned: [] }; }),
+      fetchJsonAuth('/api/dashboard/lora/pending', { headers: { 'Authorization': token } })
+        .catch(function(e) {
+          if (isAuthExpiredError(e)) throw e;
+          return { ok: false, pending: [] };
+        }),
+      fetchJsonAuth('/api/admin-status/banned-devices', { headers: { 'Authorization': token } })
+        .catch(function(e) {
+          if (isAuthExpiredError(e)) throw e;
+          return { banned: [] };
+        }),
     ]);
     const devs = d.devices || [];
     const pending = (pendingResp && pendingResp.pending) || [];
@@ -2280,13 +2320,14 @@ async function loadMyDevices() {
           .catch(function() {});
       }
     }
-  } catch { document.getElementById('myDevices').textContent = 'Failed to load'; }
+  } catch(e) {
+    if (isAuthExpiredError(e)) return;
+    document.getElementById('myDevices').textContent = 'Failed to load';
+  }
 }
 
 function logout() {
-  token = '';
-  localStorage.removeItem('admin_token');
-  location.reload();
+  endAdminSession('');
 }
 
 async function bindDevice(sn) {
