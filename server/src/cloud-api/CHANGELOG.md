@@ -2,6 +2,16 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-06-05 — queryEquipmentMap: serve metadata-only inter-map unicoms as empty CSV (issues #89, #81)
+
+- `routes/map.ts`: a `mapNtomapM_*_unicom` row imported without a download URL
+  (LFI ships inter-map channels 0-byte) is now stored as a metadata-only unicom
+  (no `map_area`) and served as an empty CSV on download instead of 404. This
+  keeps the inter-map channel key visible to the app without synthesizing a fake
+  path. `csvBaseName` rejects path traversal and `.zip`; the empty-CSV branch
+  only fires for path-less unicom rows — real unicoms with point data fall
+  through to the existing CSV-from-DB logic.
+
 ## 2026-05-15 — Map rename: resolve by canonical_name (issue #66)
 
 - `routes/map.ts`: `updateEquipmentMapAlias` was resolving the target row
