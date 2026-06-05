@@ -17,7 +17,7 @@
 import { randomUUID } from 'crypto';
 import { scheduleRepo, mapRepo, rainSettingsRepo } from '../db/repositories/index.js';
 import { isDeviceOnline } from '../mqtt/broker.js';
-import { publishToDevice, goToChargePayload } from '../mqtt/mapSync.js';
+import { publishToDevice, goToChargePayload, getNextCmdNum } from '../mqtt/mapSync.js';
 import { deviceCache } from '../mqtt/sensorData.js';
 import { getWeatherForecast, shouldPauseForRain } from './weatherService.js';
 import { emitScheduleEvent } from '../dashboard/socketHandler.js';
@@ -44,6 +44,11 @@ export function setRainIgnoreSession(sn: string, active: boolean): void {
   if (active) {
     ignoreSessionSet.add(sn);
     console.log(`[RainMonitor] Rain-ignore enabled for session: ${sn}`);
+    // The user is taking manual control of this rain pause (e.g. tapping Resume
+    // during rain). Release any auto-paused rain_session so checkPausedSessions
+    // can't later re-issue start_run and re-mow the map after the manual resume.
+    const paused = scheduleRepo.findRainSessionByMower(sn, 'paused');
+    if (paused) cancelSession(paused, 'manual_rain_ignore');
   } else if (ignoreSessionSet.delete(sn)) {
     console.log(`[RainMonitor] Rain-ignore disabled for: ${sn}`);
   }
@@ -195,8 +200,14 @@ function getAllCachedMowerSns(): string[] {
 
 /** Stuur maaier naar huis en maak een rain_session */
 function pauseForRain(mowerSn: string, schedule: ScheduleRow | null | undefined): void {
-  // Stuur go_to_charge
-  publishToDevice(mowerSn, goToChargePayload(mowerSn));
+  // Pauzeer eerst de actieve coverage (net als de app-knop "Pause task &
+  // return": pause_navigation → ~500ms → go_to_charge), dán naar de dock. Zo
+  // landt de maaier in dezelfde resumebare Work:USER_STOP-staat als een
+  // handmatige pauze, waardoor de Continue-knop + resume_navigation in de app
+  // ook na een regen-pauze identiek werken. De auto-resume bij opgeklaarde
+  // regen blijft via start_run in resumeSession (robuust na lang wachten).
+  publishToDevice(mowerSn, { pause_navigation: { cmd_num: getNextCmdNum(mowerSn) } });
+  setTimeout(() => publishToDevice(mowerSn, goToChargePayload(mowerSn)), 500);
   pendingGoCharge.add(mowerSn);
 
   // Maak rain session in DB. Voor manual sessions gebruiken we sentinel schedule_id.
