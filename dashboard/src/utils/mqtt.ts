@@ -29,6 +29,22 @@ export function workIndexToArea(idx: number): number {
   return 200;
 }
 
+export function workMapSlotIndex(
+  map: { canonicalName?: string | null } | null | undefined,
+  fallbackIdx: number,
+): number {
+  const match = map?.canonicalName?.match(/^map(\d+)(?:$|[_t])/);
+  if (match) return parseInt(match[1], 10);
+  return Math.max(0, fallbackIdx);
+}
+
+export function workMapToArea(
+  map: { canonicalName?: string | null } | null | undefined,
+  fallbackIdx: number,
+): number {
+  return workIndexToArea(workMapSlotIndex(map, fallbackIdx));
+}
+
 /** Sequential cmd number used by start/stop_navigation. */
 export function nextCmdNum(): number {
   return Date.now() % 100000;

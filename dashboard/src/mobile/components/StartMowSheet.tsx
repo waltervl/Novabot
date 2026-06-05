@@ -3,7 +3,7 @@ import { Play } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData } from '../../types';
 import { sendCommand, fetchMaps } from '../../api/client';
-import { mmToCutterhigh, workIndexToArea, nextCmdNum } from '../../utils/mqtt';
+import { mmToCutterhigh, workMapToArea, nextCmdNum } from '../../utils/mqtt';
 import { useToast } from '../../components/common/Toast';
 
 interface Props {
@@ -46,10 +46,10 @@ export function StartMowSheet({ open, onClose, sn, onStarted, initialMapId = nul
       // Convert mm UI value to firmware wire enum: cutterhigh = mm/10 − 2
       const wireHeight = mmToCutterhigh(cuttingHeight);
 
-      // Compute area enum from map index in work maps list
       const workMaps = maps.filter(m => m.mapType === 'work');
-      const mapIdx = mapId ? workMaps.findIndex(m => m.mapId === mapId) : -1;
-      const areaParam = mapId ? workIndexToArea(mapIdx >= 0 ? mapIdx : 0) : 200;
+      const selectedWorkMap = mapId ? workMaps.find(m => m.mapId === mapId) : null;
+      const fallbackIdx = selectedWorkMap ? workMaps.indexOf(selectedWorkMap) : 0;
+      const areaParam = mapId ? workMapToArea(selectedWorkMap, fallbackIdx) : 200;
       // When no map selected (all work areas), app uses mapName:'test' and area:200
       const selectedMap = mapId ? maps.find(m => m.mapId === mapId) : null;
       const resolvedMapName = selectedMap?.mapName || 'test';

@@ -12,7 +12,7 @@ import {
   setDemoMode as setDemoModeApi, getDemoMode,
 } from '../../api/client';
 import { localToGps } from '../../utils/coords';
-import { mmToCutterhigh, workIndexToArea, nextCmdNum } from '../../utils/mqtt';
+import { mmToCutterhigh, workMapToArea, nextCmdNum } from '../../utils/mqtt';
 import { useToast } from '../common/Toast';
 import { PatternPicker } from '../patterns/PatternPicker';
 import { loadPattern, transformToGps, type NormContour } from '../../utils/patternUtils.js';
@@ -280,8 +280,8 @@ export function MowerControls({
         const targetMap = mapId
           ? workMaps.find(m => m.mapId === mapId)
           : workMaps[0];
-        const mapIdx = targetMap ? workMaps.indexOf(targetMap) : 0;
-        const areaParam = workIndexToArea(Math.max(0, mapIdx));
+        const fallbackIdx = targetMap ? workMaps.indexOf(targetMap) : 0;
+        const areaParam = workMapToArea(targetMap, fallbackIdx);
         const resolvedMapName = targetMap?.mapName ?? 'test';
 
         const cmdNum = nextCmdNum();

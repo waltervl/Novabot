@@ -3750,6 +3750,7 @@ async function pollDockAnchorAuto(sn) {
       var dev = (Array.isArray(devs) ? devs : []).find(function(d) { return d.sn === sn; });
       var sensors = (dev && dev.sensors) || {};
       var battery = String(sensors.battery_state || '');
+      var batteryNorm = battery.toUpperCase();
       var work = String(sensors.work_status || '');
       var elapsed = Math.round((Date.now() - startMs) / 1000);
       // Update modal body via textContent (XSS-safe).
@@ -3761,7 +3762,7 @@ async function pollDockAnchorAuto(sn) {
           'battery_state: ' + (battery || '?');
         bodyEl.style.whiteSpace = 'pre-line';
       }
-      if (battery === 'Charging' && elapsed > 10) {
+      if (batteryNorm === 'CHARGING' && elapsed > 10) {
         if (bodyEl) bodyEl.textContent += '\\n\\nDocked. The drive should have re-derived the UTM origin from GPS. If the frame is still off, re-anchor in the app (Re-anchor wizard).';
         return;
       }
