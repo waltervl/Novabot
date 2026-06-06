@@ -13,10 +13,10 @@ import { DeviceRegistryRow } from '../types/index.js';
 import { startMqttBridge } from '../proxy/mqttBridge.js';
 import { tryDecrypt } from './decrypt.js';
 import { startHomeAssistantBridge, forwardToHomeAssistant, publishDeviceOnline, publishDeviceOffline } from './homeassistant.js';
-import { updateDeviceData, clearDeviceData, deviceCache } from './sensorData.js';
+import { updateDeviceData, clearDeviceData, deviceCache, consumeWifiRssiRefreshRequest } from './sensorData.js';
 import { isDemoMode } from '../services/demoSimulator.js';
 import { forwardToDashboard, emitDeviceOnline, emitDeviceOffline, pushMqttLog, emitOtaEvent, emitPinEvent, emitExtendedEvent, emitCommandRespond } from '../dashboard/socketHandler.js';
-import { initMapSync, handleMapMessage, handleExtendedResponse, handleDeviceResponse, publishToExtended, onExtendedResponse, offExtendedResponse, publishEncryptedOnTopic, notifyRespond } from './mapSync.js';
+import { initMapSync, handleMapMessage, handleExtendedResponse, handleDeviceResponse, publishToExtended, onExtendedResponse, offExtendedResponse, publishEncryptedOnTopic, notifyRespond, publishToDevice } from './mapSync.js';
 
 const PROXY_MODE = process.env.PROXY_MODE ?? 'local';
 
@@ -1051,6 +1051,9 @@ export async function startMqttBroker(): Promise<void> {
       // In demo mode: skip echte maaier status updates (simulator stuurt eigen data)
       if (!isDemoMode(forwardSn)) {
         const changes = updateDeviceData(forwardSn, effectiveBuf);
+        if (consumeWifiRssiRefreshRequest(forwardSn)) {
+          publishToDevice(forwardSn, { get_wifi_rssi: {} });
+        }
         forwardToHomeAssistant(packet.topic, effectiveBuf, forwardSn, changes);
         forwardToDashboard(forwardSn, changes);
       }

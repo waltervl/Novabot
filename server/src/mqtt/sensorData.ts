@@ -132,6 +132,7 @@ export const DATA_COMMANDS = [
   'report_state_timer_data',  // Maaier → AES ontsleuteld
   'ota_version_info_respond', // Charger/Maaier → huidige firmware versie
   'get_para_info_respond',    // Maaier → headlight, sound, path_direction etc.
+  'get_wifi_rssi_respond',    // Maaier → expliciet ververste WiFi RSSI
   'report_state_to_server_work_respond', // Maaier → server-only status met sv/hv/ov versies
 ];
 
@@ -473,6 +474,11 @@ export function clearValidationTrail(sn: string): void {
 export function clearDeviceData(sn: string): void {
   deviceCache.delete(sn);
   pinVerifiedSns.delete(sn);
+  signalSampleMetaBySn.delete(sn);
+  lastSignalSampleTime.delete(sn);
+  lastWifiHeatmapSampleTime.delete(sn);
+  lastWifiRssiRefreshRequestTime.delete(sn);
+  pendingWifiRssiRefreshRequests.delete(sn);
   // Drop the notifications detector's cached "previous frame" too —
   // otherwise the next reconnect's first sensor frame compares an
   // empty msg ('') against a stale prev=Work:COVERING and emits a
@@ -484,7 +490,33 @@ export function clearDeviceData(sn: string): void {
 // ── Signal history sampling ──────────────────────────────────────
 
 const SAMPLE_INTERVAL_MS = 30_000; // 30 seconden
-const lastSampleTime = new Map<string, number>();
+const POSITIONED_WIFI_MAX_AGE_MS = 15_000;
+const WIFI_RSSI_REFRESH_INTERVAL_MS = SAMPLE_INTERVAL_MS;
+const lastSignalSampleTime = new Map<string, number>();
+const lastWifiHeatmapSampleTime = new Map<string, number>();
+const lastWifiRssiRefreshRequestTime = new Map<string, number>();
+const pendingWifiRssiRefreshRequests = new Set<string>();
+
+interface SignalSampleMeta {
+  lastWifiAt?: number;
+  lastPoseAt?: number;
+}
+
+const signalSampleMetaBySn = new Map<string, SignalSampleMeta>();
+
+function queueWifiRssiRefresh(sn: string, now: number): void {
+  if (!sn.startsWith('LFIN')) return;
+  const last = lastWifiRssiRefreshRequestTime.get(sn);
+  if (last !== undefined && now - last < WIFI_RSSI_REFRESH_INTERVAL_MS) return;
+  lastWifiRssiRefreshRequestTime.set(sn, now);
+  pendingWifiRssiRefreshRequests.add(sn);
+}
+
+export function consumeWifiRssiRefreshRequest(sn: string): boolean {
+  const pending = pendingWifiRssiRefreshRequests.has(sn);
+  pendingWifiRssiRefreshRequests.delete(sn);
+  return pending;
+}
 
 const signalHistoryInsert = db.prepare(`
   INSERT INTO signal_history
@@ -496,10 +528,10 @@ function normaliseWifiRssi(n: number): number {
   return n > 0 ? -n : n;
 }
 
-function sampleSignalHistory(sn: string, snValues: Map<string, string>): void {
+function sampleSignalHistory(sn: string, snValues: Map<string, string>, meta: SignalSampleMeta): void {
   const now = Date.now();
-  const last = lastSampleTime.get(sn) ?? 0;
-  if (now - last < SAMPLE_INTERVAL_MS) return;
+  const lastSignal = lastSignalSampleTime.get(sn) ?? 0;
+  const lastHeatmap = lastWifiHeatmapSampleTime.get(sn) ?? 0;
 
   // Alleen samplen als er minstens één relevant signaal veld is
   const battery = parseInt(snValues.get('battery_power') ?? snValues.get('battery_capacity') ?? '', 10);
@@ -514,6 +546,20 @@ function sampleSignalHistory(sn: string, snValues: Map<string, string>): void {
 
   if (isNaN(battery) && isNaN(wifiRssi) && isNaN(rtkSat) && isNaN(locQuality) && isNaN(cpuTemp)) return;
 
+  const hasFreshPositionedWifi =
+    !isNaN(wifiRssi)
+    && !isNaN(mapX)
+    && !isNaN(mapY)
+    && meta.lastWifiAt !== undefined
+    && meta.lastPoseAt !== undefined
+    && now - meta.lastWifiAt <= POSITIONED_WIFI_MAX_AGE_MS
+    && now - meta.lastPoseAt <= POSITIONED_WIFI_MAX_AGE_MS
+    && Math.abs(meta.lastWifiAt - meta.lastPoseAt) <= POSITIONED_WIFI_MAX_AGE_MS;
+
+  const shouldSampleSignal = now - lastSignal >= SAMPLE_INTERVAL_MS;
+  const shouldSampleHeatmap = hasFreshPositionedWifi && now - lastHeatmap >= SAMPLE_INTERVAL_MS;
+  if (!shouldSampleSignal && !shouldSampleHeatmap) return;
+
   try {
     signalHistoryInsert.run(
       sn,
@@ -522,12 +568,13 @@ function sampleSignalHistory(sn: string, snValues: Map<string, string>): void {
       isNaN(rtkSat) ? null : rtkSat,
       isNaN(locQuality) ? null : locQuality,
       isNaN(cpuTemp) ? null : cpuTemp,
-      isNaN(mapX) ? null : mapX,
-      isNaN(mapY) ? null : mapY,
+      hasFreshPositionedWifi ? mapX : null,
+      hasFreshPositionedWifi ? mapY : null,
       isNaN(latitude) || latitude === 0 ? null : latitude,
       isNaN(longitude) || longitude === 0 ? null : longitude,
     );
-    lastSampleTime.set(sn, now);
+    if (shouldSampleSignal) lastSignalSampleTime.set(sn, now);
+    if (shouldSampleHeatmap) lastWifiHeatmapSampleTime.set(sn, now);
   } catch {
     // DB write failure — skip silently
   }
@@ -720,6 +767,25 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
     }
   }
 
+  // Voor get_wifi_rssi_respond: mqtt_node retourneert meestal
+  // { result, value: { rssi } }. Normaliseer naar het bestaande wifi_rssi veld.
+  if (commandName === 'get_wifi_rssi_respond') {
+    const d = data as Record<string, unknown>;
+    const message = typeof d.message === 'object' && d.message !== null
+      ? d.message as Record<string, unknown>
+      : null;
+    const source = message ?? d;
+    const value = source.value;
+    let rssi = source.wifi_rssi ?? source.rssi;
+    if (rssi === undefined && typeof value === 'object' && value !== null) {
+      const valueObj = value as Record<string, unknown>;
+      rssi = valueObj.wifi_rssi ?? valueObj.rssi;
+    } else if (rssi === undefined && value !== undefined) {
+      rssi = value;
+    }
+    data = rssi === undefined ? {} : { wifi_rssi: rssi };
+  }
+
   // Voor report_state_to_server_work_respond: waarden zitten in value, en sv/hv/ov moeten gemapt worden
   if (commandName === 'report_state_to_server_work_respond' && typeof (data as Record<string, unknown>).value === 'object') {
     const raw = (data as Record<string, unknown>).value as Record<string, unknown>;
@@ -745,6 +811,9 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
 
   const changes = new Map<string, string>();
   const pinSuppressed = pinVerifiedSns.has(sn);
+  const frameReceivedAt = Date.now();
+  const signalMeta = signalSampleMetaBySn.get(sn) ?? {};
+  signalSampleMetaBySn.set(sn, signalMeta);
 
   for (const [field, value] of Object.entries(data as Record<string, unknown>)) {
     if (value === undefined || value === null) continue;
@@ -784,6 +853,10 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
 
   // Extraheer geneste GPS data uit report_state_timer_data → localization.gps_position
   const dataObj = data as Record<string, unknown>;
+  const frameWifiRssi = parseInt(String(dataObj.wifi_rssi ?? ''), 10);
+  const hasExplicitWifiRssi = commandName === 'get_wifi_rssi_respond' && !isNaN(frameWifiRssi);
+  if (hasExplicitWifiRssi) signalMeta.lastWifiAt = frameReceivedAt;
+
   if (commandName === 'report_state_timer_data' && typeof dataObj.localization === 'object' && dataObj.localization !== null) {
     const loc = dataObj.localization as Record<string, unknown>;
     // GPS positie
@@ -810,6 +883,13 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
     // Map position (local x/y in meters relative to charger, + orientation in radians)
     if (typeof loc.map_position === 'object' && loc.map_position !== null) {
       const mp = loc.map_position as Record<string, unknown>;
+      const frameMapX = parseFloat(String(mp.x ?? ''));
+      const frameMapY = parseFloat(String(mp.y ?? ''));
+      if (!isNaN(frameMapX) && !isNaN(frameMapY)) {
+        signalMeta.lastPoseAt = frameReceivedAt;
+        queueWifiRssiRefresh(sn, frameReceivedAt);
+      }
+
       for (const mpField of ['x', 'y', 'orientation'] as const) {
         if (mp[mpField] !== undefined && mp[mpField] !== null) {
           const key = mpField === 'x' ? 'map_position_x' : mpField === 'y' ? 'map_position_y' : 'map_position_orientation';
@@ -1039,8 +1119,8 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
   }
 
   // Sample signal history elke 30s
-  if (changes.size > 0) {
-    sampleSignalHistory(sn, snValues);
+  if (changes.size > 0 || hasExplicitWifiRssi) {
+    sampleSignalHistory(sn, snValues, signalMeta);
   }
 
   // Notification event detection — only mowers, only when there were

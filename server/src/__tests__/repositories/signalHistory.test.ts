@@ -12,7 +12,7 @@ vi.mock('../../mqtt/broker.js', () => ({
 }));
 
 import { signalHistoryRepo } from '../../db/repositories/signalHistory.js';
-import { updateDeviceData } from '../../mqtt/sensorData.js';
+import { updateDeviceData, consumeWifiRssiRefreshRequest } from '../../mqtt/sensorData.js';
 
 describe('signal_history positioned samples', () => {
   it('has local and GPS position columns for map overlays', () => {
@@ -25,11 +25,10 @@ describe('signal_history positioned samples', () => {
     ]));
   });
 
-  it('samples WiFi history with local map position and normalized RSSI', () => {
+  it('samples explicit WiFi RSSI responses with local map position and normalized RSSI', () => {
     const sn = 'LFIN_HEATMAP_SAMPLE';
-    const payload = {
+    updateDeviceData(sn, Buffer.from(JSON.stringify({
       report_state_timer_data: {
-        wifi_rssi: 52,
         battery_power: 88,
         loc_quality: 100,
         localization: {
@@ -38,14 +37,17 @@ describe('signal_history positioned samples', () => {
           localization_state: 'LOC_SUCCESS',
         },
       },
-    };
+    })));
 
-    updateDeviceData(sn, Buffer.from(JSON.stringify(payload)));
+    updateDeviceData(sn, Buffer.from(JSON.stringify({
+      type: 'get_wifi_rssi_respond',
+      message: { result: 0, value: { rssi: 52 } },
+    })));
 
     const row = db.prepare(`
       SELECT wifi_rssi, map_x, map_y, latitude, longitude
       FROM signal_history
-      WHERE sn = ?
+      WHERE sn = ? AND wifi_rssi IS NOT NULL AND map_x IS NOT NULL AND map_y IS NOT NULL
     `).get(sn) as {
       wifi_rssi: number;
       map_x: number;
@@ -60,6 +62,150 @@ describe('signal_history positioned samples', () => {
     expect(row!.map_y).toBeCloseTo(-2.5);
     expect(row!.latitude).toBeCloseTo(52.1234567);
     expect(row!.longitude).toBeCloseTo(6.1234567);
+  });
+
+  it('pairs close explicit WiFi and local-position frames for heatmap samples', () => {
+    vi.useFakeTimers();
+    try {
+      const sn = 'LFIN_HEATMAP_CLOSE_FRAMES';
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_state_timer_data: {
+          battery_capacity: 87,
+          localization: {
+            gps_position: { latitude: 52.1234567, longitude: 6.1234567 },
+            map_position: { x: 3.5, y: -1.75, orientation: 0.1 },
+          },
+        },
+      })));
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        get_wifi_rssi_respond: { result: 0, value: { rssi: -54 } },
+      })));
+
+      const positioned = db.prepare(`
+        SELECT wifi_rssi, map_x, map_y
+        FROM signal_history
+        WHERE sn = ? AND map_x IS NOT NULL AND map_y IS NOT NULL
+      `).get(sn) as { wifi_rssi: number; map_x: number; map_y: number } | undefined;
+
+      expect(positioned).toBeDefined();
+      expect(positioned!.wifi_rssi).toBe(-54);
+      expect(positioned!.map_x).toBeCloseTo(3.5);
+      expect(positioned!.map_y).toBeCloseTo(-1.75);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not use report_exception_state WiFi for heatmap samples', () => {
+    vi.useFakeTimers();
+    try {
+      const sn = 'LFIN_HEATMAP_CACHED_HEARTBEAT_WIFI';
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_exception_state: { wifi_rssi: 54, rtk_sat: 29 },
+      })));
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_state_timer_data: {
+          battery_capacity: 87,
+          localization: {
+            gps_position: { latitude: 52.1234567, longitude: 6.1234567 },
+            map_position: { x: 3.5, y: -1.75, orientation: 0.1 },
+          },
+        },
+      })));
+
+      const positionedCount = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM signal_history
+        WHERE sn = ? AND wifi_rssi IS NOT NULL AND map_x IS NOT NULL AND map_y IS NOT NULL
+      `).get(sn) as { count: number };
+
+      expect(positionedCount.count).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not attach stale cached WiFi to later position-only samples', () => {
+    vi.useFakeTimers();
+    try {
+      const sn = 'LFIN_HEATMAP_STALE_WIFI';
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_exception_state: { wifi_rssi: 54, rtk_sat: 29 },
+      })));
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:31.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_state_timer_data: {
+          battery_capacity: 86,
+          localization: {
+            gps_position: { latitude: 52.1234567, longitude: 6.1234567 },
+            map_position: { x: 7.0, y: 2.5, orientation: 0.1 },
+          },
+        },
+      })));
+
+      const positionedCount = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM signal_history
+        WHERE sn = ? AND wifi_rssi IS NOT NULL AND map_x IS NOT NULL AND map_y IS NOT NULL
+      `).get(sn) as { count: number };
+
+      expect(positionedCount.count).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('requests a WiFi RSSI refresh when positioned mower samples arrive', () => {
+    vi.useFakeTimers();
+    try {
+      const sn = 'LFIN_HEATMAP_REFRESH_REQUEST';
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_state_timer_data: {
+          battery_capacity: 86,
+          localization: {
+            map_position: { x: 1, y: 2, orientation: 0 },
+          },
+        },
+      })));
+
+      expect(consumeWifiRssiRefreshRequest(sn)).toBe(true);
+      expect(consumeWifiRssiRefreshRequest(sn)).toBe(false);
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_state_timer_data: {
+          battery_capacity: 85,
+          localization: {
+            map_position: { x: 1.1, y: 2.1, orientation: 0 },
+          },
+        },
+      })));
+
+      expect(consumeWifiRssiRefreshRequest(sn)).toBe(false);
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:31.000Z'));
+      updateDeviceData(sn, Buffer.from(JSON.stringify({
+        report_state_timer_data: {
+          battery_capacity: 84,
+          localization: {
+            map_position: { x: 1.2, y: 2.2, orientation: 0 },
+          },
+        },
+      })));
+
+      expect(consumeWifiRssiRefreshRequest(sn)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns only positioned WiFi samples for heatmap rendering', () => {
