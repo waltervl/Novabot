@@ -12,4 +12,13 @@ describe('admin page session handling', () => {
     expect(html).not.toContain('r.ok ? r.json() : { ok: false, pending: [] }');
     expect(html).not.toContain('r.ok ? r.json() : { banned: [] }');
   });
+
+  it('downloads portable backup snapshots with the admin bearer token', () => {
+    const html = adminPageHtml();
+
+    expect(html).toContain('async function downloadPortableBackup(filename)');
+    expect(html).toContain("headers: { 'Authorization': token }");
+    expect(html).toContain("onclick=\"downloadPortableBackup(\\'' + b.filename + '\\')\"");
+    expect(html).not.toContain('<a href="/api/admin-status/maps/\' + encodeURIComponent(sn) + \'/portable-backups/\' + encodeURIComponent(b.filename) + \'" download');
+  });
 });

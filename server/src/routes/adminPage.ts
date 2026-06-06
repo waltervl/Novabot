@@ -3673,7 +3673,7 @@ async function loadPortableBackups() {
       html += '<span><span style="color:#cbd5e1">' + dt + '</span> · <span style="color:#67e8f9">' + b.reason + '</span> · <span style="color:#888">' + kb + ' KB</span></span>';
       html += '<span style="display:flex;gap:4px">';
       html += '<button onclick="restorePortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(16,185,129,.15);color:#86efac;border:1px solid rgba(16,185,129,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">Restore</button>';
-      html += '<a href="/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(b.filename) + '" download style="padding:3px 10px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;text-decoration:none">⬇</a>';
+      html += '<button onclick="downloadPortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">⬇</button>';
       html += '<button onclick="deletePortableBackup(\\'' + b.filename + '\\')" style="padding:3px 10px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer">×</button>';
       html += '</span>';
       html += '</div>';
@@ -3682,6 +3682,32 @@ async function loadPortableBackups() {
     content.innerHTML = html;
   } catch (e) {
     content.innerHTML = '<div style="color:#fca5a5">Error: ' + e + '</div>';
+  }
+}
+
+async function downloadPortableBackup(filename) {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) { await appAlert('Select a mower first', { accent: 'warning' }); return; }
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups/' + encodeURIComponent(filename), {
+      headers: { 'Authorization': token },
+    });
+    if (!r.ok) {
+      var err = await r.json().catch(function(){ return {}; });
+      throw new Error(err.error || err.message || 'HTTP ' + r.status);
+    }
+    var blob = await r.blob();
+    if (!blob || blob.size < 4) throw new Error('Downloaded file is empty');
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    await appAlert('Download failed: ' + e.message, { accent: 'danger' });
   }
 }
 
