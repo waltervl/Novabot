@@ -1,5 +1,46 @@
 import fs from 'node:fs';
+import { exec as cpExec } from 'node:child_process';
 import type { EventEmitter } from 'node:events';
+
+/** Structured result of a one-shot exec on the agent (option B). Returned to
+ *  the operator over the relay as {type:'exec-result'}. */
+export interface ExecResult {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  timedOut?: boolean;
+}
+
+export interface ExecRequest {
+  reqId: string;
+  cmd: string;
+  timeoutMs?: number;
+}
+
+const EXEC_TIMEOUT_DEFAULT_MS = 15000;
+const EXEC_TIMEOUT_MAX_MS = 60000;
+const EXEC_STDOUT_CAP = 256 * 1024;
+const EXEC_STDERR_CAP = 64 * 1024;
+
+/** Run a command in the container and return clean stdout/stderr/exit-code.
+ *  Hard caps on timeout + output so a runaway/huge command can't wedge the
+ *  agent or flood the relay. Runs as the agent's own UID (root in our image),
+ *  same trust level as the interactive pty — gated upstream by admin-auth +
+ *  the support toggle (consent). */
+export function runExecCommand(cmd: string, timeoutMs?: number): Promise<ExecResult> {
+  const timeout = Math.min(Math.max(Number(timeoutMs) || EXEC_TIMEOUT_DEFAULT_MS, 1000), EXEC_TIMEOUT_MAX_MS);
+  return new Promise((resolve) => {
+    cpExec(cmd, { timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
+      const e = err as (Error & { code?: number; killed?: boolean; signal?: string }) | null;
+      resolve({
+        stdout: String(stdout ?? '').slice(0, EXEC_STDOUT_CAP),
+        stderr: String(stderr ?? '').slice(0, EXEC_STDERR_CAP),
+        code: e ? (typeof e.code === 'number' ? e.code : 1) : 0,
+        timedOut: !!(e && (e.killed || e.signal === 'SIGTERM')),
+      });
+    });
+  });
+}
 
 /** Reads /data/.remote_support_enabled. The agent only dials the relay
  *  when this evaluates to true so users can leave the flag off until they
@@ -42,6 +83,9 @@ export interface AgentOpts {
    *  (i.e. operator keystrokes once a session is ACTIVE). Without this
    *  hook the bytes were silently dropped — no shell ever saw the input. */
   onRawBytes?: (data: Buffer) => void;
+  /** Option B: run a one-shot command and return structured output. The
+   *  relay sends {type:'exec'}; the agent replies {type:'exec-result'}. */
+  onExec?: (req: ExecRequest) => Promise<ExecResult>;
 }
 
 export interface AgentHandle {
@@ -72,6 +116,22 @@ export function startAgent(opts: AgentOpts): AgentHandle {
           if (msg && typeof msg === 'object' && typeof msg.type === 'string') {
             if (msg.type === 'request' && typeof msg.requestId === 'string') {
               opts.onRequest({ requestId: msg.requestId });
+            } else if (msg.type === 'exec' && typeof msg.reqId === 'string' && typeof msg.cmd === 'string') {
+              const reqId = msg.reqId as string;
+              Promise.resolve(opts.onExec?.({ reqId, cmd: msg.cmd, timeoutMs: msg.timeoutMs }))
+                .then((result) => {
+                  if (result && s.readyState === 1) {
+                    s.send(JSON.stringify({ type: 'exec-result', reqId, ...result }));
+                  }
+                })
+                .catch((err: unknown) => {
+                  if (s.readyState === 1) {
+                    s.send(JSON.stringify({
+                      type: 'exec-result', reqId,
+                      stdout: '', stderr: String((err as Error)?.message ?? err), code: 1,
+                    }));
+                  }
+                });
             }
             return;
           }
@@ -268,6 +328,7 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
         // the relay state machine guarantees no bytes flow pre-approve.
         if (activePty) activePty.write(data);
       },
+      onExec: (req) => runExecCommand(req.cmd, req.timeoutMs),
     });
     // CRITICAL: ws emits 'error' on TLS / upgrade / DNS failures. Without
     // a handler Node treats it as an Unhandled 'error' event and crashes

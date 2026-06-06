@@ -1,4 +1,6 @@
 import type { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
+import type { ExecResult } from './agent.js';
 
 /** Minimal WebSocket-like surface — keeps tests free of the `ws` import. */
 export interface RelaySocket extends EventEmitter {
@@ -41,6 +43,11 @@ const BUFFER_MAX = 65536;
 
 export class Relay {
   private sessions = new Map<string, Session>();
+  /** Pending exec RPCs (option B) keyed by reqId — resolved when the agent
+   *  replies {type:'exec-result'} (routed here by the agent WS handler). Each
+   *  entry records the SN it was issued to so a reply from a DIFFERENT agent
+   *  cannot satisfy it (cross-talk guard). */
+  private pendingExecs = new Map<string, { sn: string; resolve: (r: ExecResult) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
   private getOrInit(sn: string): Session {
     let s = this.sessions.get(sn);
@@ -128,6 +135,10 @@ export class Relay {
     const s = this.sessions.get(sn);
     if (!s) return;
     s.agent = null;
+    // An exec can be in flight without an ACTIVE session (execOnAgent only
+    // needs the agent attached), so reject here rather than relying on
+    // closeSession below.
+    this.rejectPendingExecs(sn, 'agent disconnected before exec completed');
     if (s.state === 'REQUESTED' || s.state === 'ACTIVE') {
       this.closeSession(sn, 'agent-disconnect');
     }
@@ -165,6 +176,7 @@ export class Relay {
     const s = this.sessions.get(sn);
     if (!s) return;
     s.state = 'CLOSED';
+    this.rejectPendingExecs(sn, 'session closed before exec completed');
     if (s.closeTimer) { clearTimeout(s.closeTimer); s.closeTimer = null; }
     if (s.agent && s.agentMsgListener) s.agent.off('message', s.agentMsgListener);
     if (s.operator && s.operatorMsgListener) s.operator.off('message', s.operatorMsgListener);
@@ -206,5 +218,59 @@ export class Relay {
     };
     agent.on('message', s.agentMsgListener);
     operator.on('message', s.operatorMsgListener);
+  }
+
+  /** Option B: run a one-shot command on the connected agent and await its
+   *  structured result. Rejects if no agent is connected for the SN or the
+   *  agent doesn't reply within the (clamped) command timeout + grace margin.
+   *  Consent + auth are enforced upstream (admin-only endpoint + support toggle). */
+  execOnAgent(sn: string, cmd: string, timeoutMs: number): Promise<ExecResult> {
+    const s = this.sessions.get(sn);
+    if (!s?.agent) return Promise.reject(new Error('no agent connected for sn'));
+    const agent = s.agent;
+    const clamped = Math.min(Math.max(Number(timeoutMs) || 15000, 1000), 60000);
+    // CSPRNG reqId — Date.now()+Math.random() is predictable (ms clock + V8
+    // non-crypto PRNG), and the reqId is the only thing a cross-talk reply
+    // would need to forge, so make it genuinely unguessable.
+    const reqId = `exec-${randomBytes(12).toString('hex')}`;
+    return new Promise<ExecResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingExecs.delete(reqId);
+        reject(new Error('exec timed out waiting for agent response'));
+      }, clamped + 5000);
+      this.pendingExecs.set(reqId, { sn, resolve, reject, timer });
+      try {
+        agent.send(JSON.stringify({ type: 'exec', reqId, cmd, timeoutMs: clamped }));
+      } catch (e) {
+        clearTimeout(timer);
+        this.pendingExecs.delete(reqId);
+        reject(e as Error);
+      }
+    });
+  }
+
+  /** Called by the agent WS handler when {type:'exec-result'} arrives. `sn` is
+   *  the SN of the agent that SENT the reply; it must match the SN the exec was
+   *  issued to, else a different (consenting-but-malicious) agent could resolve
+   *  another agent's exec by guessing its reqId. Mismatches are dropped. */
+  resolveExec(sn: string, reqId: string, result: ExecResult): void {
+    const p = this.pendingExecs.get(reqId);
+    if (!p) return;
+    if (p.sn !== sn) return; // cross-talk guard — reply came from the wrong agent
+    this.pendingExecs.delete(reqId);
+    clearTimeout(p.timer);
+    p.resolve(result);
+  }
+
+  /** Reject + clear any exec RPCs still awaiting a reply from this SN's agent,
+   *  so the operator's POST doesn't hang until the grace timeout when the agent
+   *  goes away (disconnect / support toggled off / session killed). */
+  private rejectPendingExecs(sn: string, reason: string): void {
+    for (const [reqId, p] of this.pendingExecs) {
+      if (p.sn !== sn) continue;
+      this.pendingExecs.delete(reqId);
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
   }
 }

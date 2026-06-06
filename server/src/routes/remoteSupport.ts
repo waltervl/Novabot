@@ -2,7 +2,30 @@ import { Router, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Relay } from '../services/remoteSupport/relay.js';
-import { writeEnabledFlag, readEnabledFlag } from '../services/remoteSupport/agent.js';
+import { writeEnabledFlag, readEnabledFlag, type ExecResult } from '../services/remoteSupport/agent.js';
+
+/** Append a one-shot exec (command + result) to a per-SN audit log so the
+ *  user can review exactly what an operator ran. Best-effort. */
+function auditExec(
+  dir: string,
+  sn: string,
+  command: string,
+  result: ExecResult | { error: string },
+): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString();
+    const safe = sn.replace(/[^A-Za-z0-9_.-]/g, '_');
+    // JSON.stringify the operator-supplied command and the agent-supplied
+    // output so an embedded newline can't forge a fake "EXEC …/RESULT code=0"
+    // line. This log exists to hold a (trusted-but-watched) operator
+    // accountable, so it must be unforgeable by the operator OR the agent.
+    const line = 'error' in result
+      ? `${ts} EXEC ${JSON.stringify(command)}\n${ts} ERROR ${JSON.stringify(result.error)}\n\n`
+      : `${ts} EXEC ${JSON.stringify(command)}\n${ts} RESULT code=${result.code} timedOut=${!!result.timedOut} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}\n\n`;
+    fs.appendFileSync(path.join(dir, `${safe}-exec.log`), line);
+  } catch { /* audit must never break the request */ }
+}
 
 /** Two-mode router:
  *  - `relay`  → runs on Ramon's central instance; mounts /active-agents and
@@ -70,6 +93,32 @@ export function createRemoteSupportRouter(opts: RouterOpts): Router {
       const result = opts.relay?.getSessionBuffer(sn, since);
       if (!result) { res.status(404).json({ error: 'no relay' }); return; }
       res.json({ sn, ...result });
+    });
+
+    // POST /operator/:sn/exec — run ONE command on the connected agent and
+    // return structured { stdout, stderr, code } (option B). Admin-only;
+    // consent is the user's support toggle (the agent only runs while ON);
+    // every command + result is audit-logged. Caps: 8 KB command, 1–60 s.
+    router.post('/operator/:sn/exec', async (req: Request, res: Response) => {
+      if (opts.isOperator && !opts.isOperator(req)) {
+        res.status(403).json({ error: 'forbidden' }); return;
+      }
+      if (!opts.relay) { res.status(404).json({ error: 'no relay' }); return; }
+      const sn = req.params.sn;
+      const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown };
+      const command = typeof body.command === 'string' ? body.command : '';
+      if (!command.trim()) { res.status(400).json({ error: 'command required' }); return; }
+      if (command.length > 8192) { res.status(413).json({ error: 'command too long (max 8192 chars)' }); return; }
+      const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 15000, 1000), 60000);
+      try {
+        const result = await opts.relay.execOnAgent(sn, command, timeoutMs);
+        auditExec(opts.auditLogDir, sn, command, result);
+        res.json({ ok: true, ...result });
+      } catch (e) {
+        const msg = (e as Error).message;
+        auditExec(opts.auditLogDir, sn, command, { error: msg });
+        res.status(/no agent connected/.test(msg) ? 409 : 502).json({ ok: false, error: msg });
+      }
     });
   }
 
@@ -283,6 +332,13 @@ export function attachRemoteSupportWebSocket(
             // eslint-disable-next-line no-console
             console.warn('[remote-support] denySession failed:', (e as Error).message);
           }
+          return;
+        }
+        if (parsed.type === 'exec-result') {
+          const er = parsed as unknown as (ExecResult & { reqId?: string });
+          // Pass THIS agent's sn so the relay can reject a reply that tries to
+          // resolve a different agent's exec (cross-talk guard).
+          if (typeof er.reqId === 'string') relay.resolveExec(sn, er.reqId, er);
           return;
         }
         // Unknown control type — ignore.

@@ -122,3 +122,59 @@ describe('relay byte pipe', () => {
     expect(outBytes.map((b) => b.toString('utf8'))).toEqual(['hello-back']);
   });
 });
+
+describe('relay exec RPC (option B)', () => {
+  let relay: Relay;
+  let agent: FakeWS;
+
+  beforeEach(() => {
+    relay = new Relay();
+    agent = new FakeWS();
+  });
+
+  it('sends an exec frame and resolves on the matching exec-result', async () => {
+    relay.attachAgent(SN, agent as any);
+    const p = relay.execOnAgent(SN, 'echo hi', 5000);
+    expect(agent.sent.length).toBe(1);
+    const frame = JSON.parse(String(agent.sent[0]));
+    expect(frame.type).toBe('exec');
+    expect(frame.cmd).toBe('echo hi');
+    expect(typeof frame.reqId).toBe('string');
+    relay.resolveExec(SN, frame.reqId, { stdout: 'hi\n', stderr: '', code: 0 });
+    await expect(p).resolves.toEqual({ stdout: 'hi\n', stderr: '', code: 0 });
+  });
+
+  it('rejects when no agent is connected', async () => {
+    await expect(relay.execOnAgent(SN, 'echo hi', 5000)).rejects.toThrow(/no agent/i);
+  });
+
+  it('clamps the timeout into the exec frame (max 60 s)', () => {
+    relay.attachAgent(SN, agent as any);
+    void relay.execOnAgent(SN, 'x', 999999);
+    expect(JSON.parse(String(agent.sent[0])).timeoutMs).toBe(60000);
+  });
+
+  it('ignores an exec-result for an unknown reqId (no throw)', () => {
+    relay.attachAgent(SN, agent as any);
+    expect(() => relay.resolveExec(SN, 'bogus', { stdout: '', stderr: '', code: 0 })).not.toThrow();
+  });
+
+  it('drops an exec-result whose SN does not match the issuing SN (cross-talk guard)', async () => {
+    relay.attachAgent(SN, agent as any);
+    const p = relay.execOnAgent(SN, 'echo hi', 2000);
+    const frame = JSON.parse(String(agent.sent[0]));
+    // A DIFFERENT agent replies with the same reqId — must be ignored, not
+    // allowed to satisfy the operator's exec against SN.
+    relay.resolveExec('LFIN-OTHER-9999', frame.reqId, { stdout: 'forged\n', stderr: '', code: 0 });
+    // The real agent then replies — this one resolves the promise.
+    relay.resolveExec(SN, frame.reqId, { stdout: 'real\n', stderr: '', code: 0 });
+    await expect(p).resolves.toEqual({ stdout: 'real\n', stderr: '', code: 0 });
+  });
+
+  it('rejects an in-flight exec when the agent disconnects', async () => {
+    relay.attachAgent(SN, agent as any);
+    const p = relay.execOnAgent(SN, 'sleep 30', 5000);
+    relay.unregisterAgent(SN);
+    await expect(p).rejects.toThrow(/disconnect/i);
+  });
+});

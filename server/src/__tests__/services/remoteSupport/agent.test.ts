@@ -109,6 +109,26 @@ describe('agent connection', () => {
     expect(raw[0].toString('utf8')).toBe('ls\n');
     handle.stop();
   });
+
+  it('runs onExec for an exec frame and replies with exec-result', async () => {
+    const sock = new MockWs();
+    let seenCmd = '';
+    const handle = startAgent({
+      sn: 'LFIN2231000656',
+      token: 't',
+      wsFactory: () => sock as any,
+      onRequest: () => {},
+      onExec: async (req) => { seenCmd = req.cmd; return { stdout: 'hi\n', stderr: '', code: 0 }; },
+    });
+    sock.emit('open');
+    sock.emit('message', JSON.stringify({ type: 'exec', reqId: 'e-1', cmd: 'echo hi' }));
+    await new Promise((r) => setTimeout(r, 10)); // let the async onExec + reply settle
+    expect(seenCmd).toBe('echo hi');
+    const reply = sock.sent.find((m) => m.includes('"type":"exec-result"'));
+    expect(reply).toBeTruthy();
+    expect(JSON.parse(reply!)).toMatchObject({ type: 'exec-result', reqId: 'e-1', stdout: 'hi\n', code: 0 });
+    handle.stop();
+  });
 });
 
 describe('approve/deny pending wiring', () => {
