@@ -97,7 +97,7 @@ RELEASE_NOTES=$(
     | sed -E 's/[[:space:]]*\(#[0-9]+\)[[:space:]]*$//' \
     | awk 'NF { sub(/^[[:space:]]+/,""); first=toupper(substr($0,1,1)); rest=substr($0,2); print "• " first rest }' \
     | head -20 \
-    | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().rstrip()))'
+    | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().rstrip().replace("—","-").replace("–","-")))'
 )
 # Empty-list fallback so the manifest stays valid JSON.
 if [ -z "$RELEASE_NOTES" ] || [ "$RELEASE_NOTES" = '""' ]; then
