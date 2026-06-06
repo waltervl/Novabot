@@ -756,6 +756,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
         <label class="exp-chip"><input type="checkbox" id="expLayerPolygons" checked onchange="renderExperimentalDeck()">Polygons</label>
         <label class="exp-chip"><input type="checkbox" id="expLayerHeatmap" checked onchange="renderExperimentalDeck()">WiFi heatmap</label>
+        <label class="exp-chip"><input type="checkbox" id="expLayerMower" checked onchange="renderExperimentalDeck()">Mower position</label>
         <label class="exp-chip"><input type="checkbox" id="expLayerTrail" checked onchange="renderExperimentalDeck()">Live trail</label>
         <label class="exp-chip"><input type="checkbox" id="expLayerLabels" checked onchange="renderExperimentalDeck()">Labels</label>
       </div>
@@ -767,6 +768,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
         <span><span style="display:inline-block;width:12px;height:12px;background:rgba(34,197,94,.3);border:2px solid #22c55e;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Work</span>
         <span><span style="display:inline-block;width:12px;height:12px;background:rgba(239,68,68,.3);border:2px solid #ef4444;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Obstacle</span>
         <span><span style="display:inline-block;width:14px;height:2px;background:#60a5fa;vertical-align:middle;margin-right:4px"></span>Channel</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:#22d3ee;border:2px solid #0e7490;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Mower position</span>
         <span><span style="display:inline-block;width:14px;height:2px;background:#22d3ee;vertical-align:middle;margin-right:4px"></span>Trail</span>
         <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Charger</span>
       </div>
@@ -3003,8 +3005,7 @@ function renderExperimentalDeck() {
   if (_expState.chargingPose && Number.isFinite(Number(_expState.chargingPose.x)) && Number.isFinite(Number(_expState.chargingPose.y))) {
     markers.push({ __kind: 'charger', x: Number(_expState.chargingPose.x), y: Number(_expState.chargingPose.y), color: [245, 158, 11, 240], radius: 0.22 });
   }
-  if (_expState.livePose && Number.isFinite(Number(_expState.livePose.x)) && Number.isFinite(Number(_expState.livePose.y))) {
-    markers.push({ __kind: 'mower', x: Number(_expState.livePose.x), y: Number(_expState.livePose.y), color: [34, 211, 238, 245], radius: 0.25 });
+  if (expLayerEnabled('expLayerMower') && _expState.livePose && Number.isFinite(Number(_expState.livePose.x)) && Number.isFinite(Number(_expState.livePose.y))) {
     var theta = Number(_expState.livePose.orientation || 0);
     layers.push(new deck.PathLayer({
       id: 'exp-mower-heading',
@@ -3017,6 +3018,20 @@ function renderExperimentalDeck() {
       getColor: [34, 211, 238, 245],
       getWidth: 0.08,
       widthMinPixels: 2
+    }));
+    layers.push(new deck.ScatterplotLayer({
+      id: 'exp-mower-position',
+      data: [{ __kind: 'mower', x: Number(_expState.livePose.x), y: Number(_expState.livePose.y), color: [34, 211, 238, 245], radius: 0.25 }],
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      pickable: true,
+      getPosition: function(d) { return [d.x, d.y, 0]; },
+      getRadius: function(d) { return d.radius; },
+      radiusMinPixels: 7,
+      getFillColor: function(d) { return d.color; },
+      getLineColor: [14, 116, 144, 255],
+      getLineWidth: 0.05,
+      lineWidthMinPixels: 2,
+      stroked: true
     }));
   }
   if (markers.length > 0) {
@@ -3062,7 +3077,9 @@ function renderExperimentalDeck() {
     viewState: _expState.viewState,
     layers: layers
   });
-  if (empty) empty.style.display = (_expState.maps.length === 0 && _expState.heatmap.length === 0) ? 'flex' : 'none';
+  var hasLivePose = _expState.livePose && Number.isFinite(Number(_expState.livePose.x)) && Number.isFinite(Number(_expState.livePose.y));
+  var hasRenderableData = _expState.maps.length > 0 || _expState.heatmap.length > 0 || _expState.mowerTrail.length > 0 || hasLivePose || !!_expState.chargingPose;
+  if (empty) empty.style.display = hasRenderableData ? 'none' : 'flex';
 }
 
 function experimentalInfoText() {
@@ -3073,8 +3090,14 @@ function experimentalInfoText() {
     else if (t === 'unicom') channels++;
     else work++;
   }
+  var pose = _expState.livePose;
+  var poseText = 'Mower position: not reported';
+  if (pose && Number.isFinite(Number(pose.x)) && Number.isFinite(Number(pose.y))) {
+    var theta = Number(pose.orientation || 0);
+    poseText = 'Mower position: x=' + Number(pose.x).toFixed(2) + ' y=' + Number(pose.y).toFixed(2) + ' θ=' + (Number.isFinite(theta) ? theta.toFixed(2) : '0.00');
+  }
   return work + ' work, ' + obstacles + ' obstacles, ' + channels + ' channels, '
-    + _expState.heatmap.length + ' WiFi samples, ' + _expState.mowerTrail.length + ' trail points';
+    + _expState.heatmap.length + ' WiFi samples, ' + _expState.mowerTrail.length + ' trail points · ' + poseText;
 }
 
 async function loadExperimentalMap(resetView) {

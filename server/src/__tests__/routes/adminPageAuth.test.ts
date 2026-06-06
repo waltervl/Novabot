@@ -21,4 +21,15 @@ describe('admin page session handling', () => {
     expect(html).toContain("onclick=\"downloadPortableBackup(\\'' + b.filename + '\\')\"");
     expect(html).not.toContain('<a href="/api/admin-status/maps/\' + encodeURIComponent(sn) + \'/portable-backups/\' + encodeURIComponent(b.filename) + \'" download');
   });
+
+  it('shows the live mower position as a first-class experimental map layer', () => {
+    const html = adminPageHtml();
+
+    expect(html).toContain('id="expLayerMower"');
+    expect(html).toContain('Mower position');
+    expect(html).toContain("id: 'exp-mower-position'");
+    expect(html).toContain('Mower position:');
+    expect(html).toContain('hasRenderableData');
+    expect(html).toContain('hasLivePose');
+  });
 });
