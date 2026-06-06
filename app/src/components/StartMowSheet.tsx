@@ -34,7 +34,12 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   sn: string;
-  onStarted: (settings: { cuttingHeight: number; pathDirection: number }) => void;
+  onStarted: (settings: {
+    cuttingHeight: number;
+    pathDirection: number;
+    mapIds: string[];
+    activeMapId: string | null;
+  }) => void;
   initialSelectedMapId?: string | null;
   /** Als true: niet auto-selecteren wanneer er 1 werkzone is — forceer
    *  altijd bewuste zone-keuze. Gebruikt vanuit de "Specific zone" flow. */
@@ -309,7 +314,12 @@ export function StartMowSheet({
           pathDirection,
         });
         console.log(`[StartMow] enqueued ${orderedMapIds.length} maps:`, orderedMapIds.join(','));
-        onStarted({ cuttingHeight: wireHeight, pathDirection });
+        onStarted({
+          cuttingHeight: wireHeight,
+          pathDirection,
+          mapIds: orderedMapIds,
+          activeMapId: orderedMapIds[0] ?? null,
+        });
         onClose();
         return;
       }
@@ -365,7 +375,12 @@ export function StartMowSheet({
 
       // Report back display cm so HomeScreen's mismatch check compares like-for-like
       // (target_height will equal wireHeight = cm+2, not cm).
-      onStarted({ cuttingHeight: wireHeight, pathDirection });
+      onStarted({
+        cuttingHeight: wireHeight,
+        pathDirection,
+        mapIds: orderedMapIds,
+        activeMapId: selectedMap?.mapId ?? null,
+      });
       onClose();
     } catch (err) { console.log('[StartMow] ERROR:', err); }
     setStarting(false);

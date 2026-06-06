@@ -35,6 +35,7 @@ import { getServerUrl, getToken } from '../services/auth';
 import { DemoBanner } from '../components/DemoBanner';
 import { HealthBanner } from '../components/HealthBanner';
 import { MowingProgressMap } from '../components/MowingProgressMap';
+import { resolveMowingMapSelection } from '../utils/mowingMapSelection';
 import HistoryScreen from './HistoryScreen';
 import MessagesScreen from './MessagesScreen';
 import { useDemo } from '../context/DemoContext';
@@ -788,12 +789,33 @@ export default function HomeScreen() {
   // render dimmed underneath.
   const [allWorkPolygons, setAllWorkPolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }>; label?: string | null }>>([]);
   const [activeMapLabel, setActiveMapLabel] = useState<string | null>(null);
+  const [startedMapIds, setStartedMapIds] = useState<string[]>([]);
+  const [mapSelectionMismatch, setMapSelectionMismatch] = useState<{ expected: string; actual: string } | null>(null);
   const [mowingTrail, setMowingTrail] = useState<Array<{ x: number; y: number }>>([]);
   const [plannedPaths, setPlannedPaths] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
   const [obstaclePolygons, setObstaclePolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }>; label?: string | null }>>([]);
   // Track mowing settings for safety check + display
   const [mowSettings, setMowSettings] = useState<{ cuttingHeight: number; pathDirection: number } | null>(null);
   const demo = useDemo();
+  const intendedActiveMapId = useMemo(() => {
+    if (mowQueue && mower && mowQueue.sn === mower.sn && mowQueue.remaining.length > 0) {
+      return mowQueue.remaining[0].mapId;
+    }
+    return startedMapIds[0] ?? null;
+  }, [mowQueue, mower?.sn, startedMapIds]);
+
+  useEffect(() => {
+    const sessionActive =
+      effectiveActivity === 'mowing'
+      || effectiveActivity === 'edge_cutting'
+      || effectiveActivity === 'mapping'
+      || effectiveActivity === 'paused'
+      || effectiveActivity === 'returning';
+    if (!sessionActive) {
+      setStartedMapIds([]);
+      setMapSelectionMismatch(null);
+    }
+  }, [effectiveActivity, mower?.sn]);
 
   // Fetch device sets + map count + next schedule from server
   const [serverMapCount, setServerMapCount] = useState(0);
@@ -999,6 +1021,7 @@ export default function HomeScreen() {
         { x: -3, y: 5 }, { x: 1, y: 7 }, { x: 5, y: 6 },
         { x: 6, y: 2 }, { x: 3, y: -1 }, { x: -2, y: 1 },
       ]);
+      setMapSelectionMismatch(null);
       return;
     }
     if (!mower?.sn) return;
@@ -1010,37 +1033,16 @@ export default function HomeScreen() {
         const res = await api.fetchMaps(mower.sn);
         const workMaps = (res.maps ?? []).filter((m: any) => m.mapType === 'work' && m.mapArea?.length >= 3);
 
-        // Issue #14 round 3 (dir26738): user selected the LEFT map (trampo,
-        // canonical map0) but the MIDDLE map (pool, canonical map1) was
-        // highlighted. The earlier heuristic used `current_map_ids` with a
-        // hand-rolled enum (1/10/100/200) AND a stale capture of
-        // `devices.get(...)` from useEffect closure that wasn't in the
-        // deps, so it never updated when the mower moved between zones.
-        //
-        // Prefer cover_map_id from report_state_timer_data — that's the
-        // firmware's actual current map id (string "0"/"1"/"2"), no enum
-        // translation needed. Fall back to current_map_ids (1=map0,
-        // 10=map1, 200=map2 per docs/reference/MOWING-FLOW.md — NOTE: was
-        // wrongly documented as 100 for map2 in the previous comment).
-        let activeCanonicalIdx: number | null = null;
-        const cmId = liveCoverMapId ? parseInt(String(liveCoverMapId), 10) : NaN;
-        if (Number.isFinite(cmId) && cmId >= 0 && cmId <= 9) {
-          activeCanonicalIdx = cmId;
-        } else {
-          const cur = parseInt(String(liveCurrentMapIds ?? '0'), 10);
-          activeCanonicalIdx = cur === 1 ? 0
-            : cur === 10 ? 1
-            : cur === 200 ? 2
-            : null;
-        }
-
-        const matchByCanonical = activeCanonicalIdx == null
-          ? null
-          : workMaps.find((m: any) => {
-              const m2 = (m.canonicalName ?? '').match(/^map(\d+)/);
-              return m2 ? parseInt(m2[1], 10) === activeCanonicalIdx : false;
-            });
-        const activeWork = matchByCanonical ?? workMaps[0];
+        const selection = resolveMowingMapSelection(workMaps, {
+          intendedMapId: intendedActiveMapId,
+          coverMapId: liveCoverMapId,
+          currentMapIds: liveCurrentMapIds,
+        });
+        const activeWork = selection.activeMap;
+        const mapLabel = (m: any) => m?.mapName ?? m?.canonicalName ?? m?.mapId ?? 'unknown map';
+        setMapSelectionMismatch(selection.mismatch && selection.expectedMap && selection.telemetryMap
+          ? { expected: mapLabel(selection.expectedMap), actual: mapLabel(selection.telemetryMap) }
+          : null);
         if (activeWork) {
           setActiveMapPolygon(activeWork.mapArea);
           setActiveMapLabel(activeWork.mapName ?? activeWork.canonicalName ?? null);
@@ -1066,7 +1068,7 @@ export default function HomeScreen() {
         })));
       } catch { /* ignore */ }
     })();
-  }, [mower?.sn, demo.enabled, liveCoverMapId, liveCurrentMapIds]);
+  }, [mower?.sn, demo.enabled, liveCoverMapId, liveCurrentMapIds, intendedActiveMapId]);
 
   // Safety check: verify mower cutting height matches what we set.
   // Firmware echoes cutterhigh verbatim as target_height. Both are the wire
@@ -1875,6 +1877,14 @@ export default function HomeScreen() {
               task_mode=1) en waar hij nu naartoe rijdt. */}
           {(displayActivity === 'mowing' || displayActivity === 'edge_cutting' || displayActivity === 'mapping' || displayActivity === 'returning') && activeMapPolygon.length >= 3 ? (
             <View style={styles.mowingMapPanel}>
+              {mapSelectionMismatch && (
+                <View style={styles.mapMismatchBanner}>
+                  <Ionicons name="warning-outline" size={16} color="#f59e0b" />
+                  <Text style={styles.mapMismatchText}>
+                    Started {mapSelectionMismatch.expected}, mower reports {mapSelectionMismatch.actual}
+                  </Text>
+                </View>
+              )}
               <MowingProgressMap
                 polygon={activeMapPolygon}
                 activeLabel={activeMapLabel}
@@ -2782,7 +2792,13 @@ export default function HomeScreen() {
             setStartMowForceZone(false);
           }}
           sn={mower.sn}
-          onStarted={(settings) => { setCommandLoading(null); setOptimisticActivity('mowing'); setMowSettings(settings); setMowingTrail([]); }}
+          onStarted={(settings) => {
+            setCommandLoading(null);
+            setOptimisticActivity('mowing');
+            setMowSettings(settings);
+            setStartedMapIds(settings.mapIds);
+            setMowingTrail([]);
+          }}
           initialSelectedMapId={startMowInitialMapId}
           forceZonePicker={startMowForceZone}
           battery={mower.battery}
@@ -3305,6 +3321,28 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     overflow: 'hidden',
     alignItems: 'stretch',
     justifyContent: 'center',
+  },
+  mapMismatchBanner: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    right: 10,
+    zIndex: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(30, 21, 8, 0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.55)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  mapMismatchText: {
+    flex: 1,
+    color: '#fbbf24',
+    fontSize: 12,
+    fontWeight: '700',
   },
   batteryTextOverlay: {
     position: 'absolute',
