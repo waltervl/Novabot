@@ -505,13 +505,13 @@ export default function JoystickScreen() {
             the operator can tell when the firmware engaged the motor vs
             when it silently rejected the request (e.g. IMU zero-bias not
             initialized or mower in protect_mode). */}
-        {(bladeOn || bladeSpeed > 0) && (
+        {!busyWithTask && (bladeOn || bladeSpeed > 0) && (
           <TouchableOpacity onPress={toggleBlade} activeOpacity={0.85} style={styles.bladeBanner}>
             <BladeSpinIcon size={28} color={bladeSpeed > 0 ? colors.red : colors.amber} spinning={bladeSpeed > 0} />
             <Text style={{ color: bladeSpeed > 0 ? colors.red : colors.amber, fontWeight: '700', fontSize: 13, flex: 1 }}>
               {bladeSpeed > 0
-                ? `Blade spinning — ${bladeSpeed} rpm — tap to stop`
-                : 'Blade requested — waiting for motor… tap to cancel'}
+                ? `Blade spinning at ${bladeSpeed} rpm. Tap to stop.`
+                : 'Blade requested, waiting for motor. Tap to cancel.'}
             </Text>
             <Ionicons name="stop-circle" size={20} color={bladeSpeed > 0 ? colors.red : colors.amber} />
           </TouchableOpacity>
@@ -754,15 +754,18 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 8,
+    paddingHorizontal: 32,
   },
   offlineText: {
     fontSize: 18,
     fontWeight: '600',
     color: c.white,
+    textAlign: 'center',
   },
   offlineSubtext: {
     fontSize: 14,
     color: c.textMuted,
+    textAlign: 'center',
   },
   speedInfo: {
     marginVertical: 8,
