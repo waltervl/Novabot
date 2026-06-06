@@ -42,7 +42,10 @@ APK_OUT="${OUT_DIR}/${APK_NAME}"
 # ── Build APK locally via EAS (no cloud queue, no credits) ───────────────────
 (
   cd app
-  npx eas build \
+  # Use the globally-installed eas-cli directly. `npx eas` only resolves from
+  # node_modules / auto-install and misses a global eas that lives under a
+  # different nvm node, failing with "could not determine executable to run".
+  eas build \
     --platform android \
     --profile apk-release \
     --local \
