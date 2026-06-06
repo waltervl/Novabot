@@ -102,6 +102,7 @@ export function startAgent(opts: AgentOpts): AgentHandle {
 }
 
 import * as pty from 'node-pty';
+import { existsSync } from 'node:fs';
 
 export interface PtyOpts {
   cols: number;
@@ -115,12 +116,17 @@ export interface PtySession {
   close(): void;
 }
 
-/** Spawns /bin/bash inside the container under the agent's own UID
+/** Spawns an interactive shell inside the container under the agent's own UID
  *  (typically root in our docker image). Output is delivered as raw
  *  Buffers to the caller, which forwards them upstream to the operator
  *  via the relay socket. */
 export function spawnPtySession(opts: PtyOpts): PtySession {
-  const shell = process.env.SHELL ?? '/bin/bash';
+  // Resolve a shell that actually exists. The docker image is node:20-alpine,
+  // which ships /bin/sh (busybox) but not necessarily bash. Honor $SHELL, then
+  // prefer bash if installed, else fall back to /bin/sh — otherwise node-pty's
+  // execvp fails with "No such file or directory".
+  const shell = process.env.SHELL
+    ?? (existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh');
   const term = pty.spawn(shell, ['-i'], {
     name: 'xterm-256color',
     cols: opts.cols,
