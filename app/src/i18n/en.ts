@@ -1,4 +1,10 @@
 export default {
+  // Added 2026-06-06: used in code but missing from the locale, so t() returned
+  // the raw key instead of text (t() falls back to the key, not the || fallback).
+  close: 'Close',
+  intervalSchedules: 'Every N days',
+  rainResumeBody: 'Rain is expected soon. Resume anyway and ignore rain for this session? Otherwise the mower stays on the dock.',
+  rainIgnoreResume: 'Ignore rain & resume',
   // ── Common ────────────────────────────────────────────────────
   cancel: 'Cancel',
   save: 'Save',
@@ -51,13 +57,13 @@ export default {
   pairWithCharger: 'Pair with charger',
   connectMower: 'Connect mower',
   reProvisionMower: 'Provision',
-  noMapCreateFirst: 'No Map — Create one first',
+  noMapCreateFirst: 'No Map - Create one first',
   clearErrorFirst: 'Clear error first',
   startMowing: 'Start Mowing',
   start: 'Start',
   alreadyMowing: 'Already mowing',
   dockReturnInProgress: 'Returning to dock',
-  dockReturnFailed: 'Dock failed — fix first',
+  dockReturnFailed: 'Dock failed - fix first',
   mappingInProgress: 'Mapping in progress',
   // ── Pre-start confirmation dialogs (StartMowSheet + RainOverlay) ────
   startAnyway: 'Start Anyway',
@@ -100,7 +106,7 @@ export default {
   tapPreviewToPlace: 'Tap the preview map above to place the pattern',
   previewMowingPath: 'Preview Mowing Path',
   starting: 'Starting...',
-  noMaps: 'No maps found — import or create one first',
+  noMaps: 'No maps found - import or create one first',
 
   // ── Map ───────────────────────────────────────────────────────
   mapTitle: 'Map',
@@ -199,7 +205,7 @@ export default {
   // ── Schedule ──────────────────────────────────────────────────
   schedules: 'Schedules',
   scheduleRunning: 'Running now',
-  schedulePausedRain: 'Paused — rain',
+  schedulePausedRain: 'Paused - rain',
   noActiveSchedule: 'No schedule running',
   scheduleActiveBanner: '{{name}} is mowing now',
   scheduleRainBanner: 'Mowing paused due to rain',
@@ -267,13 +273,13 @@ export default {
   paired: 'Paired!',
   noChargerFound: 'No charger found',
   provisionCharger: 'Provision a charger first before pairing a mower.',
-  bladesNotSpinning: 'Mower is driving but blades are NOT spinning — check cutter head / height, or power-cycle the mower',
+  bladesNotSpinning: 'Mower is driving but blades are NOT spinning - check cutter head / height, or power-cycle the mower',
 
   // ── Return-reason modal ───────────────────────────────────────
   rrRainTitle: 'Returned: rain',
   rrRainDesc: 'The mower drove back to the dock because rain was detected. Resume to ignore the rain pause.',
   rrRainResume: 'Ignore rain & resume',
-  rrBatteryTitle: 'Charging — low battery',
+  rrBatteryTitle: 'Charging - low battery',
   rrBatteryDesc: 'The mower is charging and will resume automatically once the battery is full.',
   rrTimeTitle: 'Time limit reached',
   rrTimeDesc: 'The configured mowing time has been reached. You can resume mowing.',

@@ -1,4 +1,10 @@
 export default {
+  // Toegevoegd 2026-06-06 (zie en.ts): keys die in code gebruikt werden maar
+  // ontbraken, waardoor t() de ruwe key teruggaf i.p.v. tekst.
+  close: 'Sluiten',
+  intervalSchedules: 'Elke N dagen',
+  rainResumeBody: 'Er wordt binnenkort regen verwacht. Toch hervatten en regen voor deze sessie negeren? Anders blijft de maaier op het laadstation.',
+  rainIgnoreResume: 'Regen negeren & hervatten',
   // ── Common ────────────────────────────────────────────────────
   cancel: 'Annuleren',
   save: 'Opslaan',
@@ -51,13 +57,13 @@ export default {
   pairWithCharger: 'Koppelen met laadstation',
   connectMower: 'Maaier verbinden',
   reProvisionMower: 'Provision',
-  noMapCreateFirst: 'Geen kaart — Maak er eerst een',
+  noMapCreateFirst: 'Geen kaart - Maak er eerst een',
   clearErrorFirst: 'Los eerst de fout op',
   startMowing: 'Start maaien',
   start: 'Start',
   alreadyMowing: 'Is al aan het maaien',
   dockReturnInProgress: 'Terug naar laadstation',
-  dockReturnFailed: 'Dokken mislukt — los eerst op',
+  dockReturnFailed: 'Dokken mislukt - los eerst op',
   mappingInProgress: 'Kaart maken bezig',
   startAnyway: 'Toch starten',
   lowBattery: 'Accu laag',
@@ -98,7 +104,7 @@ export default {
   tapPreviewToPlace: 'Tik op de voorbeeldkaart hierboven om het patroon te plaatsen',
   previewMowingPath: 'Maaipad bekijken',
   starting: 'Starten...',
-  noMaps: 'Geen kaarten gevonden — importeer of maak er eerst een',
+  noMaps: 'Geen kaarten gevonden - importeer of maak er eerst een',
 
   // ── Map ───────────────────────────────────────────────────────
   mapTitle: 'Kaart',
@@ -197,7 +203,7 @@ export default {
   // ── Schedule ──────────────────────────────────────────────────
   schedules: 'Schema\'s',
   scheduleRunning: 'Nu actief',
-  schedulePausedRain: 'Gepauzeerd — regen',
+  schedulePausedRain: 'Gepauzeerd - regen',
   noActiveSchedule: 'Geen schema actief',
   scheduleActiveBanner: '{{name}} is nu aan het maaien',
   scheduleRainBanner: 'Maaien gepauzeerd door regen',
@@ -265,13 +271,13 @@ export default {
   paired: 'Gekoppeld!',
   noChargerFound: 'Geen laadstation gevonden',
   provisionCharger: 'Configureer eerst een laadstation voordat je een maaier koppelt.',
-  bladesNotSpinning: 'Maaier rijdt maar messen draaien NIET — check messenkop / hoogte, of zet de maaier uit en weer aan',
+  bladesNotSpinning: 'Maaier rijdt maar messen draaien NIET - check messenkop / hoogte, of zet de maaier uit en weer aan',
 
   // ── Return-reason modal ───────────────────────────────────────
   rrRainTitle: 'Teruggekeerd: regen',
   rrRainDesc: 'De maaier is naar het laadstation gereden omdat er regen werd gedetecteerd. Hervat om de regenpauze te negeren.',
   rrRainResume: 'Negeer regen & hervat',
-  rrBatteryTitle: 'Opladen — lage batterij',
+  rrBatteryTitle: 'Opladen - lage batterij',
   rrBatteryDesc: 'De maaier laadt op en hervat automatisch zodra de accu vol is.',
   rrTimeTitle: 'Tijdslimiet bereikt',
   rrTimeDesc: 'De ingestelde maaitijd is bereikt. Je kunt het maaien hervatten.',
