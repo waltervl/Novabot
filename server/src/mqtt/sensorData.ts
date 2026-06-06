@@ -487,9 +487,14 @@ const SAMPLE_INTERVAL_MS = 30_000; // 30 seconden
 const lastSampleTime = new Map<string, number>();
 
 const signalHistoryInsert = db.prepare(`
-  INSERT INTO signal_history (sn, battery, wifi_rssi, rtk_sat, loc_quality, cpu_temp)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO signal_history
+    (sn, battery, wifi_rssi, rtk_sat, loc_quality, cpu_temp, map_x, map_y, latitude, longitude)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
+
+function normaliseWifiRssi(n: number): number {
+  return n > 0 ? -n : n;
+}
 
 function sampleSignalHistory(sn: string, snValues: Map<string, string>): void {
   const now = Date.now();
@@ -502,6 +507,10 @@ function sampleSignalHistory(sn: string, snValues: Map<string, string>): void {
   const rtkSat = parseInt(snValues.get('rtk_sat') ?? '', 10);
   const locQuality = parseInt(snValues.get('loc_quality') ?? '', 10);
   const cpuTemp = parseInt(snValues.get('cpu_temperature') ?? '', 10);
+  const mapX = parseFloat(snValues.get('map_position_x') ?? '');
+  const mapY = parseFloat(snValues.get('map_position_y') ?? '');
+  const latitude = parseFloat(snValues.get('latitude') ?? '');
+  const longitude = parseFloat(snValues.get('longitude') ?? '');
 
   if (isNaN(battery) && isNaN(wifiRssi) && isNaN(rtkSat) && isNaN(locQuality) && isNaN(cpuTemp)) return;
 
@@ -509,10 +518,14 @@ function sampleSignalHistory(sn: string, snValues: Map<string, string>): void {
     signalHistoryInsert.run(
       sn,
       isNaN(battery) ? null : battery,
-      isNaN(wifiRssi) ? null : wifiRssi,
+      isNaN(wifiRssi) ? null : normaliseWifiRssi(wifiRssi),
       isNaN(rtkSat) ? null : rtkSat,
       isNaN(locQuality) ? null : locQuality,
       isNaN(cpuTemp) ? null : cpuTemp,
+      isNaN(mapX) ? null : mapX,
+      isNaN(mapY) ? null : mapY,
+      isNaN(latitude) || latitude === 0 ? null : latitude,
+      isNaN(longitude) || longitude === 0 ? null : longitude,
     );
     lastSampleTime.set(sn, now);
   } catch {

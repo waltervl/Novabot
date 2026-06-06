@@ -14,6 +14,7 @@ export function adminPageHtml(): string {
 <link rel="icon" type="image/png" href="/assets/OpenNova.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/deck.gl@9.3.3/dist.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
 <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
 <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
@@ -202,6 +203,11 @@ export function adminPageHtml(): string {
     padding: 8px 0; cursor: pointer; font-size: 14px; line-height: 1;
   }
   .cal-arrow:hover { background: #4b5563; }
+  .exp-map-shell{position:relative;height:620px;min-height:420px;background:#050816;border:1px solid rgba(255,255,255,.08);border-radius:8px;overflow:hidden}
+  .exp-map-shell canvas{outline:none}
+  .exp-map-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px;pointer-events:none;text-align:center;padding:20px}
+  .exp-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid rgba(255,255,255,.1);border-radius:6px;background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;white-space:nowrap}
+  .exp-chip input{width:auto;margin:0}
 </style>
 </head>
 <body>
@@ -514,6 +520,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
     <button class="tab" onclick="switchTab('console')">Console</button>
     <button class="tab" onclick="switchTab('mowerdebug')">Mower Debug</button>
     <button class="tab" onclick="switchTab('maps')">Maps</button>
+    <button class="tab" onclick="switchTab('experimental')">Experimental</button>
     <button class="tab" onclick="switchTab('firmware')">Firmware</button>
     <button class="tab" onclick="switchTab('settings')">Settings</button>
   </div>
@@ -727,6 +734,42 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
         Library of <code>.novabundle</code> files uploaded by the RTK walker. Each row is one survey session. Pick "Assign to mower..." to run the apply-verbatim pipeline against that mower's live charging pose. Uploads are SN-agnostic, so you can walk once and decide which mower gets the map later.
       </div>
       <div id="walkerBundleList" style="font-size:12px;color:#cbd5e1">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Tab: Experimental -->
+  <div id="tab_experimental" style="display:none">
+    <div class="card">
+      <h2>Experimental deck.gl Map <span class="refresh-btn" onclick="loadExperimentalMap(true)">&#x21BB;</span></h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <select id="expMowerSelect" onchange="loadExperimentalMap(true)" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+          <option value="">Select a mower...</option>
+        </select>
+        <select id="expHeatmapHours" onchange="loadExperimentalHeatmap()" style="width:120px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+          <option value="1">1 hour</option>
+          <option value="6">6 hours</option>
+          <option value="24" selected>24 hours</option>
+          <option value="168">7 days</option>
+        </select>
+        <button onclick="loadExperimentalMap(true)" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Refresh</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <label class="exp-chip"><input type="checkbox" id="expLayerPolygons" checked onchange="renderExperimentalDeck()">Polygons</label>
+        <label class="exp-chip"><input type="checkbox" id="expLayerHeatmap" checked onchange="renderExperimentalDeck()">WiFi heatmap</label>
+        <label class="exp-chip"><input type="checkbox" id="expLayerTrail" checked onchange="renderExperimentalDeck()">Live trail</label>
+        <label class="exp-chip"><input type="checkbox" id="expLayerLabels" checked onchange="renderExperimentalDeck()">Labels</label>
+      </div>
+      <div id="expMapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
+      <div id="expDeckMap" class="exp-map-shell">
+        <div id="expMapEmpty" class="exp-map-empty">Select a mower to render experimental layers.</div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#aaa;margin-top:10px">
+        <span><span style="display:inline-block;width:12px;height:12px;background:rgba(34,197,94,.3);border:2px solid #22c55e;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Work</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:rgba(239,68,68,.3);border:2px solid #ef4444;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Obstacle</span>
+        <span><span style="display:inline-block;width:14px;height:2px;background:#60a5fa;vertical-align:middle;margin-right:4px"></span>Channel</span>
+        <span><span style="display:inline-block;width:14px;height:2px;background:#22d3ee;vertical-align:middle;margin-right:4px"></span>Trail</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Charger</span>
+      </div>
     </div>
   </div>
 
@@ -1140,10 +1183,11 @@ let currentTab = 'devices';
 
 function switchTab(name) {
   currentTab = name;
+  if (name !== 'experimental') stopExperimentalPoll();
   var tabs = document.querySelectorAll('.tab');
   for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
   // Activate clicked tab
-  var names = ['devices','console','mowerdebug','maps','firmware','settings'];
+  var names = ['devices','console','mowerdebug','maps','experimental','firmware','settings'];
   for (var i = 0; i < names.length; i++) {
     document.getElementById('tab_' + names[i]).style.display = names[i] === name ? '' : 'none';
     if (names[i] === name) tabs[i].classList.add('active');
@@ -1153,6 +1197,7 @@ function switchTab(name) {
   if (name === 'mowerdebug') { mdPopulateDropdown(); }
   // Load maps when switching to maps tab
   if (name === 'maps') { populateMowerDropdown(); loadWalkerBundles(); }
+  if (name === 'experimental') { populateExperimentalMowerDropdown(); }
   if (name === 'firmware') { loadFirmwareVersions(); populateOtaDeviceDropdown(); wireWalkerFwToggle(); }
 }
 
@@ -2689,6 +2734,436 @@ async function checkDns() {
 
 // ── Maps Tab ──────────────────────────────────────────────────────
 var _mapsDropdownLoaded = false;
+
+// ── Experimental deck.gl Map Tab ──────────────────────────────────
+var _expDropdownLoaded = false;
+var _expDeck = null;
+var _expLiveTimer = null;
+var _expHeatTimer = null;
+var _expState = {
+  sn: '',
+  maps: [],
+  chargingPose: null,
+  heatmap: [],
+  livePose: null,
+  mowerTrail: [],
+  viewState: null
+};
+
+function stopExperimentalPoll() {
+  if (_expLiveTimer) { clearInterval(_expLiveTimer); _expLiveTimer = null; }
+  if (_expHeatTimer) { clearInterval(_expHeatTimer); _expHeatTimer = null; }
+}
+
+function startExperimentalPoll(sn) {
+  stopExperimentalPoll();
+  if (!sn) return;
+  _expLiveTimer = setInterval(function() {
+    if (currentTab === 'experimental') loadExperimentalLive(true);
+  }, 2000);
+  _expHeatTimer = setInterval(function() {
+    if (currentTab === 'experimental') loadExperimentalHeatmap(true);
+  }, 30000);
+}
+
+async function populateExperimentalMowerDropdown() {
+  var sel = document.getElementById('expMowerSelect');
+  if (!sel) return;
+  if (_expDropdownLoaded && sel.options.length > 1) {
+    if (sel.value) loadExperimentalMap(false);
+    return;
+  }
+  try {
+    var d = await api('/devices');
+    var devs = d.devices || [];
+    var prev = sel.value;
+    sel.innerHTML = '<option value="">Select a mower...</option>';
+    for (var i = 0; i < devs.length; i++) {
+      if (devs[i].device_type === 'mower') {
+        var opt = document.createElement('option');
+        opt.value = devs[i].sn;
+        opt.textContent = devs[i].sn;
+        sel.appendChild(opt);
+      }
+    }
+    _expDropdownLoaded = true;
+    if (prev && sel.querySelector('option[value="' + prev + '"]')) {
+      sel.value = prev;
+    } else if (sel.options.length > 1) {
+      sel.selectedIndex = 1;
+    }
+    if (sel.value) loadExperimentalMap(true);
+  } catch(e) {
+    var info = document.getElementById('expMapInfo');
+    if (info) info.textContent = 'Failed to load devices: ' + e.message;
+  }
+}
+
+function expLayerEnabled(id) {
+  var el = document.getElementById(id);
+  return !el || el.checked;
+}
+
+function expMapType(m) {
+  return String(m.mapType || 'work').toLowerCase();
+}
+
+function expMapName(m) {
+  return m.mapName || m.canonicalName || m.fileName || m.mapId || 'map';
+}
+
+function expPath(points) {
+  return (points || []).map(function(p) { return [Number(p.x), Number(p.y), 0]; })
+    .filter(function(p) { return Number.isFinite(p[0]) && Number.isFinite(p[1]); });
+}
+
+function expCentroid(points) {
+  var sx = 0, sy = 0, n = 0;
+  for (var i = 0; i < (points || []).length; i++) {
+    var x = Number(points[i].x), y = Number(points[i].y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    sx += x; sy += y; n++;
+  }
+  return n ? [sx / n, sy / n, 0] : [0, 0, 0];
+}
+
+function expAllBounds() {
+  var xs = [], ys = [];
+  function add(x, y) {
+    x = Number(x); y = Number(y);
+    if (Number.isFinite(x) && Number.isFinite(y)) { xs.push(x); ys.push(y); }
+  }
+  for (var i = 0; i < _expState.maps.length; i++) {
+    var pts = _expState.maps[i].mapArea || [];
+    for (var j = 0; j < pts.length; j++) add(pts[j].x, pts[j].y);
+  }
+  for (var h = 0; h < _expState.heatmap.length; h++) add(_expState.heatmap[h].mapX, _expState.heatmap[h].mapY);
+  for (var t = 0; t < _expState.mowerTrail.length; t++) add(_expState.mowerTrail[t].x, _expState.mowerTrail[t].y);
+  if (_expState.livePose) add(_expState.livePose.x, _expState.livePose.y);
+  if (_expState.chargingPose) add(_expState.chargingPose.x, _expState.chargingPose.y);
+  if (xs.length === 0) { xs = [-5, 5]; ys = [-5, 5]; }
+  return {
+    minX: Math.min.apply(null, xs),
+    maxX: Math.max.apply(null, xs),
+    minY: Math.min.apply(null, ys),
+    maxY: Math.max.apply(null, ys)
+  };
+}
+
+function expFitViewState(container) {
+  var b = expAllBounds();
+  var w = Math.max(320, container.clientWidth || 800);
+  var h = Math.max(320, container.clientHeight || 620);
+  var rangeX = Math.max(1, b.maxX - b.minX);
+  var rangeY = Math.max(1, b.maxY - b.minY);
+  var pxPerUnit = Math.max(0.1, Math.min((w - 80) / rangeX, (h - 80) / rangeY));
+  return {
+    target: [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, 0],
+    zoom: Math.max(-4, Math.min(12, Math.log2(pxPerUnit))),
+    minZoom: -8,
+    maxZoom: 16
+  };
+}
+
+function expEnsureDeck(container) {
+  if (typeof deck === 'undefined') {
+    var empty = document.getElementById('expMapEmpty');
+    if (empty) empty.textContent = 'deck.gl did not load. Check internet access to unpkg.com.';
+    return null;
+  }
+  if (_expDeck) return _expDeck;
+  _expDeck = new deck.Deck({
+    parent: container,
+    views: [new deck.OrthographicView({ id: 'exp-map', controller: true, flipY: false })],
+    controller: true,
+    getTooltip: function(info) {
+      var o = info && info.object;
+      if (!o) return null;
+      if (o.__kind === 'charger') return 'Charger\\nx=' + o.x.toFixed(2) + ' y=' + o.y.toFixed(2);
+      if (o.__kind === 'mower') return 'Mower\\nx=' + o.x.toFixed(2) + ' y=' + o.y.toFixed(2);
+      if (o.wifiRssi != null) return 'WiFi ' + o.wifiRssi + ' dBm\\nx=' + o.mapX.toFixed(2) + ' y=' + o.mapY.toFixed(2);
+      return expMapName(o);
+    },
+    onViewStateChange: function(ev) {
+      _expState.viewState = ev.viewState;
+      _expDeck.setProps({ viewState: _expState.viewState });
+    }
+  });
+  return _expDeck;
+}
+
+function renderExperimentalDeck() {
+  var container = document.getElementById('expDeckMap');
+  var empty = document.getElementById('expMapEmpty');
+  if (!container) return;
+  if (!container.clientWidth || !container.clientHeight) {
+    setTimeout(renderExperimentalDeck, 50);
+    return;
+  }
+  if (!_expState.sn) {
+    if (empty) {
+      empty.style.display = 'flex';
+      empty.textContent = 'Select a mower to render experimental layers.';
+    }
+    if (_expDeck) _expDeck.setProps({ layers: [] });
+    return;
+  }
+  var deckInstance = expEnsureDeck(container);
+  if (!deckInstance) return;
+
+  var layers = [];
+  var maps = _expState.maps || [];
+  var polygons = maps.filter(function(m) {
+    return expMapType(m) !== 'unicom' && (m.mapArea || []).length >= 3;
+  });
+  var channels = maps.filter(function(m) {
+    return expMapType(m) === 'unicom' && (m.mapArea || []).length >= 2;
+  });
+
+  if (expLayerEnabled('expLayerPolygons')) {
+    layers.push(new deck.PolygonLayer({
+      id: 'exp-polygons',
+      data: polygons,
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      pickable: true,
+      filled: true,
+      stroked: true,
+      getPolygon: function(d) { return expPath(d.mapArea); },
+      getFillColor: function(d) {
+        return expMapType(d) === 'obstacle' ? [239, 68, 68, 70] : [34, 197, 94, 60];
+      },
+      getLineColor: function(d) {
+        return expMapType(d) === 'obstacle' ? [239, 68, 68, 230] : [34, 197, 94, 230];
+      },
+      getLineWidth: 0.05,
+      lineWidthMinPixels: 1
+    }));
+    layers.push(new deck.PathLayer({
+      id: 'exp-channels',
+      data: channels,
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      pickable: true,
+      getPath: function(d) { return expPath(d.mapArea); },
+      getColor: [96, 165, 250, 230],
+      getWidth: 0.08,
+      widthMinPixels: 2,
+      jointRounded: true,
+      capRounded: true
+    }));
+  }
+
+  if (expLayerEnabled('expLayerHeatmap') && _expState.heatmap.length > 0 && deck.HeatmapLayer) {
+    layers.push(new deck.HeatmapLayer({
+      id: 'exp-wifi-heatmap',
+      data: _expState.heatmap,
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      getPosition: function(d) { return [d.mapX, d.mapY, 0]; },
+      getWeight: function(d) { return d.weight || 0.1; },
+      radiusPixels: 48,
+      intensity: 1.4,
+      threshold: 0.03,
+      colorRange: [
+        [239, 68, 68, 0],
+        [239, 68, 68, 130],
+        [245, 158, 11, 150],
+        [234, 179, 8, 165],
+        [34, 197, 94, 185],
+        [20, 184, 166, 210]
+      ]
+    }));
+    layers.push(new deck.ScatterplotLayer({
+      id: 'exp-wifi-points',
+      data: _expState.heatmap,
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      pickable: true,
+      getPosition: function(d) { return [d.mapX, d.mapY, 0]; },
+      getRadius: 0.12,
+      radiusMinPixels: 2,
+      getFillColor: function(d) {
+        return d.wifiRssi >= -60 ? [34, 197, 94, 180] : d.wifiRssi >= -75 ? [245, 158, 11, 180] : [239, 68, 68, 180];
+      }
+    }));
+  }
+
+  if (expLayerEnabled('expLayerTrail') && _expState.mowerTrail.length >= 2) {
+    layers.push(new deck.PathLayer({
+      id: 'exp-live-trail',
+      data: [{ points: _expState.mowerTrail }],
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      getPath: function(d) { return expPath(d.points); },
+      getColor: [34, 211, 238, 230],
+      getWidth: 0.07,
+      widthMinPixels: 2,
+      jointRounded: true,
+      capRounded: true
+    }));
+  }
+
+  var markers = [];
+  if (_expState.chargingPose && Number.isFinite(Number(_expState.chargingPose.x)) && Number.isFinite(Number(_expState.chargingPose.y))) {
+    markers.push({ __kind: 'charger', x: Number(_expState.chargingPose.x), y: Number(_expState.chargingPose.y), color: [245, 158, 11, 240], radius: 0.22 });
+  }
+  if (_expState.livePose && Number.isFinite(Number(_expState.livePose.x)) && Number.isFinite(Number(_expState.livePose.y))) {
+    markers.push({ __kind: 'mower', x: Number(_expState.livePose.x), y: Number(_expState.livePose.y), color: [34, 211, 238, 245], radius: 0.25 });
+    var theta = Number(_expState.livePose.orientation || 0);
+    layers.push(new deck.PathLayer({
+      id: 'exp-mower-heading',
+      data: [{ points: [
+        { x: Number(_expState.livePose.x), y: Number(_expState.livePose.y) },
+        { x: Number(_expState.livePose.x) + Math.cos(theta) * 0.8, y: Number(_expState.livePose.y) + Math.sin(theta) * 0.8 }
+      ] }],
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      getPath: function(d) { return expPath(d.points); },
+      getColor: [34, 211, 238, 245],
+      getWidth: 0.08,
+      widthMinPixels: 2
+    }));
+  }
+  if (markers.length > 0) {
+    layers.push(new deck.ScatterplotLayer({
+      id: 'exp-markers',
+      data: markers,
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      pickable: true,
+      getPosition: function(d) { return [d.x, d.y, 0]; },
+      getRadius: function(d) { return d.radius; },
+      radiusMinPixels: 6,
+      getFillColor: function(d) { return d.color; },
+      getLineColor: [15, 23, 42, 255],
+      getLineWidth: 0.04,
+      lineWidthMinPixels: 1,
+      stroked: true
+    }));
+  }
+
+  if (expLayerEnabled('expLayerLabels')) {
+    var labels = maps.filter(function(m) { return (m.mapArea || []).length > 0; }).map(function(m) {
+      return { label: expMapName(m), position: expCentroid(m.mapArea), source: m };
+    });
+    layers.push(new deck.TextLayer({
+      id: 'exp-labels',
+      data: labels,
+      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+      getPosition: function(d) { return d.position; },
+      getText: function(d) { return d.label; },
+      getSize: 12,
+      sizeUnits: 'pixels',
+      getColor: [226, 232, 240, 230],
+      getTextAnchor: 'middle',
+      getAlignmentBaseline: 'center',
+      background: true,
+      getBackgroundColor: [3, 7, 18, 165],
+      backgroundPadding: [4, 2]
+    }));
+  }
+
+  if (!_expState.viewState) _expState.viewState = expFitViewState(container);
+  deckInstance.setProps({
+    viewState: _expState.viewState,
+    layers: layers
+  });
+  if (empty) empty.style.display = (_expState.maps.length === 0 && _expState.heatmap.length === 0) ? 'flex' : 'none';
+}
+
+function experimentalInfoText() {
+  var work = 0, obstacles = 0, channels = 0;
+  for (var i = 0; i < _expState.maps.length; i++) {
+    var t = expMapType(_expState.maps[i]);
+    if (t === 'obstacle') obstacles++;
+    else if (t === 'unicom') channels++;
+    else work++;
+  }
+  return work + ' work, ' + obstacles + ' obstacles, ' + channels + ' channels, '
+    + _expState.heatmap.length + ' WiFi samples, ' + _expState.mowerTrail.length + ' trail points';
+}
+
+async function loadExperimentalMap(resetView) {
+  var sel = document.getElementById('expMowerSelect');
+  var info = document.getElementById('expMapInfo');
+  var empty = document.getElementById('expMapEmpty');
+  var sn = sel ? sel.value : '';
+  _expState.sn = sn;
+  if (resetView) _expState.viewState = null;
+  if (!sn) {
+    stopExperimentalPoll();
+    _expState.maps = [];
+    _expState.heatmap = [];
+    _expState.mowerTrail = [];
+    _expState.livePose = null;
+    if (info) info.textContent = '';
+    if (empty) {
+      empty.style.display = 'flex';
+      empty.textContent = 'Select a mower to render experimental layers.';
+    }
+    renderExperimentalDeck();
+    return;
+  }
+  if (info) info.textContent = 'Loading experimental map for ' + sn + '...';
+  try {
+    var data = await fetchJsonAuth('/api/dashboard/maps/' + encodeURIComponent(sn), {
+      headers: { 'Authorization': token }
+    });
+    _expState.maps = data.maps || [];
+    _expState.chargingPose = data.chargingPose || null;
+    await loadExperimentalHeatmap(false);
+    await loadExperimentalLive(false);
+    if (info) info.textContent = experimentalInfoText();
+    startExperimentalPoll(sn);
+    renderExperimentalDeck();
+  } catch(e) {
+    if (isAuthExpiredError(e)) return;
+    if (info) info.textContent = 'Experimental map failed: ' + e.message;
+    if (empty) {
+      empty.style.display = 'flex';
+      empty.textContent = 'Failed to load experimental map.';
+    }
+  }
+}
+
+async function loadExperimentalHeatmap(shouldRender) {
+  var sn = _expState.sn || (document.getElementById('expMowerSelect') || {}).value || '';
+  if (!sn) return;
+  var hoursEl = document.getElementById('expHeatmapHours');
+  var hours = hoursEl ? (hoursEl.value || '24') : '24';
+  try {
+    var data = await api('/wifi-heatmap/' + encodeURIComponent(sn) + '?hours=' + encodeURIComponent(hours));
+    _expState.heatmap = data.points || [];
+    var info = document.getElementById('expMapInfo');
+    if (info) info.textContent = experimentalInfoText();
+    if (shouldRender !== false) renderExperimentalDeck();
+  } catch(e) {
+    if (!isAuthExpiredError(e)) {
+      var info = document.getElementById('expMapInfo');
+      if (info) info.textContent = 'WiFi heatmap failed: ' + e.message;
+    }
+  }
+}
+
+async function loadExperimentalLive(shouldRender) {
+  var sn = _expState.sn || (document.getElementById('expMowerSelect') || {}).value || '';
+  if (!sn) return;
+  try {
+    var data = await api('/live-position/' + encodeURIComponent(sn));
+    _expState.livePose = data.pose || null;
+    _expState.mowerTrail = (data.recentTrail || []).map(function(p) {
+      return { x: Number(p.x), y: Number(p.y) };
+    }).filter(function(p) {
+      return Number.isFinite(p.x) && Number.isFinite(p.y);
+    });
+    var info = document.getElementById('expMapInfo');
+    if (info) info.textContent = experimentalInfoText();
+    if (shouldRender !== false) renderExperimentalDeck();
+  } catch(e) {
+    if (!isAuthExpiredError(e)) {
+      var info = document.getElementById('expMapInfo');
+      if (info) info.textContent = 'Live trail failed: ' + e.message;
+    }
+  }
+}
+
+window.addEventListener('resize', function() {
+  if (currentTab === 'experimental') renderExperimentalDeck();
+});
 
 async function populateMowerDropdown() {
   var sel = document.getElementById('mapMowerSelect');

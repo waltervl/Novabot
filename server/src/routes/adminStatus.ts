@@ -14,7 +14,7 @@ import { execSync } from 'child_process';
 import { db } from '../db/database.js';
 import { isDeviceOnline, banishSn, unbanSn, listBannedSns } from '../mqtt/broker.js';
 import { awaitCommand, publishToDevice, publishToExtended, onExtendedResponse, offExtendedResponse, applyVerbatimToMower } from '../mqtt/mapSync.js';
-import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo, walkerBundleRepo } from '../db/repositories/index.js';
+import { userRepo, equipmentRepo, deviceRepo, mapRepo, otaVersionRepo, walkerBundleRepo, signalHistoryRepo } from '../db/repositories/index.js';
 import type { WalkerBundleRow } from '../db/repositories/index.js';
 import { AuthRequest } from '../types/index.js';
 import { invalidateSetupCache } from '../middleware/setupGuard.js';
@@ -3452,6 +3452,42 @@ adminStatusRouter.get('/live-position/:sn', (req: AuthRequest, res: Response) =>
     workStatus: sensors?.get('work_status') ?? null,
     locQuality: sensors?.get('loc_quality') ?? null,
     recentTrail,
+  });
+});
+
+function wifiHeatmapWeight(rssi: number): number {
+  const normalized = rssi > 0 ? -rssi : rssi;
+  const weight = 1 - ((Math.abs(normalized) - 45) / 50);
+  return Math.max(0.05, Math.min(1, Math.round(weight * 100) / 100));
+}
+
+/**
+ * GET /api/admin-status/wifi-heatmap/:sn
+ *
+ * Positioned RSSI samples for the experimental admin deck.gl map. The data
+ * lives in mower local coordinates so the browser can render it on top of the
+ * existing polygon model without needing an internet basemap.
+ */
+adminStatusRouter.get('/wifi-heatmap/:sn', (req: AuthRequest, res: Response) => {
+  const sn = req.params.sn;
+  const rawHours = parseInt(String(req.query.hours ?? ''), 10);
+  const hours = Math.max(1, Math.min(168, Number.isFinite(rawHours) ? rawHours : 24));
+  const rows = signalHistoryRepo.findWifiHeatmapBySnWithinHours(sn, hours);
+
+  res.json({
+    sn,
+    hours,
+    points: rows.map((r) => ({
+      ts: r.ts,
+      wifiRssi: r.wifi_rssi > 0 ? -r.wifi_rssi : r.wifi_rssi,
+      weight: wifiHeatmapWeight(r.wifi_rssi),
+      battery: r.battery,
+      locQuality: r.loc_quality,
+      mapX: r.map_x,
+      mapY: r.map_y,
+      latitude: r.latitude,
+      longitude: r.longitude,
+    })),
   });
 });
 

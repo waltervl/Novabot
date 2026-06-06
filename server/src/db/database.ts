@@ -215,7 +215,11 @@ export function initDb(): void {
       wifi_rssi   INTEGER,
       rtk_sat     INTEGER,
       loc_quality INTEGER,
-      cpu_temp    INTEGER
+      cpu_temp    INTEGER,
+      map_x       REAL,
+      map_y       REAL,
+      latitude    REAL,
+      longitude   REAL
     );
     CREATE INDEX IF NOT EXISTS signal_history_sn_ts ON signal_history(sn, ts);
 
@@ -269,6 +273,25 @@ export function initDb(): void {
       first_seen  INTEGER NOT NULL
     );
   `);
+
+  // Positioned signal samples for experimental admin map overlays. Older
+  // installs already have signal_history, so keep this additive and repeatable.
+  for (const col of [
+    'map_x REAL',
+    'map_y REAL',
+    'latitude REAL',
+    'longitude REAL',
+  ]) {
+    try { db.exec(`ALTER TABLE signal_history ADD COLUMN ${col}`); }
+    catch { /* kolom bestaat al */ }
+  }
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS signal_history_wifi_heatmap_idx
+      ON signal_history(sn, ts)
+      WHERE wifi_rssi IS NOT NULL AND map_x IS NOT NULL AND map_y IS NOT NULL
+    `);
+  } catch { /* ignore index migration errors */ }
 
   // Voeg mac_address kolom toe aan equipment (migratie – veilig om te herhalen)
   try {
