@@ -1269,8 +1269,12 @@ export default function MapScreen() {
                     );
                   })}
 
-                  {/* Polygon clip paths for coverage stripes */}
-                  {isMowing && mowingProgress > 0 && (
+                  {/* Polygon clip paths for coverage stripes. Must exist whenever
+                      the stripes below render (which is on `isMowing`, regardless
+                      of progress) — otherwise react-native-svg drops the missing
+                      clipPath reference and the full-length stripes spill across
+                      the whole screen, outside the mowing area. */}
+                  {isMowing && (
                     <Defs>
                       {visibleMaps.filter((m) => m.mapType === 'work' && m.mapArea?.length >= 3).map((m) => {
                         const svgPts = m.mapArea.map((p) => localToSvg(p, bounds, MAP_SIZE, INNER_PADDING));
