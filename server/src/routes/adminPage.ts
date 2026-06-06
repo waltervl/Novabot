@@ -205,9 +205,11 @@ export function adminPageHtml(): string {
   .cal-arrow:hover { background: #4b5563; }
   .exp-map-shell{position:relative;height:620px;min-height:420px;background:#050816;border:1px solid rgba(255,255,255,.08);border-radius:8px;overflow:hidden}
   .exp-map-shell canvas{outline:none}
+  .exp-wifi-heat-raster{display:none}
   .exp-map-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px;pointer-events:none;text-align:center;padding:20px}
   .exp-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid rgba(255,255,255,.1);border-radius:6px;background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;white-space:nowrap}
   .exp-chip input{width:auto;margin:0}
+  .exp-heat-legend{display:inline-block;width:72px;height:10px;border-radius:999px;background:linear-gradient(90deg,#ef4444 0%,#f59e0b 34%,#eab308 54%,#22c55e 76%,#14b8a6 100%);vertical-align:middle;margin-right:4px;box-shadow:0 0 12px rgba(34,197,94,.18)}
 </style>
 </head>
 <body>
@@ -756,18 +758,21 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
         <label class="exp-chip"><input type="checkbox" id="expLayerPolygons" checked onchange="renderExperimentalDeck()">Polygons</label>
         <label class="exp-chip"><input type="checkbox" id="expLayerHeatmap" checked onchange="renderExperimentalDeck()">WiFi heatmap</label>
+        <label class="exp-chip"><input type="checkbox" id="expLayerWifiSamples" onchange="renderExperimentalDeck()">WiFi samples</label>
         <label class="exp-chip"><input type="checkbox" id="expLayerMower" checked onchange="renderExperimentalDeck()">Mower position</label>
         <label class="exp-chip"><input type="checkbox" id="expLayerTrail" checked onchange="renderExperimentalDeck()">Live trail</label>
         <label class="exp-chip"><input type="checkbox" id="expLayerLabels" checked onchange="renderExperimentalDeck()">Labels</label>
       </div>
       <div id="expMapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
       <div id="expDeckMap" class="exp-map-shell">
+        <canvas id="expWifiHeatCanvas" class="exp-wifi-heat-raster" aria-hidden="true"></canvas>
         <div id="expMapEmpty" class="exp-map-empty">Select a mower to render experimental layers.</div>
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#aaa;margin-top:10px">
         <span><span style="display:inline-block;width:12px;height:12px;background:rgba(34,197,94,.3);border:2px solid #22c55e;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Work</span>
         <span><span style="display:inline-block;width:12px;height:12px;background:rgba(239,68,68,.3);border:2px solid #ef4444;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Obstacle</span>
         <span><span style="display:inline-block;width:14px;height:2px;background:#60a5fa;vertical-align:middle;margin-right:4px"></span>Channel</span>
+        <span><span class="exp-heat-legend"></span>WiFi weak → strong</span>
         <span><span style="display:inline-block;width:12px;height:12px;background:#22d3ee;border:2px solid #0e7490;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Mower position</span>
         <span><span style="display:inline-block;width:14px;height:2px;background:#22d3ee;vertical-align:middle;margin-right:4px"></span>Trail</span>
         <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:50%;vertical-align:middle;margin-right:4px"></span>Charger</span>
@@ -2829,6 +2834,164 @@ function expCentroid(points) {
   return n ? [sx / n, sy / n, 0] : [0, 0, 0];
 }
 
+function expHeatmapColor(rssi, alpha) {
+  var stops = [
+    { r: -85, c: [239, 68, 68] },
+    { r: -75, c: [245, 158, 11] },
+    { r: -67, c: [234, 179, 8] },
+    { r: -60, c: [34, 197, 94] },
+    { r: -50, c: [20, 184, 166] }
+  ];
+  var v = Number(rssi);
+  if (!Number.isFinite(v)) v = -90;
+  if (v > 0) v = -v;
+  if (v <= stops[0].r) return [stops[0].c[0], stops[0].c[1], stops[0].c[2], alpha];
+  for (var i = 1; i < stops.length; i++) {
+    if (v <= stops[i].r) {
+      var lo = stops[i - 1], hi = stops[i];
+      var t = (v - lo.r) / (hi.r - lo.r);
+      return [
+        Math.round(lo.c[0] + (hi.c[0] - lo.c[0]) * t),
+        Math.round(lo.c[1] + (hi.c[1] - lo.c[1]) * t),
+        Math.round(lo.c[2] + (hi.c[2] - lo.c[2]) * t),
+        alpha
+      ];
+    }
+  }
+  return [stops[stops.length - 1].c[0], stops[stops.length - 1].c[1], stops[stops.length - 1].c[2], alpha];
+}
+
+function expNormalizeWifiPoints(points) {
+  return (points || []).map(function(p) {
+    return { x: Number(p.mapX), y: Number(p.mapY), rssi: Number(p.wifiRssi), source: p };
+  }).filter(function(p) {
+    return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.rssi);
+  });
+}
+
+function expAggregateWifiPoints(raw, maxPoints) {
+  if (raw.length <= maxPoints) return raw;
+  var bounds = { minX: raw[0].x, maxX: raw[0].x, minY: raw[0].y, maxY: raw[0].y };
+  for (var i = 1; i < raw.length; i++) {
+    bounds.minX = Math.min(bounds.minX, raw[i].x);
+    bounds.maxX = Math.max(bounds.maxX, raw[i].x);
+    bounds.minY = Math.min(bounds.minY, raw[i].y);
+    bounds.maxY = Math.max(bounds.maxY, raw[i].y);
+  }
+  var rangeX = Math.max(1, bounds.maxX - bounds.minX);
+  var rangeY = Math.max(1, bounds.maxY - bounds.minY);
+  var cols = Math.max(12, Math.round(Math.sqrt(maxPoints * rangeX / rangeY)));
+  var rows = Math.max(12, Math.round(maxPoints / cols));
+  var cells = {};
+  for (var j = 0; j < raw.length; j++) {
+    var cx = Math.max(0, Math.min(cols - 1, Math.floor((raw[j].x - bounds.minX) / rangeX * cols)));
+    var cy = Math.max(0, Math.min(rows - 1, Math.floor((raw[j].y - bounds.minY) / rangeY * rows)));
+    var key = cx + ':' + cy;
+    var c = cells[key] || (cells[key] = { x: 0, y: 0, rssi: 0, n: 0 });
+    c.x += raw[j].x;
+    c.y += raw[j].y;
+    c.rssi += raw[j].rssi;
+    c.n += 1;
+  }
+  return Object.keys(cells).map(function(k) {
+    var c = cells[k];
+    return { x: c.x / c.n, y: c.y / c.n, rssi: c.rssi / c.n, count: c.n };
+  });
+}
+
+function expWifiSamplePoints(points) {
+  var raw = expNormalizeWifiPoints(points);
+  if (raw.length <= 1200) return points || [];
+  var every = Math.ceil(raw.length / 1200);
+  var sampled = [];
+  for (var i = 0; i < raw.length; i += every) sampled.push(raw[i].source);
+  return sampled;
+}
+
+function expHeatmapRadiusMeters(points, bounds) {
+  var nearest = [];
+  for (var i = 0; i < points.length; i++) {
+    var best = Infinity;
+    for (var j = 0; j < points.length; j++) {
+      if (i === j) continue;
+      var dx = points[i].x - points[j].x;
+      var dy = points[i].y - points[j].y;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d > 0 && d < best) best = d;
+    }
+    if (Number.isFinite(best)) nearest.push(best);
+  }
+  nearest.sort(function(a, b) { return a - b; });
+  var range = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, 1);
+  var median = nearest.length ? nearest[Math.floor(nearest.length / 2)] : range / 8;
+  return Math.max(0.9, Math.min(3.2, median * 2.1));
+}
+
+function renderExperimentalWifiHeatmap(points) {
+  var raw = expAggregateWifiPoints(expNormalizeWifiPoints(points), 900);
+  if (raw.length === 0) return null;
+
+  var bounds = { minX: raw[0].x, maxX: raw[0].x, minY: raw[0].y, maxY: raw[0].y };
+  for (var i = 1; i < raw.length; i++) {
+    bounds.minX = Math.min(bounds.minX, raw[i].x);
+    bounds.maxX = Math.max(bounds.maxX, raw[i].x);
+    bounds.minY = Math.min(bounds.minY, raw[i].y);
+    bounds.maxY = Math.max(bounds.maxY, raw[i].y);
+  }
+  var radius = expHeatmapRadiusMeters(raw, bounds);
+  var pad = radius * 1.6;
+  bounds.minX -= pad; bounds.maxX += pad; bounds.minY -= pad; bounds.maxY += pad;
+
+  var rangeX = Math.max(1, bounds.maxX - bounds.minX);
+  var rangeY = Math.max(1, bounds.maxY - bounds.minY);
+  var maxSide = 360;
+  var width = rangeX >= rangeY ? maxSide : Math.max(120, Math.round(maxSide * rangeX / rangeY));
+  var height = rangeY > rangeX ? maxSide : Math.max(120, Math.round(maxSide * rangeY / rangeX));
+  var canvas = document.getElementById('expWifiHeatCanvas');
+  if (!canvas) return null;
+  canvas.width = width;
+  canvas.height = height;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  var img = ctx.createImageData(width, height);
+  var data = img.data;
+  var radius2 = radius * radius;
+  var sigma2 = Math.pow(radius * 0.48, 2) * 2;
+  for (var py = 0; py < height; py++) {
+    var y = bounds.maxY - ((py + 0.5) / height) * rangeY;
+    for (var px = 0; px < width; px++) {
+      var x = bounds.minX + ((px + 0.5) / width) * rangeX;
+      var density = 0;
+      var weightedRssi = 0;
+      for (var k = 0; k < raw.length; k++) {
+        var dx = x - raw[k].x;
+        var dy = y - raw[k].y;
+        var d2 = dx * dx + dy * dy;
+        if (d2 > radius2) continue;
+        var w = Math.exp(-d2 / sigma2);
+        density += w;
+        weightedRssi += raw[k].rssi * w;
+      }
+      if (density <= 0.015) continue;
+      var avgRssi = weightedRssi / density;
+      var alpha = Math.round(Math.min(175, Math.max(0, (density - 0.015) / 0.85) * 175));
+      if (alpha <= 0) continue;
+      var color = expHeatmapColor(avgRssi, alpha);
+      var idx = (py * width + px) * 4;
+      data[idx] = color[0];
+      data[idx + 1] = color[1];
+      data[idx + 2] = color[2];
+      data[idx + 3] = color[3];
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return {
+    canvas: canvas,
+    bounds: [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY]
+  };
+}
+
 function expAllBounds() {
   var xs = [], ys = [];
   function add(x, y) {
@@ -2954,35 +3117,32 @@ function renderExperimentalDeck() {
     }));
   }
 
-  if (expLayerEnabled('expLayerHeatmap') && _expState.heatmap.length > 0 && deck.HeatmapLayer) {
-    layers.push(new deck.HeatmapLayer({
-      id: 'exp-wifi-heatmap',
-      data: _expState.heatmap,
-      coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
-      getPosition: function(d) { return [d.mapX, d.mapY, 0]; },
-      getWeight: function(d) { return d.weight || 0.1; },
-      radiusPixels: 48,
-      intensity: 1.4,
-      threshold: 0.03,
-      colorRange: [
-        [239, 68, 68, 0],
-        [239, 68, 68, 130],
-        [245, 158, 11, 150],
-        [234, 179, 8, 165],
-        [34, 197, 94, 185],
-        [20, 184, 166, 210]
-      ]
-    }));
+  if (expLayerEnabled('expLayerHeatmap') && _expState.heatmap.length > 0 && deck.BitmapLayer) {
+    var heatRaster = renderExperimentalWifiHeatmap(_expState.heatmap);
+    if (heatRaster) {
+      layers.push(new deck.BitmapLayer({
+        id: 'exp-wifi-raster-heatmap',
+        image: heatRaster.canvas,
+        bounds: heatRaster.bounds,
+        coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+        opacity: 0.82
+      }));
+    }
+  }
+
+  if (expLayerEnabled('expLayerWifiSamples') && _expState.heatmap.length > 0) {
     layers.push(new deck.ScatterplotLayer({
-      id: 'exp-wifi-points',
-      data: _expState.heatmap,
+      id: 'exp-wifi-samples',
+      data: expWifiSamplePoints(_expState.heatmap),
       coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
       pickable: true,
       getPosition: function(d) { return [d.mapX, d.mapY, 0]; },
-      getRadius: 0.12,
-      radiusMinPixels: 2,
+      getRadius: 0.075,
+      radiusMinPixels: 1,
+      radiusMaxPixels: 5,
       getFillColor: function(d) {
-        return d.wifiRssi >= -60 ? [34, 197, 94, 180] : d.wifiRssi >= -75 ? [245, 158, 11, 180] : [239, 68, 68, 180];
+        var c = expHeatmapColor(d.wifiRssi, 150);
+        return [c[0], c[1], c[2], c[3]];
       }
     }));
   }

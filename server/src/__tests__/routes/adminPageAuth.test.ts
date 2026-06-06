@@ -32,4 +32,15 @@ describe('admin page session handling', () => {
     expect(html).toContain('hasRenderableData');
     expect(html).toContain('hasLivePose');
   });
+
+  it('renders experimental WiFi as a raster heatmap with optional raw samples', () => {
+    const html = adminPageHtml();
+
+    expect(html).toContain('id="expWifiHeatCanvas"');
+    expect(html).toContain('function renderExperimentalWifiHeatmap');
+    expect(html).toContain('function expHeatmapColor');
+    expect(html).toContain('id="expLayerWifiSamples"');
+    expect(html).toContain("id: 'exp-wifi-samples'");
+    expect(html).not.toContain("id: 'exp-wifi-points'");
+  });
 });
