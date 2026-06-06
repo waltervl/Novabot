@@ -36,6 +36,66 @@ def log(msg):
     print(f"{LOG_PREFIX} {msg}", flush=True)
 
 
+def _env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(name, default, minimum):
+    raw = os.environ.get(name)
+    try:
+        value = float(raw) if raw is not None else float(default)
+    except (TypeError, ValueError):
+        value = float(default)
+    return max(float(minimum), value)
+
+
+def enable_blade_telemetry():
+    """Enable live /blade_speed_get -> MQTT telemetry.
+
+    Disabled by default because the ROS subscription wakes this Python process
+    at chassis publish rate. Manual blade commands still work without it.
+    """
+    return _env_bool("OPENNOVA_ENABLE_BLADE_TELEMETRY", False)
+
+
+def enable_rtk_telemetry():
+    """Enable the RTK fix-quality indicator relay (/bestpos_parsed_data ->
+    rtk_fix_quality / rtk_sat).
+
+    Measured ~5Hz with a light callback, and useful for diagnosing localization,
+    so it is ON by default. Set OPENNOVA_ENABLE_RTK_TELEMETRY=0 to drop it for
+    maximum thermal headroom. The heavier heading/velocity telemetry is a
+    separate opt-in flag (see enable_heading_telemetry).
+    """
+    return _env_bool("OPENNOVA_ENABLE_RTK_TELEMETRY", True)
+
+
+def enable_heading_telemetry():
+    """Enable the heavier heading + GNSS-velocity telemetry inside the RTK relay
+    (/robot_combination_localization/odom -> heading_deg, /bestvel_parsed_data ->
+    gnss_track_deg / gnss_speed).
+
+    These add ~10Hz of high-rate ROS subscriptions (measured 5Hz each) and are
+    only needed for heading-discovery / re-anchor diagnostics, not for the
+    fix-quality indicator or normal mowing — so they are opt-in for thermal
+    headroom. Set OPENNOVA_ENABLE_HEADING_TELEMETRY=1 to enable.
+    """
+    return _env_bool("OPENNOVA_ENABLE_HEADING_TELEMETRY", False)
+
+
+def blade_idle_hold_seconds():
+    """How long to keep publishing blade-off / height pulses before idling."""
+    return _env_float("OPENNOVA_BLADE_IDLE_HOLD_SECONDS", 6.0, 2.0)
+
+
+def charging_station_guard_interval_seconds():
+    """How often the charging_station.yaml guard scans map homes."""
+    return _env_float("OPENNOVA_CHG_GUARD_INTERVAL_SECONDS", 60.0, 30.0)
+
+
 # ── SN en broker adres uit json_config.json lezen ──────────────────────────
 def read_config():
     """Lees SN en MQTT broker adres uit json_config.json, met DNS fallback."""
@@ -2447,7 +2507,11 @@ def _publish_blade_speed(speed: int) -> str:
     node = _ROS_BLADE_NODE[0]
     if node is None:
         return "ros node not ready"
-    node.target_blade_speed = int(speed)
+    setter = getattr(node, "set_blade_speed_target", None)
+    if callable(setter):
+        setter(int(speed))
+    else:
+        node.target_blade_speed = int(speed)
     return ""
 
 
@@ -2518,7 +2582,11 @@ def _publish_blade_height(level: int) -> str:
     node = _ROS_BLADE_NODE[0]
     if node is None:
         return "ros node not ready"
-    node.target_blade_height = int(mm)
+    setter = getattr(node, "set_blade_height_target", None)
+    if callable(setter):
+        setter(int(mm))
+    else:
+        node.target_blade_height = int(mm)
     return ""
 
 
@@ -3400,18 +3468,28 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
                     super().__init__('blade_telemetry_relay')
                     self._topic = f'novabot/sensor/{sn}'
                     self._last_value = None
-                    self.create_subscription(
-                        Int16, '/blade_speed_get', self._on_msg, 10,
-                    )
+                    if enable_blade_telemetry():
+                        self.create_subscription(
+                            Int16, '/blade_speed_get', self._on_msg, 10,
+                        )
+                        log(f"[BladeRelay] subscribed /blade_speed_get -> MQTT {self._topic}")
+                    else:
+                        log("[BladeRelay] blade telemetry disabled (set OPENNOVA_ENABLE_BLADE_TELEMETRY=1 to enable)")
                     self.speed_pub = self.create_publisher(Int16, '/blade_speed_set', 10)
                     self.height_pub = self.create_publisher(UInt8, '/blade_height_set', 10)
                     self.reset_pub = self.create_publisher(String, '/motor_driver_reset', 10)
-                    # Sustained blade target: timer at 10Hz publishes the
-                    # current target speed/height so the chassis (and STM32)
-                    # never lose state mid-spin. None = nothing to publish.
+                    # Sustained blade target: a lazy 10Hz timer publishes the
+                    # current target speed/height only while manual blade control
+                    # is active. Keeping that timer alive forever cost measurable
+                    # CPU on hot mowers even when targets were None.
                     self.target_blade_speed = None
                     self.target_blade_height = None
-                    self.create_timer(0.1, self._tick_blade)
+                    self._blade_timer = None
+                    self._blade_idle_until = None
+                    # Keep one very low-frequency waitable so rclpy's executor
+                    # can sleep cleanly even when telemetry and blade targets are
+                    # both idle. Publishers alone are not executor waitables.
+                    self.create_timer(60.0, lambda: None)
                     # RobotStatus passthrough: cache real status from
                     # robot_decision; republish a modified clone at 50Hz when
                     # override_active is True. Subscription + 50Hz timer are
@@ -3427,8 +3505,29 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
                     self._status_sub = None
                     self._status_timer = None
                     self.override_active = False
-                    log(f"[BladeRelay] subscribed /blade_speed_get → MQTT {self._topic}")
                     log("[BladeRelay] publishers ready: blade ops + RobotStatus override (lazy)")
+
+                def _arm_blade_timer(self):
+                    if self._blade_timer is None:
+                        self._blade_timer = self.create_timer(0.1, self._tick_blade)
+                        log("[BladeRelay] blade target timer armed")
+
+                def _schedule_idle_disarm(self):
+                    self._blade_idle_until = time.monotonic() + blade_idle_hold_seconds()
+
+                def set_blade_speed_target(self, speed):
+                    self.target_blade_speed = int(speed)
+                    if int(speed) == 0:
+                        self._schedule_idle_disarm()
+                    else:
+                        self._blade_idle_until = None
+                    self._arm_blade_timer()
+
+                def set_blade_height_target(self, mm):
+                    self.target_blade_height = int(mm)
+                    if self.target_blade_speed in (None, 0):
+                        self._schedule_idle_disarm()
+                    self._arm_blade_timer()
 
                 def _arm_status_override(self):
                     """Create subscription + 50Hz republish timer. Idempotent.
@@ -3497,6 +3596,17 @@ def start_blade_telemetry_relay(sn, mqtt_ref):
                             self.speed_pub.publish(m)
                         except Exception as ex:
                             log(f"[BladeRelay] speed tick failed: {ex}")
+                    if self._blade_idle_until is not None and time.monotonic() >= self._blade_idle_until:
+                        self.target_blade_height = None
+                        self.target_blade_speed = None
+                        self._blade_idle_until = None
+                        if self._blade_timer is not None:
+                            try:
+                                self.destroy_timer(self._blade_timer)
+                            except Exception as ex:
+                                log(f"[BladeRelay] destroy blade timer failed: {ex}")
+                            self._blade_timer = None
+                            log("[BladeRelay] blade target timer idle")
 
                 def _on_status(self, msg):
                     # Only cache messages NOT produced by ourselves. rclpy's
@@ -3635,9 +3745,10 @@ def start_charging_station_guard():
                 _ensure_charging_station_yaml()
             except Exception as ex:
                 log("[chg-guard] loop error: %s" % ex)
-            time.sleep(5)
+            time.sleep(charging_station_guard_interval_seconds())
     threading.Thread(target=_loop, daemon=True, name="charging-station-guard").start()
-    log("[chg-guard] started — ensures charging_station.yaml for save_map type:1")
+    log("[chg-guard] started — ensures charging_station.yaml for save_map type:1 "
+        f"(interval={charging_station_guard_interval_seconds()}s)")
 
 
 def start_rtk_telemetry_relay(sn, mqtt_ref):
@@ -3691,17 +3802,25 @@ def start_rtk_telemetry_relay(sn, mqtt_ref):
                     self._last_heading = None
                     self._last_track = None
                     self._last_speed = None
+                    # Always: the cheap fix-quality indicator (~5Hz light callback).
                     self.create_subscription(
                         BestPos, '/bestpos_parsed_data', self._on_bestpos, 10,
                     )
-                    self.create_subscription(
-                        Odometry, '/robot_combination_localization/odom', self._on_odom, 10,
-                    )
-                    self.create_subscription(
-                        BestVel, '/bestvel_parsed_data', self._on_bestvel, 10,
-                    )
+                    # Opt-in: heavier heading + GNSS-velocity telemetry (~10Hz of
+                    # high-rate subs). Only for heading-discovery / re-anchor
+                    # diagnostics — off by default for thermal headroom (#85).
+                    if enable_heading_telemetry():
+                        self.create_subscription(
+                            Odometry, '/robot_combination_localization/odom', self._on_odom, 10,
+                        )
+                        self.create_subscription(
+                            BestVel, '/bestvel_parsed_data', self._on_bestvel, 10,
+                        )
+                        log(f"[RtkRelay] subscribed bestpos + heading/bestvel -> MQTT {self._topic}")
+                    else:
+                        log(f"[RtkRelay] subscribed bestpos (fix-quality only) -> MQTT {self._topic} "
+                            "(set OPENNOVA_ENABLE_HEADING_TELEMETRY=1 for heading_deg/gnss_track)")
                     self.create_timer(2.0, self._heartbeat)
-                    log(f"[RtkRelay] subscribed bestpos/odom/bestvel -> MQTT {self._topic}")
 
                 def _pub(self, payload):
                     if mqtt_ref[0] is None:
@@ -3829,10 +3948,13 @@ def main():
     # reconnects without needing its own MQTT loop.
     start_blade_telemetry_relay(sn, mqtt_ref)
 
-    # Spin up the ROS -> MQTT RTK fix-quality relay right after the blade relay.
-    # Subscribes to /bestpos_parsed_data (novabot_msgs/BestPos) and publishes
-    # {rtk_fix_quality, rtk_sat} to novabot/sensor/<SN>.
-    start_rtk_telemetry_relay(sn, mqtt_ref)
+    # Optional ROS -> MQTT RTK/heading relay. Keep it opt-in because it
+    # subscribes to high-rate localization topics and can cost noticeable CPU
+    # on hot mowers.
+    if enable_rtk_telemetry():
+        start_rtk_telemetry_relay(sn, mqtt_ref)
+    else:
+        log("[RtkRelay] disabled (set OPENNOVA_ENABLE_RTK_TELEMETRY=1 to enable)")
 
     # Keep charging_station.yaml present so stock save_map type:1 never crashes
     # (Error 140) on a missing file — see start_charging_station_guard().
