@@ -1,0 +1,22 @@
+{
+  // Self-contained tsconfig for the pure (framework-free) utils in this folder.
+  //
+  // Why this exists: server/src/__tests__/utils/mowingMapSelection.test.ts
+  // imports ../app/src/utils/mowingMapSelection.ts so the shared map-selection
+  // logic runs under the server's vitest (the app has no test runner). When
+  // Vite/tsconfck transforms that file it walks UP for the nearest tsconfig.
+  // Without this file it reaches app/tsconfig.json, whose
+  // `extends: "expo/tsconfig.base"` is unresolvable in CI (the server-test
+  // workflow installs server/ deps only, so app/node_modules is absent) and
+  // the transform dies with "Tsconfig not found". This nearest, self-contained
+  // config short-circuits that lookup. It does NOT affect the app build/tsc
+  // (which compiles via the root app/tsconfig.json) — only per-file tooling.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  }
+}

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import mdns from 'multicast-dns';
 import { startMdnsAdvertiser, stopMdnsAdvertiser } from '../../services/mdnsAdvertiser.js';
 
@@ -8,8 +8,19 @@ import { startMdnsAdvertiser, stopMdnsAdvertiser } from '../../services/mdnsAdve
 const TEST_PORT = 15353;
 
 describe('mDNS advertiser', () => {
+  let savedEnableMdns: string | undefined;
+  beforeEach(() => {
+    // startMdnsAdvertiser() bails out when ENABLE_MDNS is "false"/"0". A
+    // developer's local server/.env may set that (to silence the advertiser
+    // during dev) — force it OFF here so these tests reliably exercise the
+    // advertiser answering queries, independent of the ambient environment.
+    savedEnableMdns = process.env.ENABLE_MDNS;
+    delete process.env.ENABLE_MDNS;
+  });
   afterEach(() => {
     stopMdnsAdvertiser();
+    if (savedEnableMdns === undefined) delete process.env.ENABLE_MDNS;
+    else process.env.ENABLE_MDNS = savedEnableMdns;
   });
 
   it('answers A query for opennova.local with the configured IP', async () => {

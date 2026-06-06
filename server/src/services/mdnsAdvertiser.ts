@@ -106,6 +106,14 @@ export function startMdnsAdvertiser(opts?: Partial<AdvertiserOptions>): void {
   active = { ip, hostnames, ttl, port, httpPort, srvName };
   socket = mdns({ port });
 
+  // A dgram 'error' (e.g. the competing-server probe failing to send multicast
+  // in a container / restricted test env) must NOT go unhandled — Node would
+  // throw and break the whole advertiser (so it stops answering queries). Log
+  // and keep running.
+  socket.on('error', (err: Error) => {
+    console.warn(`${TAG} socket error: ${err.message}`);
+  });
+
   socket.on('query', (query, rinfo) => {
     const answers: Answer[] = [];
     for (const q of query.questions ?? []) {
@@ -170,7 +178,11 @@ export function startMdnsAdvertiser(opts?: Partial<AdvertiserOptions>): void {
     }
   });
 
-  // Periodically probe so a competitor that starts AFTER us is also noticed.
+  // Actively probe our own hostnames so a competitor is noticed even AFTER a
+  // hijack has already completed (a stolen mower stops querying once it has
+  // connected to the rogue server, so passive listening alone could miss it).
+  // A send failure in a restricted/container env surfaces on the socket
+  // 'error' handler above rather than crashing the advertiser.
   const probe = () => {
     try {
       socket?.query({ questions: active!.hostnames.map((name) => ({ name, type: 'A' as const })) });
