@@ -35,6 +35,27 @@ interface AdvertiserOptions {
 let socket: ReturnType<typeof mdns> | null = null;
 let active: AdvertiserOptions | null = null;
 
+// ── Competing-server detection ────────────────────────────────────────────
+// A local dev server (`npm run dev`) or a second instance advertising the same
+// `opennovabot.local` name silently steals mowers via mDNS, because
+// set_server_urls.sh resolves mDNS BEFORE DNS (mqtt.lfibot.com). We do NOT
+// change that behaviour, but we make it loud: detect any OTHER host answering
+// our hostnames and surface it (server log + dashboard banner).
+export interface CompetingServer {
+  ip: string;
+  hostnames: string[];
+  lastSeen: number; // unix-ms
+}
+const competing = new Map<string, CompetingServer>();
+let probeTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Competing servers seen within the last 3×TTL (stale entries pruned). */
+export function getCompetingServers(): CompetingServer[] {
+  const now = Date.now();
+  const ttlMs = (active?.ttl ?? 120) * 1000 * 3;
+  return [...competing.values()].filter((c) => now - c.lastSeen <= ttlMs);
+}
+
 /**
  * Pick the first non-loopback IPv4 address as a fallback when TARGET_IP is
  * unset. We deliberately do not advertise loopback or link-local addresses.
@@ -123,10 +144,48 @@ export function startMdnsAdvertiser(opts?: Partial<AdvertiserOptions>): void {
     }
   });
 
+  // Watch for OTHER hosts answering our hostnames → competing server.
+  socket.on('response', (response, rinfo) => {
+    if (!active) return;
+    for (const ans of response.answers ?? []) {
+      if (ans.type !== 'A') continue;
+      if (!active.hostnames.includes(ans.name)) continue;
+      const ip = String(ans.data);
+      if (!ip || ip === active.ip) continue; // ignore our own answers
+      const now = Date.now();
+      const existing = competing.get(ip);
+      if (existing) {
+        existing.lastSeen = now;
+        if (!existing.hostnames.includes(ans.name)) existing.hostnames.push(ans.name);
+      } else {
+        competing.set(ip, { ip, hostnames: [ans.name], lastSeen: now });
+        console.warn(
+          `${TAG} ⚠️  Another OpenNova server is advertising ${ans.name} at ${ip}. ` +
+          `Mowers on this LAN may connect there (or here: ${active.ip}) — whichever wins via mDNS. ` +
+          `If ${ip} is a dev box, the mowers can silently switch servers. ` +
+          `(set ENABLE_MDNS=false to stop advertising from this instance)`,
+        );
+      }
+      void rinfo;
+    }
+  });
+
+  // Periodically probe so a competitor that starts AFTER us is also noticed.
+  const probe = () => {
+    try {
+      socket?.query({ questions: active!.hostnames.map((name) => ({ name, type: 'A' as const })) });
+    } catch { /* socket closing */ }
+  };
+  probe();
+  probeTimer = setInterval(probe, 45000);
+  if (typeof probeTimer.unref === 'function') probeTimer.unref();
+
   console.log(`${TAG} advertising ${hostnames.join(', ')} → ${ip} (ttl=${ttl}s, mdns-port=${port}, http-port=${httpPort}, srv=${srvName})`);
 }
 
 export function stopMdnsAdvertiser(): void {
+  if (probeTimer) { clearInterval(probeTimer); probeTimer = null; }
+  competing.clear();
   if (!socket) return;
   socket.destroy();
   socket = null;

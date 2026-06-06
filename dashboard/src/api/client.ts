@@ -18,6 +18,18 @@ async function post(url: string, body?: unknown): Promise<Response> {
   return res;
 }
 
+export interface MdnsConflict {
+  self: string | null;
+  hostnames: string[];
+  competitors: { ip: string; hostnames: string[]; lastSeen: number }[];
+}
+
+/** Second OpenNova server advertising the same opennovabot.local on the LAN. */
+export async function fetchMdnsConflict(): Promise<MdnsConflict> {
+  const res = await get(`${BASE}/mdns-conflict`);
+  return res.json();
+}
+
 export async function fetchDevices(): Promise<DeviceState[]> {
   const data = await (await get(`${BASE}/devices`)).json();
   return (data.devices ?? []).map((d: DeviceState) => ({

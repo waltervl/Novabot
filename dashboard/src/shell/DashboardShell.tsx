@@ -14,6 +14,7 @@ import { LiveStatusCard } from '../components/drawer/LiveStatusCard';
 import { ServerLogTail } from '../components/drawer/ServerLogTail';
 import { MowerControls } from '../components/dashboard/MowerControls';
 import { LongPauseBanner } from './LongPauseBanner';
+import { MdnsConflictBanner } from './MdnsConflictBanner';
 
 type Tab = 'map' | 'schedule' | 'records' | 'settings';
 
@@ -72,6 +73,7 @@ function ShellInner() {
         )}
       </div>
 
+      <MdnsConflictBanner />
       <LongPauseBanner mower={activeMower} />
 
       <nav className="flex gap-1 px-4 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">

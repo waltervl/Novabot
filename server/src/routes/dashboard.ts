@@ -34,7 +34,7 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { v4 as uuidv4 } from 'uuid';
-import { getActiveAdvertisement } from '../services/mdnsAdvertiser.js';
+import { getActiveAdvertisement, getCompetingServers } from '../services/mdnsAdvertiser.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
 
 interface DeviceRegistryRow {
@@ -1782,6 +1782,19 @@ dashboardRouter.get('/calibration/:sn', (req: Request, res: Response) => {
           gpsChargerLat: row.gps_charger_lat, gpsChargerLng: row.gps_charger_lng }
       : { offsetLat: 0, offsetLng: 0, rotation: 0, scale: 1,
           chargerLat: null, chargerLng: null, gpsChargerLat: null, gpsChargerLng: null },
+  });
+});
+
+// GET /api/dashboard/mdns-conflict — detect a SECOND OpenNova server advertising
+// the same opennovabot.local on the LAN (e.g. a local `npm run dev` box). Mowers
+// resolve mDNS before DNS, so a competitor can silently steal them. The dashboard
+// renders a banner when competitors[] is non-empty.
+dashboardRouter.get('/mdns-conflict', (_req: Request, res: Response) => {
+  const adv = getActiveAdvertisement();
+  res.json({
+    self: adv?.ip ?? null,
+    hostnames: adv?.hostnames ?? [],
+    competitors: getCompetingServers(),
   });
 });
 
