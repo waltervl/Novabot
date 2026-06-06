@@ -116,44 +116,51 @@ export function ReturnReasonModal({ visible, reason, online, loading, onResume, 
   const { colors } = useTheme();
   const { t } = useI18n();
 
-  if (!reason) return null;
-  const meta = RETURN_REASON_META[reason];
-  const title = t(TITLE_FALLBACK[reason].key) || TITLE_FALLBACK[reason].fb;
-  const desc = t(DESC_FALLBACK[reason].key) || DESC_FALLBACK[reason].fb;
-  const showResume = meta.offersResume && online;
+  // NEVER unmount the <Modal> while it might still be presented. If `reason`
+  // flips to null (e.g. a fresh sensor snapshot arrives during the fade-out
+  // animation) and we returned null here, the native modal would be torn down
+  // mid-presentation — on iOS that leaves a transparent, touch-swallowing
+  // overlay that freezes the entire app. So the <Modal> is always rendered and
+  // we only gate `visible` + the inner content on `reason`.
+  const meta = reason ? RETURN_REASON_META[reason] : null;
+  const title = reason ? (t(TITLE_FALLBACK[reason].key) || TITLE_FALLBACK[reason].fb) : '';
+  const desc = reason ? (t(DESC_FALLBACK[reason].key) || DESC_FALLBACK[reason].fb) : '';
+  const showResume = !!meta && meta.offersResume && online;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+    <Modal visible={visible && !!reason} transparent animationType="fade" onRequestClose={onDismiss}>
       <View style={styles.backdrop}>
-        <View style={styles.card}>
-          <View style={styles.iconRow}>
-            <Ionicons name={meta.icon} size={28} color={meta.color} />
-            <Text style={styles.title}>{title}</Text>
-          </View>
+        {reason && meta && (
+          <View style={styles.card}>
+            <View style={styles.iconRow}>
+              <Ionicons name={meta.icon} size={28} color={meta.color} />
+              <Text style={styles.title}>{title}</Text>
+            </View>
 
-          <Text style={styles.body}>{desc}</Text>
+            <Text style={styles.body}>{desc}</Text>
 
-          <View style={styles.buttons}>
-            <TouchableOpacity style={[styles.btn, styles.btnDismiss]} onPress={onDismiss}>
-              <Text style={styles.btnDismissText}>{t('rrDismiss') || t('close') || 'Sluiten'}</Text>
-            </TouchableOpacity>
-            {showResume && (
-              <TouchableOpacity
-                style={[styles.btn, styles.btnResume, { backgroundColor: meta.color }]}
-                onPress={onResume}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.btnResumeText}>
-                    {t(RESUME_LABEL[reason].key) || RESUME_LABEL[reason].fb}
-                  </Text>
-                )}
+            <View style={styles.buttons}>
+              <TouchableOpacity style={[styles.btn, styles.btnDismiss]} onPress={onDismiss}>
+                <Text style={styles.btnDismissText}>{t('rrDismiss') || t('close') || 'Sluiten'}</Text>
               </TouchableOpacity>
-            )}
+              {showResume && (
+                <TouchableOpacity
+                  style={[styles.btn, styles.btnResume, { backgroundColor: meta.color }]}
+                  onPress={onResume}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.btnResumeText}>
+                      {t(RESUME_LABEL[reason].key) || RESUME_LABEL[reason].fb}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
-        </View>
+        )}
       </View>
     </Modal>
   );

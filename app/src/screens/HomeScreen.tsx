@@ -739,6 +739,15 @@ export default function HomeScreen() {
     }
   }, [mower?.activity, activityOverride]);
 
+  // Fresh-session coverage suppression. After starting a new mow the mower keeps
+  // reporting the PREVIOUS session's coverage (mowing_progress, finished_area,
+  // planned paths) until it reaches the start point and begins fresh coverage.
+  // We hide that carried-over coverage on the home map until new data arrives,
+  // so a freshly started mow shows a clean slate instead of last time's lines.
+  const [freshSession, setFreshSession] = useState(false);
+  const freshSessionFingerprint = useRef('');
+  const freshSessionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Auto-show the return-reason modal once per new reason while the mower is
   // returning / charging / paused. Reset the guard when it goes actively
   // off-dock (mowing/edge_cutting) or truly idle, so a future return re-pops.
@@ -747,16 +756,52 @@ export default function HomeScreen() {
     mower ? devices.get(mower.sn)?.sensors : undefined,
     mower?.hasError ?? false,
   );
+  // Reveal live coverage again once the mower reports fresh session data (its
+  // finished_area / cover_map_id changed from the carried-over session), or it
+  // is clearly no longer mowing. The timeout armed in onStarted is the safety net.
   useEffect(() => {
-    if (effectiveActivity === 'mowing' || effectiveActivity === 'edge_cutting' || effectiveActivity === 'idle') {
+    if (!freshSession) return;
+    const s = mower ? devices.get(mower.sn)?.sensors : undefined;
+    const fp = `${s?.finished_area ?? ''}|${s?.cover_map_id ?? ''}`;
+    if (
+      fp !== freshSessionFingerprint.current ||
+      effectiveActivity === 'idle' ||
+      effectiveActivity === 'charging'
+    ) {
+      setFreshSession(false);
+      if (freshSessionTimer.current) {
+        clearTimeout(freshSessionTimer.current);
+        freshSessionTimer.current = null;
+      }
+    }
+  }, [devices, mower?.sn, effectiveActivity, freshSession]);
+  useEffect(() => {
+    const prev = prevActivityRef.current;
+    prevActivityRef.current = effectiveActivity;
+    if (
+      effectiveActivity === 'mowing' ||
+      effectiveActivity === 'edge_cutting' ||
+      effectiveActivity === 'idle' ||
+      effectiveActivity === null
+    ) {
+      // Actively working or truly idle: nothing to explain. Reset so the next
+      // real return re-pops, and retract the chip.
       lastShownReasonRef.current = null;
+      setLiveReturn(false);
       return;
     }
-    const onDockState =
-      effectiveActivity === 'returning' || effectiveActivity === 'charging' || effectiveActivity === 'paused';
-    if (onDockState && returnReason && returnReason !== lastShownReasonRef.current) {
-      lastShownReasonRef.current = returnReason;
-      setReasonModalVisible(true);
+    // Dock states (returning/charging/paused). Only surface the return-reason
+    // UI when we just transitioned here from an off-dock state DURING this app
+    // session. On a cold app open of an already-docked mower `prev` is null, so
+    // we never ambush the user with a stale popup/chip that "survives" a restart.
+    const cameFromOffDock =
+      prev === 'mowing' || prev === 'edge_cutting' || prev === 'returning';
+    if (cameFromOffDock && returnReason) {
+      setLiveReturn(true);
+      if (returnReason !== lastShownReasonRef.current) {
+        lastShownReasonRef.current = returnReason;
+        setReasonModalVisible(true);
+      }
     }
   }, [effectiveActivity, returnReason]);
 
@@ -774,9 +819,15 @@ export default function HomeScreen() {
   }, [effectiveActivity]);
   // ── Return-reason modal: explain WHY the mower returned to the dock ──
   const [reasonModalVisible, setReasonModalVisible] = useState(false);
+  // True only after we observed the mower return from an off-dock state in THIS
+  // app session. Gates both the auto-popup and the chip so neither survives an
+  // app restart (was: stale "Mowing finished" popup ambushing on cold open).
+  const [liveReturn, setLiveReturn] = useState(false);
   // Tracks the reason we last auto-showed so we don't re-pop the modal for the
   // same ongoing reason. Reset to null when the mower goes actively off-dock.
   const lastShownReasonRef = useRef<ReturnReason>(null);
+  // Previous effectiveActivity, to detect a live off-dock -> dock transition.
+  const prevActivityRef = useRef<MowerActivity | null>(null);
   // Fire a single fresh snapshot request per transition into returning/charging
   // so the server-side rain_paused flag is current when we derive the reason.
   const snapshotRequestedForRef = useRef<MowerActivity | null>(null);
@@ -1806,7 +1857,7 @@ export default function HomeScreen() {
 
           {/* Return-reason chip — appears when the modal has been dismissed but
               the mower is still back on the dock. Tap to re-open the modal. */}
-          {returnReason && !reasonModalVisible &&
+          {returnReason && !reasonModalVisible && liveReturn &&
             (displayActivity === 'returning' || displayActivity === 'charging' || displayActivity === 'paused') && (
               <TouchableOpacity
                 style={styles.returnReasonChip}
@@ -1888,22 +1939,22 @@ export default function HomeScreen() {
               <MowingProgressMap
                 polygon={activeMapPolygon}
                 activeLabel={activeMapLabel}
-                progress={mower.mowingProgress}
+                progress={freshSession ? 0 : mower.mowingProgress}
                 pathDirection={mowSettings?.pathDirection ?? mower.pathDirection}
                 fill
                 interactive
-                trail={mowingTrail}
-                plannedPaths={plannedPaths}
-                finishedAreas={parseFinishedAreas(
+                trail={freshSession ? [] : mowingTrail}
+                plannedPaths={freshSession ? [] : plannedPaths}
+                finishedAreas={freshSession ? [] : parseFinishedAreas(
                   devices.get(mower.sn)?.sensors?.finished_area,
                   devices.get(mower.sn)?.sensors?.cover_map_id,
                 )}
-                activeAreaId={prefixedAreaId(
+                activeAreaId={freshSession ? undefined : prefixedAreaId(
                   devices.get(mower.sn)?.sensors?.covering_area_id,
                   devices.get(mower.sn)?.sensors?.cover_map_id,
                 )}
-                activeAreaPoints={parseInt(devices.get(mower.sn)?.sensors?.covering_area_points ?? '0', 10) || undefined}
-                liveCoverSegment={parseCoveringPoints(devices.get(mower.sn)?.sensors?.covering_points)}
+                activeAreaPoints={freshSession ? undefined : (parseInt(devices.get(mower.sn)?.sensors?.covering_area_points ?? '0', 10) || undefined)}
+                liveCoverSegment={freshSession ? undefined : parseCoveringPoints(devices.get(mower.sn)?.sensors?.covering_points)}
                 obstacles={obstaclePolygons}
                 inactivePolygons={allWorkPolygons}
                 mowerPos={mower.mowerPosX != null && mower.mowerPosY != null ? { x: mower.mowerPosX, y: mower.mowerPosY } : null}
@@ -2798,6 +2849,16 @@ export default function HomeScreen() {
             setMowSettings(settings);
             setStartedMapIds(settings.mapIds);
             setMowingTrail([]);
+            setPlannedPaths([]);
+            // Hide the previous session's coverage until the mower reports fresh
+            // data — it keeps echoing the old finished_area while it drives to
+            // the start point. Cleared by the freshSession effect (fingerprint
+            // change / left mowing) or this safety timeout.
+            const s = devices.get(mower.sn)?.sensors;
+            freshSessionFingerprint.current = `${s?.finished_area ?? ''}|${s?.cover_map_id ?? ''}`;
+            setFreshSession(true);
+            if (freshSessionTimer.current) clearTimeout(freshSessionTimer.current);
+            freshSessionTimer.current = setTimeout(() => setFreshSession(false), 180000);
           }}
           initialSelectedMapId={startMowInitialMapId}
           forceZonePicker={startMowForceZone}
