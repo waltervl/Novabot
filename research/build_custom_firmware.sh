@@ -18,6 +18,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# GNU ar — resolved ONCE, hardcoded to the bundled project binary. Used for BOTH
+# unpacking the input .deb (ar x) AND packing the output .deb (ar cr). This is
+# deliberate: macOS /usr/bin/ar is BROKEN (produces 96-byte members) and a bare
+# `ar` on PATH varies per machine — both have repeatedly produced unusable .debs.
+# Never use bare `ar` in this script. Falls back to Homebrew binutils only if the
+# bundled binary is missing.
+GNU_AR="$SCRIPT_DIR/../tools/bin/gnu-ar"
+if [ ! -x "$GNU_AR" ]; then
+    GNU_AR="$(find /opt/homebrew/Cellar/binutils /usr/local/Cellar/binutils -name ar -type f 2>/dev/null | head -1)"
+fi
+if [ -z "${GNU_AR:-}" ] || [ ! -x "$GNU_AR" ]; then
+    echo "ERROR: GNU ar niet gevonden. Verwacht: tools/bin/gnu-ar (in repo) of 'brew install binutils'." >&2
+    exit 1
+fi
+
 INPUT_DEB=""
 WORK_DIR="/tmp/mower_firmware_custom"
 OUTPUT_DIR="$SCRIPT_DIR/firmware"
@@ -141,8 +157,8 @@ FIRMWARE_DATA="$WORK_DIR/firmware_data"
 mkdir -p "$FIRMWARE_DATA"
 
 cd "$WORK_DIR"
-ar x "$INPUT_DEB"
-echo "  .deb uitgepakt (ar)"
+"$GNU_AR" x "$INPUT_DEB"
+echo "  .deb uitgepakt (ar: $GNU_AR)"
 
 if [ -f data.tar.xz ]; then
     tar -xf data.tar.xz -C "$FIRMWARE_DATA"
@@ -1990,17 +2006,8 @@ cd "$WORK_DIR/DEBIAN"
 COPYFILE_DISABLE=1 tar -cJf "$WORK_DIR/control.tar.xz" .
 cd "$WORK_DIR"
 
-# Bouw .deb ar-archief (volgorde is belangrijk: debian-binary eerst)
-# macOS /usr/bin/ar is BROKEN (produces 96-byte files) — use bundled GNU ar
-GNU_AR="$SCRIPT_DIR/../tools/bin/gnu-ar"
-if [ ! -f "$GNU_AR" ]; then
-    # Fallback: find Homebrew ar
-    GNU_AR=$(find /usr/local/Cellar/binutils /opt/homebrew/Cellar/binutils -name "ar" -type f 2>/dev/null | head -1)
-fi
-if [ -z "$GNU_AR" ] || [ ! -f "$GNU_AR" ]; then
-    echo "ERROR: GNU ar niet gevonden. Verwacht: tools/bin/gnu-ar of brew install binutils"
-    exit 1
-fi
+# Bouw .deb ar-archief (volgorde is belangrijk: debian-binary eerst).
+# GNU_AR is al bovenaan resolved (bundled tools/bin/gnu-ar) — nooit bare `ar`.
 echo "  Gebruik ar: $GNU_AR"
 "$GNU_AR" cr "$OUTPUT_DEB" debian-binary control.tar.xz data.tar.xz
 BUILD_METHOD="ar"
