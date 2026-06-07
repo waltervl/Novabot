@@ -215,7 +215,15 @@ export async function createBundleFromDb(sn: string, reason: string): Promise<Ba
     return null;
   }
   const obstacleRows = mapRepo.findAllByMowerSnAndType(sn, 'obstacle').filter((o) => o.map_area);
-  const unicomRows = mapRepo.findAllByMowerSnAndType(sn, 'unicom').filter((u) => u.map_area);
+  // Do NOT filter unicoms by map_area. Inter-zone connectors
+  // (mapXtomapY_unicom) are legitimately metadata-only (0-byte / map_area
+  // NULL) in the LFI/firmware design, but they MUST still be restored as
+  // (empty) CSV files: the mower regenerates its occupancy grid at every
+  // coverage start (RobotDecision::loadMap -> novabot_mapping Mapping service),
+  // and that regeneration needs every unicom file present to connect the zones.
+  // Dropping them (as the work/obstacle filter does) left the zones as
+  // disconnected free-islands -> nav2 "no valid path to goal" (Error 127).
+  const unicomRows = mapRepo.findAllByMowerSnAndType(sn, 'unicom');
 
   const workMaps = workRows.map((w, i) => ({
     canonical: w.canonical_name ?? `map${i}`,
@@ -232,7 +240,9 @@ export async function createBundleFromDb(sn: string, reason: string): Promise<Ba
     return {
       canonical: u.canonical_name ?? '',
       targetMapName: m?.[1] ?? 'charge',
-      points: JSON.parse(u.map_area as string) as { x: number; y: number }[],
+      // metadata-only inter-zone connectors have no map_area -> empty points
+      // (synthMowerFiles still writes the empty CSV the firmware expects).
+      points: u.map_area ? (JSON.parse(u.map_area as string) as { x: number; y: number }[]) : [],
     };
   });
 
