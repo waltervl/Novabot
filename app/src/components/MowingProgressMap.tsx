@@ -103,6 +103,9 @@ interface Props {
    *  the active polygon so the mower icon never sits "outside" the visible
    *  boundary when we picked the wrong active slot (#14). */
   inactivePolygons?: Array<{ id: string; points: LocalPoint[]; label?: string | null }>;
+  /** Inter-zone unicom connectors ("channels") — the recorded path linking two
+   *  work maps. Drawn as a blue line so the user sees the zones are joined. */
+  channels?: Array<{ id: string; points: LocalPoint[] }>;
   mowerPos?: LocalPoint | null;  // mower position in local meters
   mowerHeading?: number;    // radians
   showProgressOverlay?: boolean; // show big percentage overlay (default: true)
@@ -254,6 +257,7 @@ export function MowingProgressMap({
   liveCoverSegment,
   obstacles,
   inactivePolygons,
+  channels,
   mowerPos,
   mowerHeading,
   showProgressOverlay = true,
@@ -333,8 +337,11 @@ export function MowingProgressMap({
     if (inactivePolygons) {
       for (const ip of inactivePolygons) extra.push(...ip.points);
     }
+    if (channels) {
+      for (const ch of channels) extra.push(...ch.points);
+    }
     return computeBounds(polygon, extra);
-  }, [polygon, mowerPos, trail, inactivePolygons]);
+  }, [polygon, mowerPos, trail, inactivePolygons, channels]);
 
   const svgPoints = useMemo(
     () => polygon.map(p => toSvg(p, bounds, renderSize, padding)),
@@ -417,6 +424,23 @@ export function MowingProgressMap({
 
       {/* Polygon background */}
       <SvgPolygon points={pointsStr} fill={mapPalette.polygonFill} stroke={mapPalette.polygonStroke} strokeWidth={1.5} strokeLinejoin="round" />
+
+      {/* Inter-zone channels (unicom connectors) — blue line over the fills so
+          the link between zones stays visible while mowing / returning. */}
+      {channels && channels.map((ch) => {
+        if (!ch.points || ch.points.length < 2) return null;
+        return (
+          <Polyline
+            key={`channel-${ch.id}`}
+            points={ch.points.map(p => toSvg(p, bounds, renderSize, padding)).map(p => `${p.x},${p.y}`).join(' ')}
+            fill="none"
+            stroke="#3b82f6"
+            strokeWidth={2.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        );
+      })}
 
       {/* Planned mowing paths OR direction stripes as fallback.
           Finished sub-areas (from mower's cover_path.covered.finished_area)

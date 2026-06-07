@@ -29,7 +29,7 @@ export interface CommandResult {
 
 /** Progress of the server-orchestrated auto re-anchor (Novabot-cq3). */
 export type ReanchorPhase =
-  | 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'dock' | 'verify' | 'done' | 'error';
+  | 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'needs_drive' | 'needs_position' | 'dock' | 'verify' | 'done' | 'error';
 export interface ReanchorStatus {
   phase: ReanchorPhase;
   /** Dutch, human-readable. Kept for the (Dutch) dashboard + back-compat with
@@ -44,6 +44,14 @@ export interface ReanchorStatus {
   /** Distance (m) from the origin for the verify_failed message. */
   dist?: number;
   ts: number;
+  /** Live gating booleans the server computes fresh on each status poll.
+   *  onDock: mower physically on the dock now (strict, battery-FULL excluded).
+   *  rtkFixed: real RTK Fixed now. relocked: has completed off-dock -> RUNNING +
+   *  Fixed since the re-anchor began. Verify needs relocked && onDock; retry-auto
+   *  needs onDock && rtkFixed. Optional for back-compat with older servers. */
+  onDock?: boolean;
+  rtkFixed?: boolean;
+  relocked?: boolean;
 }
 
 export interface LocalPoint { x: number; y: number }
@@ -382,7 +390,7 @@ export class ApiClient {
    * - 'drive'/'spin'/'dock': legacy single-step diagnostics. */
   async reanchor(
     sn: string,
-    action: 'auto' | 'verify' | 'drive' | 'spin' | 'dock' = 'auto',
+    action: 'auto' | 'verify' | 'drive' | 'spin' | 'dock' | 'continue_dock' = 'auto',
   ): Promise<{ ok: boolean; error?: string; message?: string }> {
     return this.request<{ ok: boolean; error?: string; message?: string }>(
       'POST',

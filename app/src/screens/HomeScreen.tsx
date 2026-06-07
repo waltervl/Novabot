@@ -845,6 +845,7 @@ export default function HomeScreen() {
   const [mowingTrail, setMowingTrail] = useState<Array<{ x: number; y: number }>>([]);
   const [plannedPaths, setPlannedPaths] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
   const [obstaclePolygons, setObstaclePolygons] = useState<Array<{ id: string; points: Array<{ x: number; y: number }>; label?: string | null }>>([]);
+  const [channelPolylines, setChannelPolylines] = useState<Array<{ id: string; points: Array<{ x: number; y: number }> }>>([]);
   // Track mowing settings for safety check + display
   const [mowSettings, setMowSettings] = useState<{ cuttingHeight: number; pathDirection: number } | null>(null);
   const demo = useDemo();
@@ -1117,6 +1118,13 @@ export default function HomeScreen() {
           points: m.mapArea,
           label: m.mapName ?? m.canonicalName ?? null,
         })));
+        // Inter-zone channels (unicom connectors). Exclude the charger
+        // connector (mapXtocharge) — users only care about map-to-map links.
+        const chans = (res.maps ?? []).filter((m: any) =>
+          m.mapType === 'unicom'
+          && (m.mapArea?.length ?? 0) >= 2
+          && !/tocharge/i.test(m.canonicalName ?? m.fileName ?? m.mapName ?? ''));
+        setChannelPolylines(chans.map((m: any) => ({ id: m.mapId, points: m.mapArea })));
       } catch { /* ignore */ }
     })();
   }, [mower?.sn, demo.enabled, liveCoverMapId, liveCurrentMapIds, intendedActiveMapId]);
@@ -1956,6 +1964,7 @@ export default function HomeScreen() {
                 activeAreaPoints={freshSession ? undefined : (parseInt(devices.get(mower.sn)?.sensors?.covering_area_points ?? '0', 10) || undefined)}
                 liveCoverSegment={freshSession ? undefined : parseCoveringPoints(devices.get(mower.sn)?.sensors?.covering_points)}
                 obstacles={obstaclePolygons}
+                channels={channelPolylines}
                 inactivePolygons={allWorkPolygons}
                 mowerPos={mower.mowerPosX != null && mower.mowerPosY != null ? { x: mower.mowerPosX, y: mower.mowerPosY } : null}
                 mowerHeading={mower.mowerHeading ?? undefined}

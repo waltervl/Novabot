@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { ApiClient, ReanchorStatus } from '../services/api';
 import { getServerUrl } from '../services/auth';
 import { fixQualityLabel } from '../utils/fixQuality';
@@ -17,15 +18,21 @@ interface Props {
 // Automatic re-anchor (Novabot-cq3). After a bundle restore the saved map frame
 // no longer agrees with the live UTM frame, so the server sets frame_unvalidated
 // and the app shows this wizard. With the mower ON the dock and on a real RTK
-// Fixed, one button runs the whole server-orchestrated sequence:
-//   reanchor_pos (origin = docked GPS) -> drive ~1m back to re-lock -> visual
-//   ArUco dock -> self-verify the docked position is on the origin -> clear the
-//   flag. We poll GET /reanchor/:sn/status for progress (the server messages are
-//   already user-facing Dutch). On success the server clears frame_unvalidated,
-//   which makes `visible` false and closes this modal.
-// Manual backup: if re-lock or docking times out, the joystick stays available so
-// the operator can drive the mower back onto the dock, then "Verifieer" re-runs
-// the docked-on-origin check alone and clears the flag if it lands right.
+// Fixed, one button runs the server-orchestrated sequence:
+//   reanchor_pos (origin = docked GPS) -> drive ~1m back to re-lock -> PAUSE.
+// Two phases hand control back to the operator:
+//   - needs_drive: re-lock did not reach RUNNING+Fixed; the user nudges the mower
+//     ~1m further back with the joystick and the flow resumes automatically.
+//   - needs_position: re-lock done. The visual ArUco dock only homes in from close
+//     range, so the user drives the mower to ~50cm straight in front of the dock,
+//     then presses "Start docken" (action:'continue_dock') to run the ArUco dock +
+//     self-verify (docked position must land on the origin) -> clear the flag.
+// We poll GET /reanchor/:sn/status for progress (the server messages are already
+// user-facing Dutch). On success the server clears frame_unvalidated, which makes
+// `visible` false and closes this modal.
+// Manual backup: if docking times out, the joystick stays available so the operator
+// can drive the mower onto the dock, then "Verifieer" re-runs the docked-on-origin
+// check alone and clears the flag if it lands right.
 
 const PHASES_RUNNING: ReanchorStatus['phase'][] = ['check', 'anchor', 'relock', 'wait', 'dock', 'verify'];
 
@@ -40,9 +47,20 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
   const isFixed = rtk.label === 'RTK Fixed';
   const rsStr = String(sensors?.recharge_status ?? '');
   const bs = String(sensors?.battery_state ?? '').toLowerCase();
-  // On-dock / charging — required to START (the origin is captured on the dock).
-  const docked = rsStr.includes('Charging') || rsStr.includes('9') || bs === 'charging' || bs === 'full';
+  // On-dock / charging — required to START (the origin is captured on the dock)
+  // and to verify / retry. battery 'full' is intentionally EXCLUDED: it lingers
+  // for a while after the mower undocks, which would wrongly report "on dock" off
+  // the dock and let Verify / Retry-auto run (writing pos.json or verifying a
+  // stale frame from the wrong place). Only recharge_status (9 / Charging) and
+  // battery 'charging' reliably mean the mower is on the dock right now.
+  const docked = rsStr.includes('Charging') || rsStr === '9' || bs === 'charging';
   const canStart = docked && isFixed;
+
+  // Has the mower completed off-dock -> RUNNING + Fixed since the re-anchor began?
+  // The server latches this and reports it live in the status. Verify is only
+  // meaningful (and only allowed) once this is true AND the mower is re-docked.
+  const relocked = status?.relocked ?? false;
+  const canVerify = docked && relocked;
 
   // The auto flow reached a terminal error the operator can recover from manually.
   const inError = status?.phase === 'error';
@@ -101,6 +119,23 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
     }
   }
 
+  // needs_position: the auto flow paused after re-locking. The user has driven
+  // the mower to ~50 cm straight in front of the dock; this starts the ArUco dock
+  // + self-verify continuation on the server. Optimistically flip to a running
+  // status so the button disappears and the spinner shows immediately.
+  async function startDock() {
+    setErr(null);
+    const url = await getServerUrl();
+    if (!url) { setErr(t('reanchorNoServer')); return; }
+    try {
+      const r = await new ApiClient(url).reanchor(sn, 'continue_dock');
+      if (!r.ok) { setErr(r.error ?? t('reanchorStartFailed')); return; }
+      setStatus((s) => (s ? { ...s, phase: 'dock', msgKey: 'reanchorMsgDock', message: '' } : s));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('reanchorStartFailed'));
+    }
+  }
+
   async function verifyManual() {
     setErr(null);
     const url = await getServerUrl();
@@ -141,12 +176,44 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
 
   return (
     <Modal visible={visible} transparent animationType="fade">
-      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 }}>
-        <View style={{ backgroundColor: '#111827', borderRadius: 16, padding: 20, gap: 14 }}>
-          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>{t('reanchorTitle')}</Text>
+      {/* A React Native Modal renders in its own native view tree, OUTSIDE the
+          app-root GestureHandlerRootView, so the joystick gesture needs a gesture
+          root here. Exactly ONE root, filling the modal (flex:1), is the correct
+          react-native-gesture-handler setup — a content-sized root buried inside a
+          shared child left an invisible touch-capturing layer over the app after
+          the modal closed. */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 }}>
+          <View style={{ backgroundColor: '#111827', borderRadius: 16, padding: 20, gap: 14 }}>
+            <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>{t('reanchorTitle')}</Text>
 
-          {/* Running: server-orchestrated sequence in progress. */}
-          {running || phaseRunning ? (
+          {/* Needs-drive: auto re-lock did not reach RUNNING+Fixed after the
+              drive-back. The server keeps polling; the user nudges the mower
+              ~1m further straight back with the joystick and the flow resumes
+              automatically the moment it locks. */}
+          {status?.phase === 'needs_drive' ? (
+            <>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <ActivityIndicator color="#f59e0b" />
+                <Text style={{ color: '#fbbf24', flex: 1, fontWeight: '700' }}>{liveMessage(status)}</Text>
+              </View>
+              <Text style={{ color: '#cbd5e1', fontSize: 13 }}>{t('reanchorNeedsDriveHint')}</Text>
+              {StatusBlock}
+              <ManualJoystick sn={sn} />
+            </>
+          ) : status?.phase === 'needs_position' ? (
+            /* Re-lock done. The user must drive the mower to ~50cm straight in
+               front of the dock before the ArUco dock; we never auto-attempt it. */
+            <>
+              <Text style={{ color: '#fbbf24', fontWeight: '700' }}>{liveMessage(status)}</Text>
+              <Text style={{ color: '#cbd5e1', fontSize: 13 }}>{t('reanchorNeedsPositionHint')}</Text>
+              {StatusBlock}
+              {err && <Text style={{ color: '#ef4444', fontWeight: '700' }}>{err}</Text>}
+              <ManualJoystick sn={sn} />
+              <Btn label={t('reanchorBtnDock')} onPress={startDock} />
+              <Btn label={t('reanchorBtnLater')} onPress={onClose} secondary />
+            </>
+          ) : running || phaseRunning ? (
             <>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <ActivityIndicator color="#22c55e" />
@@ -163,7 +230,10 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
               <Text style={{ color: '#cbd5e1', fontSize: 13 }}>{t('reanchorManualBackupHint')}</Text>
               {StatusBlock}
               <ManualJoystick sn={sn} />
-              <Btn label={t('reanchorBtnVerify')} onPress={verifyManual} disabled={!docked} />
+              {/* Verify only after the relock cycle (off-dock -> RUNNING+Fixed ->
+                  re-docked). Retry-auto re-writes pos.json, so it needs the mower
+                  back on the dock with a real Fixed. */}
+              <Btn label={t('reanchorBtnVerify')} onPress={verifyManual} disabled={!canVerify} />
               <Btn label={t('reanchorBtnRetryAuto')} onPress={startAuto} disabled={!canStart} secondary />
               <Btn label={t('reanchorBtnLater')} onPress={onClose} secondary />
             </>
@@ -185,8 +255,9 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
               <Btn label={t('reanchorBtnLater')} onPress={onClose} secondary />
             </>
           )}
+          </View>
         </View>
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

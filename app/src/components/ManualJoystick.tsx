@@ -26,7 +26,6 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   GestureDetector,
   Gesture,
-  GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
 import { useStyles, useTheme, type Colors } from '../theme';
@@ -168,7 +167,10 @@ export default function ManualJoystick({ sn }: Props) {
   const speedMs = (dist * lvl.linear).toFixed(2);
 
   return (
-    <GestureHandlerRootView style={{ alignSelf: 'stretch' }}>
+    // No GestureHandlerRootView here: the host (e.g. ReanchorWizard's Modal)
+    // provides the single gesture root. Nesting a second root inside a Modal left
+    // an invisible touch-blocking layer over the app after the modal closed.
+    <View style={{ alignSelf: 'stretch' }}>
       {/* Speed readout */}
       <View style={styles.speedInfo}>
         {active ? (
@@ -224,7 +226,7 @@ export default function ManualJoystick({ sn }: Props) {
           </TouchableOpacity>
         ))}
       </View>
-    </GestureHandlerRootView>
+    </View>
   );
 }
 

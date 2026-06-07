@@ -28,9 +28,16 @@ function parseFiniteInt(value: unknown): number | null {
 function slotFromCoverMapId(value: unknown): number | null {
   const parsed = parseFiniteInt(value);
   if (parsed === null) return null;
-  if (parsed >= 0 && parsed <= 2) return parsed;
+  // Firmware area enum (matches the start_navigation `area` value AND
+  // slotFromCurrentMapIds): map0=1, map1=10, map2=200. cover_map_id=1 is map0,
+  // NOT slot index 1 — the old `0..2 -> that slot` rule wrongly mapped 1 to
+  // map1, surfacing the false "Started map0, mower reports map1" banner.
+  if (parsed === 1) return 0;
   if (parsed === 10) return 1;
   if (parsed === 100 || parsed === 200) return 2;
+  // Some builds emit a raw 0/2 slot index for map0/map2.
+  if (parsed === 0) return 0;
+  if (parsed === 2) return 2;
   return null;
 }
 

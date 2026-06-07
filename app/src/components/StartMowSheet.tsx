@@ -293,14 +293,36 @@ export function StartMowSheet({
       if (!url) { console.log('[StartMow] NO SERVER URL!'); return; }
       const api = new ApiClient(url);
 
+      // Re-fetch the CURRENT maps right before sending so the firmware `area`
+      // enum is derived from the freshest canonical. A bundle restore can
+      // re-assign map0<->map1; a stale list would send the wrong area and mow
+      // the wrong zone (the "Voortuin -> Achtertuin" bug). If the refresh fails
+      // or the selection no longer maps to a live work map, abort instead of
+      // mowing blind.
+      const freshRes = await api.fetchMaps(sn).catch(() => null);
+      if (!freshRes) {
+        appAlertCompat.alert(t('error') || 'Error', t('mapRefreshFailed') || 'Could not refresh the maps. Check the connection and try again.');
+        return;
+      }
+      const freshWork = (freshRes.maps ?? []).filter(m => m.mapType === 'work' && (m.mapArea?.length ?? 0) >= 3);
+
       // Wire value = display cm − 2 (see cuttingHeight comment). For 4cm → 2.
       const wireHeight = Math.max(0, cuttingHeight - 2);
 
-      // Maintain the order in which the maps appear in the work-map list
+      // Maintain the order in which the maps appear in the FRESH work-map list
       // so the area-encoding (1=map0, 10=map1, 200=map2) is stable.
-      const orderedMapIds = maps
+      const orderedMapIds = freshWork
         .filter(m => selectedMapIds.has(m.mapId))
         .map(m => m.mapId);
+      if (orderedMapIds.length !== selectedMapIds.size) {
+        // The live map list changed under us (restore / delete). Refresh the
+        // picker and make the user re-confirm instead of mowing a stale slot.
+        setAllMaps(freshRes.maps ?? []);
+        setMaps(freshWork);
+        setSelectedMapIds(new Set(orderedMapIds));
+        appAlertCompat.alert(t('error') || 'Error', t('mapsChanged') || 'The map list changed (e.g. after a restore). Re-check your selection and start again.');
+        return;
+      }
 
       if (orderedMapIds.length > 1) {
         // Multi-map: hand off to the queue. The queue sends the FIRST
@@ -330,12 +352,12 @@ export function StartMowSheet({
       // with the mower's internal index. Sorting by updated_at + using array
       // index produced "select front, mow trampo" because the alphabetical
       // app order didn't match the firmware's creation order.
-      const selectedMap = maps.find(m => m.mapId === orderedMapIds[0]) ?? maps[0];
+      const selectedMap = freshWork.find(m => m.mapId === orderedMapIds[0]) ?? freshWork[0];
       const canonicalIdx = (() => {
         const m = (selectedMap?.canonicalName ?? '').match(/^map(\d+)/);
         return m ? parseInt(m[1], 10) : null;
       })();
-      const fallbackIdx = maps.findIndex(m => m.mapId === orderedMapIds[0]);
+      const fallbackIdx = freshWork.findIndex(m => m.mapId === orderedMapIds[0]);
       const mapIdx = canonicalIdx ?? (fallbackIdx >= 0 ? fallbackIdx : 0);
       // Firmware `area` enum: map0=1, map1=10, map2=200. Confirmed in
       // docs/reference/MOWING-FLOW.md. Three slots only (firmware limit).

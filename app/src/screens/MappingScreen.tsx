@@ -44,6 +44,7 @@ import { getServerUrl } from '../services/auth';
 import { useExperimental } from '../context/ExperimentalContext';
 import { useI18n } from '../i18n';
 import { fixQualityLabel } from '../utils/fixQuality';
+import { findMissingChannels } from '../utils/mapChannels';
 import {
   bleJoystickConnect, bleJoystickDisconnect,
   bleJoystickStart, bleJoystickMove, bleJoystickStop,
@@ -189,7 +190,7 @@ export default function MappingScreen() {
   const lastTrailRef = useRef<{x: number; y: number} | null>(null);
 
   // ── Existing maps (shown greyed-out during mapping) ──
-  const [existingMaps, setExistingMaps] = useState<Array<{ mapId: string; mapType: string; mapName?: string; fileName?: string; points: Array<{x: number; y: number}> }>>([]);
+  const [existingMaps, setExistingMaps] = useState<Array<{ mapId: string; mapType: string; mapName?: string; fileName?: string; canonicalName?: string; points: Array<{x: number; y: number}> }>>([]);
 
   // ── Track last saved map to inform the post-save "create channel" CTA ──
   const [lastSaved, setLastSaved] = useState<{ mapName: string; buildType: MapBuildType } | null>(null);
@@ -244,23 +245,11 @@ export default function MappingScreen() {
         }
       }
     }
-    // 2. Scan DB for older gaps (any pair of adjacent work maps).
-    const hasUnicom = (a: string, b: string) => existingMaps.some(row =>
-      row.mapType === 'unicom' &&
-      (row.mapName?.includes(`${a}to${b}`) || row.fileName?.includes(`${a}to${b}`))
-    );
-    const canonicalNames = existingMaps
-      .filter(m => m.mapType === 'work')
-      .map(m => (m.fileName?.match(/^(map\d+)/)?.[1]) ?? (m.mapName?.match(/^(map\d+)/)?.[1]))
-      .filter((v): v is string => !!v)
-      .sort();
-    for (let i = canonicalNames.length - 1; i > 0; i--) {
-      const from = canonicalNames[i];         // newer
-      const to = canonicalNames[i - 1];       // older
-      if (!hasUnicom(from, to) && !hasUnicom(to, from)
-        && !missing.some(p => p.from === from && p.to === to)) {
-        missing.push({ from, to });
-      }
+    // 2. Scan the live map list for older gaps (any adjacent work-map pair
+    //    without a unicom between them). Shared with MapScreen via the helper
+    //    so both screens agree on what counts as a missing channel.
+    for (const c of findMissingChannels(existingMaps)) {
+      if (!missing.some(p => p.from === c.from && p.to === c.to)) missing.push(c);
     }
     return missing;
   })();
@@ -294,6 +283,7 @@ export default function MappingScreen() {
           mapType: m.mapType ?? 'work',
           mapName: m.mapName,
           fileName: m.fileName,
+          canonicalName: m.canonicalName,
           points: m.mapArea,
         }));
       setExistingMaps(loaded);
@@ -727,6 +717,49 @@ export default function MappingScreen() {
     .onEnd(() => { runOnJS(stopJoystick)(); })
     .onFinalize(() => { runOnJS(stopJoystick)(); }),
   [handleGestureStart, handleGestureUpdate, stopJoystick]);
+
+  // ── Start a channel (inter-zone unicom) recording ──
+  // Reused by the post-mapping "must create channel" CTA and the standalone
+  // "missing channel" banner at idle. The mode is always manual + joystick:
+  // the firmware records the connector from the driven trajectory and names
+  // the file mapXtomapY_N_unicom based on which work maps the path crosses, so
+  // the user just drives from `fromMap` into the adjacent map.
+  const startChannelFlow = useCallback(async (fromMap: string) => {
+    // GATE: the firmware's unicom recorder polls the base_link->map transform
+    // and the mapping node CRASHES (error 140) when there is no map frame yet.
+    // Require a live map position (mower is localized) before starting.
+    if (!mowerLocal) {
+      appAlertCompat.alert(
+        t('notLocalizedTitle') || 'Mower not localized',
+        t('notLocalizedBody') || 'Drive the mower a few meters until it shows a position on the map, then try again.',
+      );
+      return;
+    }
+    // Capture the start map so handleBeginRecording sends the correct mapName
+    // even if lastSaved / existingMaps are stale.
+    pendingChannelFromRef.current = fromMap;
+    setMapBuildType('unicom');
+    setLastSaved(null);
+    setBleConnecting(true);
+    await connectBleJoystick();
+    setBleConnecting(false);
+    if (!isBleJoystickConnected()) {
+      appAlertCompat.alert('BLE', 'BLE not connected — check Bluetooth and proximity.');
+      setMappingState('idle');
+      return;
+    }
+    // Open a MANUAL assistant mapping session on the EXISTING maps BEFORE any
+    // add_scan_map. The native app sends start_assistant_build_map to enter the
+    // session without wiping maps; `type:0` = manual (type:2 = autonomous, which
+    // would drive the mower). Without this the mapping node receives a cold
+    // add_scan_map and crashes (error 140, novabot_mapping dies).
+    sendCommand(
+      { start_assistant_build_map: { type: 0, cmd_num: cmdNumRef.current++ } },
+      'start_assistant_build_map (manual session)',
+    );
+    setMappingMode('manual');
+    setMappingState('preMapping');
+  }, [connectBleJoystick, sendCommand, mowerLocal, t]);
 
   // ── Start mapping ──
   const handleStartManual = () => {
@@ -1350,6 +1383,48 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
               </View>
             )}
 
+            {/* Missing-channel banner — standalone entry to record an inter-zone
+                unicom between two EXISTING work maps. Previously the "create
+                channel" CTA only appeared right after mapping a new zone
+                (mustCreateChannel gated on mappingState==='done'), so a
+                pre-existing gap (e.g. after a map restore that lacks the driven
+                connector) could never be fixed. The firmware names the file
+                mapXtomapY_N_unicom from the driven path — no invented geometry. */}
+            {missingMapChannels.length > 0 && (
+              <View style={[styles.card, { borderColor: '#3b82f6', borderWidth: 1 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <Ionicons name="swap-horizontal" size={20} color="#3b82f6" />
+                  <Text style={[styles.cardTitle, { marginBottom: 0 }]}>{t('channelMissingBanner')}</Text>
+                </View>
+                <Text style={[styles.modeBtnSub, { color: colors.textDim, marginBottom: 12 }]}>
+                  {missingMapChannels.length === 1
+                    ? t('channelMissingHint', {
+                        from: missingMapChannels[0].from.replace('map', ''),
+                        to: missingMapChannels[0].to.replace('map', ''),
+                      })
+                    : t('channelMissingHintMulti', { count: missingMapChannels.length })}
+                </Text>
+                {/* One button per gap, ordered dock-outward (map0->map1 first).
+                    missingMapChannels is newest-first for the post-mapping CTA,
+                    so reverse it here for an intuitive idle list. */}
+                {[...missingMapChannels].reverse().map((ch) => (
+                  <TouchableOpacity
+                    key={`${ch.from}-${ch.to}`}
+                    style={[styles.modeBtn, { backgroundColor: '#3b82f6', alignItems: 'center', paddingVertical: 12, marginTop: 8 }]}
+                    onPress={() => startChannelFlow(ch.from)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.modeBtnTitle, { color: colors.white }]}>
+                      {t('createChannelArrow', { from: ch.from, to: ch.to })}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                <Text style={[styles.modeBtnSub, { color: colors.textMuted, marginTop: 10 }]}>
+                  {t('channelDriveHint')}
+                </Text>
+              </View>
+            )}
+
             {/* Mode selection */}
             <View style={styles.card}>
               <Text style={styles.cardTitle}>{t('mappingMode', undefined) || 'MAPPING MODE'}</Text>
@@ -1965,35 +2040,11 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
                 {mustCreateChannel ? (
                   <TouchableOpacity
                     style={[styles.doneBtn, { marginTop: 20, backgroundColor: '#3b82f6', width: '100%' }]}
-                    onPress={async () => {
-                      // Capture the required start map for the upcoming unicom scan
-                      // so handleStart can send the correct mapName regardless of
-                      // any lastSaved / existingMaps staleness.
-                      pendingChannelFromRef.current = missingMapChannels[0].from;
-                      setMapBuildType('unicom');
-                      setLastSaved(null);
-                      // Skip the mode-selection screen — for a required channel
-                      // the mode is always manual + joystick. Mirror the essential
-                      // steps from handleStartManual without the confirmation alert.
-                      setBleConnecting(true);
-                      await connectBleJoystick();
-                      setBleConnecting(false);
-                      if (!isBleJoystickConnected()) {
-                        appAlertCompat.alert('BLE', 'BLE not connected — check Bluetooth and proximity.');
-                        setMappingState('idle');
-                        return;
-                      }
-                      sendCommand(
-                        { quit_mapping_mode: { value: 1, cmd_num: cmdNumRef.current++ } },
-                        'quit_mapping_mode (cleanup)',
-                      );
-                      setMappingMode('manual');
-                      setMappingState('preMapping');
-                    }}
+                    onPress={() => startChannelFlow(missingMapChannels[0].from)}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.doneBtnText}>
-                      Create Channel {missingMapChannels[0].from} → {missingMapChannels[0].to}
+                      {t('createChannelArrow', { from: missingMapChannels[0].from, to: missingMapChannels[0].to })}
                     </Text>
                   </TouchableOpacity>
                 ) : (

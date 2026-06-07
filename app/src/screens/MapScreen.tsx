@@ -54,6 +54,7 @@ import { AppActionSheet, type AppActionSheetItem } from '../components/AppAction
 import { useDemo } from '../context/DemoContext';
 import { usePattern } from '../context/PatternContext';
 import { contourToSvgPath, transformToGps } from '../utils/patternUtils';
+import { findMissingChannels } from '../utils/mapChannels';
 import { useI18n } from '../i18n';
 import { Linking } from 'react-native';
 
@@ -442,7 +443,14 @@ export default function MapScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      // Fetch immediately, then poll a few more times: a mapping/save triggers
+      // an ASYNC mower->server upload that only lands ~15-30s later, so this
+      // lets a freshly recorded map/channel (and the cleared "zones not
+      // connected" banner) appear on its own, without switching tabs. Timers
+      // are cleared on blur so we don't poll in the background.
       fetchData();
+      const timers = [6000, 20000, 35000].map((d) => setTimeout(() => { fetchData(); }, d));
+      return () => timers.forEach(clearTimeout);
     }, [fetchData]),
   );
 
@@ -580,9 +588,12 @@ export default function MapScreen() {
 
   // ── Import ZIP ───────────────────────────────────────────────────
   const handleDeleteMap = useCallback((map: MapData) => {
+    const typeLabel = map.mapType === 'obstacle' ? (t('obstacle') || 'Obstacle')
+      : map.mapType === 'unicom' ? (t('channel') || 'Channel')
+      : (t('map') || 'Map');
     setSheetState({
       visible: true,
-      title: t('deleteMap'),
+      title: `${t('delete') || 'Delete'} ${typeLabel}?`,
       message: t('deleteMapConfirm'),
       actions: [
         {
@@ -1171,6 +1182,20 @@ export default function MapScreen() {
   const selectedAreaSqMeters = selectedWorkMap ? polygonAreaSqMeters(selectedWorkMap.mapArea) : 0;
   const relatedObstacleCount = legendMaps.filter((map) => map.mapType === 'obstacle').length;
   const relatedChannelCount = legendMaps.filter((map) => map.mapType === 'unicom' && !isChargerUnicom(map)).length;
+  // Adjacent work-map pairs with no inter-zone unicom between them. The mower
+  // can't drive between unconnected zones, so we surface a one-tap entry to
+  // record the missing channel (the actual recording happens in MappingScreen).
+  const missingChannels = useMemo(
+    () => findMissingChannels(
+      maps.map((m) => ({
+        mapType: m.mapType,
+        canonicalName: m.canonicalName,
+        mapName: m.mapName,
+        pointCount: m.mapArea?.length ?? 0,
+      })),
+    ),
+    [maps],
+  );
 
   return (
     <GestureHandlerRootView style={[styles.container, { paddingTop: insets.top }]}>
@@ -1211,6 +1236,41 @@ export default function MapScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {missingChannels.length > 0 && !loading && (
+          <TouchableOpacity
+            onPress={() => (navigation as any).navigate('Mapping', { buildType: 'unicom' })}
+            activeOpacity={0.8}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+              marginHorizontal: 16,
+              marginTop: 8,
+              padding: 12,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59,130,246,0.12)',
+            }}
+          >
+            <Ionicons name="swap-horizontal" size={20} color="#3b82f6" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.text, fontWeight: '600', fontSize: 13 }}>
+                {t('channelMissingBanner')}
+              </Text>
+              <Text style={{ color: colors.textDim, fontSize: 12, marginTop: 2 }}>
+                {missingChannels.length === 1
+                  ? t('channelMissingHint', {
+                      from: missingChannels[0].from.replace('map', ''),
+                      to: missingChannels[0].to.replace('map', ''),
+                    })
+                  : t('channelMissingHintMulti', { count: missingChannels.length })}
+              </Text>
+            </View>
+            <Text style={{ color: '#3b82f6', fontWeight: '700', fontSize: 12 }}>{t('addChannel')}</Text>
+          </TouchableOpacity>
+        )}
 
         {loading && <ActivityIndicator size="small" color={colors.emerald} style={{ marginTop: 32 }} />}
 
@@ -1367,6 +1427,51 @@ export default function MapScreen() {
                       </G>
                     );
                   })}
+
+                  {/* Inter-zone unicom connectors (channels) — drawn as a line
+                      over the polygons so the link between zones is visible. The
+                      polygon loop above skips mapType==='unicom'. Charger
+                      connectors (mapXtocharge) render dimmer + dashed since they
+                      matter less to the user than map-to-map channels. */}
+                  {visibleMaps
+                    .filter((m) => m.mapType === 'unicom' && Array.isArray(m.mapArea) && m.mapArea.length >= 2)
+                    .map((m) => {
+                      const isCharger = isChargerUnicom(m);
+                      const uSvgPts = m.mapArea.map((p) => localToSvg(p, bounds, MAP_SIZE, INNER_PADDING));
+                      const ptsStr = uSvgPts.map((p) => `${p.x},${p.y}`).join(' ');
+                      return (
+                        <G key={m.mapId}>
+                          {/* Wide invisible hit area so the thin line is easy to
+                              tap. Inter-zone channels open the same rename/delete
+                              sheet as obstacles (handleMapAction). The auto-managed
+                              charger connector stays non-tappable so it can't be
+                              deleted by accident (that would break docking). */}
+                          {!isCharger && (
+                            <Polyline
+                              points={ptsStr}
+                              fill="none"
+                              stroke={MAP_COLORS.unicom.stroke}
+                              strokeOpacity={0}
+                              strokeWidth={18}
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              onPress={() => handleMapAction(m)}
+                            />
+                          )}
+                          <Polyline
+                            points={ptsStr}
+                            fill="none"
+                            stroke={MAP_COLORS.unicom.stroke}
+                            strokeWidth={isCharger ? 1.5 : 3}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeDasharray={isCharger ? '4 4' : undefined}
+                            opacity={isCharger ? 0.5 : 0.95}
+                            pointerEvents="none"
+                          />
+                        </G>
+                      );
+                    })}
 
                   {/* Edit-mode overlay: vertex dots + active segment highlight */}
                   {editMode && editVertices && editMapId && bounds && (() => {
