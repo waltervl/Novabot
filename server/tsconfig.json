@@ -14,9 +14,14 @@
     "resolvePackageJsonExports": false
   },
   "include": ["src/**/*"],
-  // mowingMapSelection.test.ts imports a pure util from ../../app (outside this
-  // project's rootDir) so it can run under the server's vitest — the app has no
-  // test runner. tsc would reject the cross-rootDir import; vitest runs it fine
-  // and the util itself is type-checked by the app's tsc.
-  "exclude": ["node_modules", "dist", "src/__tests__/utils/mowingMapSelection.test.ts"]
+  // These tests import a pure util from ../../app (outside this project's
+  // rootDir) so they can run under the server's vitest — the app has no test
+  // runner. tsc would reject the cross-rootDir import; vitest runs them fine
+  // and the utils themselves are type-checked by the app's tsc.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/__tests__/utils/mowingMapSelection.test.ts",
+    "src/__tests__/utils/mapChannels.test.ts"
+  ]
 }

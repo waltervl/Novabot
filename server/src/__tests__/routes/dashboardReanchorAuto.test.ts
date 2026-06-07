@@ -10,9 +10,14 @@
  * action:'verify' is the manual backup: after the operator joysticks the mower
  * back onto the dock, it re-checks the docked map_position against the origin
  * and only clears frame_unvalidated when it lands within tolerance. It never
- * moves the mower.
+ * moves the mower. It is gated on the lifecycle: the mower must have left the
+ * dock, re-locked (RUNNING + RTK Fixed) against the new origin, AND be back on
+ * the dock — verifying before the relock tests a stale frame, verifying off-dock
+ * checks the wrong place. battery FULL alone is NOT "on the dock" (it lingers
+ * after undocking), so it cannot satisfy the auto-start or verify dock gate.
  *
- * GET /reanchor/:sn/status exposes the progress the wizard polls.
+ * GET /reanchor/:sn/status exposes the progress the wizard polls plus the live
+ * gating booleans (onDock / rtkFixed / relocked).
  */
 
 import express from 'express';
@@ -93,7 +98,7 @@ vi.mock('../../mqtt/sensorData.js', () => ({
 }));
 
 import { dashboardRouter } from '../../routes/dashboard.js';
-import { markFrameUnvalidated, clearFrameUnvalidated, isFrameUnvalidated } from '../../services/frameValidation.js';
+import { markFrameUnvalidated, clearFrameUnvalidated, isFrameUnvalidated, setReanchorRelocked } from '../../services/frameValidation.js';
 import { deviceCache } from '../../mqtt/sensorData.js';
 
 const app = express();
@@ -136,6 +141,17 @@ describe('POST /reanchor/:sn action:auto — precondition gates', () => {
   it('409 when the mower is not on the dock', async () => {
     markFrameUnvalidated(SN);
     setCache({ ...DOCKED_FIXED, battery_state: 'NORMAL', recharge_status: '0' });
+    const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'auto' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/on the dock/i);
+  });
+
+  it('409 when only the battery reads FULL (lingers after undocking — not on the dock)', async () => {
+    // Regression: a full battery keeps reporting FULL for a while after the mower
+    // drives off the dock. It must NOT count as docked, or auto would rewrite
+    // pos.json off the dock (and verify would check the wrong place).
+    markFrameUnvalidated(SN);
+    setCache({ ...DOCKED_FIXED, battery_state: 'FULL', recharge_status: '0' });
     const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'auto' });
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/on the dock/i);
@@ -201,11 +217,12 @@ describe('POST /reanchor/:sn action:auto — precondition gates', () => {
   });
 });
 
-describe('POST /reanchor/:sn action:verify — manual backup', () => {
-  it('clears frame_unvalidated when docked on the origin (within tolerance)', async () => {
+describe('POST /reanchor/:sn action:verify — manual backup (lifecycle-gated)', () => {
+  it('clears frame_unvalidated when relocked and docked on the origin (within tolerance)', async () => {
     vi.useFakeTimers();
     try {
       markFrameUnvalidated(SN);
+      setReanchorRelocked(SN, true); // mower left the dock, re-locked, now re-docked
       setCache({ ...DOCKED_FIXED, map_position_x: '0.08', map_position_y: '-0.12' });
       const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'verify' });
       expect(r.status).toBe(200);
@@ -220,10 +237,11 @@ describe('POST /reanchor/:sn action:verify — manual backup', () => {
     expect(s.body.status.ok).toBe(true);
   });
 
-  it('keeps frame_unvalidated when the docked position is outside tolerance', async () => {
+  it('keeps frame_unvalidated when relocked + docked but the position is outside tolerance', async () => {
     vi.useFakeTimers();
     try {
       markFrameUnvalidated(SN);
+      setReanchorRelocked(SN, true);
       setCache({ ...DOCKED_FIXED, map_position_x: '2.12', map_position_y: '0.63' });
       const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'verify' });
       expect(r.status).toBe(200);
@@ -238,28 +256,55 @@ describe('POST /reanchor/:sn action:verify — manual backup', () => {
     expect(s.body.status.error).toBe('verify_failed');
   });
 
-  it('errors when verify is requested but the mower is not docked', async () => {
-    vi.useFakeTimers();
-    try {
-      markFrameUnvalidated(SN);
-      setCache({ battery_state: 'NORMAL', recharge_status: '0', map_position_x: '0', map_position_y: '0' });
-      await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'verify' });
-      await vi.advanceTimersByTimeAsync(3500);
-      expect(isFrameUnvalidated(SN)).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
+  it('409 when verify is requested but the mower never re-locked (cycle incomplete)', async () => {
+    markFrameUnvalidated(SN); // resets the relock latch to false
+    setCache(DOCKED_FIXED); // on the dock + Fixed, but no off-dock relock happened
+    const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'verify' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/re-anchor cycle|left the dock|RUNNING/i);
+    expect(isFrameUnvalidated(SN)).toBe(true); // not cleared
+  });
 
-    const s = await request(app).get(`/api/dashboard/reanchor/${SN}/status`);
-    expect(s.body.status.phase).toBe('error');
-    expect(s.body.status.error).toBe('not_docked');
+  it('409 when verify is requested off the dock, even after a relock', async () => {
+    markFrameUnvalidated(SN);
+    setReanchorRelocked(SN, true);
+    setCache({ ...DOCKED_FIXED, battery_state: 'NORMAL', recharge_status: '0' });
+    const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'verify' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/on the dock/i);
+    expect(isFrameUnvalidated(SN)).toBe(true);
+  });
+
+  it('409 verify off the dock even when only the battery reads FULL', async () => {
+    markFrameUnvalidated(SN);
+    setReanchorRelocked(SN, true);
+    setCache({ ...DOCKED_FIXED, battery_state: 'FULL', recharge_status: '0' });
+    const r = await request(app).post(`/api/dashboard/reanchor/${SN}`).send({ action: 'verify' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/on the dock/i);
   });
 });
 
-describe('GET /reanchor/:sn/status — default', () => {
+describe('GET /reanchor/:sn/status', () => {
   it('returns an idle status for an unknown SN', async () => {
     const s = await request(app).get('/api/dashboard/reanchor/UNKNOWNSN/status');
     expect(s.status).toBe(200);
     expect(s.body.status.phase).toBe('idle');
+  });
+
+  it('augments the status with live onDock / rtkFixed / relocked gating booleans', async () => {
+    markFrameUnvalidated(SN);
+    setReanchorRelocked(SN, true);
+    setCache(DOCKED_FIXED);
+    const s = await request(app).get(`/api/dashboard/reanchor/${SN}/status`);
+    expect(s.body.status.onDock).toBe(true);
+    expect(s.body.status.rtkFixed).toBe(true);
+    expect(s.body.status.relocked).toBe(true);
+  });
+
+  it('reports onDock=false when only the battery is FULL (off the dock)', async () => {
+    setCache({ ...DOCKED_FIXED, battery_state: 'FULL', recharge_status: '0' });
+    const s = await request(app).get(`/api/dashboard/reanchor/${SN}/status`);
+    expect(s.body.status.onDock).toBe(false);
   });
 });

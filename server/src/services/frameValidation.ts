@@ -11,7 +11,16 @@ import { deviceSettingsRepo } from '../db/repositories/deviceSettings.js';
 
 const KEY = 'frame_unvalidated';
 const AUTO_RECHARGE_KEY = 'frame_auto_recharge_seen';
+const RELOCKED_KEY = 'frame_relocked';
 const unvalidated = new Set<string>();
+// Re-anchor lifecycle latch: true once the mower has, since the current
+// frame_unvalidated began, left the dock AND reached RUNNING + RTK Fixed against
+// the freshly-written origin. Verify (docked map_position vs origin) is only
+// meaningful after this - before the relock the docked frame is stale, so a
+// verify would test the wrong thing. Reset whenever a new bundle restore marks
+// the frame unvalidated (new origin pending) and when the frame is finally
+// validated. Persisted so a server restart mid-re-anchor does not lose it.
+const relocked = new Set<string>();
 // Mowers for which an auto_recharge (pure ArUco dock) command has been issued
 // since the flag was set. The flag clears only on a docked report AFTER such a
 // command - i.e. the wizard's deliberate re-anchor dock. This prevents stray
@@ -22,28 +31,50 @@ const autoRechargeSeen = new Set<string>();
 export function loadFrameValidationFromDb(): void {
   unvalidated.clear();
   autoRechargeSeen.clear();
+  relocked.clear();
   for (const row of deviceSettingsRepo.listAll()) {
     if (row.key === KEY && row.value === '1') unvalidated.add(row.sn);
     if (row.key === AUTO_RECHARGE_KEY && row.value === '1') autoRechargeSeen.add(row.sn);
+    if (row.key === RELOCKED_KEY && row.value === '1') relocked.add(row.sn);
   }
 }
 
 export function markFrameUnvalidated(sn: string): void {
   unvalidated.add(sn);
   autoRechargeSeen.delete(sn);
+  relocked.delete(sn); // new restore => new origin pending, prior relock void
   deviceSettingsRepo.upsert(sn, KEY, '1');
   deviceSettingsRepo.upsert(sn, AUTO_RECHARGE_KEY, '0');
+  deviceSettingsRepo.upsert(sn, RELOCKED_KEY, '0');
 }
 
 export function clearFrameUnvalidated(sn: string): void {
   unvalidated.delete(sn);
   autoRechargeSeen.delete(sn);
+  relocked.delete(sn); // frame validated => latch consumed
   deviceSettingsRepo.upsert(sn, KEY, '0');
   deviceSettingsRepo.upsert(sn, AUTO_RECHARGE_KEY, '0');
+  deviceSettingsRepo.upsert(sn, RELOCKED_KEY, '0');
 }
 
 export function isFrameUnvalidated(sn: string): boolean {
   return unvalidated.has(sn);
+}
+
+/**
+ * Latch (or clear) the "has re-locked since the re-anchor began" lifecycle bit.
+ * Set true when the auto re-anchor's relock step reaches RUNNING + RTK Fixed off
+ * the dock; the verify step is only allowed once this is true and the mower is
+ * back on the dock.
+ */
+export function setReanchorRelocked(sn: string, value: boolean): void {
+  if (value) relocked.add(sn);
+  else relocked.delete(sn);
+  deviceSettingsRepo.upsert(sn, RELOCKED_KEY, value ? '1' : '0');
+}
+
+export function isReanchorRelocked(sn: string): boolean {
+  return relocked.has(sn);
 }
 
 /**

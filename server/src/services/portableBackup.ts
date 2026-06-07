@@ -354,12 +354,16 @@ export async function createBackup(sn: string, reason: string): Promise<BackupEn
       alias: o.map_name ?? '',
       points: JSON.parse(o.map_area as string),
     })),
-    unicom: unicom.filter((u) => u.map_area).map((u) => {
+    // Do NOT filter unicoms by map_area. Inter-zone connectors can be
+    // metadata-only (0-byte) and must still be listed so a restore knows the
+    // channel exists; the verbatim mower CSV (csvFilesRaw) carries the real
+    // geometry when present. Keeps unicom.json consistent with createBundleFromDb.
+    unicom: unicom.map((u) => {
       const m = (u.canonical_name ?? '').match(/^map\d+to(.+?)_?unicom$/);
       return {
         canonical: u.canonical_name ?? '',
         targetMapName: m?.[1] ?? 'charge',
-        points: JSON.parse(u.map_area as string),
+        points: u.map_area ? (JSON.parse(u.map_area as string) as { x: number; y: number }[]) : [],
       };
     }),
     csvFilesRaw: mowerData.csvFiles,

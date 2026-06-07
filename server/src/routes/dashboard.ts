@@ -19,7 +19,7 @@ import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGp
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
-import { isFrameUnvalidated, clearFrameUnvalidated } from '../services/frameValidation.js';
+import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import crypto from 'crypto';
 import { generateMapZipFromDb, gpsToLocal, localToGps, parseMapZip, type GpsPoint, type LocalPoint } from '../mqtt/mapConverter.js';
 import { existsSync, unlinkSync, readFileSync, readdirSync, createReadStream, statSync, watch, mkdirSync, copyFileSync } from 'fs';
@@ -1948,23 +1948,31 @@ dashboardRouter.get('/demo/:sn', (req: Request, res: Response) => {
 // (x_w angular, y_v linear) + start_move keepalive.
 
 // ── auto re-anchor progress (polled by the wizard) ──────────────
-type ReanchorPhase = 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'dock' | 'verify' | 'done' | 'error';
+type ReanchorPhase = 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'needs_drive' | 'needs_position' | 'dock' | 'verify' | 'done' | 'error';
 // `message` stays Dutch (the dashboard + back-compat with apps that predate
 // msgKey). `msgKey` is a stable i18n key the app translates (en/nl/de/fr),
 // interpolated with pose ({{x}},{{y}}) and dist ({{dist}}).
 interface ReanchorStat { phase: ReanchorPhase; message: string; msgKey?: string; ok?: boolean; error?: string; pose?: { x: number; y: number }; dist?: number; ts: number; }
 const reanchorStatus = new Map<string, ReanchorStat>();
+// The "has re-locked since the re-anchor began" lifecycle latch lives in
+// frameValidation (persisted, shared) via setReanchorRelocked / isReanchorRelocked.
 function setReanchor(sn: string, phase: ReanchorPhase, message: string, extra: Partial<ReanchorStat> = {}): void {
   reanchorStatus.set(sn, { phase, message, ts: Date.now(), ...extra });
   console.log(`[reanchor-auto] ${sn}: [${phase}] ${message}${extra.error ? ` (err=${extra.error})` : ''}`);
 }
 
 // Live readers off the device cache used by both the auto flow and verify.
+// "Currently physically on the dock." battery_state === 'FULL' is intentionally
+// NOT accepted here: a full battery keeps reporting FULL for a while after the
+// mower undocks, which would let the verify / retry-auto gates fire while the
+// mower is off the dock (it then writes pos.json or verifies against a stale
+// frame from the wrong place). recharge_status 9 (docked / charging finished)
+// and battery CHARGING only hold while the mower is actually on the dock.
 function reanchorOnDock(sn: string): boolean {
   const s = deviceCache.get(sn);
   const b = (s?.get('battery_state') ?? '').toUpperCase();
   const r = String(s?.get('recharge_status') ?? '');
-  return b === 'CHARGING' || b === 'FULL' || r === '9' || r === '1';
+  return b === 'CHARGING' || r === '9' || r === '1' || r.startsWith('Charging');
 }
 function reanchorRtkFixed(sn: string): boolean {
   const s = deviceCache.get(sn);
@@ -2015,6 +2023,10 @@ async function runAutoReanchor(sn: string): Promise<void> {
       return;
     }
 
+    // A fresh re-anchor write invalidates any prior relock: verify must wait for
+    // the new origin to be re-locked (off-dock -> RUNNING + Fixed -> re-docked).
+    setReanchorRelocked(sn, false);
+
     // 2. reanchor_pos — origin = the docked Fixed GPS, loaded live (no restart)
     setReanchor(sn, 'anchor', 'Origin op de dock zetten (pos.json herschrijven)...', { msgKey: 'reanchorMsgAnchor' });
     // The live RTK position is cached under 'latitude'/'longitude' (set from the
@@ -2047,13 +2059,14 @@ async function runAutoReanchor(sn: string): Promise<void> {
       return;
     }
 
-    // 3-4. relock — drive off the dock, then ESCALATE motion until the
-    // localization reaches RUNNING + Fixed. A single ~1m straight drive usually
-    // gives the GPS-track heading the localization needs, but live testing showed
-    // 1m is sometimes not enough (localization stays "Not initialized"). So if it
-    // does not lock we spin ~360 in place (no added distance, safe for the ArUco
-    // dock range) and then drive a little further, before falling back to the
-    // manual joystick. Each leg re-checks so we stop as soon as it locks.
+    // 3-4. relock — drive off the dock, then wait for the localization to reach
+    // RUNNING + Fixed. A single ~1m straight drive usually gives the GPS-track
+    // heading the localization needs, but live testing showed 1m is sometimes not
+    // enough (localization stays "Not initialized"). The 360-spin escalation was
+    // unreliable (the mower never completed the turn), so instead we ASK the user
+    // to nudge the mower ~1m further straight back with the joystick while we keep
+    // polling, and continue automatically the moment it locks. Each poll re-checks
+    // so we stop as soon as RUNNING + Fixed is reached.
     const relockOk = () =>
       (deviceCache.get(sn)?.get('localization_state') ?? '') === 'RUNNING' && reanchorRtkFixed(sn);
     const pollRelock = (ms: number) => poll(relockOk, ms, 1500);
@@ -2073,19 +2086,6 @@ async function runAutoReanchor(sn: string): Promise<void> {
       }
       publishToDevice(sn, { stop_move: null });
     };
-    const spin360 = async (): Promise<void> => {
-      publishToDevice(sn, { start_move: 2 }); // 2 = rotate right in place
-      await sleep(300);
-      const t0 = Date.now();
-      let tick = 0;
-      while (Date.now() - t0 < 12000) { // ~360 deg at x_w 0.50
-        publishToDevice(sn, { mst: [50, 0, 8] }); // x_w=+0.50 (rotate), y_v=0
-        tick++;
-        if (tick % 5 === 0) publishToDevice(sn, { start_move: 2 });
-        await sleep(150);
-      }
-      publishToDevice(sn, { stop_move: null });
-    };
 
     setReanchor(sn, 'relock', 'Achteruit rijden om te re-locken...', { msgKey: 'reanchorMsgRelockBack' });
     publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
@@ -2095,28 +2095,69 @@ async function runAutoReanchor(sn: string): Promise<void> {
     setReanchor(sn, 'wait', 'Wachten op re-lock (RUNNING + Fixed)...', { msgKey: 'reanchorMsgWaitRelock' });
     let isRelocked = await pollRelock(15000);
     if (!isRelocked) {
-      setReanchor(sn, 'relock', 'Nog niet gelockt, de maaier draait 360 graden...', { msgKey: 'reanchorMsgRelockSpin' });
-      await spin360();
-      setReanchor(sn, 'wait', 'Wachten op re-lock na draaien...', { msgKey: 'reanchorMsgWaitAfterSpin' });
-      isRelocked = await pollRelock(15000);
+      // Not locked after the auto drive-back. Hand control to the user: ask them
+      // to drive ~1m further straight back with the joystick. Keep polling for a
+      // long window and continue automatically as soon as the localization locks.
+      setReanchor(sn, 'needs_drive', 'Nog niet gelockt. Rij met de joystick nog ~1 m recht achteruit; ik ga automatisch verder zodra de localisatie lockt.', { msgKey: 'reanchorMsgNeedsDrive' });
+      isRelocked = await pollRelock(90000);
     }
     if (!isRelocked) {
-      setReanchor(sn, 'relock', 'Nog niet gelockt, nog een stukje achteruit...', { msgKey: 'reanchorMsgRelockMoreBack' });
-      await driveBack(4000, false);
-      setReanchor(sn, 'wait', 'Wachten op re-lock na extra stukje...', { msgKey: 'reanchorMsgWaitAfterMore' });
-      isRelocked = await pollRelock(20000);
-    }
-    if (!isRelocked) {
-      setReanchor(sn, 'error', 'Kon niet re-locken (geen RUNNING+Fixed) na rijden en draaien. Rij handmatig met de joystick terug naar de dock en druk Verifieer.', { error: 'relock_timeout', msgKey: 'reanchorMsgErrRelockTimeout' });
+      setReanchor(sn, 'error', 'Nog steeds geen lock na extra achteruit rijden. Rij handmatig met de joystick terug naar de dock en start de automatische re-anchor opnieuw.', { error: 'relock_timeout', msgKey: 'reanchorMsgErrRelockTimeout' });
       return;
     }
+    // Relock confirmed: the mower left the dock and reached RUNNING + Fixed, so the
+    // new origin is now the live localization frame. Verify becomes meaningful once
+    // it is re-docked.
+    setReanchorRelocked(sn, true);
 
+    // 4b. needs_position — PAUSE the auto flow. The visual ArUco dock only homes
+    // in reliably from close range, straight in front of the dock; auto-docking
+    // from wherever the mower ended up after the drive-back never succeeds. So we
+    // hand control to the user: drive the mower to ~50 cm directly in front of the
+    // dock, then press "Start docken" (POST action:'continue_dock' -> runReanchorDock
+    // below). We do NOT auto-attempt the dock here.
+    setReanchor(sn, 'needs_position', 'Re-lock gelukt. Rij de maaier nu zelf recht voor de dock, op ~50 cm afstand. Druk daarna op "Start docken".', { msgKey: 'reanchorMsgNeedsPosition' });
+  } catch (err) {
+    setReanchor(sn, 'error', `Onverwachte fout: ${err instanceof Error ? err.message : String(err)}`, { error: 'exception', msgKey: 'reanchorMsgErrException' });
+  }
+}
+
+// Dock + self-verify continuation of the auto re-anchor. Triggered by POST
+// action:'continue_dock' once the user has manually positioned the mower ~50 cm
+// straight in front of the dock (the visual ArUco dock only homes in from close
+// range, so the auto flow does NOT attempt this by itself).
+async function runReanchorDock(sn: string): Promise<void> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const poll = async (cond: () => boolean, timeoutMs: number, stepMs = 2000): Promise<boolean> => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) { if (cond()) return true; await sleep(stepMs); }
+    return cond();
+  };
+  try {
     // 5. dock — visual ArUco dock (no map-frame guide pose). suppressReanchorArm:
     // the passive docked-report clear must not fire here — step 6's self-verify
     // (docked map_position must land on the origin) is the sole authority.
     setReanchor(sn, 'dock', 'Docken (visuele ArUco)...', { msgKey: 'reanchorMsgDock' });
     publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
     await sleep(500);
+    // Record the charge pose FIRST, exactly like the Novabot app's post-mapping
+    // dock (build_map_page/logic.dart _saveChargePosition -> save_recharge_pos,
+    // sent right before the <0.5 m auto_recharge). Without it the docker logs
+    // "No charge pose set" and falls back to a COLD visual search (step back +
+    // rotate to find the marker), which fails at ~0.5 m. With the pose set it does
+    // the short guided forward dock instead. The mower is <0.5 m in front of the
+    // dock and the frame is relocked, so the recorded pose is correct — same
+    // precondition as the mapping flow. awaitCommand sends save_recharge_pos and
+    // resolves on save_recharge_pos_respond (20 s, matching the app's timeout).
+    const { awaitCommand } = await import('../mqtt/mapSync.js');
+    try {
+      await awaitCommand(sn, 'save_recharge_pos', { mapName: 'map0', map0: '', cmd_num: getNextCmdNum(sn) }, 20000);
+      console.log(`[reanchor] ${sn}: save_recharge_pos acknowledged (charge pose set)`);
+    } catch (e) {
+      // Respond missed/late — proceed anyway; the pose may still have been set.
+      console.warn(`[reanchor] ${sn}: save_recharge_pos respond timeout (${e instanceof Error ? e.message : String(e)}); docking anyway`);
+    }
+    await sleep(1000); // let the charge pose settle before docking
     publishToDevice(sn, { auto_recharge: { cmd_num: getNextCmdNum(sn) } }, { suppressReanchorArm: true });
     const docked = await poll(() => reanchorOnDock(sn), 150000, 3000);
     if (!docked) {
@@ -2127,7 +2168,7 @@ async function runAutoReanchor(sn: string): Promise<void> {
     // 6. verify — docked map_position must land on the origin, else keep the flag
     await sleep(4000); // let map_position settle after docking
     setReanchor(sn, 'verify', 'Controle: gedockt op de origin?', { msgKey: 'reanchorMsgVerify' });
-    const v = reanchorVerifyAndClear(sn);
+    const v = reanchorVerifyAndClear(sn); // clears frame_unvalidated + relock latch on ok
     if (v.ok) {
       setReanchor(sn, 'done', `Geslaagd. Gedockt op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m.`, { ok: true, pose: v.pose, msgKey: 'reanchorMsgDone' });
     } else {
@@ -2138,10 +2179,24 @@ async function runAutoReanchor(sn: string): Promise<void> {
   }
 }
 
-// GET /api/dashboard/reanchor/:sn/status — auto re-anchor progress for the wizard
+// GET /api/dashboard/reanchor/:sn/status — auto re-anchor progress for the wizard.
+// Augmented with LIVE gating booleans the app uses to enable/disable buttons:
+//   onDock   — mower physically on the dock right now (strict, no battery-FULL)
+//   rtkFixed — real RTK Fixed right now
+//   relocked — has completed off-dock -> RUNNING+Fixed since the re-anchor began
+// (verify requires relocked && onDock; retry-auto requires onDock && rtkFixed).
 dashboardRouter.get('/reanchor/:sn/status', (req: Request, res: Response) => {
   const { sn } = req.params;
-  res.json({ ok: true, status: reanchorStatus.get(sn) ?? { phase: 'idle', message: '', ts: 0 } });
+  const stored = reanchorStatus.get(sn) ?? { phase: 'idle' as ReanchorPhase, message: '', ts: 0 };
+  res.json({
+    ok: true,
+    status: {
+      ...stored,
+      onDock: reanchorOnDock(sn),
+      rtkFixed: reanchorRtkFixed(sn),
+      relocked: isReanchorRelocked(sn),
+    },
+  });
 });
 
 dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
@@ -2152,12 +2207,9 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
     return;
   }
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const onDock = () => {
-    const s = deviceCache.get(sn);
-    const b = (s?.get('battery_state') ?? '').toUpperCase();
-    const r = String(s?.get('recharge_status') ?? '');
-    return b === 'CHARGING' || b === 'FULL' || r === '9' || r === '1';
-  };
+  // Strict, shared "on the dock now" — battery FULL alone does NOT count (it
+  // lingers after undocking). Same rule used by the auto flow and verify gate.
+  const onDock = () => reanchorOnDock(sn);
 
   // 'auto' — the wizard's one-button path. Fire-and-forget; the wizard polls
   // GET /reanchor/:sn/status for progress (see runAutoReanchor above).
@@ -2179,7 +2231,19 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   // 'verify' — manual backup. After the operator joysticks the mower back onto
   // the dock, re-run the docked-on-origin check alone and clear the flag if it
   // passes. Does not move the mower.
+  // Gated on the lifecycle: verify is only meaningful once the mower has left the
+  // dock, re-locked (RUNNING + RTK Fixed) against the new origin, AND is back on
+  // the dock. Verifying before the relock tests a stale frame; verifying off-dock
+  // checks the wrong position entirely.
   if (action === 'verify') {
+    if (!isReanchorRelocked(sn)) {
+      res.status(409).json({ ok: false, error: 'verify needs the re-anchor cycle first: the mower must have left the dock, reached RUNNING + RTK Fixed, then re-docked.' });
+      return;
+    }
+    if (!onDock()) {
+      res.status(409).json({ ok: false, error: 'verify must run with the mower back on the dock.' });
+      return;
+    }
     res.json({ ok: true, action, message: 'verifying docked position against origin' });
     (async () => {
       setReanchor(sn, 'verify', 'Controle: gedockt op de origin?', { msgKey: 'reanchorMsgVerify' });
@@ -2246,6 +2310,16 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
         console.log(`[reanchor] ${sn}: 360 spin done`);
       } catch (err) { console.error(`[reanchor] ${sn}: spin failed`, err); }
     })();
+    return;
+  }
+
+  // 'continue_dock' — the auto flow paused at 'needs_position'. The operator has
+  // joysticked the mower to ~50 cm straight in front of the dock; now run the full
+  // dock + self-verify continuation (runReanchorDock). Fire-and-forget; the wizard
+  // keeps polling GET /reanchor/:sn/status.
+  if (action === 'continue_dock') {
+    res.json({ ok: true, action, message: 'continuing auto re-anchor: visual ArUco dock + self-verify' });
+    void runReanchorDock(sn);
     return;
   }
 
