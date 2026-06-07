@@ -1796,20 +1796,30 @@ def handle_write_map_files(params, respond):
 
 
 def handle_regenerate_per_map_files(params, respond):
-    """Mirror map.yaml/pgm/png to map<N>.yaml/pgm/png for every work-map
-    slot present in home0/csv_file/.
+    """Generate per-map occupancy grids map<N>.yaml/pgm/png by MASKING the
+    whole-area map.pgm to each slot's own mowable region.
 
     Mapping-node's `save_map type:1` produces only the whole-area triple
-    (`map.yaml/pgm/png`). Per-map artifacts (`map0.yaml`, `map1.yaml`,
-    ...) are only emitted by `save_map type:0`, which requires an active
-    mapping session with edge data — recovery / sync flows never go
-    through that path, so per-map files are missing and start_navigation
-    returns Error 107 "Loading map failed, please check mapN file
-    exists!!". This handler synthesizes them by copying the whole-area
-    bitmap to each slot. Coverage planner reads polygons from
-    csv_file/<slot>_work.csv anyway; the pgm only feeds Nav2's static
-    costmap which needs nothing more than an occupancy grid that covers
-    the slot.
+    (`map.yaml/pgm/png`). Per-map artifacts (`map0.yaml`, `map1.yaml`, ...) are
+    only emitted by `save_map type:0`, which recovery / sync flows never run, so
+    they go missing and start_navigation returns Error 107 ("Loading map failed,
+    please check mapN file exists"). This handler synthesizes them.
+
+    HISTORY / WHY MASK (not copy): until custom-30 this copied the whole-area
+    map.pgm verbatim to every slot, so map0.pgm == map1.pgm == map.pgm. The
+    coverage_planner_server plans coverage ON this pgm ("No coverage map, using
+    obstacle map to plan") — it is NOT just a Nav2 costmap as the old comment
+    assumed. With identical whole-area pgms, a single-zone task (e.g. only the
+    voortuin) covered the WHOLE property and the mower drove across the other
+    zone into obstacles. Confirmed live on LFIN2230700238: map0 -> 190 m2
+    (correct, the dock sits inside map0 so coverage stays bounded) but map1 ->
+    321 m2 (= both zones).
+
+    Fix: for each slot keep FREE only that slot's work polygon (slightly
+    inflated) plus every unicom corridor and the dock vicinity, and set
+    everything else OCCUPIED. Coverage then stays inside the selected zone.
+    Navigation is unaffected: nav2's map_server loads the whole map.yaml
+    separately; only the coverage planner reads the per-map yaml.
 
     Optional params:
       home: str — default "home0"
@@ -1818,13 +1828,37 @@ def handle_regenerate_per_map_files(params, respond):
       result:0, mirrored:[slot...], skipped_reason:str|null
     """
     import re as _re
-    import shutil as _shutil
+    import numpy as _np
+    from PIL import Image as _Image, ImageDraw as _ImageDraw
+
+    OCCUPIED = 0
+    INFLATE_M = 0.6      # keep this much extra around each work polygon (the
+                         # whole-map free region is the polygon offset ~0.5 m, so
+                         # masking by the bare polygon would clip the edge)
+    UNICOM_W_M = 1.4     # unicom corridor width kept free (>= unicom inflation,
+                         # preserves dock<->zone connectivity for the planner)
+    DOCK_R_M = 0.8       # free disc kept around the charging pose
+
     home = params.get("home", "home0") if isinstance(params, dict) else "home0"
     base = f"/userdata/lfi/maps/{home}"
     csv_dir = f"{base}/csv_file"
     whole_yaml = f"{base}/map.yaml"
     whole_pgm = f"{base}/map.pgm"
-    whole_png = f"{base}/map.png"
+
+    def _read_csv(path):
+        pts = []
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    a = line.replace(",", " ").split()
+                    if len(a) >= 2:
+                        pts.append((float(a[0]), float(a[1])))
+        except Exception:
+            pass
+        return pts
 
     try:
         if not os.path.exists(whole_yaml) or not os.path.exists(whole_pgm):
@@ -1834,53 +1868,98 @@ def handle_regenerate_per_map_files(params, respond):
             })
             return
         if not os.path.isdir(csv_dir):
-            respond("regenerate_per_map_files_respond", {
-                "result": 1,
-                "error": f"{csv_dir} not found",
-            })
+            respond("regenerate_per_map_files_respond", {"result": 1, "error": f"{csv_dir} not found"})
             return
 
+        whole_yaml_content = open(whole_yaml).read()
+        rm = _re.search(r"resolution:\s*([0-9.eE+-]+)", whole_yaml_content)
+        om = _re.search(r"origin:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)", whole_yaml_content)
+        if not rm or not om:
+            respond("regenerate_per_map_files_respond", {"result": 1, "error": "map.yaml missing resolution/origin"})
+            return
+        res = float(rm.group(1)); ox = float(om.group(1)); oy = float(om.group(2))
+
+        whole = _np.array(_Image.open(whole_pgm).convert("L"), dtype=_np.uint8)  # (H, W)
+        H, W = whole.shape
+
+        def to_px(x, y):
+            return (int((x - ox) / res), (H - 1) - int((y - oy) / res))
+
+        # discover work slots + every unicom polyline
         slots = set()
+        unicom_files = []
         for fname in os.listdir(csv_dir):
-            m = _re.match(r"^(map\d+)", fname)
+            m = _re.match(r"^(map\d+)_work\.csv$", fname)
             if m:
                 slots.add(m.group(1))
-
+            if fname.endswith("_unicom.csv"):
+                unicom_files.append(fname)
         if not slots:
             respond("regenerate_per_map_files_respond", {
-                "result": 0,
-                "mirrored": [],
-                "skipped_reason": "no map<N> CSVs in csv_file/",
+                "result": 0, "mirrored": [], "skipped_reason": "no map<N>_work.csv in csv_file/",
             })
             return
 
-        with open(whole_yaml, "r") as f:
-            whole_yaml_content = f.read()
+        # Which unicoms connect to a given slot? `map<X>to<Y>_..._unicom`: the two
+        # endpoints are map<X> and <Y> (<Y> = "map<M>" or "charge"). A slot owns a
+        # unicom when it is either endpoint, so the slot keeps its own corridor(s)
+        # free (connectivity) without inheriting other zones' dock strips.
+        def unicoms_for(slot):
+            out = []
+            for uf in unicom_files:
+                mm = _re.match(r"^(map\d+)to(map\d+|charge)", uf)
+                if not mm:
+                    continue
+                if mm.group(1) == slot or mm.group(2) == slot:
+                    up = [to_px(x, y) for (x, y) in _read_csv(f"{csv_dir}/{uf}")]
+                    if len(up) >= 2:
+                        out.append(up)
+            return out
+
+        # dock vicinity (kept free so the start cell is navigable)
+        dock_px = None
+        cs = f"{base}/charging_station_file/charging_station.yaml"
+        if os.path.exists(cs):
+            cm = _re.search(r"charging_pose:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)", open(cs).read())
+            if cm:
+                dock_px = to_px(float(cm.group(1)), float(cm.group(2)))
+
+        infl_px = max(1, int(round(INFLATE_M / res)))
+        uni_w = max(2, int(round(UNICOM_W_M / res)))
+        dock_r = max(2, int(round(DOCK_R_M / res)))
 
         mirrored = []
         for slot in sorted(slots):
-            slot_yaml = f"{base}/{slot}.yaml"
-            slot_pgm = f"{base}/{slot}.pgm"
-            slot_png = f"{base}/{slot}.png"
-            rewritten = _re.sub(
-                r"^image:\s*map\.pgm\s*$",
-                f"image: {slot}.pgm",
-                whole_yaml_content,
-                flags=_re.MULTILINE,
-            )
-            with open(slot_yaml, "w") as f:
-                f.write(rewritten)
-            _shutil.copyfile(whole_pgm, slot_pgm)
-            if os.path.exists(whole_png):
-                _shutil.copyfile(whole_png, slot_png)
+            wpts = _read_csv(f"{csv_dir}/{slot}_work.csv")
+            if len(wpts) < 3:
+                continue
+            mask = _Image.new("L", (W, H), 0)
+            d = _ImageDraw.Draw(mask)
+            poly = [to_px(x, y) for (x, y) in wpts]
+            d.polygon(poly, fill=255)                                  # the zone itself
+            d.line(poly + [poly[0]], fill=255, width=2 * infl_px, joint="curve")  # inflate the edge
+            for up in unicoms_for(slot):                               # keep this slot's corridor(s) navigable
+                d.line(up, fill=255, width=uni_w, joint="curve")
+            if dock_px is not None:                                    # keep the dock start cell free
+                d.ellipse([dock_px[0] - dock_r, dock_px[1] - dock_r,
+                           dock_px[0] + dock_r, dock_px[1] + dock_r], fill=255)
+            marr = _np.array(mask, dtype=_np.uint8)
+            out = _np.where(marr > 0, whole, _np.uint8(OCCUPIED)).astype(_np.uint8)
+
+            with open(f"{base}/{slot}.pgm", "wb") as fh:
+                fh.write(f"P5\n# CREATOR: map_generator.cpp {res:.3f} m/pix\n{W} {H}\n255\n".encode("ascii"))
+                fh.write(out.tobytes())
+            with open(f"{base}/{slot}.yaml", "w") as fh:
+                fh.write(_re.sub(r"^image:\s*\S+\s*$", f"image: {slot}.pgm",
+                                 whole_yaml_content, flags=_re.MULTILINE))
+            try:
+                _Image.fromarray(out, mode="L").save(f"{base}/{slot}.png")
+            except Exception:
+                pass
             mirrored.append(slot)
 
-        log(f"regenerate_per_map_files: mirrored map.yaml/pgm/png to {mirrored}")
-        respond("regenerate_per_map_files_respond", {
-            "result": 0,
-            "mirrored": mirrored,
-            "home": home,
-        })
+        log(f"regenerate_per_map_files: per-slot masked grids for {mirrored}")
+        respond("regenerate_per_map_files_respond", {"result": 0, "mirrored": mirrored, "home": home})
     except Exception as e:
         log(f"regenerate_per_map_files error: {e}")
         respond("regenerate_per_map_files_respond", {"result": 1, "error": str(e)})
