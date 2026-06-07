@@ -1949,7 +1949,10 @@ dashboardRouter.get('/demo/:sn', (req: Request, res: Response) => {
 
 // ── auto re-anchor progress (polled by the wizard) ──────────────
 type ReanchorPhase = 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'dock' | 'verify' | 'done' | 'error';
-interface ReanchorStat { phase: ReanchorPhase; message: string; ok?: boolean; error?: string; pose?: { x: number; y: number }; ts: number; }
+// `message` stays Dutch (the dashboard + back-compat with apps that predate
+// msgKey). `msgKey` is a stable i18n key the app translates (en/nl/de/fr),
+// interpolated with pose ({{x}},{{y}}) and dist ({{dist}}).
+interface ReanchorStat { phase: ReanchorPhase; message: string; msgKey?: string; ok?: boolean; error?: string; pose?: { x: number; y: number }; dist?: number; ts: number; }
 const reanchorStatus = new Map<string, ReanchorStat>();
 function setReanchor(sn: string, phase: ReanchorPhase, message: string, extra: Partial<ReanchorStat> = {}): void {
   reanchorStatus.set(sn, { phase, message, ts: Date.now(), ...extra });
@@ -2002,18 +2005,18 @@ async function runAutoReanchor(sn: string): Promise<void> {
   };
   try {
     // 1. precheck — on the dock + a real RTK Fixed
-    setReanchor(sn, 'check', 'Controle: maaier op de dock en RTK Fixed?');
+    setReanchor(sn, 'check', 'Controle: maaier op de dock en RTK Fixed?', { msgKey: 'reanchorMsgCheck' });
     if (!reanchorOnDock(sn)) {
-      setReanchor(sn, 'error', 'Maaier staat niet op de dock (laden). Dok hem eerst, dan opnieuw.', { error: 'not_docked' });
+      setReanchor(sn, 'error', 'Maaier staat niet op de dock (laden). Dok hem eerst, dan opnieuw.', { error: 'not_docked', msgKey: 'reanchorMsgErrNotDocked' });
       return;
     }
     if (!reanchorRtkFixed(sn)) {
-      setReanchor(sn, 'error', 'Nog geen RTK Fixed. Wacht tot de fix Fixed is en probeer opnieuw.', { error: 'not_fixed' });
+      setReanchor(sn, 'error', 'Nog geen RTK Fixed. Wacht tot de fix Fixed is en probeer opnieuw.', { error: 'not_fixed', msgKey: 'reanchorMsgErrNotFixed' });
       return;
     }
 
     // 2. reanchor_pos — origin = the docked Fixed GPS, loaded live (no restart)
-    setReanchor(sn, 'anchor', 'Origin op de dock zetten (pos.json herschrijven)...');
+    setReanchor(sn, 'anchor', 'Origin op de dock zetten (pos.json herschrijven)...', { msgKey: 'reanchorMsgAnchor' });
     // The live RTK position is cached under 'latitude'/'longitude' (set from the
     // mower's location report). 'gps_latitude' is not populated in production but
     // kept as a defensive fallback. When docked + Fixed this is the dock's WGS84,
@@ -2022,7 +2025,7 @@ async function runAutoReanchor(sn: string): Promise<void> {
     const lat = parseFloat((s0?.get('latitude') ?? s0?.get('gps_latitude') ?? 'NaN'));
     const lng = parseFloat((s0?.get('longitude') ?? s0?.get('gps_longitude') ?? 'NaN'));
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      setReanchor(sn, 'error', 'Geen geldige GPS-coordinaten van de maaier.', { error: 'no_gps' });
+      setReanchor(sn, 'error', 'Geen geldige GPS-coordinaten van de maaier.', { error: 'no_gps', msgKey: 'reanchorMsgErrNoGps' });
       return;
     }
     const { publishToExtended, onExtendedResponse, offExtendedResponse } = await import('../mqtt/mapSync.js');
@@ -2040,7 +2043,7 @@ async function runAutoReanchor(sn: string): Promise<void> {
       setTimeout(() => { if (!settled) { settled = true; offExtendedResponse(sn, handler); resolve(false); } }, 15000);
     });
     if (!anchored) {
-      setReanchor(sn, 'error', 'Origin schrijven faalde (geen of negatieve reactie van de maaier).', { error: 'reanchor_failed' });
+      setReanchor(sn, 'error', 'Origin schrijven faalde (geen of negatieve reactie van de maaier).', { error: 'reanchor_failed', msgKey: 'reanchorMsgErrAnchorFailed' });
       return;
     }
 
@@ -2084,54 +2087,54 @@ async function runAutoReanchor(sn: string): Promise<void> {
       publishToDevice(sn, { stop_move: null });
     };
 
-    setReanchor(sn, 'relock', 'Achteruit rijden om te re-locken...');
+    setReanchor(sn, 'relock', 'Achteruit rijden om te re-locken...', { msgKey: 'reanchorMsgRelockBack' });
     publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
     await sleep(500);
     await driveBack(12000, true);
 
-    setReanchor(sn, 'wait', 'Wachten op re-lock (RUNNING + Fixed)...');
+    setReanchor(sn, 'wait', 'Wachten op re-lock (RUNNING + Fixed)...', { msgKey: 'reanchorMsgWaitRelock' });
     let isRelocked = await pollRelock(15000);
     if (!isRelocked) {
-      setReanchor(sn, 'relock', 'Nog niet gelockt — de maaier draait 360 graden...');
+      setReanchor(sn, 'relock', 'Nog niet gelockt, de maaier draait 360 graden...', { msgKey: 'reanchorMsgRelockSpin' });
       await spin360();
-      setReanchor(sn, 'wait', 'Wachten op re-lock na draaien...');
+      setReanchor(sn, 'wait', 'Wachten op re-lock na draaien...', { msgKey: 'reanchorMsgWaitAfterSpin' });
       isRelocked = await pollRelock(15000);
     }
     if (!isRelocked) {
-      setReanchor(sn, 'relock', 'Nog niet gelockt — nog een stukje achteruit...');
+      setReanchor(sn, 'relock', 'Nog niet gelockt, nog een stukje achteruit...', { msgKey: 'reanchorMsgRelockMoreBack' });
       await driveBack(4000, false);
-      setReanchor(sn, 'wait', 'Wachten op re-lock na extra stukje...');
+      setReanchor(sn, 'wait', 'Wachten op re-lock na extra stukje...', { msgKey: 'reanchorMsgWaitAfterMore' });
       isRelocked = await pollRelock(20000);
     }
     if (!isRelocked) {
-      setReanchor(sn, 'error', 'Kon niet re-locken (geen RUNNING+Fixed) na rijden en draaien. Rij handmatig met de joystick terug naar de dock en druk Verifieer.', { error: 'relock_timeout' });
+      setReanchor(sn, 'error', 'Kon niet re-locken (geen RUNNING+Fixed) na rijden en draaien. Rij handmatig met de joystick terug naar de dock en druk Verifieer.', { error: 'relock_timeout', msgKey: 'reanchorMsgErrRelockTimeout' });
       return;
     }
 
     // 5. dock — visual ArUco dock (no map-frame guide pose). suppressReanchorArm:
     // the passive docked-report clear must not fire here — step 6's self-verify
     // (docked map_position must land on the origin) is the sole authority.
-    setReanchor(sn, 'dock', 'Docken (visuele ArUco)...');
+    setReanchor(sn, 'dock', 'Docken (visuele ArUco)...', { msgKey: 'reanchorMsgDock' });
     publishToDevice(sn, { quit_mapping_mode: { value: 1, cmd_num: getNextCmdNum(sn) } });
     await sleep(500);
     publishToDevice(sn, { auto_recharge: { cmd_num: getNextCmdNum(sn) } }, { suppressReanchorArm: true });
     const docked = await poll(() => reanchorOnDock(sn), 150000, 3000);
     if (!docked) {
-      setReanchor(sn, 'error', 'Docken duurde te lang. Dok handmatig met de joystick en druk Verifieer.', { error: 'dock_timeout' });
+      setReanchor(sn, 'error', 'Docken duurde te lang. Dok handmatig met de joystick en druk Verifieer.', { error: 'dock_timeout', msgKey: 'reanchorMsgErrDockTimeout' });
       return;
     }
 
     // 6. verify — docked map_position must land on the origin, else keep the flag
     await sleep(4000); // let map_position settle after docking
-    setReanchor(sn, 'verify', 'Controle: gedockt op de origin?');
+    setReanchor(sn, 'verify', 'Controle: gedockt op de origin?', { msgKey: 'reanchorMsgVerify' });
     const v = reanchorVerifyAndClear(sn);
     if (v.ok) {
-      setReanchor(sn, 'done', `Geslaagd. Gedockt op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m.`, { ok: true, pose: v.pose });
+      setReanchor(sn, 'done', `Geslaagd. Gedockt op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m.`, { ok: true, pose: v.pose, msgKey: 'reanchorMsgDone' });
     } else {
-      setReanchor(sn, 'error', `Buiten tolerantie: dock op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m, ${Number.isFinite(v.dist) ? v.dist.toFixed(2) : '?'} m van origin. Probeer opnieuw.`, { error: 'verify_failed', pose: v.pose });
+      setReanchor(sn, 'error', `Buiten tolerantie: dock op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m, ${Number.isFinite(v.dist) ? v.dist.toFixed(2) : '?'} m van origin. Probeer opnieuw.`, { error: 'verify_failed', pose: v.pose, dist: v.dist, msgKey: 'reanchorMsgErrVerifyFailed' });
     }
   } catch (err) {
-    setReanchor(sn, 'error', `Onverwachte fout: ${err instanceof Error ? err.message : String(err)}`, { error: 'exception' });
+    setReanchor(sn, 'error', `Onverwachte fout: ${err instanceof Error ? err.message : String(err)}`, { error: 'exception', msgKey: 'reanchorMsgErrException' });
   }
 }
 
@@ -2167,7 +2170,7 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
       res.status(409).json({ ok: false, error: 'auto re-anchor needs a real RTK Fixed; wait for the fix to go Fixed.' });
       return;
     }
-    setReanchor(sn, 'check', 'Re-anchor gestart...');
+    setReanchor(sn, 'check', 'Re-anchor gestart...', { msgKey: 'reanchorMsgStarted' });
     res.json({ ok: true, action, message: 'auto re-anchor started; poll GET /reanchor/:sn/status' });
     void runAutoReanchor(sn);
     return;
@@ -2179,17 +2182,17 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   if (action === 'verify') {
     res.json({ ok: true, action, message: 'verifying docked position against origin' });
     (async () => {
-      setReanchor(sn, 'verify', 'Controle: gedockt op de origin?');
+      setReanchor(sn, 'verify', 'Controle: gedockt op de origin?', { msgKey: 'reanchorMsgVerify' });
       if (!onDock()) {
-        setReanchor(sn, 'error', 'Maaier staat niet op de dock. Dok hem eerst.', { error: 'not_docked' });
+        setReanchor(sn, 'error', 'Maaier staat niet op de dock. Dok hem eerst.', { error: 'not_docked', msgKey: 'reanchorMsgErrNotDocked' });
         return;
       }
       await sleep(3000); // let map_position settle
       const v = reanchorVerifyAndClear(sn);
       if (v.ok) {
-        setReanchor(sn, 'done', `Geslaagd. Gedockt op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m.`, { ok: true, pose: v.pose });
+        setReanchor(sn, 'done', `Geslaagd. Gedockt op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m.`, { ok: true, pose: v.pose, msgKey: 'reanchorMsgDone' });
       } else {
-        setReanchor(sn, 'error', `Buiten tolerantie: dock op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m, ${Number.isFinite(v.dist) ? v.dist.toFixed(2) : '?'} m van origin.`, { error: 'verify_failed', pose: v.pose });
+        setReanchor(sn, 'error', `Buiten tolerantie: dock op (${v.pose.x.toFixed(2)}, ${v.pose.y.toFixed(2)}) m, ${Number.isFinite(v.dist) ? v.dist.toFixed(2) : '?'} m van origin.`, { error: 'verify_failed', pose: v.pose, dist: v.dist, msgKey: 'reanchorMsgErrVerifyFailed' });
       }
     })();
     return;

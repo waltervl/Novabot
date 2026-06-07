@@ -32,10 +32,17 @@ export type ReanchorPhase =
   | 'idle' | 'check' | 'anchor' | 'relock' | 'wait' | 'dock' | 'verify' | 'done' | 'error';
 export interface ReanchorStatus {
   phase: ReanchorPhase;
+  /** Dutch, human-readable. Kept for the (Dutch) dashboard + back-compat with
+   *  servers that predate msgKey. The app prefers msgKey when present. */
   message: string;
+  /** Stable i18n key for `message` so the app can translate it (en/nl/de/fr).
+   *  Interpolated with pose ({{x}},{{y}}) and dist ({{dist}}) where relevant. */
+  msgKey?: string;
   ok?: boolean;
   error?: string;
   pose?: { x: number; y: number };
+  /** Distance (m) from the origin for the verify_failed message. */
+  dist?: number;
   ts: number;
 }
 

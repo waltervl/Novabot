@@ -1022,9 +1022,9 @@ export default function HomeScreen() {
           await new Promise(r => setTimeout(r, 300));
           await api.sendCommand(mower.sn, { clear_error: {} });
           appAlertCompat.alert(
-            'Safety stop',
-            'Mower went outside the map after a long pause. Automatically stopped before the coverage planner crashed. Move the mower back inside the work area to continue.',
-            [{ text: 'OK' }],
+            t('safetyStopTitle'),
+            t('safetyStopBody'),
+            [{ text: t('ok') }],
           );
         } catch { /* ignore */ }
       })();
@@ -1156,10 +1156,10 @@ export default function HomeScreen() {
     if (Math.abs(reportedHeight - mowSettings.cuttingHeight) > 1) {
       heightCheckDone.current = true;
       appAlertCompat.alert(
-        'Cutting Height Mismatch!',
-        `Expected ${mowSettings.cuttingHeight + 2}cm but mower reports ${reportedHeight + 2}cm. Stop mowing for safety?`,
+        t('heightMismatchTitle'),
+        t('heightMismatchBody', { expected: mowSettings.cuttingHeight + 2, actual: reportedHeight + 2 }),
         [
-          { text: 'Stop', style: 'destructive', onPress: () => {
+          { text: t('stop'), style: 'destructive', onPress: () => {
             sendCommand(mower.sn, { stop_navigation: { cmd_num: ++cmdNumRef.current } }, 'stop');
             setOptimisticActivity('idle');
           }},
@@ -1349,8 +1349,8 @@ export default function HomeScreen() {
   const sendGoHome = async (sn: string) => {
     if (frameUnvalidated) {
       appAlertCompat.alert(
-        'Re-anchor required',
-        'The map frame is not yet validated after a restore. Dock the mower via the re-anchor flow first.',
+        t('reanchorRequiredTitle'),
+        t('reanchorRequiredBody'),
       );
       return;
     }
@@ -1436,12 +1436,12 @@ export default function HomeScreen() {
 
   const handleDeleteDevice = (sn: string, label: string) => {
     appAlertCompat.alert(
-      `Remove ${label}?`,
-      `Remove ${sn} from the server. You can re-provision it later.`,
+      t('removeDeviceTitle', { label }),
+      t('removeDeviceBody', { sn }),
       [
         { text: t('cancel'), style: 'cancel' },
         {
-          text: 'Remove',
+          text: t('removeBtn'),
           style: 'destructive',
           onPress: async () => {
             try {
@@ -1803,13 +1803,13 @@ export default function HomeScreen() {
             <Ionicons name="warning-outline" size={20} color="#f59e0b" />
             <View style={{ flex: 1 }}>
               <Text style={{ color: '#f59e0b', fontWeight: '700', fontSize: 13 }}>
-                Frame niet geankerd
+                {t('reanchorBannerTitle')}
               </Text>
               <Text style={{ color: colors.textDim, fontSize: 12 }}>
-                Kaart hersteld. Dock de maaier één keer om het frame te ankeren. Go-home is geblokkeerd tot dat lukt.
+                {t('reanchorBannerBody')}
               </Text>
             </View>
-            <Text style={{ color: '#f59e0b', fontWeight: '700', fontSize: 13 }}>Re-anchor ›</Text>
+            <Text style={{ color: '#f59e0b', fontWeight: '700', fontSize: 13 }}>{t('reanchorBannerCta')}</Text>
           </TouchableOpacity>
         )}
 
@@ -2612,12 +2612,12 @@ export default function HomeScreen() {
                     onPress={() => {
                       if (isLongPause) {
                         appAlertCompat.alert(
-                          `Paused for ${pausedLabel}`,
-                          'Long pauses can cause localization drift. The mower may drive outside the map on resume. Continue anyway?',
+                          t('pausedForTitle', { label: pausedLabel }),
+                          t('longPauseResumeBody'),
                           [
-                            { text: 'Cancel', style: 'cancel' },
+                            { text: t('cancel'), style: 'cancel' },
                             {
-                              text: 'Resume anyway', style: 'destructive',
+                              text: t('resumeAnyway'), style: 'destructive',
                               onPress: () => {
                                 sendCommand(mower.sn, { resume_navigation: { cmd_num: ++cmdNumRef.current } }, 'resume');
                                 setOptimisticActivity('mowing');

@@ -4,6 +4,7 @@ import { ApiClient, ReanchorStatus } from '../services/api';
 import { getServerUrl } from '../services/auth';
 import { fixQualityLabel } from '../utils/fixQuality';
 import ManualJoystick from './ManualJoystick';
+import { useI18n } from '../i18n';
 
 interface Props {
   visible: boolean;
@@ -29,6 +30,7 @@ interface Props {
 const PHASES_RUNNING: ReanchorStatus['phase'][] = ['check', 'anchor', 'relock', 'wait', 'dock', 'verify'];
 
 export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props) {
+  const { t } = useI18n();
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<ReanchorStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -89,26 +91,26 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
     setErr(null);
     setStatus(null);
     const url = await getServerUrl();
-    if (!url) { setErr('Geen server geconfigureerd.'); return; }
+    if (!url) { setErr(t('reanchorNoServer')); return; }
     try {
       const r = await new ApiClient(url).reanchor(sn, 'auto');
-      if (!r.ok) { setErr(r.error ?? 'Re-anchor kon niet starten.'); return; }
+      if (!r.ok) { setErr(r.error ?? t('reanchorStartFailed')); return; }
       setRunning(true);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Re-anchor kon niet starten.');
+      setErr(e instanceof Error ? e.message : t('reanchorStartFailed'));
     }
   }
 
   async function verifyManual() {
     setErr(null);
     const url = await getServerUrl();
-    if (!url) { setErr('Geen server geconfigureerd.'); return; }
+    if (!url) { setErr(t('reanchorNoServer')); return; }
     try {
       const r = await new ApiClient(url).reanchor(sn, 'verify');
-      if (!r.ok) { setErr(r.error ?? 'Verifiëren mislukt.'); return; }
+      if (!r.ok) { setErr(r.error ?? t('reanchorVerifyFailedErr')); return; }
       setRunning(true); // poll the verify result the same way
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Verifiëren mislukt.');
+      setErr(e instanceof Error ? e.message : t('reanchorVerifyFailedErr'));
     }
   }
 
@@ -116,10 +118,24 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
     <View style={{ gap: 4 }}>
       <Text style={{ color: rtk.color, fontWeight: '700' }}>RTK: {rtk.label}</Text>
       <Text style={{ color: docked ? '#22c55e' : '#f59e0b', fontSize: 13, fontWeight: '700' }}>
-        {docked ? 'Op de dock (laden)' : 'Niet op de dock'}
+        {docked ? t('reanchorOnDock') : t('reanchorOffDock')}
       </Text>
     </View>
   );
+
+  // Live progress/result text: prefer the server's stable msgKey (translated
+  // here with pose/dist) and fall back to its Dutch `message` for older servers.
+  const liveMessage = (s: ReanchorStatus | null): string => {
+    if (!s) return t('reanchorBusy');
+    if (s.msgKey) {
+      return t(s.msgKey, {
+        x: s.pose ? s.pose.x.toFixed(2) : '',
+        y: s.pose ? s.pose.y.toFixed(2) : '',
+        dist: Number.isFinite(s.dist as number) ? (s.dist as number).toFixed(2) : '?',
+      });
+    }
+    return s.message || t('reanchorBusy');
+  };
 
   const phaseRunning = status != null && PHASES_RUNNING.includes(status.phase);
 
@@ -127,62 +143,46 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
     <Modal visible={visible} transparent animationType="fade">
       <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 }}>
         <View style={{ backgroundColor: '#111827', borderRadius: 16, padding: 20, gap: 14 }}>
-          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>Opnieuw ankeren na herstel</Text>
+          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>{t('reanchorTitle')}</Text>
 
           {/* Running: server-orchestrated sequence in progress. */}
           {running || phaseRunning ? (
             <>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <ActivityIndicator color="#22c55e" />
-                <Text style={{ color: '#cbd5e1', flex: 1 }}>
-                  {status?.message ?? 'Bezig...'}
-                </Text>
+                <Text style={{ color: '#cbd5e1', flex: 1 }}>{liveMessage(status)}</Text>
               </View>
-              <Text style={{ color: '#64748b', fontSize: 12 }}>
-                De maaier zet de origin op de dock, rijdt ~1m terug om te re-locken en
-                dokt daarna automatisch. Niet aanraken tot dit klaar is.
-              </Text>
+              <Text style={{ color: '#64748b', fontSize: 12 }}>{t('reanchorRunningHint')}</Text>
             </>
           ) : status?.phase === 'done' && status.ok ? (
-            <Text style={{ color: '#22c55e', fontWeight: '700' }}>
-              Geslaagd. {status.message}
-            </Text>
+            <Text style={{ color: '#22c55e', fontWeight: '700' }}>{liveMessage(status)}</Text>
           ) : inError ? (
             /* Terminal error: offer the manual backup. */
             <>
-              <Text style={{ color: '#ef4444', fontWeight: '700' }}>{status?.message}</Text>
-              <Text style={{ color: '#cbd5e1', fontSize: 13 }}>
-                Handmatige backup: rij de maaier met de joystick terug op de dock
-                (laden) en druk dan op Verifieer. Of probeer de automatische flow
-                opnieuw.
-              </Text>
+              <Text style={{ color: '#ef4444', fontWeight: '700' }}>{liveMessage(status)}</Text>
+              <Text style={{ color: '#cbd5e1', fontSize: 13 }}>{t('reanchorManualBackupHint')}</Text>
               {StatusBlock}
               <ManualJoystick sn={sn} />
-              <Btn label="Verifieer (na handmatig docken)" onPress={verifyManual} disabled={!docked} />
-              <Btn label="Opnieuw proberen (automatisch)" onPress={startAuto} disabled={!canStart} secondary />
-              <Btn label="Later" onPress={onClose} secondary />
+              <Btn label={t('reanchorBtnVerify')} onPress={verifyManual} disabled={!docked} />
+              <Btn label={t('reanchorBtnRetryAuto')} onPress={startAuto} disabled={!canStart} secondary />
+              <Btn label={t('reanchorBtnLater')} onPress={onClose} secondary />
             </>
           ) : (
             /* Idle: preconditions + the one-button start. */
             <>
-              <Text style={{ color: '#cbd5e1' }}>
-                De kaart is hersteld. Zet de maaier op de dock tot hij laadt en wacht
-                op een RTK Fixed. Druk dan op Opnieuw ankeren: de maaier doet de hele
-                flow zelf (origin zetten, terugrijden, re-locken en docken) en
-                controleert daarna of hij weer op de juiste plek staat.
-              </Text>
+              <Text style={{ color: '#cbd5e1' }}>{t('reanchorIdleIntro')}</Text>
               {StatusBlock}
               {err && <Text style={{ color: '#ef4444', fontWeight: '700' }}>{err}</Text>}
               {canStart ? (
-                <Text style={{ color: '#22c55e', fontWeight: '700' }}>Klaar om te starten.</Text>
+                <Text style={{ color: '#22c55e', fontWeight: '700' }}>{t('reanchorReady')}</Text>
               ) : (
                 <Text style={{ color: '#f59e0b', fontWeight: '700' }}>
-                  {!docked ? 'Zet de maaier eerst OP de dock (laden).' : `Wacht op RTK Fixed (nu: ${rtk.label}).`}
+                  {!docked ? t('reanchorNeedDock') : t('reanchorNeedFix', { label: rtk.label })}
                 </Text>
               )}
               <ManualJoystick sn={sn} />
-              <Btn label="Opnieuw ankeren" onPress={startAuto} disabled={!canStart} />
-              <Btn label="Later" onPress={onClose} secondary />
+              <Btn label={t('reanchorBtnStart')} onPress={startAuto} disabled={!canStart} />
+              <Btn label={t('reanchorBtnLater')} onPress={onClose} secondary />
             </>
           )}
         </View>
