@@ -21,6 +21,7 @@ import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
 import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
+import { compareMapRowsByCanonical } from '../utils/mapOrder.js';
 import crypto from 'crypto';
 import { generateMapZipFromDb, gpsToLocal, localToGps, parseMapZip, type GpsPoint, type LocalPoint } from '../mqtt/mapConverter.js';
 import { existsSync, unlinkSync, readFileSync, readdirSync, createReadStream, statSync, watch, mkdirSync, copyFileSync } from 'fs';
@@ -534,7 +535,10 @@ dashboardRouter.get('/maps', (_req: Request, res: Response) => {
 // Dashboard converteert lokaal→GPS voor Leaflet rendering.
 dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
-  const rows = mapRepo.findByMowerSn(sn);
+  // findByMowerSn orders by updated_at DESC; re-sort to canonical slot order
+  // (map0, map1, map2, ...) so the app's zone carousel reads Zone1 first
+  // instead of whichever zone was saved most recently.
+  const rows = mapRepo.findByMowerSn(sn).sort(compareMapRowsByCanonical);
 
   // Charger GPS ophalen — dashboard gebruikt dit voor local→GPS conversie
   let chargerGps = mapRepo.getChargerGps(sn);
