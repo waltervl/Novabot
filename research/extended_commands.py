@@ -536,6 +536,40 @@ def handle_reboot(params, respond):
     os.system('reboot')
 
 
+def handle_soft_restart(params, respond):
+    """Soft restart: restart the whole novabot ROS stack via
+    `systemctl restart novabot_launch.service`. This is NOT an OS reboot — it
+    cycles iox-roudi + all ROS nodes (which RESETS the iceoryx shm pool, the
+    fix for the chunk leak that crash-loops novabot_mapping → Error 140), while
+    `mqtt_node` keeps running so the mower stays online to the app.
+
+    SAFETY: the "only when idle/charging, NEVER while mowing" gate is enforced
+    SERVER-SIDE (the server reads work_status and only sends soft_restart when
+    safe). We do not re-check ROS state here because extended_commands has no
+    cheap view of it.
+
+    extended_commands.py is itself launched by novabot_launch.service, so the
+    restart will kill THIS process. We therefore respond first, then fire the
+    restart DETACHED (setsid via start_new_session) with a short delay so the
+    response MQTT flush + our teardown don't abort the systemctl call. Same
+    detachment pattern as _restart_novabot_mapping.
+    """
+    import subprocess
+    log("soft_restart requested — restarting novabot_launch.service (ROS stack reset)")
+    respond("soft_restart_respond", {"result": 0})
+    try:
+        subprocess.Popen(
+            ["bash", "-lc", "sleep 2; systemctl restart novabot_launch.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception as e:
+        log(f"soft_restart error: {e}")
+
+
 def handle_system_info(params, respond):
     """Verzamel systeem diagnostiek."""
     info = {}
@@ -3105,6 +3139,7 @@ COMMANDS = {
     "is_opennova": handle_is_opennova,
     "reanchor_pos": handle_reanchor_pos,
     "set_robot_reboot": handle_reboot,
+    "soft_restart": handle_soft_restart,
     "get_system_info": handle_system_info,
     "verify_pin": handle_verify_pin,
     "query_pin": handle_query_pin,
