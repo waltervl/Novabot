@@ -1,4 +1,6 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
+import { join } from 'node:path';
+import { registerIpcHandlers } from './ipc.js';
 
 const PLACEHOLDER_HTML =
   'data:text/html,' +
@@ -16,6 +18,7 @@ function createWindow(): void {
     height: 650,
     webPreferences: {
       contextIsolation: true,
+      preload: join(__dirname, 'preload.js'),
     },
   });
 
@@ -23,6 +26,10 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(() => {
+  registerIpcHandlers(ipcMain, {
+    getWebContents: () => BrowserWindow.getAllWindows()[0]?.webContents,
+  });
+
   createWindow();
 
   app.on('activate', () => {
