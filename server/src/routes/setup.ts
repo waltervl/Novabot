@@ -21,6 +21,7 @@ import { userRepo, equipmentRepo, deviceRepo, mapRepo } from '../db/repositories
 import { isSetupComplete, invalidateSetupCache } from '../middleware/setupGuard.js';
 import { importCloudWorkRecords } from '../services/cloudWorkRecordsImport.js';
 import { supportsMowerFileWrites } from '../services/mowerFileCapability.js';
+import { markFrameUnvalidated } from '../services/frameValidation.js';
 // LFI cloud helpers were extracted to `src/services/lfiCloud.ts` on 2026-04-23
 // so cloud-api routes can import them without reaching into `routes/setup.ts`
 // (the cloud-api freeze forbids that direction). Re-export here so existing
@@ -489,6 +490,19 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
 
             // Genereer _latest.zip zodat queryEquipmentMap md5 + chargingPose kan retourneren
             if (mapsImported > 0) {
+              // A non-merge cloud re-import (e.g. the recovery flow after a
+              // factory reset) places the cloud's map polygons in their OLD
+              // frame onto a mower whose pos.json may not match (the reset
+              // wiped it). Flag the frame unvalidated so the app shows the
+              // re-anchor wizard and go_to_charge / start-mowing stay locked
+              // until a real dock re-anchors pos.json. The flag clears on the
+              // deliberate re-anchor re-dock (frameValidation.noteDockState).
+              // Skip in merge mode (a settings re-import on an already-anchored,
+              // working device must not force a spurious re-anchor).
+              if (!merge) {
+                markFrameUnvalidated(mower.sn);
+                console.log(`[Setup] frame_unvalidated set for ${mower.sn} after cloud re-import (${mapsImported} maps)`);
+              }
               try {
                 const STORAGE = path.resolve(process.env.STORAGE_PATH ?? './storage', 'maps');
                 fs.mkdirSync(STORAGE, { recursive: true });

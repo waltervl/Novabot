@@ -21,6 +21,7 @@ vi.mock('../../services/portableBackup.js', () => ({
 import { setupRouter } from '../../routes/setup.js';
 import { mapRepo } from '../../db/repositories/index.js';
 import { callLfiCloud } from '../../services/lfiCloud.js';
+import { isFrameUnvalidated } from '../../services/frameValidation.js';
 
 const app = express();
 app.use(express.json());
@@ -74,5 +75,44 @@ describe('POST /cloud-apply map import', () => {
     expect(rows[0].file_name).toBe('map0tomap1_0_unicom.csv');
     expect(rows[0].canonical_name).toBe('map0tomap1_0_unicom');
     expect(rows[0].map_area).toBeNull();
+  });
+
+  // After a factory reset the recovery flow is a (non-merge) cloud re-import:
+  // it lands the cloud's polygons in their old frame, so the frame must be
+  // flagged unvalidated to drive the app's re-anchor wizard. Without this the
+  // mower won't move and gives no re-anchor prompt (the bug David hit).
+  it('sets frame_unvalidated after a non-merge cloud re-import', async () => {
+    const res = await request(app)
+      .post('/api/setup/cloud-apply')
+      .send({
+        email: 'setup@example.com',
+        password: 'secret',
+        deviceName: 'Test mower',
+        mower: { sn: 'LFIN_FU_NONMERGE', version: '5.7.1' },
+        charger: { sn: 'LFIC_FU_NONMERGE', address: 718, channel: 16 },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mapsImported).toBeGreaterThan(0);
+    expect(isFrameUnvalidated('LFIN_FU_NONMERGE')).toBe(true);
+  });
+
+  // A merge re-import (settings sync on an already-anchored, working device)
+  // must NOT force a re-anchor.
+  it('does NOT set frame_unvalidated in merge mode', async () => {
+    const res = await request(app)
+      .post('/api/setup/cloud-apply')
+      .send({
+        email: 'setup@example.com',
+        password: 'secret',
+        deviceName: 'Test mower',
+        merge: true,
+        mower: { sn: 'LFIN_FU_MERGE', version: '5.7.1' },
+        charger: { sn: 'LFIC_FU_MERGE', address: 718, channel: 16 },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mapsImported).toBeGreaterThan(0);
+    expect(isFrameUnvalidated('LFIN_FU_MERGE')).toBe(false);
   });
 });
