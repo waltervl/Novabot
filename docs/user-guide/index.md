@@ -33,6 +33,7 @@ You do **not** need a powerful machine. The mower does the hard work — the ser
 
 | If you want to… | Read |
 |-----------------|------|
+| Start from zero with a Raspberry Pi | [Beginner Installation](../guide/beginner-installation.md) |
 | Get OpenNova running for the first time | [First-time setup](../guide/getting-started.md) |
 | Set up Docker on a NAS / Raspberry Pi | [Docker Guide](../guide/docker.md) |
 | Configure DNS so the app finds your server | [DNS Setup](../guide/dns-setup.md) |
