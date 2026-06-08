@@ -71,7 +71,16 @@ describe('registerIpcHandlers', () => {
   it('drives:scan returns { ok:true, value } when scanDrives resolves', async () => {
     const { ipcMain, handlers } = makeFakeIpcMain();
     registerIpcHandlers(ipcMain);
-    const candidates = [{ device: '/dev/disk4', description: 'SD', size: 64e9 }];
+    const candidates = [
+      {
+        device: '/dev/disk4',
+        description: 'SD',
+        size: 64e9,
+        isSystem: false,
+        isRemovable: true,
+        isReadOnly: false,
+      },
+    ];
     vi.mocked(scanDrives).mockResolvedValue(candidates);
 
     const result = await handlers.get('drives:scan')!({});

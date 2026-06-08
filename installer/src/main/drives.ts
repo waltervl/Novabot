@@ -63,6 +63,16 @@ export interface DriveCandidate {
   device: string;
   description: string;
   size: number;
+  /**
+   * The real, scanned safety flags for this device — NOT invented by the UI.
+   * Because only `isSafeTarget`-passing drives are returned, in practice these
+   * are always `isSystem:false`, `isRemovable:true`, `isReadOnly:false`, but
+   * they are populated from the same normalized reads the guard uses so the
+   * descriptor reflects the actual device rather than a fabricated claim.
+   */
+  isSystem: boolean;
+  isRemovable: boolean;
+  isReadOnly: boolean;
 }
 
 /**
@@ -122,10 +132,16 @@ export async function scanDrives(): Promise<DriveCandidate[]> {
       if (typeof drive.device !== 'string' || typeof drive.size !== 'number') {
         continue;
       }
+      // Past the guard, these are the true scanned values (false/true/false),
+      // carried verbatim from the same normalized reads `isSafeTarget` used —
+      // never invented downstream by the renderer.
       candidates.push({
         device: drive.device,
         description: drive.description ?? drive.device,
         size: drive.size,
+        isSystem: input.isSystem as boolean,
+        isRemovable: input.isRemovable as boolean,
+        isReadOnly: input.isReadOnly as boolean,
       });
     }
     return candidates;

@@ -6,7 +6,7 @@
  * per-step advance guard. The React layer reads from here and never duplicates
  * the routing rules.
  */
-import type { InstallerConfig } from '../shared/types';
+import type { InstallerConfig, DriveCandidate } from '../shared/types';
 
 /** The wizard screens, in the order the user walks through them. */
 export type Step =
@@ -34,6 +34,13 @@ export const STEPS: readonly Step[] = [
  */
 export interface WizardContext {
   config?: InstallerConfig;
+  /**
+   * The full drive the user picked, carrying its REAL scanned safety flags.
+   * `FlashStep` builds the `FlashTarget` from this rather than fabricating
+   * flags. `selectedDevice`/`selectedSize` are kept as convenience mirrors of
+   * `selectedDrive.device`/`.size`.
+   */
+  selectedDrive?: DriveCandidate;
   selectedDevice?: string;
   selectedSize?: number;
   imagePath?: string;

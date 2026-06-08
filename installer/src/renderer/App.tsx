@@ -63,16 +63,19 @@ export function App() {
             <ChooseSdStep
               selectedDevice={ctx.selectedDevice}
               eraseConfirmed={ctx.eraseConfirmed ?? false}
-              onSelect={(device, size) =>
-                patchCtx({ selectedDevice: device, selectedSize: size })
+              onSelect={(drive) =>
+                patchCtx({
+                  selectedDrive: drive,
+                  selectedDevice: drive.device,
+                  selectedSize: drive.size,
+                })
               }
               onEraseConfirmedChange={(eraseConfirmed) => patchCtx({ eraseConfirmed })}
             />
           )}
           {step === 'flash' && (
             <FlashStep
-              device={ctx.selectedDevice}
-              size={ctx.selectedSize}
+              drive={ctx.selectedDrive}
               flashed={ctx.flashed ?? false}
               onFlashed={(imagePath) => patchCtx({ flashed: true, imagePath })}
             />

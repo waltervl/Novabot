@@ -38,4 +38,43 @@ describe('generateFiles', () => {
     expect(g.cmdlineAppend).toContain('systemd.run=/boot/firstrun.sh');
     expect(g.cmdlineAppend).toContain('systemd.run_success_action=reboot');
   });
+
+  it('safely escapes a single quote in the Wi-Fi password', () => {
+    const g = generateFiles({
+      ...base,
+      network: { type: 'wifi', ssid: 'Home', password: "p'wn", country: 'NL' },
+      connectionPath: 'opennova-app',
+    });
+    // The quote is closed, escaped, and reopened: p'\''wn wrapped in quotes.
+    expect(g.firstrunSh).toContain("'p'\\''wn'");
+    // And the raw, broken sequence must NOT appear.
+    expect(g.firstrunSh).not.toContain("psk 'p'wn'");
+  });
+
+  it('safely escapes a single quote in the hostname', () => {
+    const g = generateFiles({
+      ...base,
+      hostname: "ho'st",
+      connectionPath: 'opennova-app',
+    });
+    expect(g.firstrunSh).toContain("'ho'\\''st'");
+    expect(g.firstrunSh).not.toContain("set-hostname 'ho'st'");
+  });
+
+  it('sanitizes a malicious timezone before emitting it into YAML', () => {
+    const g = generateFiles({
+      ...base,
+      timezone: 'Europe/Amsterdam"; rm -rf /',
+      connectionPath: 'opennova-app',
+    });
+    // The TZ line keeps the legitimate part but strips the dangerous chars.
+    const tzLine = g.composeYml
+      .split('\n')
+      .find((l) => l.includes('TZ:'));
+    expect(tzLine).toBeDefined();
+    expect(tzLine).toContain('Europe/Amsterdam');
+    expect(tzLine).not.toContain('"');
+    expect(tzLine).not.toContain(';');
+    expect(tzLine).not.toContain(' rm');
+  });
 });

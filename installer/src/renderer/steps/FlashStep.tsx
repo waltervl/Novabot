@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { installer } from '../ipc';
-import type { FlashTarget, ImageProgress, FlashProgress } from '../../shared/types';
+import type {
+  DriveCandidate,
+  FlashTarget,
+  ImageProgress,
+  FlashProgress,
+} from '../../shared/types';
 
 interface FlashStepProps {
-  device?: string;
-  size?: number;
+  /** The drive the user selected, carrying its REAL scanned safety flags. */
+  drive?: DriveCandidate;
   flashed: boolean;
   onFlashed: (imagePath: string) => void;
 }
@@ -15,7 +20,7 @@ function formatMb(bytes: number): string {
   return (bytes / 1e6).toFixed(0) + ' MB';
 }
 
-export function FlashStep({ device, size, flashed, onFlashed }: FlashStepProps) {
+export function FlashStep({ drive, flashed, onFlashed }: FlashStepProps) {
   const [phase, setPhase] = useState<Phase>(flashed ? 'done' : 'idle');
   const [error, setError] = useState<string | null>(null);
   const [imageProgress, setImageProgress] = useState<ImageProgress | null>(null);
@@ -41,7 +46,7 @@ export function FlashStep({ device, size, flashed, onFlashed }: FlashStepProps) 
   }, []);
 
   const start = async () => {
-    if (!device || typeof size !== 'number') {
+    if (!drive) {
       setError('No SD card selected. Go back and choose a card.');
       setPhase('error');
       return;
@@ -59,12 +64,14 @@ export function FlashStep({ device, size, flashed, onFlashed }: FlashStepProps) 
     }
 
     setPhase('flashing');
+    // Forward the REAL scanned flags from the selected drive — never fabricate
+    // them. The main process re-validates and live re-scans regardless.
     const target: FlashTarget = {
-      device,
-      isSystem: false,
-      isRemovable: true,
-      isReadOnly: false,
-      size,
+      device: drive.device,
+      isSystem: drive.isSystem,
+      isRemovable: drive.isRemovable,
+      isReadOnly: drive.isReadOnly,
+      size: drive.size,
     };
     const flashResult = await installer.startFlash({
       imagePath: imageResult.value.imagePath,

@@ -1,5 +1,25 @@
 import type { InstallerConfig, GeneratedFiles } from '../shared/types.js';
 
+/**
+ * Single-quote a string for safe use in a POSIX shell. Wrap in single quotes; a
+ * literal single quote becomes '\'' (close, escaped quote, reopen). This makes
+ * user-supplied values (Wi-Fi password, SSID, hostname, ...) injection-proof
+ * even when they legitimately contain a `'` — which Wi-Fi passwords often do.
+ * The returned value INCLUDES the surrounding quotes.
+ */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Restrict a timezone to the IANA-safe charset so it can be emitted into
+ * unquoted YAML / env files without breaking them. Anything outside
+ * [A-Za-z0-9_/+-] (e.g. `}`, `:`, `#`, `"`, whitespace, newlines) is stripped.
+ */
+function sanitizeTimezone(tz: string): string {
+  return tz.replace(/[^A-Za-z0-9_/+-]/g, '');
+}
+
 function composeYml(cfg: InstallerConfig): string {
   const dns = cfg.connectionPath === 'novabot-app'
     ? '      ENABLE_DNS: "true"\n      UPSTREAM_DNS: "1.1.1.1"\n'
@@ -11,7 +31,7 @@ function composeYml(cfg: InstallerConfig): string {
     restart: unless-stopped
     network_mode: host
     environment:
-      TZ: \${TZ:-${cfg.timezone}}
+      TZ: \${TZ:-${sanitizeTimezone(cfg.timezone)}}
       PORT: 80
       DB_PATH: /data/novabot.db
       STORAGE_PATH: /data/storage
@@ -27,21 +47,21 @@ ${dns}    volumes:
 }
 
 function envFile(cfg: InstallerConfig): string {
-  return `TZ=${cfg.timezone}\n`;
+  return `TZ=${sanitizeTimezone(cfg.timezone)}\n`;
 }
 
 function firstrunSh(cfg: InstallerConfig): string {
   const wifi = cfg.network.type === 'wifi'
-    ? `nmcli connection add type wifi ifname wlan0 con-name opennova-wifi ssid '${cfg.network.ssid}' \\
-  802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk '${cfg.network.password}' || true
-raspi-config nonint do_wifi_country '${cfg.network.country}' || true
+    ? `nmcli connection add type wifi ifname wlan0 con-name opennova-wifi ssid ${shQuote(cfg.network.ssid)} \\
+  802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk ${shQuote(cfg.network.password)} || true
+raspi-config nonint do_wifi_country ${shQuote(cfg.network.country)} || true
 nmcli connection up opennova-wifi || true
 `
     : '';
   return `#!/bin/bash
 set -e
 exec > /var/log/opennova-firstrun.log 2>&1
-hostnamectl set-hostname '${cfg.hostname}' || true
+hostnamectl set-hostname ${shQuote(cfg.hostname)} || true
 ${wifi}
 # Docker (official Debian repo)
 apt-get update
@@ -65,7 +85,7 @@ systemctl enable docker
 install -d -o "$(logname 2>/dev/null || echo opennova)" /home/opennova/opennova/data || mkdir -p /home/opennova/opennova/data
 cd /home/opennova/opennova
 TARGET_IP="$(hostname -I | awk '{print $1}')"
-printf 'TZ=%s\\nTARGET_IP=%s\\n' '${cfg.timezone}' "$TARGET_IP" > .env
+printf 'TZ=%s\\nTARGET_IP=%s\\n' ${shQuote(sanitizeTimezone(cfg.timezone))} "$TARGET_IP" > .env
 cat > docker-compose.yml <<'COMPOSE'
 ${composeYml(cfg)}COMPOSE
 docker compose pull

@@ -5,7 +5,8 @@ import type { DriveCandidate } from '../../shared/types';
 interface ChooseSdStepProps {
   selectedDevice?: string;
   eraseConfirmed: boolean;
-  onSelect: (device: string, size: number) => void;
+  /** Receives the full candidate (with its real scanned safety flags). */
+  onSelect: (drive: DriveCandidate) => void;
   onEraseConfirmedChange: (confirmed: boolean) => void;
 }
 
@@ -89,7 +90,7 @@ export function ChooseSdStep({
                     type="radio"
                     name="sd-card"
                     checked={isSelected}
-                    onChange={() => onSelect(d.device, d.size)}
+                    onChange={() => onSelect(d)}
                   />
                   <span className="flex-1">
                     <span className="block font-medium text-slate-800">
