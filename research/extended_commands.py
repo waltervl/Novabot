@@ -1958,6 +1958,62 @@ def handle_regenerate_per_map_files(params, respond):
                 pass
             mirrored.append(slot)
 
+        # Rebuild a COMPLETE map_info.json from the on-disk work slots. The
+        # stock save flow regenerates map_info from the firmware's active map
+        # context, which after a cloud re-import / recovery often holds only
+        # map0 — so map_info silently drops map1/map2 even though their work
+        # CSVs are on disk, which breaks multi-zone tasks (manifest != disk;
+        # confirmed live on David's LFIN2231000633 vs the healthy .244). Recompute
+        # every slot's area (shoelace, the same formula the cloud-import
+        # generator uses) and write the full manifest to BOTH csv_file/ and
+        # x3_csv_file/, preserving charging_pose (from the old map_info, else
+        # parsed from charging_station.yaml). Non-fatal: a failure here never
+        # blocks the per-map grid regeneration above.
+        try:
+            def _shoelace(pts):
+                n = len(pts)
+                if n < 3:
+                    return 0.0
+                acc = 0.0
+                for i in range(n):
+                    j = (i + 1) % n
+                    acc += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]
+                return abs(acc) / 2.0
+
+            cur_info = {}
+            existing = f"{csv_dir}/map_info.json"
+            if os.path.exists(existing):
+                try:
+                    cur_info = json.load(open(existing))
+                except Exception:
+                    cur_info = {}
+            cp = cur_info.get("charging_pose") if isinstance(cur_info, dict) else None
+            if cp is None:
+                cs_yaml = f"{base}/charging_station_file/charging_station.yaml"
+                if os.path.exists(cs_yaml):
+                    cmm = _re.search(
+                        r"charging_pose:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)",
+                        open(cs_yaml).read())
+                    if cmm:
+                        cp = {"x": float(cmm.group(1)), "y": float(cmm.group(2)),
+                              "orientation": float(cmm.group(3))}
+
+            new_info = {}
+            if cp is not None:
+                new_info["charging_pose"] = cp
+            for slot in sorted(slots):
+                wpts = _read_csv(f"{csv_dir}/{slot}_work.csv")
+                if len(wpts) >= 3:
+                    new_info[f"{slot}_work.csv"] = {"map_size": _shoelace(wpts)}
+            for sub in ("csv_file", "x3_csv_file"):
+                mp = f"{base}/{sub}/map_info.json"
+                if os.path.isdir(os.path.dirname(mp)):
+                    with open(mp, "w") as fh:
+                        json.dump(new_info, fh, indent=3)
+            log(f"regenerate_per_map_files: rebuilt map_info.json for slots {sorted(slots)}")
+        except Exception as e:
+            log(f"regenerate_per_map_files: map_info rebuild failed (non-fatal): {e}")
+
         log(f"regenerate_per_map_files: per-slot masked grids for {mirrored}")
         respond("regenerate_per_map_files_respond", {"result": 0, "mirrored": mirrored, "home": home})
     except Exception as e:
