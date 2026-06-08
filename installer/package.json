@@ -1,0 +1,22 @@
+{
+  "name": "opennova-installer",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "dev": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0",
+    "@types/node": "^22.0.0"
+  },
+  "dependencies": {
+    "etcher-sdk": "^9.0.0"
+  }
+}
