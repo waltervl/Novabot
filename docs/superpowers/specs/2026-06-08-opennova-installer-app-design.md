@@ -29,7 +29,7 @@ Electron app. Two processes:
 
 - **Renderer (UI):** React + Tailwind, reusing the dashboard's component/style
   conventions. Implements the wizard. Talks to main over IPC.
-- **Main (Node):** owns all privileged/native work via **`@balena/etcher-sdk`**
+- **Main (Node):** owns all privileged/native work via **`etcher-sdk`**
   (the engine inside balenaEtcher):
   - enumerate removable drives (with system-disk filtering),
   - download + decompress the stock Pi OS image (`.img.xz`) from a pinned URL,

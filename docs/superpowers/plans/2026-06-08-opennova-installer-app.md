@@ -4,9 +4,9 @@
 
 **Goal:** Build a cross-platform Electron desktop app that flashes **stock** Raspberry Pi OS Lite 64-bit to an SD card, injects an OpenNova config + first-boot install script, and hands off to the Pi's existing `/admin` wizard — so a non-technical user gets OpenNova running with no terminal, no SSH, and no pre-baked image.
 
-**Architecture:** Electron app under `installer/`. Renderer = React + Tailwind wizard. Main process = Node, doing all native work via `@balena/etcher-sdk` (drive scan, image download/verify, raw write) plus a post-flash boot-partition injector. No backend; only network use is the stock-image download and (at Pi first boot) Docker + the OpenNova container.
+**Architecture:** Electron app under `installer/`. Renderer = React + Tailwind wizard. Main process = Node, doing all native work via `etcher-sdk` (drive scan, image download/verify, raw write) plus a post-flash boot-partition injector. No backend; only network use is the stock-image download and (at Pi first boot) Docker + the OpenNova container.
 
-**Tech Stack:** Electron, electron-builder, TypeScript, React 18, Tailwind, Vite (renderer), `@balena/etcher-sdk`, `node:crypto` (sha256), Vitest (unit/integration). Spec: `docs/superpowers/specs/2026-06-08-opennova-installer-app-design.md`.
+**Tech Stack:** Electron, electron-builder, TypeScript, React 18, Tailwind, Vite (renderer), `etcher-sdk`, `node:crypto` (sha256), Vitest (unit/integration). Spec: `docs/superpowers/specs/2026-06-08-opennova-installer-app-design.md`.
 
 ---
 
@@ -72,7 +72,7 @@ Boilerplate (Electron bootstrapping, Vite/React wiring, Tailwind) follows standa
     "@types/node": "^22.0.0"
   },
   "dependencies": {
-    "@balena/etcher-sdk": "^9.0.0"
+    "etcher-sdk": "^9.0.0"
   }
 }
 ```
