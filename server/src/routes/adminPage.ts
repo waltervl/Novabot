@@ -2819,6 +2819,13 @@ function expMapName(m) {
   return m.mapName || m.canonicalName || m.fileName || m.mapId || 'map';
 }
 
+function expIsChargerUnicom(m) {
+  // mapXtocharge_unicom is the firmware's auto-generated dock route, NOT a
+  // user channel. The app (HomeScreen) and dashboard already hide it; do the
+  // same here so the dock connectors don't show as stray blue lines/labels.
+  return /tocharge/i.test(String(m.canonicalName || '') + ' ' + String(m.fileName || '') + ' ' + String(m.mapName || ''));
+}
+
 function expPath(points) {
   return (points || []).map(function(p) { return [Number(p.x), Number(p.y), 0]; })
     .filter(function(p) { return Number.isFinite(p[0]) && Number.isFinite(p[1]); });
@@ -3082,7 +3089,7 @@ function renderExperimentalDeck() {
     return expMapType(m) !== 'unicom' && (m.mapArea || []).length >= 3;
   });
   var channels = maps.filter(function(m) {
-    return expMapType(m) === 'unicom' && (m.mapArea || []).length >= 2;
+    return expMapType(m) === 'unicom' && !expIsChargerUnicom(m) && (m.mapArea || []).length >= 2;
   });
 
   if (expLayerEnabled('expLayerPolygons')) {
@@ -3212,7 +3219,7 @@ function renderExperimentalDeck() {
   }
 
   if (expLayerEnabled('expLayerLabels')) {
-    var labels = maps.filter(function(m) { return (m.mapArea || []).length > 0; }).map(function(m) {
+    var labels = maps.filter(function(m) { return (m.mapArea || []).length > 0 && !expIsChargerUnicom(m); }).map(function(m) {
       return { label: expMapName(m), position: expCentroid(m.mapArea), source: m };
     });
     layers.push(new deck.TextLayer({
@@ -3247,7 +3254,7 @@ function experimentalInfoText() {
   for (var i = 0; i < _expState.maps.length; i++) {
     var t = expMapType(_expState.maps[i]);
     if (t === 'obstacle') obstacles++;
-    else if (t === 'unicom') channels++;
+    else if (t === 'unicom') { if (!expIsChargerUnicom(_expState.maps[i])) channels++; }
     else work++;
   }
   var pose = _expState.livePose;
