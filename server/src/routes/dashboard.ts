@@ -20,6 +20,7 @@ import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/b
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
 import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
+import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
 import crypto from 'crypto';
 import { generateMapZipFromDb, gpsToLocal, localToGps, parseMapZip, type GpsPoint, type LocalPoint } from '../mqtt/mapConverter.js';
 import { existsSync, unlinkSync, readFileSync, readdirSync, createReadStream, statSync, watch, mkdirSync, copyFileSync } from 'fs';
@@ -67,6 +68,24 @@ export const dashboardRouter = Router();
   }
   if (rows.length > 0) console.log(`[SETTINGS] Loaded ${rows.length} persisted settings for ${new Set(rows.map(r => r.sn)).size} device(s)`);
 }
+
+// POST /api/dashboard/soft-restart/:sn — restart the mower's ROS stack via the
+// firmware `soft_restart` command (systemctl restart novabot_launch.service).
+// NOT an OS reboot: it resets iox-roudi (clears the iceoryx shm leak behind
+// Error 140) and keeps mqtt_node alive so the mower stays online. Refused with
+// 409 while the mower is actively mowing/working unless `{ force: true }`.
+dashboardRouter.post('/soft-restart/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const force = (req.body as { force?: boolean } | undefined)?.force === true;
+  const blocked = softRestartBlockedReason(sn);
+  if (blocked && !force) {
+    res.status(409).json({ ok: false, error: blocked });
+    return;
+  }
+  sendSoftRestart(sn);
+  console.log(`[soft-restart] ${sn}: soft_restart dispatched (force=${force}, ${blocked ?? 'idle/charging'})`);
+  res.json({ ok: true, message: 'soft restart dispatched; the mower goes offline ~30-60s then returns' });
+});
 
 // GET /api/dashboard/system/health — mDNS advertiser state, server uptime, per-mower cache status
 dashboardRouter.get('/system/health', (_req: Request, res: Response) => {

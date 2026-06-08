@@ -108,6 +108,10 @@ startScheduleRunner();
 import { startRainMonitor } from './services/rainMonitor.js';
 startRainMonitor();
 
+// ── Soft-restart auto-recovery (sustained Error 140 + idle/charging → ROS-stack restart) ──
+import { startSoftRestartMonitor } from './services/softRestart.js';
+startSoftRestartMonitor();
+
 // ── Mower IP discovery (mDNS + camera-port verify) ────────────────────────
 // Houdt equipment.discovered_ip vers zodat camera/info en push-to-mower
 // werken zonder dat de gebruiker handmatig een IP hoeft in te stellen.
