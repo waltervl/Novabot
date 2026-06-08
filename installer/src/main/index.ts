@@ -2,16 +2,6 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { registerIpcHandlers } from './ipc.js';
 
-const PLACEHOLDER_HTML =
-  'data:text/html,' +
-  encodeURIComponent(
-    '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-      '<title>OpenNova Installer</title></head>' +
-      '<body style="font-family: sans-serif; display: flex; ' +
-      'align-items: center; justify-content: center; height: 100vh; ' +
-      'margin: 0;"><h1>OpenNova Installer</h1></body></html>',
-  );
-
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 900,
@@ -22,7 +12,16 @@ function createWindow(): void {
     },
   });
 
-  void win.loadURL(PLACEHOLDER_HTML);
+  // In development the renderer is served by the Vite dev server (set
+  // OPENNOVA_DEV_SERVER_URL, e.g. http://localhost:5173). In production we load
+  // the built renderer. Main compiles to dist/main/, the renderer builds to
+  // dist/renderer/, so the file sits one directory up from __dirname.
+  const devServerUrl = process.env.OPENNOVA_DEV_SERVER_URL;
+  if (devServerUrl) {
+    void win.loadURL(devServerUrl);
+  } else {
+    void win.loadFile(join(__dirname, '../renderer/index.html'));
+  }
 }
 
 void app.whenReady().then(() => {
