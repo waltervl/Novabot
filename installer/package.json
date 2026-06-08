@@ -11,7 +11,8 @@
     "dev": "electron .",
     "typecheck:renderer": "tsc --noEmit -p tsconfig.renderer.json",
     "test": "vitest run",
-    "dist": "electron-builder"
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

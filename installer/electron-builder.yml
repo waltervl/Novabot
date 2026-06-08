@@ -1,0 +1,69 @@
+# electron-builder configuration for the OpenNova Installer.
+#
+# SIGNING / NOTARIZATION (deferred):
+#   This config builds UNSIGNED artifacts by default for internal use. Sign
+#   before any wide release. All credentials come from environment variables
+#   and are NEVER committed to the repo:
+#     - Windows/macOS code signing : CSC_LINK, CSC_KEY_PASSWORD
+#     - macOS notarization         : APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+#   When those env vars are absent, electron-builder skips signing/notarization.
+#
+# NATIVE DEPS: etcher-sdk ships native/prebuilt modules (drivelist, lzma-native,
+#   usb, xxhash-addon, @ronomon/direct-io). They MUST live outside the asar
+#   archive or the app crashes at runtime when it dlopen()s them — see asarUnpack.
+
+appId: nl.ramonvanbruggen.opennova.installer
+productName: OpenNova Installer
+
+directories:
+  output: release
+  buildResources: build
+
+# Only the built output + production deps are shipped. Source/tests are excluded
+# (only dist/ runs at runtime); electron-builder prunes to production deps itself.
+files:
+  - "dist/**/*"
+  - "package.json"
+  - "node_modules/**/*"
+  - "!**/*.map"
+  - "!**/test/**"
+  - "!**/__tests__/**"
+  - "!src/**"
+
+# Native modules pulled in (directly or transitively) by etcher-sdk. These must
+# be unpacked from the asar so they can be loaded at runtime.
+asarUnpack:
+  - "node_modules/etcher-sdk/**"
+  - "node_modules/drivelist/**"
+  - "node_modules/lzma-native/**"
+  - "node_modules/usb/**"
+  - "node_modules/xxhash-addon/**"
+  - "node_modules/@ronomon/direct-io/**"
+  - "node_modules/**/*.node"
+  - "node_modules/**/prebuilds/**"
+
+mac:
+  target: dmg
+  category: public.app-category.utilities
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Notarization is env-gated: enable by setting APPLE_ID,
+  # APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID in the build environment.
+  # notarize:
+  #   teamId: ${env.APPLE_TEAM_ID}
+
+win:
+  target: nsis
+
+# The installer writes raw block devices, which requires administrator rights.
+nsis:
+  oneClick: false
+  perMachine: true
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+
+linux:
+  target: AppImage
+  category: Utility
