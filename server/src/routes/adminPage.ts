@@ -643,12 +643,30 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
            (Portable Map Bundle, legacy Map Recovery, Debug) lives
            below the map so the canvas is the visual focal point. -->
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <select id="mapMowerSelect" onchange="loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value);portableCheckActive(this.value);loadPortableBackups()" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+        <select id="mapMowerSelect" onchange="resetMaskLayer();loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value);portableCheckActive(this.value);loadPortableBackups()" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
         </select>
         <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
       </div>
       <div id="mapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#cbd5e1">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Toon de occupancy-grid die de maaier gebruikt: groen = bereikbaar vanaf de dock, blauw = afgesneden, rood = bezet">
+          <input type="checkbox" id="maskToggle" onchange="onMaskToggle()" style="width:15px;height:15px;cursor:pointer">
+          <span>Toon wat de maaier "ziet"</span>
+        </label>
+        <select id="maskLayer" onchange="refreshMaskOverlay()" disabled style="padding:4px 8px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
+          <option value="whole">Hele kaart (navigatie)</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px">opacity
+          <input type="range" id="maskOpacity" min="0.2" max="1" step="0.05" value="0.8" oninput="onMaskOpacity()" disabled style="width:90px">
+        </label>
+        <span id="maskLegend" style="display:none;gap:12px;align-items:center">
+          <span style="color:#28b43c">&#9632; bereikbaar</span>
+          <span style="color:#2a6eeb">&#9632; afgesneden</span>
+          <span style="color:#d22d2d">&#9632; bezet</span>
+        </span>
+        <span id="maskStatus" style="color:#9ca3af;font-size:11px"></span>
+      </div>
       <div style="background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;position:relative">
         <canvas id="mapCanvas" width="800" height="600" style="width:100%;display:block;background:#0a0a1a"></canvas>
         <div id="polygonCalPanel" style="display:none;position:absolute;top:12px;left:12px;z-index:1000;background:rgba(15,15,30,0.95);backdrop-filter:blur(6px);border:1px solid #444;border-radius:10px;padding:14px;width:240px;box-shadow:0 6px 30px rgba(0,0,0,0.45)">
@@ -4365,11 +4383,19 @@ function renderPortableImportWizard(sn, state) {
       // (GPS/RTK only — NOT an ArUco snap). See docs/reference/REANCHOR.md.
       var xsn = portableSourceSn && !portableSourceSnMatches;
       if (portableMowerFileApplySupported) {
-        html += '<div style="flex-basis:100%;font-size:10px;color:' + (xsn ? '#fbbf24' : '#86efac') + ';margin-bottom:4px">'
-          + (xsn ? 'Bundle source ' + portableSourceSn + ' differs from target — pos.json is left untouched so this is safe; re-anchor in the app afterward. '
-                 : 'Complete bundle (csv + rasterized map.pgm/png/yaml + per-map). ')
-          + 'Restore pushes it to the mower 1-to-1; re-anchor afterward in the app (Re-anchor wizard).</div>';
-        html += '<button onclick="portableApplyVerbatim()" style="padding:6px 12px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Restore to mower</button>';
+        // BETA SAFETY: default to server/app copy only (DB) — the mower is left
+        // untouched. Writing maps to the mower WIPES + overwrites its map files,
+        // so it is an explicit opt-in (checkbox), guarded by a loud warning.
+        html += '<div style="flex-basis:100%;padding:9px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.45);border-radius:6px;font-size:11px;color:#fbbf24;margin-bottom:6px;line-height:1.6">'
+          + '<b>BETA — dit kan je maaier-kaarten overschrijven.</b> Standaard wordt alleen de server/app-kopie hersteld (database); de <b>maaier blijft ongemoeid</b>. '
+          + 'Vink hieronder aan om de kaarten OOK naar de maaier te schrijven: dat <b>WIST</b> de huidige kaartbestanden op de maaier en vervangt ze door (opnieuw-gegenereerde, nog experimentele) bestanden. '
+          + 'Doe dat alleen als de maaier zijn kaart kwijt of kapot is. Werken de kaarten op de maaier nog? Laat dit dan uit.'
+          + (xsn ? ' <br><b>Let op:</b> bundel-bron ' + portableSourceSn + ' wijkt af van de doel-maaier (pos.json blijft ongemoeid; her-anker daarna in de app).' : '')
+          + '</div>';
+        html += '<label style="flex-basis:100%;display:flex;align-items:center;gap:8px;font-size:11px;color:#fca5a5;margin-bottom:8px;cursor:pointer">'
+          + '<input type="checkbox" id="portablePushToMower" style="width:16px;height:16px;cursor:pointer"> '
+          + '<span>Kaarten <b>ook naar de maaier</b> schrijven (overschrijft maaier-bestanden)</span></label>';
+        html += '<button onclick="portableDoImport()" style="padding:6px 14px;background:rgba(16,185,129,.3);color:#bbf7d0;border:1px solid rgba(16,185,129,.7);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Importeren</button>';
       } else {
         html += '<div style="flex-basis:100%;font-size:10px;color:#fbbf24;margin-bottom:4px">' + portableServerCopyWarningText() + '</div>';
         html += '<button onclick="portableImportServerCopy()" style="padding:6px 12px;background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.5);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">Import server copy only</button>';
@@ -4413,6 +4439,17 @@ function renderPortableImportWizard(sn, state) {
   html += '<div id="portablePreviewBox" style="margin-top:8px;display:none;height:300px;border:1px solid #2a2a3a;border-radius:6px"></div>';
   panel.innerHTML = html;
   portableStartRtkPoll(sn);
+}
+
+// Dispatcher for the BETA restore wizard: server/app copy (DB) is the safe
+// default; the "also write to the mower" checkbox opts into the destructive
+// apply-verbatim push.
+async function portableDoImport() {
+  var pushEl = document.getElementById('portablePushToMower');
+  if (pushEl && pushEl.checked) {
+    return portableApplyVerbatim();   // opt-in: WIPE + write map files to the mower (+ DB)
+  }
+  return portableImportServerCopy();  // default: DB / server copy only — mower untouched
 }
 
 async function portableImportServerCopy() {
@@ -5420,6 +5457,23 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
     ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
   }
 
+  // Mask overlay ("what the mower sees"): drawn UNDER the polygons so the
+  // operator's drawn zones + live pose stay crisp on top. Aligned to the pgm's
+  // world geometry via tx/ty. The PNG's top row = world max-Y (firmware flips Y).
+  var _ms = canvas.__mapState;
+  if (_ms.maskOn && _ms.maskImg && _ms.maskGeom) {
+    var _g = _ms.maskGeom;
+    var _wx0 = _g.originX;
+    var _wyTop = _g.originY + _g.H * _g.res;
+    var _dX = tx(_wx0), _dY = ty(_wyTop);
+    var _dW = (_g.W * _g.res) * scale, _dH = (_g.H * _g.res) * scale;
+    ctx.save();
+    ctx.globalAlpha = (typeof _ms.maskOpacity === 'number') ? _ms.maskOpacity : 0.8;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(_ms.maskImg, _dX, _dY, _dW, _dH);
+    ctx.restore();
+  }
+
   // Draw scale bar
   ctx.fillStyle = '#555';
   ctx.font = '10px system-ui';
@@ -5612,6 +5666,93 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
     ctx.stroke();
     ctx.restore();
   }
+}
+
+// ── Mask overlay layer ("what the mower sees") ──────────────────────────────
+function _maskCanvas() { return document.getElementById('mapCanvas'); }
+
+function resetMaskLayer() {
+  var cb = document.getElementById('maskToggle'); if (cb) cb.checked = false;
+  var sel = document.getElementById('maskLayer'); if (sel) sel.disabled = true;
+  var op = document.getElementById('maskOpacity'); if (op) op.disabled = true;
+  var lg = document.getElementById('maskLegend'); if (lg) lg.style.display = 'none';
+  var stt = document.getElementById('maskStatus'); if (stt) stt.textContent = '';
+  var c = _maskCanvas();
+  if (c && c.__mapState) {
+    c.__mapState.maskOn = false; c.__mapState.maskImg = null;
+    if (c.__mapState.maps) renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
+  }
+}
+
+async function onMaskToggle() {
+  var cb = document.getElementById('maskToggle');
+  var c = _maskCanvas();
+  if (!cb || !c) return;
+  if (cb.checked) {
+    document.getElementById('maskLayer').disabled = false;
+    document.getElementById('maskOpacity').disabled = false;
+    await refreshMaskOverlay();
+  } else {
+    document.getElementById('maskLayer').disabled = true;
+    document.getElementById('maskOpacity').disabled = true;
+    document.getElementById('maskLegend').style.display = 'none';
+    document.getElementById('maskStatus').textContent = '';
+    if (c.__mapState) {
+      c.__mapState.maskOn = false; c.__mapState.maskImg = null;
+      if (c.__mapState.maps) renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
+    }
+  }
+}
+
+function onMaskOpacity() {
+  var op = document.getElementById('maskOpacity'); var c = _maskCanvas();
+  if (!op || !c || !c.__mapState) return;
+  c.__mapState.maskOpacity = parseFloat(op.value);
+  if (c.__mapState.maskOn && c.__mapState.maps) renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
+}
+
+function _populateMaskLayers(layers, keep) {
+  var sel = document.getElementById('maskLayer');
+  if (!sel || !layers || !layers.length) return;
+  while (sel.firstChild) sel.removeChild(sel.firstChild);
+  for (var i = 0; i < layers.length; i++) {
+    var v = String(layers[i]);
+    var opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = (v === 'whole') ? 'Hele kaart (navigatie)' : (v + ' (zone)');
+    sel.appendChild(opt);
+  }
+  if (keep && layers.indexOf(keep) >= 0) sel.value = keep;
+}
+
+async function refreshMaskOverlay() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var sel = document.getElementById('maskLayer');
+  var stt = document.getElementById('maskStatus');
+  var c = _maskCanvas();
+  if (!sn || !c) return;
+  var layer = sel ? sel.value : 'whole';
+  if (stt) stt.textContent = 'laden...';
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/mask-overlay?layer=' + encodeURIComponent(layer), { headers: { 'Authorization': token } });
+    var j = await r.json();
+    if (j.availableLayers) _populateMaskLayers(j.availableLayers, layer);
+    if (!j.ok) { if (stt) stt.textContent = j.error || 'mislukt'; return; }
+    var img = new Image();
+    img.onload = function() {
+      c.__mapState = c.__mapState || { userScale: 1, userPanX: 0, userPanY: 0 };
+      c.__mapState.maskImg = img;
+      c.__mapState.maskGeom = j.geometry;
+      c.__mapState.maskOn = true;
+      var opEl = document.getElementById('maskOpacity');
+      if (typeof c.__mapState.maskOpacity !== 'number') c.__mapState.maskOpacity = opEl ? parseFloat(opEl.value) : 0.8;
+      if (c.__mapState.maps) renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
+    };
+    img.src = 'data:image/png;base64,' + j.pngBase64;
+    var lg = document.getElementById('maskLegend'); if (lg) lg.style.display = 'inline-flex';
+    var pct = (j.stats && typeof j.stats.reachableFrac === 'number') ? Math.round(j.stats.reachableFrac * 100) : null;
+    if (stt) stt.textContent = (pct !== null ? ('bereikbaar: ' + pct + '% van vrij') : '');
+  } catch (e) { if (stt) stt.textContent = 'fout: ' + (e && e.message ? e.message : e); }
 }
 
 function renderMapList(container, maps, sn) {

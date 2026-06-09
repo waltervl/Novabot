@@ -24,7 +24,8 @@ import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
 import { isSnBanned, isDeviceOnline } from './broker.js';
 import { isFrameNavBlocked, noteAutoRecharge } from '../services/frameValidation.js';
-import { hasPendingMapSync, clearPendingMapSync, getPendingMapSync } from '../services/pendingMapSync.js';
+import { hasPendingMapSync, clearPendingMapSync } from '../services/pendingMapSync.js';
+import { validateMapRasters, type BundleValidation } from '../maps/validateGrid.js';
 
 const TAG = '[MAP-SYNC]';
 
@@ -584,7 +585,19 @@ export function applyVerbatimToMower(
     mapFilesText?: Record<string, string>;
     mapFilesB64?: Record<string, string>;
   },
-): void {
+): { pushed: boolean; validation: BundleValidation } {
+  // SAFETY GATE — never overwrite a mower's (possibly working) map with a
+  // structurally broken raster. handle_write_map_files WIPES csv_file/ before
+  // writing, so a bad push is destructive + irreversible on the user's side.
+  // Validate the rasters first; refuse the push on a hard failure.
+  const validation = validateMapRasters(mowerFiles.mapFilesB64);
+  if (!validation.ok) {
+    console.error(`${TAG} apply-verbatim ${sn}: GEBLOKKEERD — kaartvalidatie faalt, NIETS gepusht (maaier-bestanden blijven intact):`);
+    for (const f of validation.hardFailures) console.error(`${TAG}   ✗ ${f}`);
+    return { pushed: false, validation };
+  }
+  for (const w of validation.warnings) console.warn(`${TAG} apply-verbatim ${sn}: ⚠ ${w}`);
+
   const writePayload: Record<string, unknown> = {
     csv_files: mowerFiles.csvFiles,
     charging_station_yaml: mowerFiles.chargingStationYaml ?? null,
@@ -609,6 +622,7 @@ export function applyVerbatimToMower(
   } else {
     console.log(`${TAG} apply-verbatim ${sn}: complete raster — on-device save_map/regen overgeslagen`);
   }
+  return { pushed: true, validation };
 }
 
 /**
@@ -623,7 +637,7 @@ export function applyVerbatimToMower(
 export async function pushMapToMowerVerbatim(
   sn: string,
   filename?: string,
-): Promise<{ ok: boolean; offline?: boolean; noBundle?: boolean; noFiles?: boolean }> {
+): Promise<{ ok: boolean; offline?: boolean; noBundle?: boolean; noFiles?: boolean; invalidMap?: boolean }> {
   if (!sn.startsWith('LFIN')) return { ok: false };
 
   let buf: Buffer | null = null;
@@ -658,7 +672,11 @@ export async function pushMapToMowerVerbatim(
 
   if (!isDeviceOnline(sn)) return { ok: false, offline: true };
 
-  applyVerbatimToMower(sn, mowerFiles);
+  const res = applyVerbatimToMower(sn, mowerFiles);
+  if (!res.pushed) {
+    console.error(`${TAG} pushMapToMowerVerbatim: ${sn} GEBLOKKEERD door kaartvalidatie — bundel NIET gepusht, maaier ongemoeid`);
+    return { ok: false, invalidMap: true };
+  }
   console.log(`${TAG} Kaart naar ${sn} gepusht via apply-verbatim (write_map_files)`);
   return { ok: true };
 }
@@ -697,24 +715,15 @@ export function onMowerConnected(sn: string): void {
       // opnieuw toepassen — de firmware persisteert ze niet over een reboot heen.
       republishParaSettings(sn);
 
-      // Uitgestelde map-push: een cloud-import wachtte tot de maaier online was.
-      // Push nu de geïmporteerde kaart via apply-verbatim en wis de vlag bij succes.
+      // BETA SAFETY (Option A): GEEN automatische map-push naar de maaier. Een
+      // cloud-import/factory-reset herstelt alleen de server/app-kopie; de
+      // maaier behoudt zijn eigen kaarten. Een legacy pending-vlag wordt gewist
+      // en genegeerd — herstel naar de maaier is nu een bewuste /admin-actie
+      // (de "ook naar de maaier schrijven" opt-in). Zo overschrijven we nooit
+      // automatisch een werkende kaart op de maaier.
       if (hasPendingMapSync(sn)) {
-        // Push de EXACT onthouden bundle (niet de nieuwste backup-heuristiek).
-        // getPendingMapSync geeft undefined terug bij een legacy-vlag → dan valt
-        // pushMapToMowerVerbatim alsnog terug op de nieuwste backup.
-        const pendingBundle = getPendingMapSync(sn);
-        console.log(`${TAG} Pending map-push voor ${sn} — kaart pushen via apply-verbatim${pendingBundle ? ` (${pendingBundle})` : ''}...`);
-        pushMapToMowerVerbatim(sn, pendingBundle)
-          .then((r) => {
-            if (r.ok) {
-              clearPendingMapSync(sn);
-              console.log(`${TAG} Pending map-push voltooid voor ${sn}`);
-            } else {
-              console.log(`${TAG} Pending map-push nog niet gelukt voor ${sn} (${r.offline ? 'offline' : r.noBundle ? 'geen bundel' : r.noFiles ? 'geen mower-files' : 'mislukt'}) — opnieuw bij volgende connect`);
-            }
-          })
-          .catch((e) => console.warn(`${TAG} Pending map-push fout voor ${sn}:`, e));
+        clearPendingMapSync(sn);
+        console.log(`${TAG} ${sn}: pending map-push genegeerd (beta: auto-push uit) — herstel naar de maaier desgewenst via /admin "ook naar de maaier schrijven"`);
       }
 
       // OpenNova firmware detectie: alleen onze firmware heeft extended_commands.py

@@ -25,6 +25,7 @@ import { getPolygonAnchor } from '../services/anchor.js';
 import { markFrameUnvalidated } from '../services/frameValidation.js';
 import { exportBundle, parseBundle, BundleValidationError, computeAnchorRebase, type ParsedBundle } from '../services/portableMap.js';
 import { synthesizePortableFromWalker } from '../maps/walkerBundleImporter.js';
+import { buildMaskOverlay, parsePgm } from '../maps/maskOverlay.js';
 import { ImportStagingStore } from '../services/importStaging.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
 import { classifyBundle, type ClassifyResult } from '../services/bundleClassifier.js';
@@ -1112,6 +1113,111 @@ adminStatusRouter.get('/map-backups/:sn/:filename/polygons', (req: AuthRequest, 
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'unknown error' });
   }
+});
+
+// GET /api/admin-status/maps/:sn/mask-overlay?layer=whole|map0|map1...
+//
+// Reads the mower's LIVE occupancy grid (read_map_files) + dock pose and returns
+// a colored RGBA reachability overlay PNG for the admin Map Viewer "what the
+// mower sees" layer: occupied=red, free+reachable-from-dock=green, free-but-
+// cut-off=blue. layer=whole -> map.pgm (Nav2 global map); layer=mapN -> per-zone
+// coverage grid. The overlay is what Nav2 can actually route, so a blue patch
+// means a zone the mower CANNOT reach.
+adminStatusRouter.get('/maps/:sn/mask-overlay', async (req: AuthRequest, res: Response) => {
+  const { sn } = req.params;
+  const layer = String(req.query.layer ?? 'whole');
+  if (!/^(whole|map\d+)$/.test(layer)) {
+    res.status(400).json({ ok: false, error: 'layer must be "whole" or "mapN"' });
+    return;
+  }
+  if (!isDeviceOnline(sn)) {
+    res.status(409).json({ ok: false, error: 'mower offline — the mask is read live from the mower' });
+    return;
+  }
+  const pgmName = layer === 'whole' ? 'map.pgm' : `${layer}.pgm`;
+  const yamlName = layer === 'whole' ? 'map.yaml' : `${layer}.yaml`;
+
+  const mowerData = await new Promise<{
+    chargingPose?: { x: number; y: number; orientation: number };
+    mapFilesText?: Record<string, string>;
+    mapFilesB64?: Record<string, string>;
+  }>((resolve) => {
+    let settled = false;
+    const handler = (data: Record<string, unknown>) => {
+      const r = data.read_map_files_respond as {
+        result?: number;
+        csv_files?: Record<string, string>;
+        map_files_text?: Record<string, string>;
+        map_files_b64?: Record<string, string>;
+      } | undefined;
+      if (!r || settled) return;
+      settled = true;
+      offExtendedResponse(sn, handler);
+      if (r.result !== 0) { resolve({}); return; }
+      let chargingPose: { x: number; y: number; orientation: number } | undefined;
+      const mi = r.csv_files?.['map_info.json'];
+      if (mi) {
+        try {
+          const cp = (JSON.parse(mi) as { charging_pose?: { x: number; y: number; orientation: number } }).charging_pose;
+          if (cp && Number.isFinite(cp.x) && Number.isFinite(cp.y)) chargingPose = cp;
+        } catch { /* malformed map_info.json — skip */ }
+      }
+      resolve({ chargingPose, mapFilesText: r.map_files_text, mapFilesB64: r.map_files_b64 });
+    };
+    onExtendedResponse(sn, handler);
+    publishToExtended(sn, { read_map_files: {} });
+    setTimeout(() => { if (!settled) { settled = true; offExtendedResponse(sn, handler); resolve({}); } }, 20000);
+  });
+
+  // Layers the mower actually has (whole + each per-zone mapN.pgm) so the UI
+  // can populate the selector from the live file set.
+  const availableLayers = ['whole', ...Object.keys(mowerData.mapFilesB64 ?? {})
+    .filter((k) => /^map\d+\.pgm$/.test(k))
+    .map((k) => k.replace(/\.pgm$/, ''))
+    .sort()];
+
+  const b64 = mowerData.mapFilesB64?.[pgmName];
+  if (!b64) {
+    res.status(404).json({ ok: false, error: `${pgmName} not found on mower (no map yet, or unsupported firmware)`, availableLayers });
+    return;
+  }
+  const grid = parsePgm(Buffer.from(b64, 'base64'));
+  if (!grid) { res.status(500).json({ ok: false, error: `unparseable ${pgmName}` }); return; }
+
+  // geometry from the matching yaml (fall back to map.yaml)
+  const yamlText = mowerData.mapFilesText?.[yamlName] ?? mowerData.mapFilesText?.['map.yaml'] ?? '';
+  const rm = /resolution:\s*([0-9.eE+-]+)/.exec(yamlText);
+  const om = /origin:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)/.exec(yamlText);
+  const resM = rm ? parseFloat(rm[1]) : 0.05;
+  const originX = om ? parseFloat(om[1]) : 0;
+  const originY = om ? parseFloat(om[2]) : 0;
+
+  // Reachability seed differs by layer:
+  //  - whole (map.pgm): Nav2 routes here, so seed from the dock — green = where
+  //    the mower can physically drive, blue = a cut-off island it can't reach.
+  //  - mapN (per-zone coverage grid): the mower does NOT navigate this grid; it
+  //    reaches the zone via the whole map, then coverage-plans inside the zone
+  //    from its arrival point. The dock sits OUTSIDE non-dock zones (its disc is
+  //    an isolated pocket in mapN.pgm), so a dock seed would paint ~all of the
+  //    zone blue. Seed from the largest free component instead (dockPx=null) so
+  //    green = the contiguous area the planner will actually cover.
+  let dockPx: { x: number; y: number } | null = null;
+  const cp = mowerData.chargingPose;
+  if (layer === 'whole' && cp && resM > 0) {
+    dockPx = {
+      x: Math.trunc((cp.x - originX) / resM),
+      y: (grid.H - 1) - Math.trunc((cp.y - originY) / resM),
+    };
+  }
+  const { png, stats } = buildMaskOverlay(grid, dockPx);
+  res.json({
+    ok: true,
+    layer,
+    availableLayers,
+    pngBase64: png.toString('base64'),
+    geometry: { originX, originY, res: resM, W: grid.W, H: grid.H },
+    stats,
+  });
 });
 
 // POST /api/admin-status/map-backups/:sn/:filename/restore — selective DB restore
@@ -2901,6 +3007,27 @@ adminStatusRouter.post(
     try {
       const restored = importParsedBundleServerCopy(sn, parsed);
       const latestZipBytes = await writeLatestZipFromCsvFiles(sn, parsed.mowerFiles?.csvFiles);
+
+      // First-restore ground-truth capture: a server-copy restore leaves the
+      // mower untouched, so the maps on it are still the user's working set.
+      // If there is no portable backup yet, snapshot the mower's ACTUAL current
+      // files (read_map_files via MQTT) + DB polygons into a real .novabotmap
+      // bundle — a recoverable ground-truth backup of the on-device map. Fire
+      // and forget so it never blocks the restore response.
+      // Only when the mower is ONLINE — createBackup reads its files live over
+      // MQTT, so an offline attempt is pointless (and the in-flight read must
+      // not outlive a request in tests, where the device is never online).
+      try {
+        const { listBackups, createBackup } = await import('../services/portableBackup.js');
+        if (isDeviceOnline(sn) && listBackups(sn).length === 0) {
+          void createBackup(sn, 'first-restore-ground-truth')
+            .then((b) => { if (b) console.log(`[Admin] ${sn}: first-restore ground-truth bundle captured from mower: ${b.filename}`); })
+            .catch((e) => console.warn(`[Admin] ${sn}: first-restore ground-truth capture failed:`, e));
+        }
+      } catch (e) {
+        console.warn(`[Admin] ${sn}: ground-truth capture setup failed:`, e);
+      }
+
       importStaging.transition(stagingId, 'APPLIED', {
         applyResult: { warning: 'server-copy-only; mower files were not written' },
       });
@@ -3036,7 +3163,30 @@ adminStatusRouter.post(
     // used directly. The firmware's own save_map type:1 + regenerate_per_map_files
     // were only ever needed to GENERATE the raster on-device when the bundle
     // lacked one — applyVerbatimToMower only falls back to them in that case.
-    applyVerbatimToMower(sn, mowerFiles);
+    const applyRes = applyVerbatimToMower(sn, mowerFiles);
+    if (!applyRes.pushed) {
+      // SAFETY GATE tripped: the raster set is structurally broken. Nothing was
+      // pushed — the mower's existing (working) map is untouched. Do NOT mark
+      // APPLIED or rewrite the DB; surface the failure so the operator can
+      // rebuild a clean bundle instead of silently shipping garbage.
+      importAuditRepo.append({
+        sn,
+        staging_id: stagingId,
+        from_state: 'UPLOADED',
+        to_state: 'UPLOADED',
+        reason: `verbatim-restore BLOCKED by map validation: ${applyRes.validation.hardFailures.join('; ')}`,
+      });
+      console.error(`[Admin] apply-verbatim ${sn} BLOCKED by map validation — mower untouched:`, applyRes.validation.hardFailures);
+      res.status(422).json({
+        ok: false,
+        state: 'BLOCKED',
+        error: 'map_validation_failed',
+        message: 'Geweigerd: de te herstellen kaart is structureel kapot (losgekoppelde zones of inconsistente afmetingen). De maaier is NIET aangeraakt.',
+        failures: applyRes.validation.hardFailures,
+        warnings: applyRes.validation.warnings,
+      });
+      return;
+    }
 
     // Update server DB so dashboard map view reflects what's now on disk.
     // Polygon points come from the bundle untransformed (same frame as

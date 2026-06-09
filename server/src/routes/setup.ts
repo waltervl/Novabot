@@ -20,7 +20,6 @@ import path from 'path';
 import { userRepo, equipmentRepo, deviceRepo, mapRepo } from '../db/repositories/index.js';
 import { isSetupComplete, invalidateSetupCache } from '../middleware/setupGuard.js';
 import { importCloudWorkRecords } from '../services/cloudWorkRecordsImport.js';
-import { supportsMowerFileWrites } from '../services/mowerFileCapability.js';
 import { markFrameUnvalidated } from '../services/frameValidation.js';
 // LFI cloud helpers were extracted to `src/services/lfiCloud.ts` on 2026-04-23
 // so cloud-api routes can import them without reaching into `routes/setup.ts`
@@ -565,53 +564,26 @@ setupRouter.post('/cloud-apply', async (req: Request, res: Response) => {
               // map.pgm/png/yaml + per-map + csvs) from the freshly imported
               // polygons, so cloud re-imports produce a working costmap bundle
               // without needing the mower online. Best-effort, non-fatal.
-              let cloudBundleFile: string | undefined;
               try {
                 const { createBundleFromDb } = await import('../services/portableBackup.js');
                 const entry = await createBundleFromDb(mower.sn, 'cloud-import');
                 if (entry) {
-                  cloudBundleFile = entry.filename;
                   console.log(`[Setup] Auto-bundle generated for ${mower.sn}: ${entry.filename} (${entry.bytes} B)`);
                 }
               } catch (bundleErr) {
                 console.warn(`[Setup] Auto-bundle generation failed (non-fatal):`, bundleErr);
               }
 
-              // Push the freshly imported map onto the mower via the SAME route
-              // the admin "Import bundle" button uses: apply-verbatim
-              // (write_map_files — csv_file/ + charging_station.yaml + rasters,
-              // verbatim, pos.json untouched → no realign, cloud GPS kept).
-              // If the mower is offline now (typical on first-time import), a
-              // pending flag is set and onMowerConnected pushes it on connect.
-              try {
-                // Only push (and mark pending) when we actually generated a
-                // fresh bundle this import. Without a bundle, pushing with no
-                // filename would fall back to listBackups(sn)[0] = the newest
-                // EXISTING backup, which could be a stale, unrelated map for
-                // this SN. Remember the exact bundle so the deferred re-push
-                // targets it, not the newest-backup heuristic.
-                if (!supportsMowerFileWrites(mower.sn, mower.version ?? null)) {
-                  console.warn(`[Setup] ${mower.sn} is stock/unknown firmware — cloud import restored the server/app copy only; skipping automatic mower file push`);
-                } else if (cloudBundleFile) {
-                  const { pushMapToMowerVerbatim } = await import('../mqtt/mapSync.js');
-                  const { markPendingMapSync, clearPendingMapSync } = await import('../services/pendingMapSync.js');
-                  markPendingMapSync(mower.sn, cloudBundleFile);
-                  void pushMapToMowerVerbatim(mower.sn, cloudBundleFile)
-                    .then((r) => {
-                      if (r.ok) {
-                        clearPendingMapSync(mower.sn);
-                        console.log(`[Setup] Map pushed to ${mower.sn} via apply-verbatim`);
-                      } else {
-                        console.log(`[Setup] Map push deferred for ${mower.sn} (${r.offline ? 'offline' : r.noBundle ? 'no bundle' : r.noFiles ? 'no mower files' : 'pending'}) — will push on next connect`);
-                      }
-                    })
-                    .catch((e) => console.warn(`[Setup] Map push error for ${mower.sn}:`, e));
-                } else {
-                  console.warn(`[Setup] No fresh bundle for ${mower.sn} — skipping map push (no stale-backup fallback)`);
-                }
-              } catch (pushErr) {
-                console.warn(`[Setup] Map push setup failed (non-fatal):`, pushErr);
-              }
+              // BETA SAFETY (Option A): cloud import restores ONLY the
+              // server/app copy (DB + the restorable backup bundle above). We do
+              // NOT auto-write map files to the mower — it keeps its own working
+              // maps (it already has them from its prior LFI/cloud life, so a
+              // push is unnecessary and would risk overwriting a working
+              // on-device map with a regenerated one). If the mower genuinely
+              // lost its map (e.g. after a factory reset), restore it
+              // deliberately via the /admin restore wizard — the "also write to
+              // the mower" opt-in.
+              console.log(`[Setup] ${mower.sn}: cloud import restored the server/app copy only — mower files NOT auto-pushed (beta: use /admin "also write to the mower" if its map was lost)`);
             }
           }
         }
