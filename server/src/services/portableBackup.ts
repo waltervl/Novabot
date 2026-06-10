@@ -58,6 +58,15 @@ export function listBackups(sn: string): BackupEntry[] {
   return entries;
 }
 
+/** Create the very first portable snapshot for a mower if none exists yet.
+ *  Idempotent + safe to call eagerly on connect: skips entirely once ANY
+ *  backup is present (so it never duplicates), and createBackup itself no-ops
+ *  (returns null) until the DB has a charger anchor + work polygon. */
+export async function ensureInitialBackup(sn: string): Promise<BackupEntry | null> {
+  if (listBackups(sn).length > 0) return null;
+  return createBackup(sn, 'auto-initial');
+}
+
 /** Read a backup's raw bytes. */
 export function readBackup(sn: string, filename: string): Buffer | null {
   if (!/^[A-Za-z0-9_.-]+\.novabotmap$/.test(filename)) return null;

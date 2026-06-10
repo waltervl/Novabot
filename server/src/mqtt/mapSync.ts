@@ -711,6 +711,19 @@ export function onMowerConnected(sn: string): void {
       console.log(`${TAG} Maaier ${sn} verbonden — kaarten opvragen...`);
       requestMapList(sn);
 
+      // Eerste portable snapshot: heeft deze mower al maps maar bestaat er nog
+      // geen backup van, maak er meteen één. Idempotent (skipt als er al een
+      // backup is) en no-opt als de DB nog geen charger-anchor/work-polygon
+      // heeft. Vertraagd zodat de maaier z'n kaarten eerst naar de DB uploadt.
+      setTimeout(() => {
+        void import('../services/portableBackup.js')
+          .then(({ ensureInitialBackup }) => ensureInitialBackup(sn))
+          .then((entry) => {
+            if (entry) console.log(`${TAG} initial snapshot saved for ${sn}: ${entry.filename}`);
+          })
+          .catch((e) => console.warn(`${TAG} initial snapshot failed for ${sn}: ${(e as Error)?.message ?? e}`));
+      }, 25000);
+
       // Door de gebruiker gekozen para-settings (o.a. obstacle_avoidance_sensitivity)
       // opnieuw toepassen — de firmware persisteert ze niet over een reboot heen.
       republishParaSettings(sn);
