@@ -90,6 +90,9 @@ jobs:
           }
           if ($ok) { Get-ChildItem $dir; Write-Host '::notice::win32 mtools bundled' }
           else { Write-Host '::warning::win32 mtools NOT bundled - on Windows build the image elsewhere and use Reuse-existing-image to test the flasher' }
+          # Best-effort: never fail the build over mtools (reset native exit code).
+          $global:LASTEXITCODE = 0
+          exit 0
 
       # build:helper is a no-op off macOS; build:main + build:renderer + nsis run.
       - name: Build installer
