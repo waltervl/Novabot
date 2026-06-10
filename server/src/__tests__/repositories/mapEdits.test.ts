@@ -47,4 +47,33 @@ describe('MapEditsRepository', () => {
     expect(mapEditsRepo.countVersions(sn)).toBe(10);
     expect(mapEditsRepo.latestVersion(sn)?.snapshot).toBe('[11]');
   });
+
+  it('upsert UPDATE path: replaces draft_area on second upsert same key', () => {
+    const oldArea = JSON.stringify([{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 5 }]);
+    const newArea = JSON.stringify([{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 }]);
+    mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: 'map0', map_id: 'm0', map_type: 'work', parent_map: null, draft_area: oldArea, deleted: 0 });
+    mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: 'map0', map_id: 'm0', map_type: 'work', parent_map: null, draft_area: newArea, deleted: 0 });
+    const drafts = mapEditsRepo.listDrafts(sn);
+    expect(drafts.length).toBe(1);
+    expect(drafts[0].draft_area).toBe(newArea);
+  });
+
+  it('tombstone: upsert with deleted=1 and draft_area=null', () => {
+    mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: 'map0', map_id: 'm0', map_type: 'work', parent_map: null, draft_area: null, deleted: 1 });
+    const drafts = mapEditsRepo.listDrafts(sn);
+    const tombstone = drafts.find(d => d.canonical_name === 'map0');
+    expect(tombstone).toBeDefined();
+    expect(tombstone!.deleted).toBe(1);
+    expect(tombstone!.draft_area).toBeNull();
+  });
+
+  it('pruneVersions cross-SN isolation: prune one SN leaves other untouched', () => {
+    const sn1 = 'LFIN0001';
+    const sn2 = 'LFINOTHER';
+    for (let i = 0; i < 3; i++) mapEditsRepo.saveVersion(sn1, `[${i}]`, `v${i}`);
+    for (let i = 0; i < 2; i++) mapEditsRepo.saveVersion(sn2, `[${i}]`, `v${i}`);
+    mapEditsRepo.pruneVersions(sn1, 1);
+    expect(mapEditsRepo.countVersions(sn1)).toBe(1);
+    expect(mapEditsRepo.countVersions(sn2)).toBe(2);
+  });
 });
