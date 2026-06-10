@@ -152,4 +152,15 @@ export async function downloadImage(
     await unlink(destPath).catch(() => {});
     throw new Error(`Failed to write '${destPath}': ${(err as Error).message}`);
   }
+
+  // A dropped connection can end the stream cleanly but short, leaving a
+  // truncated file that then fails checksum verification with a confusing
+  // message. When the server advertised a length, require we got all of it so
+  // an incomplete download is reported (and retried) as exactly that.
+  if (totalBytes !== null && received !== totalBytes) {
+    await unlink(destPath).catch(() => {});
+    throw new Error(
+      `Incomplete download of '${url}': received ${received} of ${totalBytes} bytes`,
+    );
+  }
 }

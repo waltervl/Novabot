@@ -88,17 +88,28 @@ async function ensureLatestImageXz(
     return destPath;
   }
 
-  const partialPath = `${destPath}.${process.pid}.partial`;
-  try {
-    await downloadImage(imageUrl, partialPath, onProgress);
-    if (!(await verifySha256(partialPath, expectedSha))) {
-      throw new Error(`Downloaded image failed sha256 verification (expected ${expectedSha})`);
+  // Retry: a transient truncation/corruption mid-download ends the stream
+  // cleanly but yields the wrong bytes, which only surfaces at verification. A
+  // fresh attempt almost always succeeds, so don't fail the whole build on the
+  // first bad transfer.
+  const maxAttempts = 3;
+  let lastError = 'unknown error';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const partialPath = `${destPath}.${process.pid}.${attempt}.partial`;
+    try {
+      await downloadImage(imageUrl, partialPath, onProgress);
+      if (await verifySha256(partialPath, expectedSha)) {
+        await rename(partialPath, destPath);
+        return destPath;
+      }
+      lastError = `checksum did not match (expected ${expectedSha})`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    } finally {
+      await unlink(partialPath).catch(() => {});
     }
-    await rename(partialPath, destPath);
-    return destPath;
-  } finally {
-    await unlink(partialPath).catch(() => {});
   }
+  throw new Error(`Downloaded image failed verification after ${maxAttempts} attempts: ${lastError}`);
 }
 
 /** Filesystem-safe `opennova-<hostname>-<timestamp>.img` for the output image. */
