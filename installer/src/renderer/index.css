@@ -1,3 +1,327 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ============================================================================
+   OpenNova Installer — "Sprout"
+   Friendly and warm, not technical: rounded Baloo 2 headings, soft Nunito body,
+   mint/coral accent tiles and candy-green pill buttons. Ships in two moods that
+   share one layout — Light (default) and Dark — driven entirely by the CSS
+   variables below, so a single `data-theme` attribute flips the whole UI.
+   Fonts are bundled (no CDN) so the tool works fully offline.
+   ========================================================================== */
+
+@layer base {
+  /* ---- Light (default) ------------------------------------------------ */
+  :root {
+    --bg: #e6f7ec;
+    --bg-image: radial-gradient(90% 60% at 15% 0%, #d6f3e1, transparent 60%),
+      radial-gradient(80% 60% at 100% 100%, #ffe9e0, transparent 60%);
+    --card: #ffffff;
+    --tile: #f7faf8;
+    --well: #f1f6f2;
+    --ink: #1f3b2d;
+    --ink-dim: #6e887a;
+    --ink-faint: #9bb0a4;
+    --green-rgb: 22 160 106;
+    --green-bright: #25c281;
+    --green-deep: #0f7d4f;
+    --green-icon: #149360;
+    --coral-rgb: 233 106 74;
+    --danger-rgb: 220 56 64;
+    --mint: #e3f7ec;
+    --peach: #fff0e9;
+    --line: rgba(0, 0, 0, 0.08);
+    --line-strong: rgba(0, 0, 0, 0.16);
+    --btn-text: #ffffff;
+    --card-shadow: 0 26px 50px -26px rgba(20, 120, 80, 0.25);
+  }
+
+  /* ---- Dark ----------------------------------------------------------- */
+  :root[data-theme='dark'] {
+    --bg: #0f1c17;
+    --bg-image: radial-gradient(80% 50% at 10% -5%, rgba(47, 214, 143, 0.16), transparent 60%),
+      radial-gradient(70% 50% at 100% 105%, rgba(255, 138, 102, 0.12), transparent 60%);
+    --card: #18271f;
+    --tile: #1e3127;
+    --well: #13241d;
+    --ink: #eaf6ee;
+    --ink-dim: #91a99b;
+    --ink-faint: #5e7468;
+    --green-rgb: 47 214 143;
+    --green-bright: #4be29c;
+    --green-deep: #1fae72;
+    --green-icon: #5cebac;
+    --coral-rgb: 255 138 102;
+    --danger-rgb: 255 107 107;
+    --mint: rgba(47, 214, 143, 0.15);
+    --peach: rgba(255, 138, 102, 0.16);
+    --line: rgba(255, 255, 255, 0.07);
+    --line-strong: rgba(255, 255, 255, 0.14);
+    --btn-text: #08130d;
+    --card-shadow: 0 30px 60px -28px rgba(0, 0, 0, 0.65);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    color: var(--ink);
+    font-family: 'Nunito', system-ui, sans-serif;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    background-color: var(--bg);
+    background-image: var(--bg-image);
+    background-attachment: fixed;
+    transition:
+      background-color 0.3s ease,
+      color 0.3s ease;
+  }
+
+  ::selection {
+    background: rgb(var(--green-rgb));
+    color: var(--btn-text);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Rounded, friendly display type for headings. */
+  .display {
+    font-family: 'Baloo 2', system-ui, cursive;
+    font-weight: 700;
+    line-height: 1.08;
+    letter-spacing: -0.01em;
+  }
+
+  /* Soft section label — warm, not a technical monospace eyebrow. */
+  .eyebrow {
+    font-weight: 700;
+    font-size: 0.78rem;
+    letter-spacing: 0.01em;
+    color: var(--ink-dim);
+  }
+
+  /* Pill step/status chip (e.g. "Step 2 of 5"). */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: var(--mint);
+    color: var(--green-icon);
+    font-weight: 700;
+    font-size: 0.74rem;
+    padding: 0.32rem 0.8rem;
+    border-radius: 999px;
+  }
+
+  /* The main rounded content card. */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 28px;
+    box-shadow: var(--card-shadow);
+    transition:
+      background 0.3s ease,
+      border-color 0.3s ease;
+  }
+
+  /* A soft inner tile: list rows, selectors, drive entries, readouts. */
+  .tile {
+    background: var(--tile);
+    border: 1px solid transparent;
+    border-radius: 18px;
+    transition:
+      border-color 0.15s ease,
+      background 0.15s ease;
+  }
+  .tile-selectable {
+    cursor: pointer;
+  }
+  .tile-selectable:hover {
+    border-color: var(--line-strong);
+  }
+  .tile-on {
+    border-color: rgb(var(--green-rgb));
+    background: var(--mint);
+  }
+
+  /* Rounded icon holder used in tiles. */
+  .icon-tile {
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+    display: grid;
+    place-items: center;
+    flex: none;
+  }
+  .icon-tile.g {
+    background: var(--mint);
+    color: var(--green-icon);
+  }
+  .icon-tile.c {
+    background: var(--peach);
+    color: rgb(var(--coral-rgb));
+  }
+
+  /* Inline "code chip" for paths / device ids — friendly, still set apart. */
+  .code {
+    font-family: 'Nunito', system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 0.82rem;
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.1rem 0.42rem;
+    color: var(--ink);
+  }
+
+  /* Rounded input field. */
+  .field {
+    width: 100%;
+    background: var(--well);
+    border: 1px solid var(--line-strong);
+    color: var(--ink);
+    font-family: 'Nunito', sans-serif;
+    font-weight: 600;
+    font-size: 0.95rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 14px;
+    outline: none;
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .field::placeholder {
+    color: var(--ink-faint);
+    font-weight: 500;
+  }
+  .field:focus {
+    border-color: rgb(var(--green-rgb));
+    box-shadow: 0 0 0 3px rgb(var(--green-rgb) / 0.16);
+  }
+
+  /* Primary candy-green pill button. */
+  .btn-go {
+    font-family: 'Baloo 2', system-ui, cursive;
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--btn-text);
+    background: linear-gradient(150deg, var(--green-bright), rgb(var(--green-rgb)));
+    border: 0;
+    padding: 0.75rem 1.6rem;
+    border-radius: 999px;
+    cursor: pointer;
+    box-shadow: 0 14px 26px -8px rgb(var(--green-rgb) / 0.55);
+    transition:
+      transform 0.12s ease,
+      box-shadow 0.15s ease,
+      opacity 0.15s ease;
+  }
+  .btn-go:hover:not(:disabled) {
+    transform: scale(1.02);
+  }
+  .btn-go:active:not(:disabled) {
+    transform: scale(0.99);
+  }
+  .btn-go:disabled {
+    opacity: 0.35;
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+
+  /* Secondary / back pill button. */
+  .btn-ghost {
+    font-family: 'Nunito', sans-serif;
+    font-weight: 700;
+    font-size: 0.92rem;
+    color: var(--ink-dim);
+    background: transparent;
+    border: 1px solid var(--line-strong);
+    padding: 0.7rem 1.3rem;
+    border-radius: 999px;
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    color: var(--ink);
+    border-color: rgb(var(--green-rgb));
+  }
+  .btn-ghost:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  /* Small round icon button (theme toggle). */
+  .icon-btn {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--ink-dim);
+    background: transparent;
+    cursor: pointer;
+    flex: none;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease,
+      background 0.15s ease;
+  }
+  .icon-btn:hover {
+    color: var(--ink);
+    border-color: rgb(var(--green-rgb));
+  }
+
+  /* Entrance animation for each step. */
+  .rise {
+    opacity: 0;
+    transform: translateY(10px);
+    animation: rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+}
+
+@keyframes rise {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes scan {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(110%);
+  }
+}
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}

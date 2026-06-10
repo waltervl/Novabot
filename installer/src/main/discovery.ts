@@ -71,7 +71,10 @@ export async function isHostnameTaken(
   }
   const host = trimmed.endsWith('.local') ? trimmed : `${trimmed}.local`;
   const dns = await import('node:dns/promises');
-  const lookup = dns.lookup(host).then(
+  // IPv4 only: a default (family 0) lookup of a `.local` name also fires an mDNS
+  // AAAA query, which has no responder and stalls getaddrinfo ~5s on macOS — past
+  // our timeout, so every name looked "free". An A-only lookup returns in ~ms.
+  const lookup = dns.lookup(host, { family: 4 }).then(
     ({ address }) => ({ taken: true, address }),
     () => ({ taken: false }),
   );

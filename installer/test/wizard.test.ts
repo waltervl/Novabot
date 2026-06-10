@@ -67,6 +67,12 @@ describe('canAdvance', () => {
   it('config advances with a valid config', () => {
     expect(canAdvance('config', { config: validConfig })).toBe(true);
   });
+  it('config advances when the hostname is explicitly free', () => {
+    expect(canAdvance('config', { config: validConfig, hostnameTaken: false })).toBe(true);
+  });
+  it('config is blocked when the hostname clashes on the network', () => {
+    expect(canAdvance('config', { config: validConfig, hostnameTaken: true })).toBe(false);
+  });
 
   it('build blocked until the image is built', () => {
     expect(canAdvance('build', {})).toBe(false);

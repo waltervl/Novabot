@@ -5,12 +5,15 @@ import type { InstallerConfig } from '../../shared/types';
 interface ConfigStepProps {
   config?: InstallerConfig;
   onChange: (config: InstallerConfig) => void;
+  /** Reports whether `<hostname>.local` clashes on the network, so the wizard
+   *  can block advancing until the user picks a free name. */
+  onHostnameTakenChange: (taken: boolean) => void;
 }
 
 type NetworkType = 'ethernet' | 'wifi';
 type ConnectionPath = InstallerConfig['connectionPath'];
 
-export function ConfigStep({ config, onChange }: ConfigStepProps) {
+export function ConfigStep({ config, onChange, onHostnameTakenChange }: ConfigStepProps) {
   const [hostname, setHostname] = useState(config?.hostname ?? 'opennova');
   const [networkType, setNetworkType] = useState<NetworkType>(
     config?.network.type ?? 'ethernet',
@@ -28,6 +31,7 @@ export function ConfigStep({ config, onChange }: ConfigStepProps) {
   const [connectionPath, setConnectionPath] = useState<ConnectionPath>(
     config?.connectionPath ?? 'opennova-app',
   );
+  const [showPassword, setShowPassword] = useState(false);
 
   // Assemble the config and lift it whenever any field changes.
   useEffect(() => {
@@ -49,94 +53,111 @@ export function ConfigStep({ config, onChange }: ConfigStepProps) {
     const name = hostname.trim();
     if (name.length === 0) {
       setTakenBy(null);
+      onHostnameTakenChange(false);
       return;
     }
     const t = setTimeout(() => {
       void installer.checkHostname(name).then((res) => {
-        setTakenBy(res.ok && res.value.taken ? res.value.address ?? 'another device' : null);
+        if (res.ok && res.value.taken) {
+          setTakenBy(res.value.address ?? 'another device');
+          onHostnameTakenChange(true);
+        } else {
+          setTakenBy(null);
+          onHostnameTakenChange(false);
+        }
       });
     }, 600);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostname]);
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Settings</h2>
-        <p className="text-sm text-slate-600">
-          These settings are written to the card and applied on first boot.
+        <h2 className="display text-3xl text-ink">A few quick settings</h2>
+        <p className="mt-2 text-[0.95rem] text-ink-dim font-medium leading-relaxed">
+          These are saved onto the card and applied the first time your Pi starts up.
         </p>
       </div>
 
-      <Field label="Device name (hostname)" htmlFor="hostname">
+      <Field label="Give it a name" htmlFor="hostname">
         <input
           id="hostname"
           type="text"
           value={hostname}
           onChange={(e) => setHostname(e.target.value)}
-          className="w-full rounded-lg border border-slate-300 px-3 py-2"
+          className="field"
+          spellCheck={false}
         />
-        {hostnameInvalid && (
-          <p className="mt-1 text-sm text-red-600">Device name cannot be empty.</p>
-        )}
+        {hostnameInvalid && <Note tone="danger">Please enter a name.</Note>}
         {!hostnameInvalid && takenBy && (
-          <p className="mt-1 text-sm text-amber-700">
-            <span className="font-medium">{hostname.trim()}.local</span> is already used on
-            your network (at {takenBy}). Pick a different name so this Pi is reachable.
-          </p>
+          <Note tone="warn">
+            <span className="text-coral font-bold">{hostname.trim()}.local</span> is already taken on
+            your network ({takenBy}). Choose a different name to continue.
+          </Note>
         )}
       </Field>
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium text-slate-700">Network</legend>
-        <Radio
-          name="network"
-          checked={networkType === 'ethernet'}
-          onChange={() => setNetworkType('ethernet')}
-          label="Ethernet"
-          subtitle="Recommended. Plug the Pi into your router."
-        />
-        <Radio
-          name="network"
-          checked={networkType === 'wifi'}
-          onChange={() => setNetworkType('wifi')}
-          label="Wi-Fi"
-          subtitle="Connect the Pi over your wireless network."
-        />
+      <fieldset>
+        <legend className="eyebrow mb-2.5">How does it connect?</legend>
+        <div className="grid sm:grid-cols-2 gap-2.5">
+          <Selector
+            name="network"
+            checked={networkType === 'ethernet'}
+            onChange={() => setNetworkType('ethernet')}
+            label="Ethernet"
+            subtitle="Best option, a cable to your router."
+          />
+          <Selector
+            name="network"
+            checked={networkType === 'wifi'}
+            onChange={() => setNetworkType('wifi')}
+            label="Wi-Fi"
+            subtitle="Join your wireless network."
+          />
+        </div>
 
         {networkType === 'wifi' && (
-          <div className="ml-7 mt-2 space-y-3 border-l border-slate-200 pl-4">
-            <Field label="Network name (SSID)" htmlFor="ssid">
+          <div className="mt-3.5 space-y-4 border-l-2 border-green/50 pl-4">
+            <Field label="Network name" htmlFor="ssid">
               <input
                 id="ssid"
                 type="text"
                 value={ssid}
                 onChange={(e) => setSsid(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                className="field"
+                spellCheck={false}
               />
-              {ssidInvalid && (
-                <p className="mt-1 text-sm text-red-600">
-                  Network name cannot be empty.
-                </p>
-              )}
+              {ssidInvalid && <Note tone="danger">Please enter your network name.</Note>}
             </Field>
             <Field label="Password" htmlFor="wifi-password">
-              <input
-                id="wifi-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2"
-              />
+              <div className="relative">
+                <input
+                  id="wifi-password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="field pr-12"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((s) => !s)}
+                  className="absolute inset-y-0 right-0 grid w-12 place-items-center text-ink-faint hover:text-green transition-colors"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
             </Field>
-            <Field label="Country code" htmlFor="country">
+            <Field label="Country" htmlFor="country">
               <input
                 id="country"
                 type="text"
                 value={country}
                 onChange={(e) => setCountry(e.target.value.toUpperCase())}
                 maxLength={2}
-                className="w-24 rounded-lg border border-slate-300 px-3 py-2"
+                className="field w-20 text-center tracking-[0.3em]"
               />
             </Field>
           </div>
@@ -149,33 +170,33 @@ export function ConfigStep({ config, onChange }: ConfigStepProps) {
           type="text"
           value={timezone}
           onChange={(e) => setTimezone(e.target.value)}
-          className="w-full rounded-lg border border-slate-300 px-3 py-2"
+          className="field"
+          spellCheck={false}
         />
       </Field>
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium text-slate-700">
-          How will you connect to the mower?
-        </legend>
-        <Radio
-          name="connection"
-          checked={connectionPath === 'opennova-app'}
-          onChange={() => setConnectionPath('opennova-app')}
-          label="OpenNova app"
-          subtitle="Uses automatic discovery on your network."
-        />
-        <Radio
-          name="connection"
-          checked={connectionPath === 'novabot-app'}
-          onChange={() => setConnectionPath('novabot-app')}
-          label="Original Novabot app"
-          subtitle="Enables a DNS redirect."
-        />
+      <fieldset>
+        <legend className="eyebrow mb-2.5">Which app will you use?</legend>
+        <div className="grid sm:grid-cols-2 gap-2.5">
+          <Selector
+            name="connection"
+            checked={connectionPath === 'opennova-app'}
+            onChange={() => setConnectionPath('opennova-app')}
+            label="OpenNova app"
+            subtitle="Finds your Pi automatically."
+          />
+          <Selector
+            name="connection"
+            checked={connectionPath === 'novabot-app'}
+            onChange={() => setConnectionPath('novabot-app')}
+            label="Original Novabot app"
+            subtitle="Redirects it to your Pi."
+          />
+        </div>
         {connectionPath === 'novabot-app' && (
-          <p className="ml-7 text-sm text-slate-500">
-            This routes the original app to your Pi instead of the manufacturer
-            cloud.
-          </p>
+          <Note tone="dim">
+            Points the original app at your own Pi instead of the manufacturer cloud.
+          </Note>
         )}
       </fieldset>
     </div>
@@ -193,13 +214,40 @@ function Field({
 }) {
   return (
     <label htmlFor={htmlFor} className="block">
-      <span className="block text-sm font-medium text-slate-700 mb-1">{label}</span>
+      <span className="eyebrow block mb-2">{label}</span>
       {children}
     </label>
   );
 }
 
-function Radio({
+function Note({ tone, children }: { tone: 'danger' | 'warn' | 'dim'; children: React.ReactNode }) {
+  const color = tone === 'danger' ? 'text-danger' : tone === 'warn' ? 'text-coral' : 'text-ink-dim';
+  return <p className={`mt-2 text-sm font-semibold leading-relaxed ${color}`}>{children}</p>;
+}
+
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+      <path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68" />
+      <path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.39-1.61" />
+      <path d="m2 2 20 20" />
+    </svg>
+  );
+}
+
+/** Friendly selector tile: a rounded row with a circular dot that fills green when picked.
+ *  The native radio is kept for accessibility but visually hidden. */
+function Selector({
   name,
   checked,
   onChange,
@@ -213,17 +261,22 @@ function Radio({
   subtitle: string;
 }) {
   return (
-    <label className="flex items-start gap-3 cursor-pointer">
-      <input
-        type="radio"
-        name={name}
-        checked={checked}
-        onChange={onChange}
-        className="mt-1"
-      />
-      <span>
-        <span className="block font-medium text-slate-800">{label}</span>
-        <span className="block text-sm text-slate-500">{subtitle}</span>
+    <label className={['tile tile-selectable flex items-start gap-3 p-3', checked ? 'tile-on' : ''].join(' ')}>
+      <input type="radio" name={name} checked={checked} onChange={onChange} className="sr-only" />
+      <span
+        className={[
+          'mt-0.5 grid place-items-center w-[18px] h-[18px] rounded-full border-2 transition-colors',
+          checked ? 'border-green' : 'border-line-strong',
+        ].join(' ')}
+        aria-hidden="true"
+      >
+        <span
+          className={['w-2 h-2 rounded-full transition-all', checked ? 'bg-green' : 'bg-transparent'].join(' ')}
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[0.95rem] font-bold text-ink leading-snug">{label}</span>
+        <span className="block text-sm text-ink-dim font-medium mt-0.5">{subtitle}</span>
       </span>
     </label>
   );

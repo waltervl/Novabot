@@ -69,10 +69,24 @@ export interface FlashProgress {
  * Request/response methods resolve an {@link IpcResult}. The `on*` methods
  * subscribe to a progress channel and return an unsubscribe function.
  */
+/** A previously-built OpenNova image found in the downloads folder. */
+export interface ExistingImage {
+  /** Absolute path to the `.img` file. */
+  path: string;
+  /** File name only, for display. */
+  name: string;
+  /** Size in bytes. */
+  size: number;
+  /** Last-modified time (ms since epoch), for "built X ago" + newest-first sort. */
+  mtimeMs: number;
+}
+
 export interface InstallerApi {
   /** Download the latest Pi OS image, decompress it, and patch in the config. */
   buildImage(config: InstallerConfig): Promise<IpcResult<BuildResult>>;
   onBuildProgress(cb: (p: BuildProgress) => void): () => void;
+  /** List previously-built OpenNova images in the downloads folder (newest first). */
+  listExistingImages(): Promise<IpcResult<ExistingImage[]>>;
   /** Enumerate currently-attached SAFE removable cards (never the system disk). */
   scanDrives(): Promise<IpcResult<DriveCandidate[]>>;
   /** Write the built image to the chosen card (admin prompt; no FDA on macOS). */

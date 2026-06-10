@@ -1,7 +1,7 @@
 import { basename, join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { existsSync } from 'node:fs';
-import { rename, unlink, mkdir } from 'node:fs/promises';
+import { rename, unlink, mkdir, readdir, stat } from 'node:fs/promises';
 
 import {
   downloadImage,
@@ -20,6 +20,7 @@ import type {
   IpcResult,
   BuildProgress,
   BuildResult,
+  ExistingImage,
   FlashProgress,
 } from '../shared/types.js';
 
@@ -145,6 +146,31 @@ async function buildImage(
 }
 
 /**
+ * List previously-built OpenNova images (`opennova-*.img`) in the downloads
+ * folder, newest first, so the Build step can offer to reuse one instead of
+ * downloading + patching all over again. Best-effort: a missing/unreadable dir
+ * yields an empty list rather than an error.
+ */
+export async function listExistingImages(downloadsDir: string): Promise<ExistingImage[]> {
+  const names = await readdir(downloadsDir).catch(() => [] as string[]);
+  const candidates = names.filter((n) => /^opennova-.*\.img$/.test(n));
+  const found: ExistingImage[] = [];
+  for (const name of candidates) {
+    const path = join(downloadsDir, name);
+    try {
+      const st = await stat(path);
+      if (st.isFile()) {
+        found.push({ path, name, size: st.size, mtimeMs: st.mtimeMs });
+      }
+    } catch {
+      /* skip a file that vanished or can't be stat'd */
+    }
+  }
+  found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return found;
+}
+
+/**
  * Register every IPC request/response handler on `ipcMain` and wire the
  * progress event forwarding. Pure registration with no side effects beyond the
  * `handle` calls; safe to call once on app ready.
@@ -172,6 +198,9 @@ export function registerIpcHandlers(ipcMain: IpcMainLike, deps: IpcDeps = {}): v
       return buildInFlight;
     }),
   );
+
+  // image:list-existing -> IpcResult<ExistingImage[]> (reuse a prior build)
+  ipcMain.handle('image:list-existing', () => wrap(() => listExistingImages(downloadsDir)));
 
   // drives:scan -> IpcResult<DriveCandidate[]> (safe removable cards only)
   ipcMain.handle('drives:scan', () => wrap(() => scanDrives()));

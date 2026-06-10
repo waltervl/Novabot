@@ -8,10 +8,11 @@
 #     - macOS notarization         : APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
 #   When those env vars are absent, electron-builder skips signing/notarization.
 #
-# NATIVE DEPS: none. xz decompression uses `xz-decompress` (WASM, base64-inlined,
-#   no .node module), and the image patch uses macOS `hdiutil`/`diskutil`. The SD
-#   write is done by Raspberry Pi Imager, not this app. The asarUnpack globs below
-#   are kept as a harmless safety net should a native dep ever be added.
+# NATIVE DEPS: xz decompression uses `xz-decompress` (WASM, base64-inlined, no
+#   .node module) and the image patch uses macOS `mtools`. The SD write uses a
+#   tiny bundled `fdwrite` helper (compiled from native/fdwrite.c) that drives
+#   `authopen -stdoutpipe` for full-speed writes without Full Disk Access. The
+#   asarUnpack globs below are a safety net should an npm native dep be added.
 
 appId: nl.ramonvanbruggen.opennova.installer
 productName: OpenNova Installer
@@ -44,6 +45,9 @@ asarUnpack:
 extraResources:
   - from: vendor/mtools
     to: mtools
+  # The fast-flash helper (macOS); resolved at runtime via process.resourcesPath.
+  - from: vendor/fdwrite
+    to: fdwrite
 
 mac:
   target: dmg

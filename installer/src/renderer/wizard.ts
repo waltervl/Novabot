@@ -29,6 +29,12 @@ export interface WizardContext {
   selectedDevice?: string;
   /** Whether the card was flashed successfully. */
   flashed?: boolean;
+  /**
+   * Whether `<hostname>.local` is already claimed on the network (mDNS). When
+   * `true`, the config step blocks advancing so the user can't build a card
+   * whose name collides with an existing device.
+   */
+  hostnameTaken?: boolean;
 }
 
 /** Zero-based position of a step in {@link STEPS}. */
@@ -69,7 +75,7 @@ function isValidConfig(config: InstallerConfig | undefined): boolean {
  * Whether the user may advance FROM `step`, given the data gathered so far.
  *
  * - welcome: always.
- * - config: a valid config is present.
+ * - config: a valid config is present AND the hostname doesn't clash on mDNS.
  * - build: the image was built successfully.
  * - flash: the card was flashed successfully.
  * - finish: never (last step).
@@ -79,7 +85,7 @@ export function canAdvance(step: Step, ctx: WizardContext): boolean {
     case 'welcome':
       return true;
     case 'config':
-      return isValidConfig(ctx.config);
+      return isValidConfig(ctx.config) && ctx.hostnameTaken !== true;
     case 'build':
       return ctx.built === true;
     case 'flash':

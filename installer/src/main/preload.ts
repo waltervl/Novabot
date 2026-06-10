@@ -6,6 +6,7 @@ import type {
   BuildProgress,
   BuildResult,
   DriveCandidate,
+  ExistingImage,
   FlashProgress,
   PiDiscovery,
 } from '../shared/types.js';
@@ -33,6 +34,9 @@ const api: InstallerApi = {
 
   onBuildProgress: (cb: (p: BuildProgress) => void) =>
     subscribe<BuildProgress>('build:progress', cb),
+
+  listExistingImages: () =>
+    ipcRenderer.invoke('image:list-existing') as Promise<IpcResult<ExistingImage[]>>,
 
   scanDrives: () =>
     ipcRenderer.invoke('drives:scan') as Promise<IpcResult<DriveCandidate[]>>,
