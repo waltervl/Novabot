@@ -10,17 +10,20 @@ import { XzReadableStream } from 'xz-decompress';
  * expected hex digest. Returns a boolean — a mismatch is NOT an error, it is a
  * `false`. Only genuine I/O failures reject.
  */
-export async function verifySha256(filePath: string, expectedHex: string): Promise<boolean> {
+export async function sha256File(filePath: string): Promise<string> {
   const hash = createHash('sha256');
   try {
     await pipeline(createReadStream(filePath), hash);
   } catch (err) {
     throw new Error(
-      `Failed to read '${filePath}' while verifying sha256: ${(err as Error).message}`,
+      `Failed to read '${filePath}' while computing sha256: ${(err as Error).message}`,
     );
   }
-  const actual = hash.digest('hex').toLowerCase();
-  return actual === expectedHex.toLowerCase();
+  return hash.digest('hex').toLowerCase();
+}
+
+export async function verifySha256(filePath: string, expectedHex: string): Promise<boolean> {
+  return (await sha256File(filePath)) === expectedHex.toLowerCase();
 }
 
 /**

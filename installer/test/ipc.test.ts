@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../src/main/imageSource.js', () => ({
   downloadImage: vi.fn(),
   verifySha256: vi.fn(),
+  sha256File: vi.fn(),
   resolveLatestImageUrl: vi.fn(),
   fetchExpectedSha256: vi.fn(),
   decompressXz: vi.fn(),

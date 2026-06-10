@@ -1,11 +1,12 @@
 import { basename, join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { existsSync } from 'node:fs';
-import { rename, unlink, mkdir, readdir, stat } from 'node:fs/promises';
+import { rename, unlink, mkdir, readdir, stat, open } from 'node:fs/promises';
 
 import {
   downloadImage,
   verifySha256,
+  sha256File,
   resolveLatestImageUrl,
   fetchExpectedSha256,
   decompressXz,
@@ -77,6 +78,35 @@ async function wrap<T>(fn: () => Promise<T> | T): Promise<IpcResult<T>> {
  * file that is verified before being atomically renamed into the cache path, so
  * an interrupted/concurrent download can never leave a corrupt file behind.
  */
+/** The 6-byte magic that starts every `.xz` file (`\xFD 7 z X Z \0`). */
+const XZ_MAGIC = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
+
+/**
+ * Describe a downloaded file that failed checksum verification: its size, actual
+ * sha256, and whether it even begins with the xz magic. This turns a cryptic
+ * "checksum failed" into something actionable — e.g. an HTML captive-portal/error
+ * page (starts with `3c...` `<`) or a proxy/AV-altered but complete transfer.
+ */
+async function describeBadDownload(path: string, expectedSha: string): Promise<string> {
+  try {
+    const { size } = await stat(path);
+    const fh = await open(path, 'r');
+    const head = Buffer.alloc(6);
+    try {
+      await fh.read(head, 0, 6, 0);
+    } finally {
+      await fh.close();
+    }
+    const actual = await sha256File(path);
+    const xzNote = head.equals(XZ_MAGIC)
+      ? 'valid .xz header'
+      : `NOT a valid .xz (starts with 0x${head.toString('hex')}) - likely an error page or a proxy/antivirus-altered download`;
+    return `got ${size} bytes, sha256 ${actual} (expected ${expectedSha}); ${xzNote}`;
+  } catch {
+    return `checksum did not match (expected ${expectedSha})`;
+  }
+}
+
 async function ensureLatestImageXz(
   onProgress: (received: number, total: number | null) => void,
 ): Promise<string> {
@@ -102,7 +132,9 @@ async function ensureLatestImageXz(
         await rename(partialPath, destPath);
         return destPath;
       }
-      lastError = `checksum did not match (expected ${expectedSha})`;
+      // Checksum mismatch: describe what actually arrived so a proxy/AV/mirror
+      // that serves complete-but-altered bytes (or an error page) is diagnosable.
+      lastError = await describeBadDownload(partialPath, expectedSha);
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     } finally {
