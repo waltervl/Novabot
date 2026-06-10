@@ -1,0 +1,62 @@
+name: Build Windows Installer
+
+# Builds the OpenNova Installer Windows .exe. We cannot cross-build it from
+# macOS (the native `drivelist` module has no Windows prebuild and must be
+# compiled with MSVC, and NSIS packaging wants a Windows/Wine host), so this runs
+# on a real windows-latest runner and uploads the installer as an artifact you
+# can download and test.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'installer/**'
+      - '.github/workflows/build-installer-windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Compiles drivelist with the VS Build Tools preinstalled on the runner,
+      # then postinstall rebuilds native deps for the Electron ABI.
+      - name: Install dependencies
+        run: npm ci
+
+      # mtools (mcopy.exe) patches the FAT boot partition. Fetch the win32 build
+      # so the packaged app can patch without the user installing mtools.
+      - name: Fetch win32 mtools
+        shell: pwsh
+        run: |
+          $url = 'https://downloads.sourceforge.net/project/ezwinports/mtools-4.0.18-w32-bin.zip'
+          $zip = "$env:RUNNER_TEMP\mtools.zip"
+          $out = "$env:RUNNER_TEMP\mtools"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $out -Force
+          $mc = Get-ChildItem -Path $out -Recurse -Filter mcopy.exe | Select-Object -First 1
+          if (-not $mc) { throw 'mcopy.exe not found in mtools archive' }
+          New-Item -ItemType Directory -Force -Path vendor\mtools\win32-x64 | Out-Null
+          Copy-Item $mc.FullName vendor\mtools\win32-x64\mcopy.exe
+          Copy-Item $mc.FullName vendor\mtools\win32-x64\mtype.exe
+          Get-ChildItem -Path $out -Recurse -Filter *.dll |
+            ForEach-Object { Copy-Item $_.FullName vendor\mtools\win32-x64\ }
+          Get-ChildItem vendor\mtools\win32-x64
+
+      # build:helper is a no-op off macOS; build:main + build:renderer + nsis run.
+      - name: Build installer
+        run: npm run dist
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennova-installer-windows
+          path: installer/release/*.exe
+          if-no-files-found: error

@@ -96,8 +96,8 @@ export function FlashStep({
           <div>
             <h2 className="display text-3xl text-ink">Write the SD card</h2>
             <p className="mt-2 text-[0.95rem] text-ink-dim font-medium leading-relaxed">
-              Only removable cards show up, to keep you safe. Your Mac will ask for your password to
-              write the card, nothing else is needed.
+              Only removable cards show up, to keep you safe. You&apos;ll be asked to approve writing
+              the card (an admin prompt), nothing else is needed.
             </p>
           </div>
 

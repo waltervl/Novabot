@@ -38,24 +38,24 @@ asarUnpack:
   - "node_modules/**/*.node"
   - "node_modules/**/prebuilds/**"
 
-# Bundle the mtools binaries used to write the FAT boot partition. They land in
-# the app's resources dir (`process.resourcesPath/mtools/<platform>-<arch>/`),
-# which `imagePatcher.ts` resolves at runtime. All platforms' binaries are tiny
-# (~200 KB) so we ship them together rather than per-target-filtering.
-extraResources:
-  - from: vendor/mtools
-    to: mtools
-  # The fast-flash helper (macOS); resolved at runtime via process.resourcesPath.
-  - from: vendor/fdwrite
-    to: fdwrite
+# Bundled binaries land in `process.resourcesPath/...`, resolved at runtime by
+# imagePatcher.ts (mtools) and flashMac.ts (fdwrite). extraResources is declared
+# PER PLATFORM so a Windows/Linux build never references the macOS-only `fdwrite`
+# (a missing `from:` is a hard build error). mtools ships all platforms' copies.
 
 mac:
   target: dmg
+  icon: build/icon.icns
   category: public.app-category.utilities
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  extraResources:
+    - from: vendor/mtools
+      to: mtools
+    - from: vendor/fdwrite
+      to: fdwrite
   # Notarization is env-gated: enable by setting APPLE_ID,
   # APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID in the build environment.
   # notarize:
@@ -63,6 +63,10 @@ mac:
 
 win:
   target: nsis
+  icon: build/icon.ico
+  extraResources:
+    - from: vendor/mtools
+      to: mtools
 
 # The app builds an image file (no raw-disk writes), so it does not need admin
 # rights to run. (Note: the image patcher is currently macOS-only.)
@@ -73,4 +77,8 @@ nsis:
 
 linux:
   target: AppImage
+  icon: build/icon.png
   category: Utility
+  extraResources:
+    - from: vendor/mtools
+      to: mtools
