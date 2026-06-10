@@ -265,6 +265,8 @@ export async function applyEdits(sn: string): Promise<ApplyResult> {
     })();
 
     const pushRes = await bundleAndPush(sn);
+    // Bewust: ook bij push_failed gaan validation+applied mee terug — de DB-mutatie
+    // is dan al gebeurd (pending sync), dus warnings/applied zijn accuraat voor de UI.
     return { ...pushRes, validation, applied };
   } finally {
     applyLocks.delete(sn);
