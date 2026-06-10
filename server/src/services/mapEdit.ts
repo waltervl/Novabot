@@ -41,6 +41,11 @@ function parseArea(row: Pick<MapRow, 'map_area'>): XY[] {
   try { return JSON.parse(row.map_area) as XY[]; } catch { return []; }
 }
 
+function parseDraftArea(s: string | null): XY[] {
+  if (!s) return [];
+  try { return JSON.parse(s) as XY[]; } catch { return []; }
+}
+
 function isPendingSync(sn: string): boolean {
   return deviceSettingsRepo.findBySn(sn).some(r => r.key === PENDING_KEY && r.value === '1');
 }
@@ -64,7 +69,7 @@ export function getEditGeometry(sn: string): EditGeometry {
       alias: row.map_name,
       parentMap: parentMapOf(canonical),
       points: row.map_type === 'unicom' ? pts : simplifyPolygon(pts, SIMPLIFY_TOL_M),
-      draft: d ? { points: d.draft_area ? (JSON.parse(d.draft_area) as XY[]) : [], deleted: d.deleted === 1, isNew: !d.map_id } : null,
+      draft: d ? { points: parseDraftArea(d.draft_area), deleted: d.deleted === 1, isNew: !d.map_id } : null,
     });
   }
   // Overgebleven drafts = nieuw getekende obstacles (geen maps-rij)
@@ -76,7 +81,7 @@ export function getEditGeometry(sn: string): EditGeometry {
       alias: null,
       parentMap: d.parent_map,
       points: [],
-      draft: { points: d.draft_area ? (JSON.parse(d.draft_area) as XY[]) : [], deleted: d.deleted === 1, isNew: true },
+      draft: { points: parseDraftArea(d.draft_area), deleted: d.deleted === 1, isNew: true },
     });
   }
   return { maps, pendingSync: isPendingSync(sn), hasVersions: !!mapEditsRepo.latestVersion(sn) };
@@ -156,17 +161,20 @@ const applyLocks = new Set<string>();
 interface SnapshotRow {
   map_id: string; canonical_name: string | null; map_type: string;
   map_name: string | null; map_area: string | null; map_max_min: string | null; file_name: string | null;
+  file_size: number | null;
 }
 
 function snapshotMaps(sn: string): string {
   const rows = mapRepo.findByMowerSn(sn).map((r): SnapshotRow => ({
     map_id: r.map_id, canonical_name: r.canonical_name, map_type: r.map_type,
     map_name: r.map_name, map_area: r.map_area, map_max_min: r.map_max_min, file_name: r.file_name,
+    file_size: r.file_size,
   }));
   return JSON.stringify(rows);
 }
 
 function boundsOf(pts: XY[]): string {
+  if (pts.length === 0) return JSON.stringify({ minX: 0, maxX: 0, minY: 0, maxY: 0 });
   return JSON.stringify({
     minX: Math.min(...pts.map(p => p.x)), maxX: Math.max(...pts.map(p => p.x)),
     minY: Math.min(...pts.map(p => p.y)), maxY: Math.max(...pts.map(p => p.y)),
@@ -178,12 +186,10 @@ async function bundleAndPush(sn: string): Promise<ApplyResult> {
   const { pushMapToMowerVerbatim } = await import('../mqtt/mapSync.js');
   const bundle = await createBundleFromDb(sn, 'map_edit');
   if (!bundle) {
-    deviceSettingsRepo.upsert(sn, PENDING_KEY, '1');
     return { ok: false, reason: 'bundle_failed' };
   }
   const push = await pushMapToMowerVerbatim(sn, bundle.filename);
   if (!push.ok) {
-    deviceSettingsRepo.upsert(sn, PENDING_KEY, '1');
     console.warn(`${TAG} ${sn}: push mislukt (${JSON.stringify(push)}) — pending sync gezet`);
     return { ok: false, reason: 'push_failed' };
   }
@@ -221,11 +227,11 @@ export async function applyEdits(sn: string): Promise<ApplyResult> {
       const d = draftMap.get(canonical);
       const row = byCanonical.get(canonical);
       if (d?.deleted) continue;                          // verwijderd → niet valideren
-      const pts: XY[] = d?.draft_area ? JSON.parse(d.draft_area) : (row ? parseArea(row) : []);
+      const pts: XY[] = d?.draft_area ? parseDraftArea(d.draft_area) : (row ? parseArea(row) : []);
       const type = d?.map_type ?? row?.map_type;
       if (type === 'work' && pts.length >= 3) work.push({ canonical, points: pts });
       else if (type === 'obstacle' && pts.length >= 3) {
-        obstacles.push({ canonical, parentMap: d?.parent_map ?? parentMapOf(canonical) ?? 'map0', points: pts });
+        obstacles.push({ canonical, parentMap: d?.parent_map ?? parentMapOf(canonical) ?? '', points: pts });
       }
     }
     const validation = validateMapSet({ work, obstacles }, originals);
@@ -241,11 +247,11 @@ export async function applyEdits(sn: string): Promise<ApplyResult> {
         if (d.deleted) {
           if (row) { mapRepo.deleteByIdAndMower(row.map_id, sn); applied.push({ canonical: d.canonical_name, action: 'deleted' }); }
         } else if (row) {
-          const pts = JSON.parse(d.draft_area as string) as XY[];
+          const pts = parseDraftArea(d.draft_area);
           mapRepo.updateAreaAndBoundsByIdAndMower(row.map_id, sn, JSON.stringify(pts), boundsOf(pts));
           applied.push({ canonical: d.canonical_name, action: 'updated' });
         } else {
-          const pts = JSON.parse(d.draft_area as string) as XY[];
+          const pts = parseDraftArea(d.draft_area);
           mapRepo.create({
             map_id: `edit_${d.canonical_name}_${Date.now()}`, mower_sn: sn,
             map_type: 'obstacle', file_name: `${d.canonical_name}.csv`,
@@ -255,6 +261,7 @@ export async function applyEdits(sn: string): Promise<ApplyResult> {
         }
       }
       mapEditsRepo.clearDrafts(sn);
+      deviceSettingsRepo.upsert(sn, PENDING_KEY, '1');
     })();
 
     const pushRes = await bundleAndPush(sn);
@@ -295,11 +302,13 @@ export async function revertEdits(sn: string): Promise<ApplyResult> {
           }
         } else {
           mapRepo.create({ map_id: r.map_id, mower_sn: sn, map_name: r.map_name,
-            map_type: r.map_type, file_name: r.file_name, map_area: r.map_area, map_max_min: r.map_max_min });
+            map_type: r.map_type, file_name: r.file_name, file_size: r.file_size,
+            canonical_name: r.canonical_name, map_area: r.map_area, map_max_min: r.map_max_min });
         }
       }
       mapEditsRepo.deleteVersion(version.id);
       mapEditsRepo.clearDrafts(sn);
+      deviceSettingsRepo.upsert(sn, PENDING_KEY, '1');
     })();
 
     return bundleAndPush(sn);

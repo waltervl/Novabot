@@ -160,4 +160,81 @@ describe('mapEdit service: apply + revert', () => {
     expect(mapRepo.findBySnAndCanonical(sn, 'map0')!.map_area).toBe(orig);
     expect(mapEditsRepo.latestVersion(sn)).toBeUndefined();      // versie verbruikt
   });
+
+  it('locked: gelijktijdige apply → exact één locked', async () => {
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const [r1, r2] = await Promise.all([applyEdits(sn), applyEdits(sn)]);
+    const lockedCount = [r1.reason, r2.reason].filter(r => r === 'locked').length;
+    expect(lockedCount).toBe(1);
+  });
+
+  it('bundle_failed: bundle null → reason bundle_failed, pendingSync true', async () => {
+    vi.mocked(createBundleFromDb).mockResolvedValueOnce(null);
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const res = await applyEdits(sn);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('bundle_failed');
+    expect(getEditGeometry(sn).pendingSync).toBe(true);
+  });
+
+  it('no_changes: geen drafts en geen pending → no_changes', async () => {
+    const res = await applyEdits(sn);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('no_changes');
+  });
+
+  it('revert: delete+recreate behoudt canonical_name en map_area', async () => {
+    // Sla map_area van de bestaande obstacle op
+    const origObst = mapRepo.findBySnAndCanonical(sn, 'map0_0_obstacle')!;
+    const origArea = origObst.map_area;
+
+    // Maak nieuw obstacle + verwijder bestaande
+    saveDraft(sn, { mapType: 'obstacle', parentMap: 'map0',
+      points: [{ x: 10, y: 10 }, { x: 12, y: 10 }, { x: 12, y: 12 }, { x: 10, y: 12 }] });
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const applyRes = await applyEdits(sn);
+    expect(applyRes.ok).toBe(true);
+    expect(mapRepo.findBySnAndCanonical(sn, 'map0_1_obstacle')).toBeTruthy();
+    expect(mapRepo.findBySnAndCanonical(sn, 'map0_0_obstacle')).toBeUndefined();
+
+    // Revert
+    const revertRes = await revertEdits(sn);
+    expect(revertRes.ok).toBe(true);
+    expect(mapRepo.findBySnAndCanonical(sn, 'map0_1_obstacle')).toBeUndefined();
+    const restored = mapRepo.findBySnAndCanonical(sn, 'map0_0_obstacle');
+    expect(restored).toBeTruthy();
+    expect(restored!.canonical_name).toBe('map0_0_obstacle');
+    expect(restored!.map_area).toBe(origArea);
+  });
+
+  it('revert offline: offline → reason offline; no_version → reason no_version', async () => {
+    vi.mocked(isDeviceOnline).mockReturnValue(false);
+    const offlineRes = await revertEdits(sn);
+    expect(offlineRes.ok).toBe(false);
+    expect(offlineRes.reason).toBe('offline');
+
+    vi.mocked(isDeviceOnline).mockReturnValue(true);
+    const noVersionRes = await revertEdits(sn);
+    expect(noVersionRes.ok).toBe(false);
+    expect(noVersionRes.reason).toBe('no_version');
+  });
+
+  it('getEditGeometry: overgebleven nieuw-obstacle draft zichtbaar als isNew', () => {
+    saveDraft(sn, { mapType: 'obstacle', parentMap: 'map0',
+      points: [{ x: 10, y: 10 }, { x: 12, y: 10 }, { x: 12, y: 12 }, { x: 10, y: 12 }] });
+    const g = getEditGeometry(sn);
+    const entry = g.maps.find(m => m.canonical === 'map0_1_obstacle');
+    expect(entry).toBeTruthy();
+    expect(entry!.draft?.isNew).toBe(true);
+    expect(entry!.mapType).toBe('obstacle');
+  });
+
+  it('unicom rejection: saveDraft weigert unicom canonical', () => {
+    mapRepo.create({ map_id: 'u0', mower_sn: sn, map_type: 'unicom',
+      file_name: 'map0tocharge_unicom.csv',
+      map_area: JSON.stringify([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]) });
+    const res = saveDraft(sn, { canonical: 'map0tocharge_unicom',
+      points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] });
+    expect(res.ok).toBe(false);
+  });
 });
