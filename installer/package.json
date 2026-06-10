@@ -7,7 +7,7 @@
     "postinstall": "electron-builder install-app-deps",
     "build:main": "tsc -p tsconfig.json",
     "build:renderer": "vite build",
-    "build:helper": "sh scripts/build-helper.sh",
+    "build:helper": "node scripts/build-helper.cjs",
     "build": "npm run build:helper && npm run build:main && npm run build:renderer",
     "dev:renderer": "vite",
     "dev": "electron .",

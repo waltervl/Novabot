@@ -15,7 +15,9 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # windows-2022 ships Visual Studio 2022, which drivelist's bundled
+    # node-gyp@9 can detect (windows-latest moved to a newer VS it can't parse).
+    runs-on: windows-2022
     defaults:
       run:
         working-directory: installer
