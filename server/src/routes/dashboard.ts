@@ -38,6 +38,7 @@ const __dirname = dirname(__filename);
 import { v4 as uuidv4 } from 'uuid';
 import { getActiveAdvertisement, getCompetingServers } from '../services/mdnsAdvertiser.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
+import { getEditGeometry, saveDraft, discardDrafts, applyEdits, revertEdits } from '../services/mapEdit.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -1161,6 +1162,49 @@ dashboardRouter.delete('/maps/:sn/:mapId', (req: Request, res: Response) => {
 
   // Auto-push naar maaier (bijgewerkte kaarten zonder de verwijderde)
   autoPushMapsInBackground(sn);
+});
+
+// ── Map editing (spec: 2026-06-10-map-obstacle-editing-design.md) ──────────
+dashboardRouter.get('/maps/:sn/edit/geometry', (req: Request, res: Response) => {
+  res.json(getEditGeometry(req.params.sn));
+});
+
+dashboardRouter.put('/maps/:sn/edit/draft', (req: Request, res: Response) => {
+  const { canonical, mapType, parentMap, points, deleted } = req.body as {
+    canonical?: string; mapType?: 'work' | 'obstacle'; parentMap?: string;
+    points?: { x: number; y: number }[]; deleted?: boolean;
+  };
+  const result = saveDraft(req.params.sn, { canonical, mapType, parentMap, points, deleted });
+  if (!result.ok) { res.status(400).json({ error: result.error }); return; }
+  res.json({ ok: true, canonical: result.canonical });
+});
+
+dashboardRouter.delete('/maps/:sn/edit/drafts', (req: Request, res: Response) => {
+  discardDrafts(req.params.sn);
+  res.json({ ok: true });
+});
+
+dashboardRouter.post('/maps/:sn/edit/apply', async (req: Request, res: Response) => {
+  const result = await applyEdits(req.params.sn);
+  if (!result.ok) {
+    const status = result.reason === 'validation' ? 422
+      : result.reason === 'no_changes' ? 400
+      : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'locked' ? 409 : 502;
+    res.status(status).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+dashboardRouter.post('/maps/:sn/edit/revert', async (req: Request, res: Response) => {
+  const result = await revertEdits(req.params.sn);
+  if (!result.ok) {
+    const status = result.reason === 'no_version' ? 404
+      : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'locked' ? 409 : 502;
+    res.status(status).json(result);
+    return;
+  }
+  res.json(result);
 });
 
 // ── Map converter endpoints ──────────────────────────────────────
