@@ -41,48 +41,55 @@ jobs:
         env:
           PYTHON: python
 
-      # mtools (mcopy.exe/mtype.exe) patches the FAT boot partition. Bundle the
-      # win32 build so the packaged app patches without the user installing it.
-      # Try the native ezwinports zip; fall back to MSYS2 (preinstalled on the
-      # runner) with its msys-*.dll runtime co-located.
-      - name: Fetch win32 mtools
+      # mtools (mcopy.exe/mtype.exe) patches the FAT boot partition. Best-effort:
+      # try a direct SourceForge mirror (the normal URL is now behind a Cloudflare
+      # challenge), then MSYS2. If neither works the build still proceeds without
+      # bundled mtools - image building/patching won't work on Windows then, but
+      # the flasher can still be tested via "reuse an existing image".
+      - name: Fetch win32 mtools (best effort)
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
           $dir = 'vendor\mtools\win32-x64'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $ok = $false
-          try {
-            $url = 'https://sourceforge.net/projects/ezwinports/files/mtools-4.0.18-w32-bin.zip/download'
-            $zip = "$env:RUNNER_TEMP\mtools.zip"
-            Invoke-WebRequest -Uri $url -OutFile $zip -UserAgent 'Mozilla/5.0' -MaximumRedirection 10
-            $head = [System.IO.File]::ReadAllBytes($zip)[0..1]
-            if ($head[0] -eq 0x50 -and $head[1] -eq 0x4B) {
-              $out = "$env:RUNNER_TEMP\mt"
-              Expand-Archive -Path $zip -DestinationPath $out -Force
-              $mc = Get-ChildItem $out -Recurse -Filter mcopy.exe | Select-Object -First 1
-              $mt = Get-ChildItem $out -Recurse -Filter mtype.exe | Select-Object -First 1
-              if ($mc) {
-                Copy-Item $mc.FullName "$dir\mcopy.exe"
-                if ($mt) { Copy-Item $mt.FullName "$dir\mtype.exe" } else { Copy-Item $mc.FullName "$dir\mtype.exe" }
-                Get-ChildItem $out -Recurse -Filter *.dll | ForEach-Object { Copy-Item $_.FullName "$dir\" }
-                $ok = $true
+          foreach ($sfhost in @('master.dl.sourceforge.net','phoenixnap.dl.sourceforge.net','versaweb.dl.sourceforge.net')) {
+            if ($ok) { break }
+            try {
+              $url = "https://$sfhost/project/ezwinports/mtools-4.0.18-w32-bin.zip"
+              $zip = "$env:RUNNER_TEMP\mt.zip"
+              Invoke-WebRequest -Uri $url -OutFile $zip -UserAgent 'Mozilla/5.0' -MaximumRedirection 10 -TimeoutSec 60
+              $h = [System.IO.File]::ReadAllBytes($zip)[0..1]
+              if ($h[0] -eq 0x50 -and $h[1] -eq 0x4B) {
+                $out = "$env:RUNNER_TEMP\mt"
+                Expand-Archive -Path $zip -DestinationPath $out -Force
+                $mc = Get-ChildItem $out -Recurse -Filter mcopy.exe | Select-Object -First 1
+                $mt = Get-ChildItem $out -Recurse -Filter mtype.exe | Select-Object -First 1
+                if ($mc) {
+                  Copy-Item $mc.FullName "$dir\mcopy.exe"
+                  if ($mt) { Copy-Item $mt.FullName "$dir\mtype.exe" } else { Copy-Item $mc.FullName "$dir\mtype.exe" }
+                  Get-ChildItem $out -Recurse -Filter *.dll | ForEach-Object { Copy-Item $_.FullName "$dir\" }
+                  $ok = $true
+                  Write-Host "got mtools from $sfhost"
+                }
               }
-            } else {
-              Write-Host 'ezwinports download was not a zip; falling back to MSYS2'
-            }
-          } catch {
-            Write-Host "ezwinports fetch failed ($_); falling back to MSYS2"
+            } catch { Write-Host "mirror $sfhost failed: $_" }
           }
           if (-not $ok) {
-            & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed mtools"
-            Copy-Item C:\msys64\usr\bin\mcopy.exe "$dir\mcopy.exe"
-            Copy-Item C:\msys64\usr\bin\mtype.exe "$dir\mtype.exe"
-            $deps = & C:\msys64\usr\bin\bash.exe -lc "ldd /usr/bin/mcopy.exe /usr/bin/mtype.exe | grep -oE 'msys-[^ ]+\.dll' | sort -u"
-            foreach ($d in $deps) { Copy-Item "C:\msys64\usr\bin\$d" "$dir\" }
+            try {
+              & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm" 2>&1 | Out-Host
+              & C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm --needed mtools" 2>&1 | Out-Host
+              if (Test-Path C:\msys64\usr\bin\mcopy.exe) {
+                Copy-Item C:\msys64\usr\bin\mcopy.exe "$dir\mcopy.exe"
+                Copy-Item C:\msys64\usr\bin\mtype.exe "$dir\mtype.exe"
+                $deps = & C:\msys64\usr\bin\bash.exe -lc "ldd /usr/bin/mcopy.exe /usr/bin/mtype.exe | grep -oE 'msys-[^ ]+\.dll' | sort -u"
+                foreach ($d in $deps) { Copy-Item "C:\msys64\usr\bin\$d" "$dir\" }
+                $ok = $true
+                Write-Host 'got mtools from MSYS2'
+              }
+            } catch { Write-Host "MSYS2 failed: $_" }
           }
-          Get-ChildItem $dir
-          if (-not (Test-Path "$dir\mcopy.exe")) { throw 'failed to obtain mcopy.exe' }
+          if ($ok) { Get-ChildItem $dir; Write-Host '::notice::win32 mtools bundled' }
+          else { Write-Host '::warning::win32 mtools NOT bundled - on Windows build the image elsewhere and use Reuse-existing-image to test the flasher' }
 
       # build:helper is a no-op off macOS; build:main + build:renderer + nsis run.
       - name: Build installer
