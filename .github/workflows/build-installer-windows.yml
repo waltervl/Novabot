@@ -41,24 +41,48 @@ jobs:
         env:
           PYTHON: python
 
-      # mtools (mcopy.exe) patches the FAT boot partition. Fetch the win32 build
-      # so the packaged app can patch without the user installing mtools.
+      # mtools (mcopy.exe/mtype.exe) patches the FAT boot partition. Bundle the
+      # win32 build so the packaged app patches without the user installing it.
+      # Try the native ezwinports zip; fall back to MSYS2 (preinstalled on the
+      # runner) with its msys-*.dll runtime co-located.
       - name: Fetch win32 mtools
         shell: pwsh
         run: |
-          $url = 'https://downloads.sourceforge.net/project/ezwinports/mtools-4.0.18-w32-bin.zip'
-          $zip = "$env:RUNNER_TEMP\mtools.zip"
-          $out = "$env:RUNNER_TEMP\mtools"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $out -Force
-          $mc = Get-ChildItem -Path $out -Recurse -Filter mcopy.exe | Select-Object -First 1
-          if (-not $mc) { throw 'mcopy.exe not found in mtools archive' }
-          New-Item -ItemType Directory -Force -Path vendor\mtools\win32-x64 | Out-Null
-          Copy-Item $mc.FullName vendor\mtools\win32-x64\mcopy.exe
-          Copy-Item $mc.FullName vendor\mtools\win32-x64\mtype.exe
-          Get-ChildItem -Path $out -Recurse -Filter *.dll |
-            ForEach-Object { Copy-Item $_.FullName vendor\mtools\win32-x64\ }
-          Get-ChildItem vendor\mtools\win32-x64
+          $ErrorActionPreference = 'Stop'
+          $dir = 'vendor\mtools\win32-x64'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $ok = $false
+          try {
+            $url = 'https://sourceforge.net/projects/ezwinports/files/mtools-4.0.18-w32-bin.zip/download'
+            $zip = "$env:RUNNER_TEMP\mtools.zip"
+            Invoke-WebRequest -Uri $url -OutFile $zip -UserAgent 'Mozilla/5.0' -MaximumRedirection 10
+            $head = [System.IO.File]::ReadAllBytes($zip)[0..1]
+            if ($head[0] -eq 0x50 -and $head[1] -eq 0x4B) {
+              $out = "$env:RUNNER_TEMP\mt"
+              Expand-Archive -Path $zip -DestinationPath $out -Force
+              $mc = Get-ChildItem $out -Recurse -Filter mcopy.exe | Select-Object -First 1
+              $mt = Get-ChildItem $out -Recurse -Filter mtype.exe | Select-Object -First 1
+              if ($mc) {
+                Copy-Item $mc.FullName "$dir\mcopy.exe"
+                if ($mt) { Copy-Item $mt.FullName "$dir\mtype.exe" } else { Copy-Item $mc.FullName "$dir\mtype.exe" }
+                Get-ChildItem $out -Recurse -Filter *.dll | ForEach-Object { Copy-Item $_.FullName "$dir\" }
+                $ok = $true
+              }
+            } else {
+              Write-Host 'ezwinports download was not a zip; falling back to MSYS2'
+            }
+          } catch {
+            Write-Host "ezwinports fetch failed ($_); falling back to MSYS2"
+          }
+          if (-not $ok) {
+            & C:\msys64\usr\bin\bash.exe -lc "pacman -Sy --noconfirm --needed mtools"
+            Copy-Item C:\msys64\usr\bin\mcopy.exe "$dir\mcopy.exe"
+            Copy-Item C:\msys64\usr\bin\mtype.exe "$dir\mtype.exe"
+            $deps = & C:\msys64\usr\bin\bash.exe -lc "ldd /usr/bin/mcopy.exe /usr/bin/mtype.exe | grep -oE 'msys-[^ ]+\.dll' | sort -u"
+            foreach ($d in $deps) { Copy-Item "C:\msys64\usr\bin\$d" "$dir\" }
+          }
+          Get-ChildItem $dir
+          if (-not (Test-Path "$dir\mcopy.exe")) { throw 'failed to obtain mcopy.exe' }
 
       # build:helper is a no-op off macOS; build:main + build:renderer + nsis run.
       - name: Build installer
