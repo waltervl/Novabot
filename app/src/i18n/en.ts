@@ -275,6 +275,11 @@ export default {
   'update.downloading': 'Downloading',
   'update.errorPrefix': 'Error',
 
+  // ── Mower firmware update (passive banner, not a popup) ───────
+  firmwareUpdateTitle: 'New mower firmware available',
+  firmwareUpdateSubtitle: 'Version {{version}} — tap to update',
+  firmwareUpdateAction: 'View',
+
   // ── Device Pairing ────────────────────────────────────────────
   selectCharger: 'Select Charger',
   whichCharger: 'Which charger should this mower pair with?',

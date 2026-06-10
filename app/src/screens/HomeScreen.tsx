@@ -34,6 +34,7 @@ import { ApiClient, type Schedule } from '../services/api';
 import { getServerUrl, getToken } from '../services/auth';
 import { DemoBanner } from '../components/DemoBanner';
 import { HealthBanner } from '../components/HealthBanner';
+import { FirmwareUpdateBanner } from '../components/FirmwareUpdateBanner';
 import { MowingProgressMap } from '../components/MowingProgressMap';
 import { resolveMowingMapSelection } from '../utils/mowingMapSelection';
 import HistoryScreen from './HistoryScreen';
@@ -1760,6 +1761,7 @@ export default function HomeScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
+      <FirmwareUpdateBanner />
       <ScrollView contentContainerStyle={[
         styles.scroll,
         { paddingBottom: Math.max(insets.bottom + 120, 132) },

@@ -24,6 +24,7 @@ import {
   clearPersistedActiveMowerSn,
 } from './src/context/ActiveMowerContext';
 import { MowQueueProvider } from './src/context/MowQueueContext';
+import { FirmwareUpdateProvider, useFirmwareUpdate } from './src/context/FirmwareUpdateContext';
 import { AppAlertProvider } from './src/context/AppAlertContext';
 import { PushRegistrar } from './src/components/PushRegistrar';
 import { I18nProvider, useI18n } from './src/i18n';
@@ -78,6 +79,9 @@ const Tab = createBottomTabNavigator<MainTabParams>();
 
 function UpdateGate() {
   const { latest, dismiss } = useAppUpdateCheck();
+  // iOS has no in-app / APK updates (App Store only), so this modal would be a
+  // dead-end popup there — only ever show it on Android.
+  if (Platform.OS !== 'android') return null;
   // Never interrupt a screenshot run with the update modal.
   if (SNAPSHOT_MODE) return null;
   if (!latest) return null;
@@ -189,6 +193,7 @@ function MapTabScreen() {
 function MainTabs({ onLogout, onGoToProvision }: { onLogout: () => void; onGoToProvision: () => void }) {
   const { t } = useI18n();
   const { colors: c, colorScheme } = useTheme();
+  const { available: fwUpdate } = useFirmwareUpdate();
   return (
     <Tab.Navigator
       initialRouteName="Home"
@@ -214,7 +219,18 @@ function MainTabs({ onLogout, onGoToProvision }: { onLogout: () => void; onGoToP
           else if (route.name === 'Camera') iconName = 'camera';
           else if (route.name === 'Schedules') iconName = 'calendar';
           else if (route.name === 'AppSettings') iconName = 'settings';
-          return <Ionicons name={iconName} size={size} color={color} />;
+          const icon = <Ionicons name={iconName} size={size} color={color} />;
+          // Passive red dot on the Settings tab when a mower firmware update is
+          // available (paired with the Home banner — no popup).
+          if (route.name === 'AppSettings' && fwUpdate) {
+            return (
+              <View>
+                {icon}
+                <View style={{ position: 'absolute', top: -2, right: -4, width: 9, height: 9, borderRadius: 5, backgroundColor: c.red, borderWidth: 1, borderColor: c.bg }} />
+              </View>
+            );
+          }
+          return icon;
         },
       })}
     >
@@ -298,11 +314,13 @@ function ThemedApp({
     <NavigationContainer theme={navTheme} ref={navigationRef}>
       {isAuthenticated ? (
         <ActiveMowerProvider>
-          <MowQueueProvider>
-            <PushRegistrar />
-            <AuthenticatedApp onLogout={handleLogout} onGoToProvision={handleGoToProvision} />
-            <UpdateGate />
-          </MowQueueProvider>
+          <FirmwareUpdateProvider>
+            <MowQueueProvider>
+              <PushRegistrar />
+              <AuthenticatedApp onLogout={handleLogout} onGoToProvision={handleGoToProvision} />
+              <UpdateGate />
+            </MowQueueProvider>
+          </FirmwareUpdateProvider>
         </ActiveMowerProvider>
       ) : (
         <AuthStack.Navigator screenOptions={screenOptions}>

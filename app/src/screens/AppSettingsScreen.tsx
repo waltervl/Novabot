@@ -32,6 +32,7 @@ import { useActiveMower } from '../hooks/useActiveMower';
 import { ApiClient } from '../services/api';
 import { useExperimental } from '../context/ExperimentalContext';
 import { useMapLabels } from '../context/MapLabelsContext';
+import { useFirmwareUpdate } from '../context/FirmwareUpdateContext';
 import { useI18n, LANGUAGES } from '../i18n';
 import * as Application from 'expo-application';
 
@@ -68,6 +69,7 @@ export default function AppSettingsScreen({
   const experimental = useExperimental();
   const mapLabels = useMapLabels();
   const { language, setLanguage, t } = useI18n();
+  const { available: fwUpdate } = useFirmwareUpdate();
 
   const { activeMower: mower } = useActiveMower();
 
@@ -408,6 +410,9 @@ export default function AppSettingsScreen({
             >
               <Ionicons name="cloud-download-outline" size={20} color={colors.blue} />
               <Text style={styles.actionLabel}>Firmware Updates</Text>
+              {fwUpdate && (
+                <View style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: colors.red, marginRight: 8 }} />
+              )}
               <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
             </TouchableOpacity>
           )}

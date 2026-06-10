@@ -273,6 +273,11 @@ export default {
   'update.downloading': 'Downloaden',
   'update.errorPrefix': 'Fout',
 
+  // ── Maaier-firmware-update (passieve balk, geen popup) ────────
+  firmwareUpdateTitle: 'Nieuwe maaier-firmware beschikbaar',
+  firmwareUpdateSubtitle: 'Versie {{version}} — tik om te updaten',
+  firmwareUpdateAction: 'Bekijk',
+
   // ── Device Pairing ────────────────────────────────────────────
   selectCharger: 'Kies laadstation',
   whichCharger: 'Met welk laadstation wil je deze maaier koppelen?',

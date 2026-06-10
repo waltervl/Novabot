@@ -150,6 +150,12 @@ export default {
   'update.openReleasePage': 'Release-Seite öffnen',
   'update.downloading': 'Herunterladen',
   'update.errorPrefix': 'Fehler',
+
+  // ── Mäher-Firmware-Update (passiver Banner, kein Popup) ───────
+  firmwareUpdateTitle: 'Neue Mäher-Firmware verfügbar',
+  firmwareUpdateSubtitle: 'Version {{version}} — zum Aktualisieren tippen',
+  firmwareUpdateAction: 'Ansehen',
+
   rrRainTitle: 'Zurückgekehrt: Regen',
   rrRainDesc: 'Der Mäher ist wegen erkanntem Regen zur Ladestation zurückgefahren. Fortsetzen, um die Regenpause zu ignorieren.',
   rrRainResume: 'Regen ignorieren & fortsetzen',

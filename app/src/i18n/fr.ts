@@ -150,6 +150,12 @@ export default {
   'update.openReleasePage': 'Ouvrir la page de release',
   'update.downloading': 'Téléchargement',
   'update.errorPrefix': 'Erreur',
+
+  // ── Mise à jour firmware tondeuse (bannière passive, pas de popup) ─
+  firmwareUpdateTitle: 'Nouveau firmware disponible',
+  firmwareUpdateSubtitle: 'Version {{version}} — touchez pour mettre à jour',
+  firmwareUpdateAction: 'Voir',
+
   rrRainTitle: 'Retour : pluie',
   rrRainDesc: 'La tondeuse est revenue à la station car de la pluie a été détectée. Reprenez pour ignorer la pause pluie.',
   rrRainResume: 'Ignorer la pluie et reprendre',
