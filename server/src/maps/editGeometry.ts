@@ -2,6 +2,7 @@
  * Pure geometrie voor map/obstacle bewerking. Bron van waarheid — wordt
  * 1-op-1 gespiegeld naar app/src/utils/mapEditGeometry.ts (geen imports!).
  * Alle afstanden in meters, lokale frame (charger = 0,0).
+ * Polygonen zijn OPEN ringen (sluitend segment impliciet; geen gedupliceerd sluitpunt).
  */
 export interface XY { x: number; y: number }
 
@@ -31,6 +32,7 @@ export function pointInPolygon(p: XY, poly: XY[]): boolean {
 
 /** Voeg punten in zodat geen segment (incl. sluitend segment) langer is dan maxSpacing. */
 export function densifyPolygon(pts: XY[], maxSpacing: number): XY[] {
+  if (!(maxSpacing > 0)) return pts.slice();
   if (pts.length < 3) return pts.slice();
   const out: XY[] = [];
   for (let i = 0; i < pts.length; i++) {
@@ -84,6 +86,10 @@ export function simplifyPolygon(pts: XY[], tolerance: number): XY[] {
   return out.length >= 3 ? out : pts.slice();
 }
 
+/**
+ * Strikte tekentest: collinear/rakend = ongedefinieerd (orientatie-afhankelijk).
+ * Bewust — float-drags raken dit praktisch nooit; NIET "fixen" in de RN-spiegel.
+ */
 function segIntersects(a: XY, b: XY, c: XY, d: XY): boolean {
   const cross = (o: XY, p: XY, q: XY) => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
   const d1 = cross(c, d, a), d2 = cross(c, d, b), d3 = cross(a, b, c), d4 = cross(a, b, d);
@@ -124,7 +130,11 @@ function distToSegment(p: XY, a: XY, b: XY): number {
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
-/** Max over edited-punten van min-afstand tot de originele polygon-rand (meters). */
+/**
+ * Max over edited-punten van min-afstand tot de originele polygon-rand (meters).
+ * Eénzijdig: alleen verplaatsing van NIEUWE punten weg van de oude rand telt
+ * (krimp/verwijdering geeft 0; richting binnen/buiten wordt niet onderscheiden).
+ */
 export function maxDisplacement(edited: XY[], original: XY[]): number {
   if (original.length < 2) return 0;
   let worst = 0;
@@ -142,7 +152,8 @@ export interface MapSetInput {
   work: { canonical: string; points: XY[] }[];
   obstacles: { canonical: string; parentMap: string; points: XY[] }[];
 }
-export interface ValidationIssue { canonical: string; code: string; message: string }
+export type ValidationCode = 'too_few_points' | 'self_intersect' | 'too_small' | 'outside_work' | 'unknown_parent' | 'large_displacement';
+export interface ValidationIssue { canonical: string; code: ValidationCode; message: string }
 export interface ValidationResult { ok: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[] }
 
 export const MIN_OBSTACLE_AREA_M2 = 0.5;
@@ -170,7 +181,9 @@ export function validateMapSet(input: MapSetInput, originals: Map<string, XY[]>)
   for (const o of input.obstacles) {
     if (!checkCommon(o.canonical, o.points, MIN_OBSTACLE_AREA_M2)) continue;
     const parent = input.work.find(w => w.canonical === o.parentMap);
-    if (parent && !polygonContains(parent.points, o.points)) {
+    if (parent === undefined) {
+      errors.push({ canonical: o.canonical, code: 'unknown_parent', message: `Onbekende werkkaart ${o.parentMap}` });
+    } else if (!polygonContains(parent.points, o.points)) {
       errors.push({ canonical: o.canonical, code: 'outside_work', message: `Obstacle steekt buiten ${o.parentMap}` });
     }
   }

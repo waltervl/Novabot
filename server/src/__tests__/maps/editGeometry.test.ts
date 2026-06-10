@@ -27,6 +27,11 @@ describe('editGeometry basics', () => {
     expect(dense.length).toBeGreaterThanOrEqual(40); // 40m omtrek / 1m
   });
 
+  it('densifyPolygon: guard tegen maxSpacing <= 0 (infinite-loop preventie)', () => {
+    expect(densifyPolygon(square, 0)).toEqual(square);
+    expect(densifyPolygon(square, NaN)).toEqual(square);
+  });
+
   it('simplifyPolygon: verwijdert collineaire punten, behoudt hoeken', () => {
     const noisy = densifyPolygon(square, 0.5);          // 80 punten op rechte randen
     const simple = simplifyPolygon(noisy, 0.05);
@@ -37,6 +42,10 @@ describe('editGeometry basics', () => {
   it('simplifyPolygon: laat kleine polygonen (<4 punten) intact', () => {
     const tri = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }];
     expect(simplifyPolygon(tri, 0.5)).toEqual(tri);
+  });
+
+  it('simplifyPolygon: safety fallback — resultaat altijd ≥ 3 punten', () => {
+    expect(simplifyPolygon(densifyPolygon(square, 0.5), 1000).length).toBeGreaterThanOrEqual(3);
   });
 });
 
@@ -103,6 +112,35 @@ describe('editGeometry validatie', () => {
     expect(res.ok).toBe(true);
     expect(res.warnings.some(w => w.canonical === 'map0' && w.code === 'large_displacement')).toBe(true);
   });
+
+  it('validateMapSet: obstacle met onbekende parentMap = unknown_parent error', () => {
+    const res = validateMapSet({
+      work: [{ canonical: 'map0', points: square }],
+      obstacles: [{ canonical: 'map9_0_obstacle', parentMap: 'map9',
+        points: [{ x: 2, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 4 }, { x: 2, y: 4 }] }],
+    }, new Map());
+    expect(res.ok).toBe(false);
+    expect(res.errors.some(e => e.canonical === 'map9_0_obstacle' && e.code === 'unknown_parent')).toBe(true);
+  });
+
+  it('validateMapSet: werkkaart met 2 punten = too_few_points', () => {
+    const res = validateMapSet({
+      work: [{ canonical: 'map0', points: [{ x: 0, y: 0 }, { x: 10, y: 0 }] }],
+      obstacles: [],
+    }, new Map());
+    expect(res.ok).toBe(false);
+    expect(res.errors.some(e => e.canonical === 'map0' && e.code === 'too_few_points')).toBe(true);
+  });
+
+  it('validateMapSet: vlinder werkkaart = self_intersect', () => {
+    const bowtie = [{ x: 0, y: 0 }, { x: 10, y: 10 }, { x: 10, y: 0 }, { x: 0, y: 10 }];
+    const res = validateMapSet({
+      work: [{ canonical: 'map0', points: bowtie }],
+      obstacles: [],
+    }, new Map());
+    expect(res.ok).toBe(false);
+    expect(res.errors.some(e => e.canonical === 'map0' && e.code === 'self_intersect')).toBe(true);
+  });
 });
 
 describe('editGeometry brush + hit-test', () => {
@@ -130,5 +168,14 @@ describe('editGeometry brush + hit-test', () => {
     const hit = hitTestEdge(square, { x: 5, y: 0.1 }, 0.5);
     expect(hit).toEqual({ insertIndex: 1, point: { x: 5, y: 0 } });
     expect(hitTestEdge(square, { x: 5, y: 5 }, 0.5)).toBeNull();
+  });
+
+  it('hitTestEdge: sluitend segment (0,10)->(0,0) wordt correct geraakt', () => {
+    // square = [{0,0},{10,0},{10,10},{0,10}]; sluitend segment is i=3: (0,10)->(0,0)
+    const hit = hitTestEdge(square, { x: 0.1, y: 5 }, 0.5);
+    expect(hit).not.toBeNull();
+    expect(hit!.insertIndex).toBe(4);
+    expect(hit!.point.x).toBeCloseTo(0, 6);
+    expect(hit!.point.y).toBeCloseTo(5, 6);
   });
 });
