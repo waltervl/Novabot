@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   polygonArea, pointInPolygon, densifyPolygon, simplifyPolygon,
+  selfIntersects, polygonContains, maxDisplacement, validateMapSet,
+  applyBrush, hitTestVertex, hitTestEdge,
 } from '../../maps/editGeometry.js';
 
 const square = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
@@ -35,5 +37,70 @@ describe('editGeometry basics', () => {
   it('simplifyPolygon: laat kleine polygonen (<4 punten) intact', () => {
     const tri = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }];
     expect(simplifyPolygon(tri, 0.5)).toEqual(tri);
+  });
+});
+
+describe('editGeometry validatie', () => {
+  it('selfIntersects: vlinder-polygon = true, vierkant = false', () => {
+    const bowtie = [{ x: 0, y: 0 }, { x: 10, y: 10 }, { x: 10, y: 0 }, { x: 0, y: 10 }];
+    expect(selfIntersects(bowtie)).toBe(true);
+    expect(selfIntersects(square)).toBe(false);
+  });
+
+  it('polygonContains: obstacle binnen work = true, half erbuiten = false', () => {
+    const inner = [{ x: 2, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 4 }, { x: 2, y: 4 }];
+    const sticking = [{ x: 8, y: 8 }, { x: 12, y: 8 }, { x: 12, y: 12 }, { x: 8, y: 12 }];
+    expect(polygonContains(square, inner)).toBe(true);
+    expect(polygonContains(square, sticking)).toBe(false);
+  });
+
+  it('polygonContains: vangt edge-crossing met alle vertices binnen', () => {
+    const cShape = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 4 }, { x: 2, y: 4 },
+                    { x: 2, y: 6 }, { x: 10, y: 6 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    const crossing = [{ x: 1, y: 1 }, { x: 1, y: 9 }, { x: 0.5, y: 9 }, { x: 0.5, y: 1 }];
+    expect(polygonContains(cShape, crossing)).toBe(true); // links van de inham — ok
+    const through = [{ x: 1, y: 3 }, { x: 9, y: 3 }, { x: 9, y: 7 }, { x: 1, y: 7 }];
+    expect(polygonContains(cShape, through)).toBe(false); // dekt de inham
+  });
+
+  it('maxDisplacement: meet grootste verschuiving t.o.v. origineel', () => {
+    const shifted = square.map(p => (p.x === 10 ? { x: 10.8, y: p.y } : p));
+    const d = maxDisplacement(shifted, square);
+    expect(d).toBeGreaterThan(0.7);
+    expect(d).toBeLessThan(0.9);
+    expect(maxDisplacement(square, square)).toBeCloseTo(0, 6);
+  });
+
+  it('validateMapSet: goede set = ok, fouten worden per canonical gemeld', () => {
+    const ok = validateMapSet({
+      work: [{ canonical: 'map0', points: square }],
+      obstacles: [{ canonical: 'map0_0_obstacle', parentMap: 'map0',
+        points: [{ x: 2, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 4 }, { x: 2, y: 4 }] }],
+    }, new Map());
+    expect(ok.ok).toBe(true);
+    expect(ok.errors).toEqual([]);
+
+    const bad = validateMapSet({
+      work: [{ canonical: 'map0', points: square }],
+      obstacles: [
+        { canonical: 'map0_0_obstacle', parentMap: 'map0',
+          points: [{ x: 9, y: 9 }, { x: 12, y: 9 }, { x: 12, y: 12 }, { x: 9, y: 12 }] },
+        { canonical: 'map0_1_obstacle', parentMap: 'map0',
+          points: [{ x: 2, y: 2 }, { x: 2.3, y: 2 }, { x: 2.3, y: 2.3 }] },
+      ],
+    }, new Map());
+    expect(bad.ok).toBe(false);
+    expect(bad.errors.some(e => e.canonical === 'map0_0_obstacle' && e.code === 'outside_work')).toBe(true);
+    expect(bad.errors.some(e => e.canonical === 'map0_1_obstacle' && e.code === 'too_small')).toBe(true);
+  });
+
+  it('validateMapSet: >1m verschuiving = warning, geen error', () => {
+    const moved = square.map(p => (p.x === 10 ? { x: 11.5, y: p.y } : p));
+    const res = validateMapSet(
+      { work: [{ canonical: 'map0', points: moved }], obstacles: [] },
+      new Map([['map0', square]]),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.warnings.some(w => w.canonical === 'map0' && w.code === 'large_displacement')).toBe(true);
   });
 });
