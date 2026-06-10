@@ -5400,6 +5400,7 @@ function rerenderMapView() {
 // Geometry helpers are a minimal JS port of server/src/maps/editGeometry.ts
 // (same formulas).
 window.__mapEdit = null;
+window.__mapEditLoading = false;
 
 function geomDensify(pts, maxSpacing) {
   if (!(maxSpacing > 0)) return pts.slice();
@@ -5448,7 +5449,9 @@ function geomHitEdge(pts, p, tol) {
 }
 
 async function enterMapEdit() {
-  if (window.__mapEdit) return;
+  if (window.__mapEdit || window.__mapEditLoading) return;
+  window.__mapEditLoading = true;
+  try {
   var sn = document.getElementById('mapMowerSelect').value;
   if (!sn) { await appAlert('Selecteer eerst een maaier.', { accent: 'warning' }); return; }
   var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(sn) + '/edit/geometry', {
@@ -5466,9 +5469,9 @@ async function enterMapEdit() {
     };
   });
   window.__mapEdit = {
-    active: true, sn: sn, tool: 'vertex', brushRadius: parseFloat(document.getElementById('brushRadius').value) || 0.8,
+    sn: sn, tool: 'vertex', brushRadius: parseFloat(document.getElementById('brushRadius').value) || 0.8,
     polys: polys, selected: -1, dragVertex: -1, brushAnchor: null, brushBase: null,
-    drawPoints: [], dirty: false, saveTimer: null, savePoly: null, cursorM: null,
+    drawPoints: [], saveTimer: null, savePoly: null, savePromise: null, cursorM: null,
     pendingSync: g.pendingSync, hasVersions: g.hasVersions
   };
   document.getElementById('mapEditTools').style.display = 'inline-flex';
@@ -5477,6 +5480,11 @@ async function enterMapEdit() {
   document.getElementById('applyMapEdit').textContent = g.pendingSync ? 'Opnieuw synchroniseren' : 'Toepassen op maaier';
   document.getElementById('deleteObstacleBtn').disabled = true;
   setEditTool('vertex');
+  } catch(e) {
+    editStatus('Editor laden mislukt');
+  } finally {
+    window.__mapEditLoading = false;
+  }
 }
 
 function exitMapEdit() {
@@ -5530,7 +5538,7 @@ function scheduleDraftSave(poly) {
 }
 
 function flushDraftSave() {
-  var st = window.__mapEdit; if (!st) return;
+  var st = window.__mapEdit; if (!st) return Promise.resolve();
   if (st.saveTimer) {
     clearTimeout(st.saveTimer);
     st.saveTimer = null;
@@ -5538,42 +5546,59 @@ function flushDraftSave() {
     st.savePoly = null;
     if (poly) saveDraftNow(poly);
   }
+  return st.savePromise || Promise.resolve();
 }
 
-async function saveDraftNow(poly) {
-  var st = window.__mapEdit; if (!st) return;
-  // A freshly drawn obstacle deleted before its first save never reached the
-  // server — nothing to do.
-  if (poly.deleted && !poly.canonical) return;
-  var body = poly.deleted
-    ? { canonical: poly.canonical, deleted: true }
-    : poly.canonical
-      ? { canonical: poly.canonical, points: poly.points }
-      : { mapType: 'obstacle', parentMap: poly.parentMap, points: poly.points };
-  try {
-    var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(st.sn) + '/edit/draft', {
+function saveDraftNow(poly) {
+  var st = window.__mapEdit; if (!st) return Promise.resolve();
+  // Serialize saves on st.savePromise: each request only starts after the
+  // previous one fully resolved (incl. canonical backfill). The body is built
+  // INSIDE the chained function so a follow-up save of a freshly drawn
+  // obstacle sees the backfilled canonical and the current points/deleted
+  // state — no duplicate creates, no dropped deletes.
+  st.savePromise = (st.savePromise || Promise.resolve()).then(function() {
+    // A freshly drawn obstacle deleted before its first save never reached
+    // the server — nothing to do.
+    if (poly.deleted && !poly.canonical) return;
+    var body = poly.deleted
+      ? { canonical: poly.canonical, deleted: true }
+      : poly.canonical
+        ? { canonical: poly.canonical, points: poly.points }
+        : { mapType: 'obstacle', parentMap: poly.parentMap, points: poly.points };
+    return fetch('/api/dashboard/maps/' + encodeURIComponent(st.sn) + '/edit/draft', {
       method: 'PUT', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
+    }).then(function(r) {
+      return r.json().then(function(j) {
+        if (!r.ok) { editStatus('Draft fout: ' + (j.error || r.status)); return; }
+        if (!poly.canonical) poly.canonical = j.canonical;
+        editStatus('Draft opgeslagen (' + poly.canonical + ')');
+      });
+    }).catch(function(e) {
+      editStatus('Draft fout: ' + e.message);
     });
-    var j = await r.json();
-    if (!r.ok) { editStatus('Draft fout: ' + (j.error || r.status)); return; }
-    if (!poly.canonical) poly.canonical = j.canonical;
-    editStatus('Draft opgeslagen (' + poly.canonical + ')');
-  } catch(e) {
-    editStatus('Draft fout: ' + e.message);
-  }
+  });
+  return st.savePromise;
 }
 
 async function resetMapEdit() {
   var st = window.__mapEdit; if (!st) return;
-  // Drop any pending debounce — we're about to wipe all drafts anyway.
+  var ok = await appConfirm('Alle niet-toegepaste wijzigingen weggooien?', { okText: 'Weggooien', destructive: true });
+  if (!ok) return;
+  // Drop any pending debounce WITHOUT firing it — we're discarding anyway.
   if (st.saveTimer) { clearTimeout(st.saveTimer); st.saveTimer = null; st.savePoly = null; }
+  // Let any in-flight draft PUT land before the DELETE wipes the drafts.
+  await (st.savePromise || Promise.resolve());
   var sn = st.sn;
   try {
-    await fetch('/api/dashboard/maps/' + encodeURIComponent(sn) + '/edit/drafts', {
+    var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(sn) + '/edit/drafts', {
       method: 'DELETE', headers: { 'Authorization': token }
     });
-  } catch(e) { /* re-enter below re-fetches the truth */ }
+    if (!r.ok) { editStatus('Reset mislukt: ' + r.status); return; }
+  } catch(e) {
+    editStatus('Reset mislukt: ' + e.message);
+    return;
+  }
   exitMapEdit();
   await enterMapEdit();
   editStatus('Drafts gewist');
@@ -5581,9 +5606,11 @@ async function resetMapEdit() {
 
 async function applyMapEdit() {
   var st = window.__mapEdit; if (!st) return;
-  flushDraftSave();
   var ok = await appConfirm('Wijzigingen toepassen op de maaier? Dit wist de map-bestanden op de maaier en pusht de bewerkte geometrie.', { okText: 'Toepassen' });
   if (!ok) return;
+  // Make sure every draft (pending debounce + in-flight PUT) has landed
+  // before the server snapshots the drafts for apply.
+  await flushDraftSave();
   var btn = document.getElementById('applyMapEdit');
   btn.disabled = true;
   editStatus('Toepassen...');
@@ -5733,6 +5760,7 @@ function hitTol() {
 }
 
 function mapEditMouseDown(e) {
+  if (e.button !== 0) return;
   var st = window.__mapEdit, m = evtToM(e);
   if (!st || !m) return;
   var tol = hitTol();
@@ -5815,6 +5843,15 @@ function mapEditDblClick(e) {
   if (!st || !m) return;
   var tol = hitTol();
   if (st.tool === 'draw') {
+    // The dblclick fires its own mousedowns, pushing (near-)duplicate
+    // trailing points — drop trailing points within 5 cm of their
+    // predecessor before closing the polygon.
+    var dp = st.drawPoints;
+    while (dp.length >= 2 &&
+           Math.hypot(dp[dp.length - 1].x - dp[dp.length - 2].x,
+                      dp[dp.length - 1].y - dp[dp.length - 2].y) < 0.05) {
+      dp.pop();
+    }
     if (st.drawPoints.length >= 3) {
       var parent = null;
       for (var i = 0; i < st.polys.length; i++) {
@@ -6214,7 +6251,7 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   // Map-edit overlay: drawn last so edited polygons + handles sit on top of
   // everything. The 1.5s live-position poll re-renders through this same
   // function, so the overlay survives polling automatically.
-  if (window.__mapEdit && window.__mapEdit.active) drawEditOverlay(canvas);
+  if (window.__mapEdit) drawEditOverlay(canvas);
 }
 
 // ── Mask overlay layer ("what the mower sees") ──────────────────────────────
