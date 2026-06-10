@@ -233,6 +233,31 @@ export function initDb(): void {
       updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Map edit drafts: uncommitted edits per mower
+    CREATE TABLE IF NOT EXISTS map_edit_drafts (
+      mower_sn       TEXT NOT NULL,
+      canonical_name TEXT NOT NULL,           -- map0, map0_0_obstacle, ...
+      map_id         TEXT,                    -- NULL = nieuw getekend obstacle
+      map_type       TEXT NOT NULL,           -- 'work' | 'obstacle'
+      parent_map     TEXT,                    -- voor obstacles: 'map0'
+      -- JSON array [{x,y}] lokale meters; NULL als deleted=1
+      draft_area     TEXT,
+      deleted        INTEGER NOT NULL DEFAULT 0,
+      updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (mower_sn, canonical_name)
+    );
+
+    -- Map versions: snapshots for undo
+    CREATE TABLE IF NOT EXISTS map_versions (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      mower_sn   TEXT NOT NULL,
+      -- JSON snapshot: [{map_id, canonical_name, map_type, map_name, map_area, map_max_min, file_name}]
+      snapshot   TEXT NOT NULL,
+      label      TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_map_versions_sn ON map_versions(mower_sn, id DESC);
+
     -- Apparaat instellingen: persistent cache voor set_para_info
     -- (maaier reageert niet op get_para_info, dus we bewaren de laatst gezette waarden)
     CREATE TABLE IF NOT EXISTS device_settings (
