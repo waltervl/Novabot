@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { unlink } from 'node:fs/promises';
+import { unlink, open, stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { XzReadableStream } from 'xz-decompress';
@@ -111,16 +111,113 @@ export async function decompressXz(xzPath: string, outPath: string): Promise<voi
   );
 }
 
+/** Size of each ranged request. Small enough that AV/proxy middleboxes that
+ *  corrupt one long stream still pass these through intact. */
+const CHUNK_BYTES = 8 * 1024 * 1024;
+/** Per-chunk network retries before giving up on a ranged download. */
+const CHUNK_RETRIES = 5;
+
 /**
- * Stream a remote image to `destPath`. Reports progress as (bytesReceived,
- * totalBytes|null) where total comes from the Content-Length header (null when
- * the server does not advertise it). Resolves only after the file is fully
- * written and flushed to disk; rejects (and removes the partial file) on any
- * network or filesystem failure.
+ * Download a remote image to `destPath`. PREFERS a segmented (HTTP Range)
+ * download: many small requests instead of one ~600 MB stream. A surprising
+ * number of consumer setups (antivirus scanning large downloads, captive/proxy
+ * middleboxes, some VPNs) silently corrupt a single long HTTPS transfer while
+ * leaving small requests intact — the symptom is a complete, structurally-valid
+ * file with the wrong checksum. Ranged requests route around that, and a bad
+ * chunk is re-fetched on its own. Falls back to a single stream when the server
+ * does not support ranges. Reports (bytesReceived, totalBytes|null).
  */
 export async function downloadImage(
   url: string,
   destPath: string,
+  onProgress?: (received: number, total: number | null) => void,
+): Promise<void> {
+  let total: number | null = null;
+  let supportsRanges = false;
+  try {
+    const head = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+    if (head.ok) {
+      const len = Number(head.headers.get('content-length'));
+      if (Number.isFinite(len) && len > 0) total = len;
+      supportsRanges = (head.headers.get('accept-ranges') ?? '').toLowerCase().includes('bytes');
+    }
+  } catch {
+    /* HEAD is best-effort; fall through to a streamed download */
+  }
+
+  if (total !== null && supportsRanges) {
+    try {
+      await downloadRanged(url, destPath, total, onProgress);
+      return;
+    } catch (err) {
+      // Range path failed (e.g. a proxy ignored Range and returned 200) — fall
+      // back to a single stream rather than aborting the whole build.
+      await unlink(destPath).catch(() => {});
+      void err;
+    }
+  }
+  await downloadStreamed(url, destPath, total, onProgress);
+}
+
+/** Segmented download: write each `bytes=start-end` range at its offset. */
+async function downloadRanged(
+  url: string,
+  destPath: string,
+  total: number,
+  onProgress?: (received: number, total: number | null) => void,
+): Promise<void> {
+  const fh = await open(destPath, 'w');
+  try {
+    let pos = 0;
+    while (pos < total) {
+      const end = Math.min(pos + CHUNK_BYTES, total) - 1;
+      const chunk = await fetchRange(url, pos, end);
+      await fh.write(chunk, 0, chunk.length, pos);
+      pos += chunk.length;
+      onProgress?.(pos, total);
+    }
+  } finally {
+    await fh.close();
+  }
+  const { size } = await stat(destPath);
+  if (size !== total) {
+    throw new Error(`Ranged download size mismatch: ${size} of ${total} bytes`);
+  }
+}
+
+/** Fetch one byte range as a Buffer, retrying transient failures. Throws (so
+ *  the caller can fall back) if the server ignores Range and returns 200. */
+async function fetchRange(url: string, start: number, end: number): Promise<Buffer> {
+  const want = end - start + 1;
+  let lastError = 'unknown error';
+  for (let attempt = 1; attempt <= CHUNK_RETRIES; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } });
+      if (res.status === 200) {
+        // Range ignored — do NOT buffer a ~600 MB body; signal fallback.
+        throw new Error('server ignored Range (returned 200)');
+      }
+      if (res.status !== 206) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length !== want) {
+        throw new Error(`short chunk: ${buf.length} of ${want} bytes`);
+      }
+      return buf;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      if (lastError.includes('returned 200')) throw new Error(lastError);
+    }
+  }
+  throw new Error(`range ${start}-${end} failed after ${CHUNK_RETRIES} tries: ${lastError}`);
+}
+
+/** Single-stream fallback for servers without Range support. */
+async function downloadStreamed(
+  url: string,
+  destPath: string,
+  total: number | null,
   onProgress?: (received: number, total: number | null) => void,
 ): Promise<void> {
   let response: Response;
@@ -129,7 +226,6 @@ export async function downloadImage(
   } catch (err) {
     throw new Error(`Network error downloading '${url}': ${(err as Error).message}`);
   }
-
   if (!response.ok) {
     throw new Error(`Failed to download '${url}': HTTP ${response.status} ${response.statusText}`);
   }
@@ -137,33 +233,20 @@ export async function downloadImage(
     throw new Error(`Failed to download '${url}': response has no body`);
   }
 
-  const lengthHeader = response.headers.get('content-length');
-  const total = lengthHeader !== null ? Number(lengthHeader) : null;
-  const totalBytes = total !== null && Number.isFinite(total) ? total : null;
-
   let received = 0;
-  // Wrap the web ReadableStream as a Node stream and tap progress as it flows.
   const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
   source.on('data', (chunk: Buffer) => {
     received += chunk.length;
-    onProgress?.(received, totalBytes);
+    onProgress?.(received, total);
   });
-
   try {
     await pipeline(source, createWriteStream(destPath));
   } catch (err) {
     await unlink(destPath).catch(() => {});
     throw new Error(`Failed to write '${destPath}': ${(err as Error).message}`);
   }
-
-  // A dropped connection can end the stream cleanly but short, leaving a
-  // truncated file that then fails checksum verification with a confusing
-  // message. When the server advertised a length, require we got all of it so
-  // an incomplete download is reported (and retried) as exactly that.
-  if (totalBytes !== null && received !== totalBytes) {
+  if (total !== null && received !== total) {
     await unlink(destPath).catch(() => {});
-    throw new Error(
-      `Incomplete download of '${url}': received ${received} of ${totalBytes} bytes`,
-    );
+    throw new Error(`Incomplete download of '${url}': received ${received} of ${total} bytes`);
   }
 }
