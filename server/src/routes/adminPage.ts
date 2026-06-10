@@ -733,7 +733,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
           <button onclick="exportPortableBundle()" style="padding:7px 18px;background:rgba(34,211,238,.2);color:#67e8f9;border:1px solid rgba(34,211,238,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Export bundle</button>
           <input id="portableImportFile" type="file" accept=".novabotmap,.novabundle,.zip" style="display:none" onchange="startPortableImport()">
           <button onclick="document.getElementById('portableImportFile').click()" title="Accepts .novabotmap (mower export) and .novabundle (RTK walker export). Walker bundles are auto-rotated against the mower's live dock pose + rasterized server-side." style="padding:7px 18px;background:rgba(99,102,241,.2);color:#a5b4fc;border:1px solid rgba(99,102,241,.5);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import bundle...</button>
-          <button onclick="manualPortableBackup()" style="padding:7px 18px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Snapshot now</button>
+          <button onclick="manualPortableBackup(this)" style="padding:7px 18px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Snapshot now</button>
           <button onclick="rebuildBundleFromDb()" title="Generate a self-contained bundle (rasterized map.pgm/png/yaml + per-map + csvs) from the stored polygons alone — no mower needed. Uses the faithful firmware occupancy-grid generator." style="padding:7px 18px;background:rgba(16,185,129,.15);color:#6ee7b7;border:1px solid rgba(16,185,129,.3);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Rebuild bundle (DB)</button>
           <input id="csvZipFile" type="file" accept=".zip" style="display:none" onchange="importCsvZip()">
           <button onclick="document.getElementById('csvZipFile').click()" title="Upload a .zip of a csv_file/ folder (mapN_work.csv, *_obstacle.csv, *_unicom.csv, map_info.json). Rasterizes + saves a restorable bundle." style="padding:7px 18px;background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.28);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Import CSV zip...</button>
@@ -1221,7 +1221,20 @@ function switchTab(name) {
   if (name === 'settings') { checkDns(); checkDnsmasqStatus(); }
   if (name === 'mowerdebug') { mdPopulateDropdown(); }
   // Load maps when switching to maps tab
-  if (name === 'maps') { populateMowerDropdown(); loadWalkerBundles(); }
+  if (name === 'maps') {
+    populateMowerDropdown(); loadWalkerBundles();
+    // Re-entry: a live-position poll may have measured the canvas at 0 while
+    // the tab was hidden. populateMowerDropdown() early-returns once loaded, so
+    // loadMaps() won't fire again — re-render the cached map once layout is
+    // back so it shows immediately (and at the right size if the window changed
+    // while we were away).
+    requestAnimationFrame(function() {
+      var c = document.getElementById('mapCanvas');
+      if (c && c.__mapState && c.__mapState.maps) {
+        renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
+      }
+    });
+  }
   if (name === 'experimental') { populateExperimentalMowerDropdown(); }
   if (name === 'firmware') { loadFirmwareVersions(); populateOtaDeviceDropdown(); wireWalkerFwToggle(); }
 }
@@ -3810,16 +3823,25 @@ function portableServerCopyWarningText() {
   return 'Stock/unknown firmware detected. Importing this bundle restores only the server/app copy; it does not write map files to the mower. Mowing will only work if these maps already exist on the mower.';
 }
 
-async function manualPortableBackup() {
+async function manualPortableBackup(btn) {
   var sn = document.getElementById('mapMowerSelect').value;
   if (!sn) { await appAlert('Select a mower first', { accent: 'warning' }); return; }
-  var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups', {
-    method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
-  });
-  var j = await r.json();
-  if (!j.ok) { await appAlert('Snapshot failed: ' + j.error, { accent: 'danger' }); return; }
-  await appAlert('Snapshot saved: ' + j.backup.filename + ' (' + (j.backup.bytes / 1024).toFixed(1) + ' KB)', { accent: 'success' });
-  loadPortableBackups();
+  // Reading the mower's live map files can take a few seconds (and up to ~20s
+  // before it gives up), so give immediate feedback and block double-clicks.
+  var origText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'wait'; btn.textContent = 'Snapshotting…'; }
+  try {
+    var r = await fetch('/api/admin-status/maps/' + encodeURIComponent(sn) + '/portable-backups', {
+      method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+    });
+    var j = await r.json();
+    if (!j.ok) { await appAlert('Snapshot failed: ' + j.error, { accent: 'danger' }); return; }
+    var kb = ((j.backup.bytes || j.backup.sizeBytes || 0) / 1024).toFixed(1);
+    await appAlert('Snapshot saved: ' + j.backup.filename + ' (' + kb + ' KB)', { accent: 'success' });
+    loadPortableBackups();
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = 'pointer'; btn.textContent = origText; }
+  }
 }
 
 async function rebuildBundleFromDb() {
@@ -5377,6 +5399,12 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   // Get device pixel ratio for sharp rendering
   var dpr = window.devicePixelRatio || 1;
   var rect = canvas.getBoundingClientRect();
+  // Canvas hidden (operator on another tab) — the 1.5s live-position poll
+  // still calls renderMapCanvas. Sizing the backing store to 0 here would
+  // collapse it (CSS height:auto), and a 0x0 canvas can't recover its aspect
+  // ratio, so the map view stays blank when you return to the Maps tab. Bail
+  // out and keep the last good bitmap instead.
+  if (rect.width === 0 || rect.height === 0) return;
   canvas.width = rect.width * dpr;
   canvas.height = rect.height * dpr;
   var ctx = canvas.getContext('2d');

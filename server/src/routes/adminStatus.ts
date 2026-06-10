@@ -1510,10 +1510,22 @@ adminStatusRouter.get('/maps/:sn/portable-backups', async (req: AuthRequest, res
 
 adminStatusRouter.post('/maps/:sn/portable-backups', async (req: AuthRequest, res: Response) => {
   const { createBackup } = await import('../services/portableBackup.js');
+  const { sn } = req.params;
   try {
-    const entry = await createBackup(req.params.sn, 'manual');
+    const entry = await createBackup(sn, 'manual');
     if (!entry) {
-      res.status(409).json({ ok: false, error: 'backup creation failed (mower offline or no map data)' });
+      // createBackup returns null when the mower didn't return its live map
+      // files in time (or has no map in the DB). Don't blame "offline" when it
+      // isn't — a corrupted/timed-out read_map_files on online mowers is the
+      // OpenNova socket-lock bug, fixed in firmware custom-37+.
+      const online = isDeviceOnline(sn);
+      res.status(409).json({
+        ok: false,
+        online,
+        error: online
+          ? 'mower is online but did not return its map files in time. Its firmware may be missing the OpenNova socket-lock fix (update to custom-37 or newer), or it has no saved map yet.'
+          : 'mower offline — a snapshot reads the live map files from the mower, so it must be online.',
+      });
       return;
     }
     res.json({ ok: true, backup: entry });
