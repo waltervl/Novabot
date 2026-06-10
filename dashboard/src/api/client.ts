@@ -573,3 +573,42 @@ export async function fetchSystemLogs(opts?: { tail?: number; type?: string; sn?
   const data = await res.json() as { logs: SystemLogEntry[] };
   return data.logs;
 }
+
+// ── Map Edit API ────────────────────────────────────────────────
+
+export interface EditDraftDto { points: { x: number; y: number }[]; deleted: boolean; isNew: boolean }
+export interface EditMapEntry {
+  mapId: string; canonical: string; mapType: 'work' | 'obstacle' | 'unicom';
+  alias: string | null; parentMap: string | null;
+  points: { x: number; y: number }[]; draft: EditDraftDto | null;
+}
+export interface EditGeometryDto { maps: EditMapEntry[]; pendingSync: boolean; hasVersions: boolean }
+export interface EditValidationIssue { canonical: string; code: string; message: string }
+export interface EditApplyDto {
+  ok: boolean; reason?: string;
+  validation?: { ok: boolean; errors: EditValidationIssue[]; warnings: EditValidationIssue[] };
+  applied?: { canonical: string; action: string }[];
+}
+
+export async function fetchEditGeometry(sn: string): Promise<EditGeometryDto> {
+  return (await get(`${BASE}/maps/${encodeURIComponent(sn)}/edit/geometry`)).json();
+}
+export async function saveEditDraft(sn: string, body: {
+  canonical?: string; mapType?: 'work' | 'obstacle'; parentMap?: string;
+  points?: { x: number; y: number }[]; deleted?: boolean;
+}): Promise<{ ok: boolean; canonical?: string; error?: string }> {
+  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/draft`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  return res.json();
+}
+export async function discardEditDrafts(sn: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/drafts`, { method: 'DELETE' });
+  return res.json();
+}
+async function postEdit(sn: string, action: 'apply' | 'revert'): Promise<EditApplyDto> {
+  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/${action}`, { method: 'POST' });
+  try { return await res.json(); } catch { return { ok: false, reason: `http_${res.status}` }; }
+}
+export async function applyEdits(sn: string): Promise<EditApplyDto> { return postEdit(sn, 'apply'); }
+export async function revertEdits(sn: string): Promise<EditApplyDto> { return postEdit(sn, 'revert'); }
