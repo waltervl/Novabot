@@ -22,6 +22,12 @@ const EXEC_TIMEOUT_MAX_MS = 60000;
 const EXEC_STDOUT_CAP = 256 * 1024;
 const EXEC_STDERR_CAP = 64 * 1024;
 
+/** How long a pending support-session request waits for the user to click
+ *  Approve/Deny before it auto-denies. Toggle-ON means "available for
+ *  support"; each operator connect still needs an explicit per-session OK,
+ *  so a request that nobody answers must not sit open forever. */
+const SESSION_APPROVAL_TIMEOUT_MS = 60_000;
+
 /** Run a command in the container and return clean stdout/stderr/exit-code.
  *  Hard caps on timeout + output so a runaway/huge command can't wedge the
  *  agent or flood the relay. Runs as the agent's own UID (root in our image),
@@ -220,6 +226,33 @@ let bootstrapHandle: AgentHandle | null = null;
  *  Approve / Deny in the admin UI (or the connection drops). */
 let pendingRequest: { requestId: string; since: number } | null = null;
 
+/** Auto-deny timer for the current pendingRequest. Cleared the moment the
+ *  user approves/denies, the request is superseded, or the link drops. */
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPendingTimer(): void {
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+}
+
+/** Record a new pending session request and arm the auto-deny timeout.
+ *  Does NOT approve — the user must explicitly Approve/Deny (toggle-ON is
+ *  availability, not blanket per-session consent). Exported so tests can
+ *  drive the timeout path without a live relay socket. */
+export function armPendingRequest(requestId: string): void {
+  clearPendingTimer();
+  pendingRequest = { requestId, since: Date.now() };
+  pendingTimer = setTimeout(() => {
+    // Nobody answered in time — deny so the operator socket is torn down
+    // and we never leave an unattended request open.
+    try { denyPending(requestId); } catch { /* already resolved/superseded */ }
+  }, SESSION_APPROVAL_TIMEOUT_MS);
+  // A lone timer must not keep the process alive on its own.
+  if (typeof pendingTimer.unref === 'function') pendingTimer.unref();
+}
+
 /** Active pty for the current approved session. Null between sessions.
  *  Operator keystrokes go through this; killing it ends the shell. */
 let activePty: PtySession | null = null;
@@ -250,6 +283,7 @@ export function approvePending(requestId: string): { ok: true } {
     throw new Error('agent not connected');
   }
   const handle = bootstrapHandle;
+  clearPendingTimer();
   // Spawn the pty BEFORE telling the relay to approve, so the very first
   // operator keystroke (which the relay may flush immediately) has a
   // shell to land in.
@@ -271,6 +305,7 @@ export function denyPending(requestId: string): { ok: true } {
   if (!pendingRequest || pendingRequest.requestId !== requestId) {
     throw new Error('no matching pending request');
   }
+  clearPendingTimer();
   bootstrapHandle?.denyRequest(requestId);
   pendingRequest = null;
   return { ok: true };
@@ -298,6 +333,7 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
     if (!shouldBeOn && bootstrapHandle) {
       // Tear down pty + handle so we leave no orphaned shells behind.
       killActiveSession();
+      clearPendingTimer();
       pendingRequest = null;
       bootstrapHandle.stop();
       bootstrapHandle = null;
@@ -317,10 +353,10 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
       token: opts.token,
       wsFactory: () => ws as unknown as AgentSocket,
       onRequest: ({ requestId }) => {
-        // Toggle ON is the consent — auto-approve. User can pull plug
-        // via kill button or by flipping the toggle OFF.
-        pendingRequest = { requestId, since: Date.now() };
-        try { approvePending(requestId); } catch { /* race with stop */ }
+        // Per-session consent: record the request and prompt the user to
+        // Approve/Deny (admin-page popup polls /status → pendingRequest).
+        // Auto-denies after SESSION_APPROVAL_TIMEOUT_MS if nobody answers.
+        armPendingRequest(requestId);
       },
       onRawBytes: (data) => {
         // Operator keystrokes — pipe them into the pty if one is active.
@@ -340,6 +376,7 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
     });
     ws.on('close', () => {
       killActiveSession();
+      clearPendingTimer();
       pendingRequest = null;
       bootstrapHandle = null;
       // Reconnect attempt next tick if still enabled.

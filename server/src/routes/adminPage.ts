@@ -1059,6 +1059,17 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
         </div>
       </div>
       <style>@keyframes rsPulse { 0%,100% { opacity:1 } 50% { opacity:.45 } }</style>
+      <div id="rsConsent" style="display:none;margin-top:14px;padding:14px 18px;background:rgba(245,158,11,.14);border-radius:8px;border:2px solid rgba(245,158,11,.7);box-shadow:0 0 0 4px rgba(245,158,11,.12)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:#f59e0b;box-shadow:0 0 0 4px rgba(245,158,11,.35);animation:rsPulse 1.4s ease-in-out infinite"></span>
+          <span style="font-weight:700;color:#fde68a;font-size:15px;letter-spacing:.02em">RAMON WANTS TO CONNECT</span>
+        </div>
+        <div style="font-size:12px;color:#fde68a;margin-top:6px">Approve to open an audited bash session inside your container. Every keystroke is logged. Declines automatically if you don't respond.</div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="rsApprove()">Approve</button>
+          <button class="btn btn-danger" onclick="rsDeny()">Decline</button>
+        </div>
+      </div>
       <div style="margin-top:12px">
         <div style="font-size:12px;color:#aaa;margin-bottom:6px">Audit logs</div>
         <ul id="rsAuditList" style="font-size:11px;color:#94a3b8;list-style:none;padding:0;margin:0"></ul>
@@ -7106,6 +7117,36 @@ async function rsRefreshStatus() {
         : 'Off — Ramon cannot connect.';
     }
   }
+  // Per-session approval prompt: shown while a request is pending and no
+  // session is live yet. Auto-denies server-side if left unanswered.
+  var consent = document.getElementById('rsConsent');
+  if (consent) {
+    if (r.pendingRequest && !active) {
+      consent.style.display = 'block';
+      window.rsPendingReqId = r.pendingRequest.requestId;
+    } else {
+      consent.style.display = 'none';
+      window.rsPendingReqId = null;
+    }
+  }
+}
+async function rsApprove() {
+  if (!window.rsPendingReqId) return;
+  await fetch('/api/remote-support/approve', {
+    method: 'POST', headers: rsAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ requestId: window.rsPendingReqId }),
+  }).catch(function() {});
+  window.rsPendingReqId = null;
+  rsRefreshStatus();
+}
+async function rsDeny() {
+  if (!window.rsPendingReqId) return;
+  await fetch('/api/remote-support/deny', {
+    method: 'POST', headers: rsAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ requestId: window.rsPendingReqId }),
+  }).catch(function() {});
+  window.rsPendingReqId = null;
+  rsRefreshStatus();
 }
 async function rsToggle() {
   var t = document.getElementById('rsToggle');
@@ -7216,12 +7257,23 @@ async function rsOpConnect() {
   var ws = new WebSocket(proto + "//" + location.host + "/api/remote-support/operator/" + sn + "?token=" + encodeURIComponent(token));
   rsOpWs = ws;
   ws.binaryType = "arraybuffer";
+  // No bytes flow until the user approves, so the first frame we receive IS
+  // the approval. Track it to tell "declined/timed out" apart from a normal
+  // session close.
+  var approved = false;
+  term.write("\\x1b[33m\\u23f3 Waiting for the user to approve this session\\u2026\\x1b[0m\\r\\n");
   ws.onopen = function() { rsOpRefresh(); };
   ws.onmessage = function(ev) {
+    if (!approved) { approved = true; term.write("\\x1b[32m\\u2713 Approved \\u2014 session is live.\\x1b[0m\\r\\n"); }
     if (typeof ev.data === "string") term.write(ev.data);
     else term.write(new Uint8Array(ev.data));
   };
-  ws.onclose = function() { term.write("\\r\\n[session closed]"); rsOpCurrentSn = null; rsOpRefresh(); };
+  ws.onclose = function() {
+    term.write(approved
+      ? "\\r\\n[session closed]"
+      : "\\r\\n\\x1b[31m\\u2717 No approval received \\u2014 the user declined or the request timed out.\\x1b[0m");
+    rsOpCurrentSn = null; rsOpRefresh();
+  };
   term.onData(function(d) { if (ws.readyState === 1) ws.send(d); });
 }
 var rsOpCard = document.getElementById("rsOperatorCard");

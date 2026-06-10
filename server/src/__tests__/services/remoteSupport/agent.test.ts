@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -175,6 +175,54 @@ describe('approve/deny pending wiring', () => {
     expect(ptyClosed).toBe(true);
     handle.stop();
     mod._setBootstrapHandleForTest(null);
+  });
+});
+
+describe('per-session approval', () => {
+  it('armPendingRequest records a pending request WITHOUT auto-approving', async () => {
+    const mod = await import('../../../services/remoteSupport/agent.js');
+    mod._setPendingForTest(null);
+    const sock = new MockWs();
+    const handle = mod.startAgent({
+      sn: 'LFIN2231000656', token: 't', wsFactory: () => sock as any, onRequest: () => {},
+    });
+    mod._setBootstrapHandleForTest(handle);
+
+    mod.armPendingRequest('r-1');
+    // Pending is recorded so the user UI can prompt — but no approve frame
+    // goes out: toggle-ON is availability, not blanket per-session consent.
+    expect(mod.getPendingRequest()).toMatchObject({ requestId: 'r-1' });
+    expect(sock.sent.some((m) => m.includes('"type":"approve"'))).toBe(false);
+
+    mod.denyPending('r-1'); // cleanup (also clears the auto-deny timer)
+    handle.stop();
+    mod._setBootstrapHandleForTest(null);
+  });
+
+  it('auto-denies a pending request left unanswered past the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const mod = await import('../../../services/remoteSupport/agent.js');
+      mod._setPendingForTest(null);
+      const sock = new MockWs();
+      const handle = mod.startAgent({
+        sn: 'LFIN2231000656', token: 't', wsFactory: () => sock as any, onRequest: () => {},
+      });
+      mod._setBootstrapHandleForTest(handle);
+
+      mod.armPendingRequest('r-2');
+      expect(mod.getPendingRequest()).toMatchObject({ requestId: 'r-2' });
+
+      vi.advanceTimersByTime(60_000);
+
+      expect(mod.getPendingRequest()).toBeNull();
+      expect(sock.sent.some((m) => m.includes('"type":"deny"') && m.includes('r-2'))).toBe(true);
+
+      handle.stop();
+      mod._setBootstrapHandleForTest(null);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
