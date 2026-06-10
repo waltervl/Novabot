@@ -2783,6 +2783,7 @@ var _expState = {
   maps: [],
   chargingPose: null,
   heatmap: [],
+  heatRaster: undefined, // cached WiFi heatmap bitmap; recomputed only when heatmap data changes
   livePose: null,
   mowerTrail: [],
   viewState: null
@@ -2938,12 +2939,12 @@ function expAggregateWifiPoints(raw, maxPoints) {
 }
 
 function expWifiSamplePoints(points) {
-  var raw = expNormalizeWifiPoints(points);
-  if (raw.length <= 1200) return points || [];
-  var every = Math.ceil(raw.length / 1200);
-  var sampled = [];
-  for (var i = 0; i < raw.length; i += every) sampled.push(raw[i].source);
-  return sampled;
+  // Cap the on-map sample dots to the NEWEST N. Plotting every sample (can be
+  // many thousands over a multi-day window) made the deck render crawl. The
+  // server returns oldest->newest (ts ASC), so the newest live at the tail.
+  var MAX = 1000;
+  var arr = points || [];
+  return arr.length > MAX ? arr.slice(arr.length - MAX) : arr;
 }
 
 function expHeatmapRadiusMeters(points, bounds) {
@@ -3156,7 +3157,14 @@ function renderExperimentalDeck() {
   }
 
   if (expLayerEnabled('expLayerHeatmap') && _expState.heatmap.length > 0 && deck.BitmapLayer) {
-    var heatRaster = renderExperimentalWifiHeatmap(_expState.heatmap);
+    // The raster is an expensive O(pixels x cells) compute (~100M ops). It only
+    // changes when the heatmap DATA changes (30s refetch), not on the 2s live
+    // tick, so cache the bitmap and rebuild only the cheap BitmapLayer each
+    // render. This is what kept the experimental deck from crawling.
+    if (_expState.heatRaster === undefined) {
+      _expState.heatRaster = renderExperimentalWifiHeatmap(_expState.heatmap);
+    }
+    var heatRaster = _expState.heatRaster;
     if (heatRaster) {
       layers.push(new deck.BitmapLayer({
         id: 'exp-wifi-raster-heatmap',
@@ -3294,8 +3302,25 @@ function experimentalInfoText() {
     var theta = Number(pose.orientation || 0);
     poseText = 'Mower position: x=' + Number(pose.x).toFixed(2) + ' y=' + Number(pose.y).toFixed(2) + ' θ=' + (Number.isFinite(theta) ? theta.toFixed(2) : '0.00');
   }
+  // The count is positioned WiFi samples within a ROLLING time window (default
+  // 24h), not a cumulative total — so it plateaus at steady state, which looks
+  // "stuck". Show the window + the newest-sample age so it's clear the mower is
+  // still sampling (only map-positioned samples count, i.e. while it's mowing).
+  var hoursEl = document.getElementById('expHeatmapHours');
+  var winH = hoursEl ? (hoursEl.value || '24') : '24';
+  var wifiTxt = _expState.heatmap.length + ' WiFi samples (last ' + winH + 'h';
+  if (_expState.heatmap.length > 0) {
+    var newestTs = _expState.heatmap[_expState.heatmap.length - 1].ts;
+    var ms = Date.parse(String(newestTs).replace(' ', 'T') + 'Z');
+    if (Number.isFinite(ms)) {
+      var ago = Math.max(0, Math.round((Date.now() - ms) / 1000));
+      var agoTxt = ago < 90 ? (ago + 's') : (ago < 5400 ? Math.round(ago / 60) + 'm' : Math.round(ago / 3600) + 'h');
+      wifiTxt += ', newest ' + agoTxt + ' ago';
+    }
+  }
+  wifiTxt += ')';
   return work + ' work, ' + obstacles + ' obstacles, ' + channels + ' channels, '
-    + _expState.heatmap.length + ' WiFi samples, ' + _expState.mowerTrail.length + ' trail points · ' + poseText;
+    + wifiTxt + ', ' + _expState.mowerTrail.length + ' trail points · ' + poseText;
 }
 
 async function loadExperimentalMap(resetView) {
@@ -3349,6 +3374,7 @@ async function loadExperimentalHeatmap(shouldRender) {
   try {
     var data = await api('/wifi-heatmap/' + encodeURIComponent(sn) + '?hours=' + encodeURIComponent(hours));
     _expState.heatmap = data.points || [];
+    _expState.heatRaster = undefined; // data changed -> drop the cached bitmap so it recomputes once
     var info = document.getElementById('expMapInfo');
     if (info) info.textContent = experimentalInfoText();
     if (shouldRender !== false) renderExperimentalDeck();
