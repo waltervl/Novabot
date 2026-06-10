@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { join } from 'node:path';
 import { registerIpcHandlers } from './ipc.js';
 
@@ -27,6 +27,11 @@ function createWindow(): void {
 void app.whenReady().then(() => {
   registerIpcHandlers(ipcMain, {
     getWebContents: () => BrowserWindow.getAllWindows()[0]?.webContents,
+    shell: {
+      showItemInFolder: (p) => shell.showItemInFolder(p),
+      openExternal: (u) => shell.openExternal(u),
+    },
+    downloadsDir: app.getPath('downloads'),
   });
 
   createWindow();

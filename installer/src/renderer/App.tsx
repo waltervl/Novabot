@@ -10,17 +10,15 @@ import {
 } from './wizard';
 import { WelcomeStep } from './steps/WelcomeStep';
 import { ConfigStep } from './steps/ConfigStep';
-import { ChooseSdStep } from './steps/ChooseSdStep';
+import { BuildStep } from './steps/BuildStep';
 import { FlashStep } from './steps/FlashStep';
-import { InjectStep } from './steps/InjectStep';
 import { FinishStep } from './steps/FinishStep';
 
 const STEP_LABELS: Record<Step, string> = {
   welcome: 'Welcome',
   config: 'Settings',
-  chooseSd: 'SD card',
+  build: 'Build',
   flash: 'Flash',
-  inject: 'Configure',
   finish: 'Finish',
 };
 
@@ -48,7 +46,7 @@ export function App() {
         <header className="mb-6 text-center">
           <h1 className="text-2xl font-semibold">OpenNova Installer</h1>
           <p className="text-sm text-slate-500">
-            Prepare a microSD card for your Raspberry Pi.
+            Build a ready-to-flash OpenNova image for your Raspberry Pi.
           </p>
         </header>
 
@@ -59,36 +57,26 @@ export function App() {
           {step === 'config' && (
             <ConfigStep config={ctx.config} onChange={(config) => patchCtx({ config })} />
           )}
-          {step === 'chooseSd' && (
-            <ChooseSdStep
-              selectedDevice={ctx.selectedDevice}
-              eraseConfirmed={ctx.eraseConfirmed ?? false}
-              onSelect={(drive) =>
-                patchCtx({
-                  selectedDrive: drive,
-                  selectedDevice: drive.device,
-                  selectedSize: drive.size,
-                })
-              }
-              onEraseConfirmedChange={(eraseConfirmed) => patchCtx({ eraseConfirmed })}
+          {step === 'build' && (
+            <BuildStep
+              config={ctx.config}
+              built={ctx.built ?? false}
+              outputPath={ctx.outputPath}
+              onBuilt={(outputPath) => patchCtx({ built: true, outputPath })}
             />
           )}
           {step === 'flash' && (
             <FlashStep
-              drive={ctx.selectedDrive}
+              imagePath={ctx.outputPath}
               flashed={ctx.flashed ?? false}
-              onFlashed={(imagePath) => patchCtx({ flashed: true, imagePath })}
+              selectedDevice={ctx.selectedDevice}
+              onSelectDevice={(device) => patchCtx({ selectedDevice: device || undefined })}
+              onFlashed={() => patchCtx({ flashed: true })}
             />
           )}
-          {step === 'inject' && (
-            <InjectStep
-              device={ctx.selectedDevice}
-              config={ctx.config}
-              injected={ctx.injected ?? false}
-              onInjected={() => patchCtx({ injected: true })}
-            />
+          {step === 'finish' && (
+            <FinishStep hostname={ctx.config?.hostname} />
           )}
-          {step === 'finish' && <FinishStep />}
         </main>
 
         <footer className="mt-6 flex justify-between">

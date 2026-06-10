@@ -1,29 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Stub the heavy modules so no etcher-sdk / network / disk is touched.
-vi.mock('../src/main/drives.js', () => ({
-  scanDrives: vi.fn(),
-}));
+// Stub the heavy modules so no network / disk / decompression is touched.
 vi.mock('../src/main/imageSource.js', () => ({
   downloadImage: vi.fn(),
   verifySha256: vi.fn(),
+  resolveLatestImageUrl: vi.fn(),
+  fetchExpectedSha256: vi.fn(),
+  decompressXz: vi.fn(),
 }));
-vi.mock('../src/main/flasher.js', () => ({
-  flash: vi.fn(),
+vi.mock('../src/main/imagePatcher.js', () => ({
+  patchImageBootPartition: vi.fn(),
 }));
-vi.mock('../src/main/bootInject.js', () => ({
-  writeBootFiles: vi.fn(),
-  findBootPartition: vi.fn(),
+vi.mock('../src/main/drives.js', () => ({
+  scanDrives: vi.fn(),
+}));
+vi.mock('../src/main/flashDisk.js', () => ({
+  flashDisk: vi.fn(),
 }));
 vi.mock('../src/main/discovery.js', () => ({
   waitForPi: vi.fn(),
+  isHostnameTaken: vi.fn(),
 }));
 
 import { registerIpcHandlers } from '../src/main/ipc.js';
-import type { IpcMainLike } from '../src/main/ipc.js';
-import { scanDrives } from '../src/main/drives.js';
-import { writeBootFiles, findBootPartition } from '../src/main/bootInject.js';
-import type { InstallerConfig } from '../src/shared/types.js';
+import type { IpcMainLike, ShellLike } from '../src/main/ipc.js';
+import { waitForPi } from '../src/main/discovery.js';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 
@@ -38,20 +39,14 @@ function makeFakeIpcMain(): { ipcMain: IpcMainLike; handlers: Map<string, Handle
   return { ipcMain, handlers };
 }
 
-const sampleConfig: InstallerConfig = {
-  hostname: 'opennova',
-  network: { type: 'ethernet' },
-  timezone: 'Europe/Amsterdam',
-  connectionPath: 'opennova-app',
-};
-
 const EXPECTED_CHANNELS = [
+  'image:build',
   'drives:scan',
-  'image:ensure',
   'flash:start',
   'flash:cancel',
-  'boot:inject',
-  'config:generate',
+  'shell:reveal',
+  'shell:openExternal',
+  'hostname:check',
   'pi:find',
 ];
 
@@ -68,75 +63,47 @@ describe('registerIpcHandlers', () => {
     }
   });
 
-  it('drives:scan returns { ok:true, value } when scanDrives resolves', async () => {
+  it('pi:find returns { ok:true, value } when waitForPi resolves', async () => {
     const { ipcMain, handlers } = makeFakeIpcMain();
     registerIpcHandlers(ipcMain);
-    const candidates = [
-      {
-        device: '/dev/disk4',
-        description: 'SD',
-        size: 64e9,
-        isSystem: false,
-        isRemovable: true,
-        isReadOnly: false,
-      },
-    ];
-    vi.mocked(scanDrives).mockResolvedValue(candidates);
+    vi.mocked(waitForPi).mockResolvedValue({ host: 'opennova.local' });
 
-    const result = await handlers.get('drives:scan')!({});
-    expect(result).toEqual({ ok: true, value: candidates });
+    const result = await handlers.get('pi:find')!({}, { hosts: ['opennova.local'] });
+    expect(result).toEqual({ ok: true, value: { host: 'opennova.local' } });
   });
 
-  it('returns { ok:false, error } (does not reject) when the module throws', async () => {
+  it('returns { ok:false, error } (does not reject) when a handler throws', async () => {
     const { ipcMain, handlers } = makeFakeIpcMain();
     registerIpcHandlers(ipcMain);
-    vi.mocked(scanDrives).mockRejectedValue(new Error('drivelist exploded'));
+    vi.mocked(waitForPi).mockRejectedValue(new Error('no pi found'));
 
-    const result = (await handlers.get('drives:scan')!({})) as {
+    const result = (await handlers.get('pi:find')!({}, { hosts: [] })) as {
       ok: boolean;
       error?: string;
     };
     expect(result.ok).toBe(false);
-    expect(result.error).toContain('drivelist exploded');
+    expect(result.error).toContain('no pi found');
   });
 
-  it('boot:inject returns { ok:false } when findBootPartition resolves null', async () => {
+  it('shell:reveal calls shell.showItemInFolder and resolves ok', async () => {
+    const showItemInFolder = vi.fn();
+    const shell: ShellLike = { showItemInFolder, openExternal: vi.fn().mockResolvedValue(undefined) };
     const { ipcMain, handlers } = makeFakeIpcMain();
-    registerIpcHandlers(ipcMain);
-    vi.mocked(findBootPartition).mockResolvedValue(null);
+    registerIpcHandlers(ipcMain, { shell });
 
-    const result = (await handlers.get('boot:inject')!(
-      {},
-      { device: '/dev/disk4', config: sampleConfig },
-    )) as { ok: boolean; error?: string };
-
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/partition/i);
-    expect(writeBootFiles).not.toHaveBeenCalled();
-  });
-
-  it('boot:inject returns { ok:true } and writes files when partition is found', async () => {
-    const { ipcMain, handlers } = makeFakeIpcMain();
-    registerIpcHandlers(ipcMain);
-    vi.mocked(findBootPartition).mockResolvedValue('/Volumes/bootfs');
-
-    const result = (await handlers.get('boot:inject')!(
-      {},
-      { device: '/dev/disk4', config: sampleConfig },
-    )) as { ok: boolean; value?: { bootDir: string; generated: unknown } };
-
-    expect(result.ok).toBe(true);
-    expect(result.value?.bootDir).toBe('/Volumes/bootfs');
-    expect(result.value?.generated).toBeDefined();
-    expect(writeBootFiles).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(writeBootFiles).mock.calls[0][0]).toBe('/Volumes/bootfs');
-  });
-
-  it('flash:cancel with no in-flight flash resolves { ok:true, value:null } (no throw)', async () => {
-    const { ipcMain, handlers } = makeFakeIpcMain();
-    registerIpcHandlers(ipcMain);
-
-    const result = await handlers.get('flash:cancel')!({});
+    const result = await handlers.get('shell:reveal')!({}, '/path/to/image.img');
     expect(result).toEqual({ ok: true, value: null });
+    expect(showItemInFolder).toHaveBeenCalledWith('/path/to/image.img');
+  });
+
+  it('shell:openExternal calls shell.openExternal and resolves ok', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    const shell: ShellLike = { showItemInFolder: vi.fn(), openExternal };
+    const { ipcMain, handlers } = makeFakeIpcMain();
+    registerIpcHandlers(ipcMain, { shell });
+
+    const result = await handlers.get('shell:openExternal')!({}, 'https://example.com');
+    expect(result).toEqual({ ok: true, value: null });
+    expect(openExternal).toHaveBeenCalledWith('https://example.com');
   });
 });

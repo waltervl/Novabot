@@ -55,6 +55,32 @@ const DEFAULT_HOSTS = ['opennova.local'];
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_INTERVAL_MS = 2_000;
 
+/**
+ * Whether `<hostname>.local` is ALREADY claimed on the network (mDNS). Used by
+ * the config step to warn before building, so the user doesn't pick a name that
+ * collides with an existing device (e.g. another OpenNova server) — which would
+ * make the new Pi unreachable by that name. Resolves `{ taken:false }` on any
+ * lookup failure or after a short timeout (don't block on an ambiguous result).
+ */
+export async function isHostnameTaken(
+  hostname: string,
+): Promise<{ taken: boolean; address?: string }> {
+  const trimmed = hostname.trim();
+  if (trimmed.length === 0) {
+    return { taken: false };
+  }
+  const host = trimmed.endsWith('.local') ? trimmed : `${trimmed}.local`;
+  const dns = await import('node:dns/promises');
+  const lookup = dns.lookup(host).then(
+    ({ address }) => ({ taken: true, address }),
+    () => ({ taken: false }),
+  );
+  const timeout = new Promise<{ taken: boolean }>((resolve) =>
+    setTimeout(() => resolve({ taken: false }), 3000).unref(),
+  );
+  return Promise.race([lookup, timeout]);
+}
+
 /** Build the health URL for a host. */
 function healthUrl(host: string): string {
   return `http://${host}/api/setup/health`;

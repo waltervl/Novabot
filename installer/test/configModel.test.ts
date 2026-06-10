@@ -18,37 +18,79 @@ describe('generateFiles', () => {
       .toMatch(/ENABLE_DNS:\s*"true"/);
   });
 
-  it('firstrun installs docker and brings the stack up, auto-detecting TARGET_IP', () => {
+  it('defers the Docker/OpenNova install to a post-network systemd service', () => {
     const g = generateFiles({ ...base, connectionPath: 'opennova-app' });
     expect(g.firstrunSh).toMatch(/^#!\/bin\/bash/);
+    // The first boot stays lightweight and ALWAYS completes.
+    expect(g.firstrunSh).toContain('set +e');
+    expect(g.firstrunSh).toMatch(/exit 0\s*$/);
+    // It MUST remove the first-boot hook, or the Pi reboots on every boot (loop).
+    expect(g.firstrunSh).toContain('rm -f /boot/firmware/firstrun.sh');
+    expect(g.firstrunSh).toMatch(/sed -i .*cmdline\.txt/);
+    // It installs + enables a service that runs the heavy install AFTER network.
+    expect(g.firstrunSh).toContain('opennova-setup.service');
+    expect(g.firstrunSh).toContain('After=network-online.target');
+    expect(g.firstrunSh).toContain('/var/lib/opennova/installed'); // run-once marker
+    // The actual Docker/OpenNova install lives in that deferred service.
     expect(g.firstrunSh).toContain('docker-ce');
     expect(g.firstrunSh).toContain('hostname -I');
     expect(g.firstrunSh).toContain('docker compose up -d');
   });
 
-  it('wifi config produces an nmcli connection; ethernet does not', () => {
-    const wifi = generateFiles({ ...base, network: { type: 'wifi', ssid: 'Home', password: 'secret', country: 'NL' }, connectionPath: 'opennova-app' });
-    expect(wifi.firstrunSh).toContain('nmcli');
-    expect(wifi.firstrunSh).toContain('Home');
-    expect(generateFiles({ ...base, connectionPath: 'opennova-app' }).firstrunSh).not.toContain('nmcli');
+  it('wifi config writes a NetworkManager keyfile profile; ethernet does not', () => {
+    const wifi = generateFiles({ ...base, network: { type: 'wifi', ssid: 'Home', password: 'secret12', country: 'NL' }, connectionPath: 'opennova-app' });
+    // A keyfile written directly (NOT nmcli, which fails in the first-boot context).
+    expect(wifi.firstrunSh).toContain('opennova-wifi.nmconnection');
+    expect(wifi.firstrunSh).toContain('ssid=Home');
+    expect(wifi.firstrunSh).toContain('key-mgmt=wpa-psk');
+    expect(wifi.firstrunSh).not.toContain('nmcli');
+    expect(generateFiles({ ...base, connectionPath: 'opennova-app' }).firstrunSh).not.toContain('nmconnection');
   });
 
   it('cmdlineAppend triggers firstrun once then reboots', () => {
     const g = generateFiles({ ...base, connectionPath: 'opennova-app' });
-    expect(g.cmdlineAppend).toContain('systemd.run=/boot/firstrun.sh');
+    // Bookworm/Trixie mount the boot partition at /boot/firmware (matches RPi Imager).
+    expect(g.cmdlineAppend).toContain('systemd.run=/boot/firmware/firstrun.sh');
     expect(g.cmdlineAppend).toContain('systemd.run_success_action=reboot');
   });
 
-  it('safely escapes a single quote in the Wi-Fi password', () => {
+  it('writes the Wi-Fi password verbatim into the NM keyfile (no shell quoting)', () => {
     const g = generateFiles({
       ...base,
-      network: { type: 'wifi', ssid: 'Home', password: "p'wn", country: 'NL' },
+      network: { type: 'wifi', ssid: 'Home', password: "p'wnpass", country: 'NL' },
       connectionPath: 'opennova-app',
     });
-    // The quote is closed, escaped, and reopened: p'\''wn wrapped in quotes.
-    expect(g.firstrunSh).toContain("'p'\\''wn'");
-    // And the raw, broken sequence must NOT appear.
-    expect(g.firstrunSh).not.toContain("psk 'p'wn'");
+    // Keyfile values are literal to end-of-line, so the quote is NOT shell-escaped.
+    expect(g.firstrunSh).toContain("psk=p'wnpass");
+  });
+
+  it('REJECTS Wi-Fi credentials with newlines / control chars (heredoc injection)', () => {
+    // A crafted SSID that would close the heredoc and inject a root command.
+    expect(() =>
+      generateFiles({
+        ...base,
+        network: { type: 'wifi', ssid: 'Home\nNMCONN\nrm -rf /', password: 'secret12', country: 'NL' },
+        connectionPath: 'opennova-app',
+      }),
+    ).toThrow(/newlines or control characters/i);
+    // Same guard on the password.
+    expect(() =>
+      generateFiles({
+        ...base,
+        network: { type: 'wifi', ssid: 'Home', password: 'secret12\nrm -rf /', country: 'NL' },
+        connectionPath: 'opennova-app',
+      }),
+    ).toThrow(/newlines or control characters/i);
+  });
+
+  it('REJECTS an out-of-range Wi-Fi password (WPA needs 8–63 chars)', () => {
+    expect(() =>
+      generateFiles({
+        ...base,
+        network: { type: 'wifi', ssid: 'Home', password: 'short', country: 'NL' },
+        connectionPath: 'opennova-app',
+      }),
+    ).toThrow(/8.63 characters/);
   });
 
   it('safely escapes a single quote in the hostname', () => {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { installer } from '../ipc';
 import type { InstallerConfig } from '../../shared/types';
 
 interface ConfigStepProps {
@@ -41,6 +42,23 @@ export function ConfigStep({ config, onChange }: ConfigStepProps) {
   const hostnameInvalid = hostname.trim().length === 0;
   const ssidInvalid = networkType === 'wifi' && ssid.trim().length === 0;
 
+  // Warn (don't block) if `<hostname>.local` is already taken on the network —
+  // e.g. another OpenNova server — which would make this Pi unreachable by name.
+  const [takenBy, setTakenBy] = useState<string | null>(null);
+  useEffect(() => {
+    const name = hostname.trim();
+    if (name.length === 0) {
+      setTakenBy(null);
+      return;
+    }
+    const t = setTimeout(() => {
+      void installer.checkHostname(name).then((res) => {
+        setTakenBy(res.ok && res.value.taken ? res.value.address ?? 'another device' : null);
+      });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [hostname]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -60,6 +78,12 @@ export function ConfigStep({ config, onChange }: ConfigStepProps) {
         />
         {hostnameInvalid && (
           <p className="mt-1 text-sm text-red-600">Device name cannot be empty.</p>
+        )}
+        {!hostnameInvalid && takenBy && (
+          <p className="mt-1 text-sm text-amber-700">
+            <span className="font-medium">{hostname.trim()}.local</span> is already used on
+            your network (at {takenBy}). Pick a different name so this Pi is reachable.
+          </p>
         )}
       </Field>
 

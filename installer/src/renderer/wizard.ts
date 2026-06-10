@@ -6,26 +6,13 @@
  * per-step advance guard. The React layer reads from here and never duplicates
  * the routing rules.
  */
-import type { InstallerConfig, DriveCandidate } from '../shared/types';
+import type { InstallerConfig } from '../shared/types';
 
 /** The wizard screens, in the order the user walks through them. */
-export type Step =
-  | 'welcome'
-  | 'config'
-  | 'chooseSd'
-  | 'flash'
-  | 'inject'
-  | 'finish';
+export type Step = 'welcome' | 'config' | 'build' | 'flash' | 'finish';
 
 /** All steps, in order. */
-export const STEPS: readonly Step[] = [
-  'welcome',
-  'config',
-  'chooseSd',
-  'flash',
-  'inject',
-  'finish',
-] as const;
+export const STEPS: readonly Step[] = ['welcome', 'config', 'build', 'flash', 'finish'] as const;
 
 /**
  * Data gathered as the user progresses. Every field is optional because it is
@@ -34,19 +21,14 @@ export const STEPS: readonly Step[] = [
  */
 export interface WizardContext {
   config?: InstallerConfig;
-  /**
-   * The full drive the user picked, carrying its REAL scanned safety flags.
-   * `FlashStep` builds the `FlashTarget` from this rather than fabricating
-   * flags. `selectedDevice`/`selectedSize` are kept as convenience mirrors of
-   * `selectedDrive.device`/`.size`.
-   */
-  selectedDrive?: DriveCandidate;
+  /** Absolute path to the built, ready-to-flash image. */
+  outputPath?: string;
+  /** Whether the image was built successfully. */
+  built?: boolean;
+  /** The SD card device the user selected to flash, e.g. `/dev/disk4`. */
   selectedDevice?: string;
-  selectedSize?: number;
-  imagePath?: string;
-  eraseConfirmed?: boolean;
+  /** Whether the card was flashed successfully. */
   flashed?: boolean;
-  injected?: boolean;
 }
 
 /** Zero-based position of a step in {@link STEPS}. */
@@ -88,9 +70,8 @@ function isValidConfig(config: InstallerConfig | undefined): boolean {
  *
  * - welcome: always.
  * - config: a valid config is present.
- * - chooseSd: a device is selected AND the erase warning is confirmed.
- * - flash: the card was flashed.
- * - inject: the boot config was injected.
+ * - build: the image was built successfully.
+ * - flash: the card was flashed successfully.
  * - finish: never (last step).
  */
 export function canAdvance(step: Step, ctx: WizardContext): boolean {
@@ -99,16 +80,10 @@ export function canAdvance(step: Step, ctx: WizardContext): boolean {
       return true;
     case 'config':
       return isValidConfig(ctx.config);
-    case 'chooseSd':
-      return (
-        typeof ctx.selectedDevice === 'string' &&
-        ctx.selectedDevice.length > 0 &&
-        ctx.eraseConfirmed === true
-      );
+    case 'build':
+      return ctx.built === true;
     case 'flash':
       return ctx.flashed === true;
-    case 'inject':
-      return ctx.injected === true;
     case 'finish':
       return false;
   }

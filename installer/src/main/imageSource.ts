@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
+import { XzReadableStream } from 'xz-decompress';
 
 /**
  * Stream a file through sha256 and compare (case-insensitively) to the
@@ -20,6 +21,91 @@ export async function verifySha256(filePath: string, expectedHex: string): Promi
   }
   const actual = hash.digest('hex').toLowerCase();
   return actual === expectedHex.toLowerCase();
+}
+
+/**
+ * Parse the first sha256 digest out of a `.sha256` sidecar file's contents. The
+ * sidecar is `sha256sum`-style (`<hex>  <filename>`); we take the first
+ * whitespace-delimited token and require exactly 64 hex chars. Throws on
+ * anything malformed so an empty/garbled sidecar can never silently disable
+ * verification (which would let an unverified image through). Pure + testable.
+ */
+export function parseSha256Sidecar(text: string): string {
+  const token = text.trim().split(/\s+/)[0] ?? '';
+  if (!/^[0-9a-fA-F]{64}$/.test(token)) {
+    throw new Error(
+      `Malformed sha256 sidecar (expected 64 hex chars, got '${token.slice(0, 80)}')`,
+    );
+  }
+  return token.toLowerCase();
+}
+
+/**
+ * Resolve the Raspberry Pi OS `_latest` endpoint to the concrete dated image URL
+ * it 302-redirects to. We issue a HEAD (fetch follows redirects by default) so
+ * we never pull the multi-hundred-MB body just to learn the URL; the resolved
+ * address is read from `response.url`. Guarded so a redirect to anything that is
+ * not an `.img.xz` is rejected rather than blindly downloaded.
+ */
+export async function resolveLatestImageUrl(latestUrl: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(latestUrl, { method: 'HEAD', redirect: 'follow' });
+  } catch (err) {
+    throw new Error(
+      `Network error resolving latest image '${latestUrl}': ${(err as Error).message}`,
+    );
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Failed to resolve latest image '${latestUrl}': HTTP ${response.status} ${response.statusText}`,
+    );
+  }
+  if (!response.url.endsWith('.img.xz')) {
+    throw new Error(`Unexpected latest image URL '${response.url}' (expected an .img.xz)`);
+  }
+  return response.url;
+}
+
+/**
+ * Fetch the `.img.xz.sha256` sidecar for `imageUrl` and return the expected
+ * lowercase hex digest. This is where integrity for the always-latest image
+ * comes from: the digest is published by Raspberry Pi alongside each image and
+ * fetched over HTTPS at download time, so there is no pinned hash to maintain.
+ */
+export async function fetchExpectedSha256(imageUrl: string): Promise<string> {
+  const sidecarUrl = `${imageUrl}.sha256`;
+  let response: Response;
+  try {
+    response = await fetch(sidecarUrl);
+  } catch (err) {
+    throw new Error(`Network error fetching checksum '${sidecarUrl}': ${(err as Error).message}`);
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch checksum '${sidecarUrl}': HTTP ${response.status} ${response.statusText}`,
+    );
+  }
+  return parseSha256Sidecar(await response.text());
+}
+
+/**
+ * Decompress an `.img.xz` to a raw `.img` at `outPath`, STREAMING through a
+ * WASM xz decoder. Streaming is mandatory here: a Raspberry Pi OS Lite image is
+ * ~3.2 GB uncompressed, and materialising that in a single Buffer/ArrayBuffer
+ * crashes the Electron main process (`v8::ArrayBuffer::NewBackingStore`
+ * out-of-memory — the V8 memory cage refuses an allocation that large). The
+ * WASM decoder (`xz-decompress`) keeps only a small window in memory (peak RSS
+ * ~150 MB) and writes chunks straight to disk. Its WASM is base64-inlined, so it
+ * works inside the packaged asar with no native module / ABI concerns.
+ */
+export async function decompressXz(xzPath: string, outPath: string): Promise<void> {
+  const compressed = Readable.toWeb(createReadStream(xzPath)) as ReadableStream<Uint8Array>;
+  const decompressed = new XzReadableStream(compressed);
+  await pipeline(
+    Readable.fromWeb(decompressed as Parameters<typeof Readable.fromWeb>[0]),
+    createWriteStream(outPath),
+  );
 }
 
 /**

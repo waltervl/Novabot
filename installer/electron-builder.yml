@@ -8,9 +8,10 @@
 #     - macOS notarization         : APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
 #   When those env vars are absent, electron-builder skips signing/notarization.
 #
-# NATIVE DEPS: etcher-sdk ships native/prebuilt modules (drivelist, lzma-native,
-#   usb, xxhash-addon, @ronomon/direct-io). They MUST live outside the asar
-#   archive or the app crashes at runtime when it dlopen()s them — see asarUnpack.
+# NATIVE DEPS: none. xz decompression uses `xz-decompress` (WASM, base64-inlined,
+#   no .node module), and the image patch uses macOS `hdiutil`/`diskutil`. The SD
+#   write is done by Raspberry Pi Imager, not this app. The asarUnpack globs below
+#   are kept as a harmless safety net should a native dep ever be added.
 
 appId: nl.ramonvanbruggen.opennova.installer
 productName: OpenNova Installer
@@ -30,17 +31,19 @@ files:
   - "!**/__tests__/**"
   - "!src/**"
 
-# Native modules pulled in (directly or transitively) by etcher-sdk. These must
-# be unpacked from the asar so they can be loaded at runtime.
+# Safety net: if a native module is ever added, unpack it from the asar so it can
+# be dlopen()'d at runtime. Currently nothing matches these (no native deps).
 asarUnpack:
-  - "node_modules/etcher-sdk/**"
-  - "node_modules/drivelist/**"
-  - "node_modules/lzma-native/**"
-  - "node_modules/usb/**"
-  - "node_modules/xxhash-addon/**"
-  - "node_modules/@ronomon/direct-io/**"
   - "node_modules/**/*.node"
   - "node_modules/**/prebuilds/**"
+
+# Bundle the mtools binaries used to write the FAT boot partition. They land in
+# the app's resources dir (`process.resourcesPath/mtools/<platform>-<arch>/`),
+# which `imagePatcher.ts` resolves at runtime. All platforms' binaries are tiny
+# (~200 KB) so we ship them together rather than per-target-filtering.
+extraResources:
+  - from: vendor/mtools
+    to: mtools
 
 mac:
   target: dmg
@@ -57,11 +60,11 @@ mac:
 win:
   target: nsis
 
-# The installer writes raw block devices, which requires administrator rights.
+# The app builds an image file (no raw-disk writes), so it does not need admin
+# rights to run. (Note: the image patcher is currently macOS-only.)
 nsis:
   oneClick: false
-  perMachine: true
-  allowElevation: true
+  perMachine: false
   allowToChangeInstallationDirectory: true
 
 linux:

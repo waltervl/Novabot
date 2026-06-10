@@ -20,6 +20,33 @@ function sanitizeTimezone(tz: string): string {
   return tz.replace(/[^A-Za-z0-9_/+-]/g, '');
 }
 
+/**
+ * Validate Wi-Fi credentials BEFORE they are interpolated into the generated
+ * first-boot script. The SSID/PSK are written verbatim into a quoted heredoc
+ * (`<<'NMCONN'`); a newline — or the heredoc terminator alone on its own line —
+ * in either value would close the heredoc early and turn the remainder into
+ * shell commands that run as ROOT on first boot. So we reject control characters
+ * (which covers CR/LF, and thus a terminator on its own line) and enforce the
+ * 802.11/WPA limits. Throws on anything unsafe; the build surfaces the message.
+ */
+function assertSafeWifi(ssid: string, password: string, country: string): void {
+  const control = /[\u0000-\u001f\u007f]/;
+  if (control.test(ssid) || control.test(password)) {
+    throw new Error('Wi-Fi SSID and password must not contain newlines or control characters.');
+  }
+  const ssidBytes = Buffer.byteLength(ssid, 'utf8');
+  if (ssidBytes < 1 || ssidBytes > 32) {
+    throw new Error('Wi-Fi SSID must be 1–32 bytes.');
+  }
+  const isHex64 = /^[0-9a-fA-F]{64}$/.test(password);
+  if (!isHex64 && (password.length < 8 || password.length > 63)) {
+    throw new Error('Wi-Fi password must be 8–63 characters (or a 64-character hex key).');
+  }
+  if (!/^[A-Za-z]{2}$/.test(country)) {
+    throw new Error('Wi-Fi country must be a 2-letter code.');
+  }
+}
+
 function composeYml(cfg: InstallerConfig): string {
   const dns = cfg.connectionPath === 'novabot-app'
     ? '      ENABLE_DNS: "true"\n      UPSTREAM_DNS: "1.1.1.1"\n'
@@ -50,19 +77,33 @@ function envFile(cfg: InstallerConfig): string {
   return `TZ=${sanitizeTimezone(cfg.timezone)}\n`;
 }
 
-function firstrunSh(cfg: InstallerConfig): string {
-  const wifi = cfg.network.type === 'wifi'
-    ? `nmcli connection add type wifi ifname wlan0 con-name opennova-wifi ssid ${shQuote(cfg.network.ssid)} \\
-  802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk ${shQuote(cfg.network.password)} || true
-raspi-config nonint do_wifi_country ${shQuote(cfg.network.country)} || true
-nmcli connection up opennova-wifi || true
-`
-    : '';
+/**
+ * The heavy, network-dependent OpenNova install. This is written to the rootfs
+ * by `firstrun.sh` and run LATER by `opennova-setup.service` — AFTER the system
+ * is fully up and online — NOT in the early first-boot init. So if the install
+ * is slow or fails, it can never block or brick the boot: the Pi is reachable
+ * regardless, and this just brings the container up when it can.
+ */
+function setupSh(cfg: InstallerConfig): string {
   return `#!/bin/bash
-set -e
-exec > /var/log/opennova-firstrun.log 2>&1
-hostnamectl set-hostname ${shQuote(cfg.hostname)} || true
-${wifi}
+# OpenNova install — runs ONCE, after network-online.target (see the
+# opennova-setup.service unit). NEVER put this in the first-boot init path.
+exec >> /var/log/opennova-setup.log 2>&1
+echo "=== opennova-setup started $(date -u 2>/dev/null) ==="
+
+# Mirror the log onto the FAT boot partition so it is readable by simply popping
+# the SD into any computer (no ext4 tooling needed) if something goes wrong.
+BOOTDIR=/boot/firmware; [ -d "$BOOTDIR" ] || BOOTDIR=/boot
+trap 'cp -f /var/log/opennova-setup.log "$BOOTDIR/opennova-setup.log" 2>/dev/null || true' EXIT
+
+# network-online.target can fire before DNS/routing actually work (especially on
+# Wi-Fi); wait until the Docker registry is genuinely reachable before starting.
+for i in $(seq 1 30); do
+  if curl -fsS --max-time 5 https://download.docker.com/ >/dev/null 2>&1; then break; fi
+  echo "waiting for internet ($i/30)..."; sleep 10
+done
+
+set -ex
 # Docker (official Debian repo)
 apt-get update
 apt-get install -y ca-certificates curl
@@ -79,7 +120,7 @@ Signed-By: /etc/apt/keyrings/docker.asc
 SRC
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-systemctl enable docker
+systemctl enable --now docker
 
 # OpenNova
 install -d -o "$(logname 2>/dev/null || echo opennova)" /home/opennova/opennova/data || mkdir -p /home/opennova/opennova/data
@@ -90,11 +131,119 @@ cat > docker-compose.yml <<'COMPOSE'
 ${composeYml(cfg)}COMPOSE
 docker compose pull
 docker compose up -d
+
+# Mark complete so the oneshot never runs again on later boots.
+install -d /var/lib/opennova && touch /var/lib/opennova/installed
+echo "=== opennova-setup finished OK $(date -u 2>/dev/null) ==="
 `;
 }
 
+/**
+ * The systemd unit that runs {@link setupSh} once, after the network is online.
+ * `Restart=on-failure` retries within the same uptime; the `installed` marker +
+ * `ConditionPathExists=!` stop it re-running once it has succeeded.
+ */
+const SETUP_SERVICE = `[Unit]
+Description=OpenNova first-boot installation (Docker + container)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/opennova/installed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/opennova/setup.sh
+RemainAfterExit=yes
+TimeoutStartSec=0
+Restart=on-failure
+RestartSec=120
+
+[Install]
+WantedBy=multi-user.target
+`;
+
+/**
+ * The LIGHTWEIGHT first-boot script. It only does fast, local config (hostname,
+ * Wi-Fi, SSH) and then installs the deferred {@link setupSh} service, so the
+ * first boot ALWAYS completes. `set +e` + `exit 0` guarantee success, which lets
+ * the firstboot `systemd.run_success_action=reboot` reboot cleanly into a normal
+ * boot where `opennova-setup.service` takes over once the network is up.
+ */
+function firstrunSh(cfg: InstallerConfig): string {
+  // Reject unsafe Wi-Fi credentials BEFORE interpolating them into the script.
+  if (cfg.network.type === 'wifi') {
+    assertSafeWifi(cfg.network.ssid, cfg.network.password, cfg.network.country);
+  }
+  // Write the NetworkManager connection profile FILE directly. `nmcli` needs the
+  // NM daemon, which is NOT running in the early first-boot context, so it
+  // silently fails there and Wi-Fi never gets configured. NM reads this keyfile
+  // on the normal boot and connects. The SSID/PSK are written verbatim (keyfile
+  // values are literal to end-of-line; no shell quoting applies inside the quoted
+  // heredoc). `cfg80211.ieee80211_regdom`/raspi-config set the country so Wi-Fi
+  // is not rfkill-blocked.
+  const wifi = cfg.network.type === 'wifi'
+    ? `install -d -m 0700 /etc/NetworkManager/system-connections
+cat > /etc/NetworkManager/system-connections/opennova-wifi.nmconnection <<'NMCONN'
+[connection]
+id=opennova-wifi
+type=wifi
+interface-name=wlan0
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=${cfg.network.ssid}
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=${cfg.network.password}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+NMCONN
+chmod 600 /etc/NetworkManager/system-connections/opennova-wifi.nmconnection
+raspi-config nonint do_wifi_country ${shQuote(cfg.network.country)} 2>/dev/null || true
+`
+    : '';
+  return `#!/bin/bash
+# LIGHTWEIGHT first-boot config — must ALWAYS let the boot complete. The heavy,
+# network-dependent install is deferred to opennova-setup.service (runs after
+# network-online.target), so it can never block or break the first boot.
+exec > /var/log/opennova-firstrun.log 2>&1
+set +e
+
+hostnamectl set-hostname ${shQuote(cfg.hostname)} 2>/dev/null || echo ${shQuote(cfg.hostname)} > /etc/hostname
+${wifi}
+# Enable SSH on the normal boot.
+systemctl enable ssh 2>/dev/null || ln -sf /lib/systemd/system/ssh.service /etc/systemd/system/multi-user.target.wants/ssh.service 2>/dev/null || true
+
+# Install the deferred OpenNova setup service (runs after the network is up).
+install -d /usr/local/lib/opennova
+cat > /usr/local/lib/opennova/setup.sh <<'OPENNOVA_SETUP'
+${setupSh(cfg)}OPENNOVA_SETUP
+chmod +x /usr/local/lib/opennova/setup.sh
+cat > /etc/systemd/system/opennova-setup.service <<'OPENNOVA_UNIT'
+${SETUP_SERVICE}OPENNOVA_UNIT
+ln -sf /etc/systemd/system/opennova-setup.service /etc/systemd/system/multi-user.target.wants/opennova-setup.service 2>/dev/null || true
+
+# CRITICAL: remove the first-boot hook so the NEXT boot is a normal boot. The
+# systemd.run mechanism does NOT clean up after itself — without this the Pi
+# re-runs firstrun.sh and reboots on EVERY boot (a boot loop). This mirrors
+# exactly what Raspberry Pi Imager's own firstrun.sh does.
+rm -f /boot/firmware/firstrun.sh
+sed -i 's| systemd[.][^ ]*||g' /boot/firmware/cmdline.txt
+
+exit 0
+`;
+}
+
+// On Bookworm/Trixie the FAT boot partition is mounted at /boot/firmware, so the
+// first-boot script lives there at runtime — this matches the path Raspberry Pi
+// Imager itself writes. (Older releases used /boot.)
 const CMDLINE_APPEND =
-  ' systemd.run=/boot/firstrun.sh systemd.run_success_action=reboot init=/usr/lib/raspberrypi-sys-mods/firstboot';
+  ' systemd.run=/boot/firmware/firstrun.sh systemd.run_success_action=reboot init=/usr/lib/raspberrypi-sys-mods/firstboot';
 
 export function generateFiles(cfg: InstallerConfig): GeneratedFiles {
   return {

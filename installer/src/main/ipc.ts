@@ -1,16 +1,27 @@
 import { basename, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { existsSync } from 'node:fs';
+import { rename, unlink, mkdir } from 'node:fs/promises';
 
+import {
+  downloadImage,
+  verifySha256,
+  resolveLatestImageUrl,
+  fetchExpectedSha256,
+  decompressXz,
+} from './imageSource.js';
+import { patchImageBootPartition } from './imagePatcher.js';
 import { scanDrives } from './drives.js';
-import { downloadImage, verifySha256 } from './imageSource.js';
-import { flash } from './flasher.js';
-import type { FlashTarget, FlashProgress } from './flasher.js';
-import { writeBootFiles, findBootPartition } from './bootInject.js';
-import { waitForPi } from './discovery.js';
-import { generateFiles } from './configModel.js';
+import { flashDisk } from './flashDisk.js';
+import { waitForPi, isHostnameTaken } from './discovery.js';
 import { PI_OS_RELEASE } from '../shared/piOsRelease.js';
-import type { InstallerConfig, IpcResult, ImageProgress } from '../shared/types.js';
+import type {
+  InstallerConfig,
+  IpcResult,
+  BuildProgress,
+  BuildResult,
+  FlashProgress,
+} from '../shared/types.js';
 
 /**
  * Minimal slice of Electron's `ipcMain` we depend on. Taking this as a
@@ -26,10 +37,20 @@ export interface WebContentsLike {
   send(channel: string, payload: unknown): void;
 }
 
-/** Injectable dependencies so progress targeting stays testable. */
+/** The slice of Electron's `shell` we use (injected so handlers stay testable). */
+export interface ShellLike {
+  showItemInFolder(fullPath: string): void;
+  openExternal(url: string): Promise<unknown>;
+}
+
+/** Injectable dependencies so progress targeting + OS integration stay testable. */
 export interface IpcDeps {
   /** Resolves the renderer to push progress events to (the first window). */
   getWebContents?: () => WebContentsLike | undefined;
+  /** OS integration (Finder reveal, open URL). Wired from electron in index.ts. */
+  shell?: ShellLike;
+  /** Directory the finished image is written to (defaults to ~/Downloads). */
+  downloadsDir?: string;
 }
 
 /**
@@ -48,66 +69,131 @@ async function wrap<T>(fn: () => Promise<T> | T): Promise<IpcResult<T>> {
 }
 
 /**
+ * Download (cached + verified) the LATEST Raspberry Pi OS Lite image and return
+ * the path to the `.img.xz`. The `_latest` endpoint 302-redirects to the current
+ * dated build; integrity comes from the published `.sha256` sidecar, so there is
+ * no pinned hash to maintain. The download goes to a process-unique `.partial`
+ * file that is verified before being atomically renamed into the cache path, so
+ * an interrupted/concurrent download can never leave a corrupt file behind.
+ */
+async function ensureLatestImageXz(
+  onProgress: (received: number, total: number | null) => void,
+): Promise<string> {
+  const imageUrl = await resolveLatestImageUrl(PI_OS_RELEASE.latestUrl);
+  const expectedSha = await fetchExpectedSha256(imageUrl);
+  const destPath = join(tmpdir(), basename(new URL(imageUrl).pathname));
+
+  if (existsSync(destPath) && (await verifySha256(destPath, expectedSha))) {
+    return destPath;
+  }
+
+  const partialPath = `${destPath}.${process.pid}.partial`;
+  try {
+    await downloadImage(imageUrl, partialPath, onProgress);
+    if (!(await verifySha256(partialPath, expectedSha))) {
+      throw new Error(`Downloaded image failed sha256 verification (expected ${expectedSha})`);
+    }
+    await rename(partialPath, destPath);
+    return destPath;
+  } finally {
+    await unlink(partialPath).catch(() => {});
+  }
+}
+
+/** Filesystem-safe `opennova-<hostname>-<timestamp>.img` for the output image. */
+function outputFileName(config: InstallerConfig): string {
+  const host = config.hostname.replace(/[^A-Za-z0-9._-]/g, '-') || 'opennova';
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '').replace('-', '').replace('-', '');
+  return `opennova-${host}-${stamp}.img`;
+}
+
+/**
+ * Build a ready-to-flash OpenNova image: download the latest Pi OS Lite,
+ * decompress it, patch the boot partition with the user's config, and write the
+ * result to the downloads directory. NO raw-disk access — the user flashes the
+ * resulting file with Raspberry Pi Imager, which handles all the OS-level disk
+ * permission machinery. Reports progress per phase.
+ */
+async function buildImage(
+  config: InstallerConfig,
+  send: (channel: string, payload: unknown) => void,
+  downloadsDir: string,
+): Promise<BuildResult> {
+  const emit = (p: BuildProgress): void => send('build:progress', p);
+
+  const xzPath = await ensureLatestImageXz((received, total) =>
+    emit({ phase: 'download', received, total }),
+  );
+
+  emit({ phase: 'decompress' });
+  const tmpImg = join(tmpdir(), `opennova-build-${process.pid}.img`);
+  await decompressXz(xzPath, tmpImg);
+
+  try {
+    emit({ phase: 'patch' });
+    await patchImageBootPartition(tmpImg, config);
+
+    emit({ phase: 'finalize' });
+    await mkdir(downloadsDir, { recursive: true });
+    const outputPath = join(downloadsDir, outputFileName(config));
+    await rename(tmpImg, outputPath);
+    return { outputPath };
+  } finally {
+    // If rename already moved the file this is a no-op; on failure it cleans up.
+    await unlink(tmpImg).catch(() => {});
+  }
+}
+
+/**
  * Register every IPC request/response handler on `ipcMain` and wire the
  * progress event forwarding. Pure registration with no side effects beyond the
  * `handle` calls; safe to call once on app ready.
  */
 export function registerIpcHandlers(ipcMain: IpcMainLike, deps: IpcDeps = {}): void {
-  // Module-local state: the controller for the single in-flight flash, if any.
+  // Single-flight guard: a second build request while one is running (double
+  // click, etc.) shares the in-flight promise instead of racing.
+  let buildInFlight: Promise<BuildResult> | undefined;
+  // The controller for the single in-flight flash, if any.
   let flashController: AbortController | undefined;
 
   const send = (channel: string, payload: unknown): void => {
     deps.getWebContents?.()?.send(channel, payload);
   };
+  const downloadsDir = deps.downloadsDir ?? join(homedir(), 'Downloads');
 
-  // drives:scan -> IpcResult<DriveCandidate[]>
-  ipcMain.handle('drives:scan', () => wrap(() => scanDrives()));
-
-  // image:ensure -> IpcResult<{ imagePath }>
-  // Download the pinned Pi OS image to a temp file, then verify its sha256.
-  // Idempotent: if the temp file already exists and verifies, skip download.
-  ipcMain.handle('image:ensure', () =>
-    wrap(async () => {
-      const destPath = join(tmpdir(), basename(new URL(PI_OS_RELEASE.url).pathname));
-
-      if (existsSync(destPath) && (await verifySha256(destPath, PI_OS_RELEASE.sha256))) {
-        return { imagePath: destPath };
+  // image:build config -> IpcResult<BuildResult>
+  ipcMain.handle('image:build', (_event, config: InstallerConfig) =>
+    wrap(() => {
+      if (!buildInFlight) {
+        buildInFlight = buildImage(config, send, downloadsDir).finally(() => {
+          buildInFlight = undefined;
+        });
       }
-
-      await downloadImage(PI_OS_RELEASE.url, destPath, (received, total) => {
-        const payload: ImageProgress = { received, total };
-        send('image:progress', payload);
-      });
-
-      const verified = await verifySha256(destPath, PI_OS_RELEASE.sha256);
-      if (!verified) {
-        // Never hand back a path to an image whose hash did not match.
-        throw new Error(
-          `Downloaded image failed sha256 verification (expected ${PI_OS_RELEASE.sha256})`,
-        );
-      }
-      return { imagePath: destPath };
+      return buildInFlight;
     }),
   );
 
-  // flash:start { imagePath, target } -> IpcResult<null>
-  ipcMain.handle('flash:start', (_event, args: { imagePath: string; target: FlashTarget }) =>
+  // drives:scan -> IpcResult<DriveCandidate[]> (safe removable cards only)
+  ipcMain.handle('drives:scan', () => wrap(() => scanDrives()));
+
+  // flash:start { imagePath, device } -> IpcResult<null>
+  // Writes the built image to the chosen SD via authopen (admin prompt, no FDA).
+  ipcMain.handle('flash:start', (_event, args: { imagePath: string; device: string }) =>
     wrap<null>(async () => {
       const controller = new AbortController();
       flashController = controller;
       try {
-        await flash({
+        await flashDisk({
           imagePath: args.imagePath,
-          target: args.target,
+          device: args.device,
           signal: controller.signal,
-          onProgress: (p: FlashProgress) => {
-            send('flash:progress', p);
+          onProgress: (written, total, bytesPerSec) => {
+            const payload: FlashProgress = { written, total, bytesPerSec };
+            send('flash:progress', payload);
           },
         });
         return null;
       } finally {
-        // Only clear if we are still the active controller (a later flash could
-        // have replaced us, though the UI flow is one-at-a-time).
         if (flashController === controller) {
           flashController = undefined;
         }
@@ -123,27 +209,25 @@ export function registerIpcHandlers(ipcMain: IpcMainLike, deps: IpcDeps = {}): v
     }),
   );
 
-  // boot:inject { device, config } -> IpcResult<{ bootDir, generated }>
-  // On partition-not-found we return ok:false so the renderer shows the manual
-  // copy fallback (and can re-fetch the files via config:generate).
-  ipcMain.handle('boot:inject', (_event, args: { device: string; config: InstallerConfig }) =>
-    wrap(async () => {
-      const generated = generateFiles(args.config);
-      const bootDir = await findBootPartition(args.device);
-      if (bootDir === null) {
-        throw new Error(
-          `Boot partition not found for ${args.device}. ` +
-            `Copy the generated files onto the boot partition manually.`,
-        );
-      }
-      writeBootFiles(bootDir, generated);
-      return { bootDir, generated };
+  // shell:reveal path -> IpcResult<null> (reveal the file in Finder/Explorer)
+  ipcMain.handle('shell:reveal', (_event, path: string) =>
+    wrap<null>(() => {
+      deps.shell?.showItemInFolder(path);
+      return null;
     }),
   );
 
-  // config:generate config -> IpcResult<GeneratedFiles> (pure; no disk writes)
-  ipcMain.handle('config:generate', (_event, config: InstallerConfig) =>
-    wrap(() => generateFiles(config)),
+  // shell:openExternal target -> IpcResult<null> (open a URL in the browser)
+  ipcMain.handle('shell:openExternal', (_event, target: string) =>
+    wrap<null>(async () => {
+      await deps.shell?.openExternal(target);
+      return null;
+    }),
+  );
+
+  // hostname:check hostname -> IpcResult<{ taken, address? }>
+  ipcMain.handle('hostname:check', (_event, hostname: string) =>
+    wrap(() => isHostnameTaken(hostname)),
   );
 
   // pi:find { hosts, timeoutMs? } -> IpcResult<PiDiscovery>

@@ -2,11 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   InstallerApi,
   InstallerConfig,
-  GeneratedFiles,
   IpcResult,
-  ImageProgress,
+  BuildProgress,
+  BuildResult,
   DriveCandidate,
-  FlashTarget,
   FlashProgress,
   PiDiscovery,
 } from '../shared/types.js';
@@ -29,16 +28,16 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
  * resolve an {@link IpcResult}, so these never reject for application errors.
  */
 const api: InstallerApi = {
+  buildImage: (config: InstallerConfig) =>
+    ipcRenderer.invoke('image:build', config) as Promise<IpcResult<BuildResult>>,
+
+  onBuildProgress: (cb: (p: BuildProgress) => void) =>
+    subscribe<BuildProgress>('build:progress', cb),
+
   scanDrives: () =>
     ipcRenderer.invoke('drives:scan') as Promise<IpcResult<DriveCandidate[]>>,
 
-  ensureImage: () =>
-    ipcRenderer.invoke('image:ensure') as Promise<IpcResult<{ imagePath: string }>>,
-
-  onImageProgress: (cb: (p: ImageProgress) => void) =>
-    subscribe<ImageProgress>('image:progress', cb),
-
-  startFlash: (args: { imagePath: string; target: FlashTarget }) =>
+  startFlash: (args: { imagePath: string; device: string }) =>
     ipcRenderer.invoke('flash:start', args) as Promise<IpcResult<null>>,
 
   cancelFlash: () => ipcRenderer.invoke('flash:cancel') as Promise<IpcResult<null>>,
@@ -46,12 +45,15 @@ const api: InstallerApi = {
   onFlashProgress: (cb: (p: FlashProgress) => void) =>
     subscribe<FlashProgress>('flash:progress', cb),
 
-  generateConfig: (config: InstallerConfig) =>
-    ipcRenderer.invoke('config:generate', config) as Promise<IpcResult<GeneratedFiles>>,
+  revealFile: (path: string) =>
+    ipcRenderer.invoke('shell:reveal', path) as Promise<IpcResult<null>>,
 
-  injectBoot: (args: { device: string; config: InstallerConfig }) =>
-    ipcRenderer.invoke('boot:inject', args) as Promise<
-      IpcResult<{ bootDir: string; generated: GeneratedFiles }>
+  openExternal: (target: string) =>
+    ipcRenderer.invoke('shell:openExternal', target) as Promise<IpcResult<null>>,
+
+  checkHostname: (hostname: string) =>
+    ipcRenderer.invoke('hostname:check', hostname) as Promise<
+      IpcResult<{ taken: boolean; address?: string }>
     >,
 
   findPi: (args: { hosts: string[]; timeoutMs?: number }) =>

@@ -1,49 +1,59 @@
 # OpenNova Installer
 
-A cross-platform Electron desktop app that flashes stock Raspberry Pi OS Lite
-64-bit to an SD card, injects an OpenNova first-boot configuration, and hands off
-to the Pi's existing `/admin` setup wizard. The goal is to let a non-technical
-user prepare a ready-to-run OpenNova appliance with no terminal, no SSH, no
-manual file editing, and no pre-baked image.
+A cross-platform Electron desktop app that builds a **ready-to-flash OpenNova
+image**: it downloads the latest stock Raspberry Pi OS Lite 64-bit, bakes an
+OpenNova first-boot configuration into the image's boot partition, and writes the
+result as a `.img` file. The user then flashes that file with **Raspberry Pi
+Imager**, boots the Pi, and is handed off to the Pi's existing `/admin` setup
+wizard.
 
-See `docs/superpowers/specs/2026-06-08-opennova-installer-app-design.md` for the
-design and `docs/superpowers/plans/2026-06-08-opennova-installer-app.md` for the
-implementation plan.
+## Why it patches an image instead of flashing the card
+
+Writing a raw disk on macOS requires the writing app to hold **Full Disk Access**
+(a TCC grant) — it fails with `EPERM` even as root otherwise. For an unsigned,
+self-distributed tool that is unworkable. Patching a **file** has none of those
+constraints: no raw-disk access, no Full Disk Access, no elevation, no code
+signing required just to run. We attach the image with `hdiutil`, edit its FAT
+boot partition, and let Raspberry Pi Imager (which is signed and handles the disk
+machinery itself) do the actual card write.
 
 ## How it works
 
 1. Collect the user's settings (hostname, network, timezone, connection path).
-2. Download the pinned stock Raspberry Pi OS Lite 64-bit image and verify its
-   sha256.
-3. Raw-write the image to the chosen SD card with verification, after a strict
-   safety filter that refuses system disks and anything outside a plausible
-   SD-card size window.
-4. Write `firstrun.sh`, an empty `ssh` sentinel, and a `cmdline.txt` patch onto
-   the freshly written boot partition. On first boot the Pi runs `firstrun.sh`
-   once, installs Docker, and brings up the OpenNova container.
-5. Poll `http://opennova.local/api/setup/health` to detect the booted Pi, then
-   deep-link to `http://opennova.local/admin`.
+2. Download the **latest** Raspberry Pi OS Lite 64-bit (the `_latest` endpoint)
+   and verify it against the published `.sha256` sidecar. Download is atomic
+   (verify-then-rename) and cached.
+3. Decompress the `.img.xz` to a working `.img` (via `@napi-rs/lzma`, N-API so it
+   loads in the Electron main process).
+4. Patch the image's FAT boot partition with `firstrun.sh`, an empty `ssh`
+   sentinel, and an idempotent `cmdline.txt` append — the documented Raspberry Pi
+   first-boot mechanism. On first boot the Pi runs `firstrun.sh` once, installs
+   Docker, and brings up the OpenNova container.
+5. Save the finished image to the user's Downloads folder and show flashing
+   instructions (Raspberry Pi Imager → Use custom → this file).
+6. Optionally "Find my Pi" once it has booted and deep-link to
+   `http://opennova.local/admin`.
 
 ## Architecture
 
-- **Main process** (`src/main/`): all privileged and native work.
-  - `configModel.ts` - turns `InstallerConfig` into `firstrun.sh`, `.env`,
+- **Main process** (`src/main/`):
+  - `configModel.ts` — turns `InstallerConfig` into `firstrun.sh`, `.env`,
     `docker-compose.yml`, and the `cmdline.txt` append.
-  - `imageSource.ts` - streaming download + sha256 verify.
-  - `drives.ts` - etcher-sdk drive scan behind a default-deny safety filter
-    (`isSafeTarget`).
-  - `flasher.ts` - etcher-sdk raw write + verify, re-checks `isSafeTarget`
-    immediately before writing.
-  - `bootInject.ts` - locate the boot partition cross-OS and write the injected
-    files (idempotent `cmdline.txt` append).
-  - `discovery.ts` - poll the health endpoint until the Pi answers `running`.
-  - `ipc.ts` + `preload.ts` - typed, context-isolated bridge exposed on
-    `window.installer`.
+  - `imageSource.ts` — streaming download, sha256 verify, and xz decompression.
+  - `imagePatcher.ts` — write the boot files into the image's FAT boot partition
+    with **mtools** (`mcopy`/`mtype`) at a byte offset (`image.img@@<offset>`),
+    no mount / root / Full Disk Access. One code path on macOS/Linux/Windows;
+    the small mtools binaries are bundled under `vendor/mtools/` (see its README).
+  - `bootInject.ts` — `writeBootFiles` (the idempotent boot-partition writes).
+  - `discovery.ts` — poll the health endpoint until the Pi answers `running`.
+  - `ipc.ts` + `preload.ts` — typed, context-isolated bridge on
+    `window.installer` (`image:build`, `shell:reveal`, `shell:openExternal`,
+    `pi:find`).
 - **Renderer** (`src/renderer/`): React + Tailwind wizard
-  (welcome, config, choose SD, flash, inject, finish). `wizard.ts` is a pure,
-  unit-tested step state machine.
-- **Shared** (`src/shared/`): the IPC contract (`types.ts`) and the pinned Pi OS
-  release descriptor (`piOsRelease.ts`).
+  (welcome, config, build, finish). `wizard.ts` is a pure, unit-tested step
+  state machine.
+- **Shared** (`src/shared/`): the IPC contract (`types.ts`) and the Pi OS release
+  descriptor (`piOsRelease.ts`, always-latest).
 
 ## Development
 
@@ -51,17 +61,10 @@ implementation plan.
 cd installer
 npm install
 
-# main process (TypeScript -> dist/main)
-npm run build:main
-
-# renderer (Vite -> dist/renderer)
-npm run build:renderer
-
-# both
-npm run build
-
-# unit + integration tests (Vitest)
-npm test
+npm run build:main       # main process (TypeScript -> dist/main)
+npm run build:renderer   # renderer (Vite -> dist/renderer)
+npm run build            # both
+npm test                 # unit + integration tests (Vitest)
 ```
 
 To run the app against the live Vite dev server, start the renderer
@@ -76,90 +79,54 @@ npm run pack    # build + electron-builder --dir (unpacked app, fast, for testin
 npm run dist    # build + electron-builder (dmg / nsis / AppImage)
 ```
 
-Targets are configured in `electron-builder.yml`: `dmg` (macOS, hardened
-runtime), `nsis` (Windows, per-machine with elevation so raw-device writes
-work), and `AppImage` (Linux). etcher-sdk's native modules are unpacked from the
-asar (`asarUnpack`) so they load at runtime.
+The app does **not** write raw disks, so it does not need Full Disk Access or an
+elevation helper. Code signing / notarization is still recommended so macOS
+Gatekeeper opens the app without a warning, but it is not required for the build
+flow to work. Unsigned builds open via right-click → Open.
 
-### Code signing and notarization
+## The Raspberry Pi OS image (always latest)
 
-Internal builds may be unsigned. Sign before any wide release. Credentials are
-read from environment variables and are never committed:
+`src/shared/piOsRelease.ts` holds the `_latest` endpoint URL. At build time the
+app resolves it to the current dated image and verifies it against the published
+`.img.xz.sha256` sidecar, so there is no pinned hash to maintain and no new
+release needed when Raspberry Pi publishes a new image. The `cmdline.txt` token
+sequence in `configModel.ts` is the documented Raspberry Pi Imager first-boot
+mechanism.
 
-- macOS / Windows code signing: `CSC_LINK`, `CSC_KEY_PASSWORD`.
-- macOS notarization: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
-  (and uncomment the `mac.notarize` block in `electron-builder.yml`).
+## End-to-end verification (manual)
 
-Windows and Linux artifacts should be built on their native OS or in CI.
+The unit and integration tests cover the pure logic (config generation, sha256
+verify + sidecar parse, the wizard state machine). The items below cover the
+parts only a real card and Pi can prove.
 
-## Pinning the Raspberry Pi OS image
+### Build (each host OS)
 
-`src/shared/piOsRelease.ts` holds the single version knob: the image URL, its
-sha256, and a display name. The committed value is a placeholder. Before any
-real build, set it to a known-good Raspberry Pi OS Lite 64-bit release and its
-real sha256. Bump it deliberately (not "always latest") so every install is
-reproducible. The `cmdline.txt` token sequence in `configModel.ts` is the
-documented Raspberry Pi Imager first-boot mechanism and should be re-verified
-against the pinned release.
+The patcher uses mtools, so the code path is identical per OS; what differs is
+the bundled `mcopy`/`mtype` binary (`vendor/mtools/<platform>-<arch>/`).
 
-## End-to-end hardware verification (manual)
-
-These steps are not automated. Run the full matrix before a release. The unit and
-integration tests cover the pure logic (config generation, drive safety, sha256
-verify, boot-file injection, discovery, the wizard state machine); the items
-below cover the parts that only a real card and a real Pi can prove.
-
-### Flashing (each host OS)
-
-- [ ] **macOS**: pick an SD, flash stock Pi OS, inject config. Confirm the boot
-      partition mounts and `firstrun.sh`, `ssh`, and the patched `cmdline.txt`
-      are present.
-- [ ] **Windows**: same flow. Confirm the elevation prompt appears and the write
-      completes with verification.
-- [ ] **Linux**: same flow.
+- [ ] **macOS**: build an image, confirm the output `.img` exists and its FAT
+      boot partition contains `firstrun.sh`, `ssh`, and the patched
+      `cmdline.txt`, and that `fsck_msdos` reports the partition clean. (Verified
+      end-to-end on macOS 26, arm64.)
+- [ ] **Linux / Windows**: add the platform's mtools binary (see
+      `vendor/mtools/README.md`), then run the same build + `fsck.vfat` check.
 
 ### First boot (real hardware)
 
-- [ ] Boot a real **Raspberry Pi 4**: confirm first boot auto-installs Docker and
+- [ ] Flash the built image with Raspberry Pi Imager (Use custom), boot a real
+      **Raspberry Pi 4** and **5**: confirm first boot auto-installs Docker and
       OpenNova, then `http://opennova.local/api/setup/health` returns
       `server: "running"`.
-- [ ] Boot a real **Raspberry Pi 5**: same confirmation.
-- [ ] Confirm `firstrun.sh` runs exactly once (the `cmdline.txt` patch is removed
-      / not re-triggered on the second boot) and the log at
+- [ ] Confirm `firstrun.sh` runs exactly once and
       `/var/log/opennova-firstrun.log` shows a clean install.
 
-### Network paths
+### Network + connection paths
 
-- [ ] **Ethernet**: leave Wi-Fi unset, connect by cable, confirm the Pi comes up
-      and is discoverable.
-- [ ] **Wi-Fi**: set SSID, password, and country, confirm the Pi joins the
-      network on first boot.
-
-### Connection paths
-
-- [ ] **OpenNova app** (default): confirm `ENABLE_DNS` is NOT set and the Pi is
-      reachable via mDNS (`opennova.local`).
-- [ ] **Original Novabot app**: confirm `ENABLE_DNS: "true"` is set in the
-      generated `docker-compose.yml` and the DNS-redirect note was shown.
-
-### Safety
-
-- [ ] Confirm an internal/system disk is never listed as a target.
-- [ ] Confirm a large external HDD/SSD (above the size window) is never
-      selectable.
-- [ ] Confirm the explicit "this will erase the card" confirmation is required
-      before flashing can start.
+- [ ] **Ethernet** and **Wi-Fi** (SSID, password, country) both come up.
+- [ ] **OpenNova app** (default): `ENABLE_DNS` NOT set, reachable via
+      `opennova.local`. **Original Novabot app**: `ENABLE_DNS: "true"` set.
 
 ### Discovery and handoff
 
 - [ ] "Find my Pi" resolves `opennova.local` and "Open admin" opens
-      `http://opennova.local/admin`.
-- [ ] On a host without mDNS (for example Windows without Bonjour), the manual-IP
-      fallback works and the wizard never blocks on a timeout.
-
-### Inject fallback
-
-- [ ] Simulate a boot partition that cannot be located, confirm the wizard shows
-      the manual-copy fallback (the generated `firstrun.sh`, the `cmdline.txt`
-      line, and `docker-compose.yml`) and that following it by hand yields a
-      working first boot.
+      `http://opennova.local/admin`; the manual-IP fallback works without mDNS.

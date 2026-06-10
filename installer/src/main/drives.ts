@@ -1,4 +1,4 @@
-import { scanner as etcherScanner } from 'etcher-sdk';
+import { list as listDrives, type Drive as DrivelistDrive } from 'drivelist';
 
 /**
  * SAFETY-CRITICAL MODULE.
@@ -19,32 +19,16 @@ export interface SafeTargetInput {
   size?: number;
 }
 
-/**
- * Smallest SD card we are willing to flash an OS image onto. Anything smaller
- * cannot be a usable target and is far more likely to be something unexpected.
- */
+/** Smallest card we will flash. Below this is almost certainly the wrong device. */
 const MIN_SIZE_BYTES = 4e9; // 4 GB
-/**
- * Largest device we treat as a (micro)SD card. This is the most important
- * safety bound: external HDD/SSDs are typically far larger, so capping the size
- * keeps multi-terabyte data drives out of the candidate list entirely.
- */
+/** Largest device we treat as a (micro)SD card — keeps big HDD/SSDs out. */
 const MAX_SIZE_BYTES = 512e9; // 512 GB
 
 /**
  * Return `true` ONLY when the drive is, by every available signal, a safe
- * removable flash target. This is a pure predicate with NO side effects.
- *
- * Default-deny: the function returns `true` only if ALL of the following hold,
- * each checked with strict equality / typeof so that `undefined` or any
- * unexpected value falls through to `false`:
- *   - not a system disk (`isSystem === false`),
- *   - removable (`isRemovable === true`),
- *   - writable (`isReadOnly === false`),
- *   - a known, plausible SD-card size (`4GB <= size <= 512GB`).
- *
- * There is intentionally no branch that can return `true` for a system,
- * non-removable, read-only, unknown-size, too-small, or too-large device.
+ * removable flash target. Pure predicate, default-deny: not a system disk,
+ * removable, writable, and a plausible SD-card size (4GB–512GB). Anything
+ * `undefined`/unexpected falls through to `false`.
  */
 export function isSafeTarget(d: SafeTargetInput): boolean {
   return (
@@ -63,26 +47,12 @@ export interface DriveCandidate {
   device: string;
   description: string;
   size: number;
-  /**
-   * The real, scanned safety flags for this device — NOT invented by the UI.
-   * Because only `isSafeTarget`-passing drives are returned, in practice these
-   * are always `isSystem:false`, `isRemovable:true`, `isReadOnly:false`, but
-   * they are populated from the same normalized reads the guard uses so the
-   * descriptor reflects the actual device rather than a fabricated claim.
-   */
   isSystem: boolean;
   isRemovable: boolean;
   isReadOnly: boolean;
 }
 
-/**
- * Superset of the etcher-sdk drive shape we read. etcher-sdk's public
- * `AdapterSourceDestination` exposes `isSystem`, `device`, `description` and
- * `size`, but the removable / read-only flags come from the underlying
- * `drivelist` drive (`isRemovable`, `isReadOnly`). We read them structurally
- * and defensively — anything we cannot positively confirm stays `undefined`
- * and is therefore rejected by `isSafeTarget`.
- */
+/** Subset of the `drivelist` drive shape we read defensively. */
 interface ScannedDrive {
   device?: string | null;
   description?: string;
@@ -93,59 +63,69 @@ interface ScannedDrive {
   isReadonly?: boolean;
 }
 
+/** Normalise a drivelist drive's read-only flag to strict boolean|undefined. */
+function normalizeReadOnly(drive: ScannedDrive): boolean | undefined {
+  if (drive.isReadOnly === true || drive.isReadonly === true) return true;
+  if (drive.isReadOnly === false || drive.isReadonly === false) return false;
+  return undefined;
+}
+
 /**
- * Enumerate attached block devices via etcher-sdk and return ONLY the ones that
- * pass `isSafeTarget`. The scanner is ALWAYS stopped (try/finally) so we never
- * leak its background polling. Verified on hardware; the safety guard
- * (`isSafeTarget`) is the unit-tested piece.
+ * Enumerate attached block devices via `drivelist` and return ONLY the ones
+ * that pass `isSafeTarget`. drivelist is N-API (loads in the Electron main
+ * process) and does a single snapshot enumeration (no background polling).
  */
 export async function scanDrives(): Promise<DriveCandidate[]> {
-  const adapter = new etcherScanner.adapters.BlockDeviceAdapter({
-    includeSystemDrives: () => false,
-  });
-  const sc = new etcherScanner.Scanner([adapter]);
+  const drives = (await listDrives()) as unknown as ScannedDrive[];
 
-  await sc.start();
-  try {
-    const candidates: DriveCandidate[] = [];
-    for (const raw of sc.drives) {
-      const drive = raw as unknown as ScannedDrive;
-      // Normalise to the strict shape `isSafeTarget` expects. `isReadonly` is an
-      // alternate spelling some adapters use; treat either as read-only.
-      const isReadOnly =
-        drive.isReadOnly === true || drive.isReadonly === true
-          ? true
-          : drive.isReadOnly === false || drive.isReadonly === false
-            ? false
-            : undefined;
-      const input: SafeTargetInput = {
-        isSystem: drive.isSystem,
-        isRemovable: drive.isRemovable,
-        isReadOnly,
-        size: typeof drive.size === 'number' ? drive.size : undefined,
-      };
-      if (!isSafeTarget(input)) {
-        continue;
-      }
-      // Past the guard: size is a finite number and device is present in
-      // practice. Re-narrow defensively rather than asserting.
-      if (typeof drive.device !== 'string' || typeof drive.size !== 'number') {
-        continue;
-      }
-      // Past the guard, these are the true scanned values (false/true/false),
-      // carried verbatim from the same normalized reads `isSafeTarget` used —
-      // never invented downstream by the renderer.
-      candidates.push({
-        device: drive.device,
-        description: drive.description ?? drive.device,
-        size: drive.size,
-        isSystem: input.isSystem as boolean,
-        isRemovable: input.isRemovable as boolean,
-        isReadOnly: input.isReadOnly as boolean,
-      });
+  const candidates: DriveCandidate[] = [];
+  for (const drive of drives) {
+    const isReadOnly = normalizeReadOnly(drive);
+    const input: SafeTargetInput = {
+      isSystem: drive.isSystem,
+      isRemovable: drive.isRemovable,
+      isReadOnly,
+      size: typeof drive.size === 'number' ? drive.size : undefined,
+    };
+    if (!isSafeTarget(input)) {
+      continue;
     }
-    return candidates;
-  } finally {
-    sc.stop();
+    if (typeof drive.device !== 'string' || typeof drive.size !== 'number') {
+      continue;
+    }
+    candidates.push({
+      device: drive.device,
+      description: drive.description ?? drive.device,
+      size: drive.size,
+      isSystem: input.isSystem as boolean,
+      isRemovable: input.isRemovable as boolean,
+      isReadOnly: input.isReadOnly as boolean,
+    });
   }
+  return candidates;
+}
+
+/**
+ * Return the FULL drivelist drive for `device` — but ONLY if it still passes
+ * `isSafeTarget` right now; otherwise `null`. This is the un-spoofable, live
+ * safety+membership gate used immediately before writing, AND the source of the
+ * REAL raw device node (`/dev/rdiskN` on macOS) the writer must open. A buggy or
+ * compromised renderer cannot fabricate this: the device must genuinely be an
+ * attached, removable, non-system, writable, SD-sized disk at this moment.
+ */
+export async function findSafeDriveForFlash(device: string): Promise<DrivelistDrive | null> {
+  const drives = (await listDrives()) as unknown as ScannedDrive[];
+  for (const drive of drives) {
+    if (drive.device !== device) {
+      continue;
+    }
+    const input: SafeTargetInput = {
+      isSystem: drive.isSystem,
+      isRemovable: drive.isRemovable,
+      isReadOnly: normalizeReadOnly(drive),
+      size: typeof drive.size === 'number' ? drive.size : undefined,
+    };
+    return isSafeTarget(input) ? (drive as unknown as DrivelistDrive) : null;
+  }
+  return null;
 }

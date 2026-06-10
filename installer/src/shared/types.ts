@@ -21,13 +21,11 @@ export interface GeneratedFiles {
 // Types that physically live in main-process modules are re-exported here so
 // both the preload bridge and the renderer import the whole IPC contract from a
 // single place (`shared/types.ts`) without reaching into `main/`.
-export type { DriveCandidate } from '../main/drives.js';
-export type { FlashTarget, FlashProgress } from '../main/flasher.js';
 export type { PiDiscovery } from '../main/discovery.js';
+export type { DriveCandidate } from '../main/drives.js';
 
-import type { DriveCandidate } from '../main/drives.js';
-import type { FlashTarget, FlashProgress } from '../main/flasher.js';
 import type { PiDiscovery } from '../main/discovery.js';
+import type { DriveCandidate } from '../main/drives.js';
 
 /**
  * Discriminated result envelope. IPC handlers NEVER reject across the boundary;
@@ -36,10 +34,33 @@ import type { PiDiscovery } from '../main/discovery.js';
  */
 export type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
-/** Progress payload for the image download (main -> renderer). */
-export interface ImageProgress {
-  received: number;
-  total: number | null;
+/**
+ * Progress for the image build (main -> renderer). The build runs through
+ * distinct phases; `download` carries byte counts, the others are coarse since
+ * decompression/patching are single native/IO operations.
+ */
+export interface BuildProgress {
+  phase: 'download' | 'decompress' | 'patch' | 'finalize';
+  /** Bytes received so far (download phase only). */
+  received?: number;
+  /** Total bytes if known (download phase only). */
+  total?: number | null;
+}
+
+/** Result of a completed image build. */
+export interface BuildResult {
+  /** Absolute path to the ready-to-flash `.img` written for the user. */
+  outputPath: string;
+}
+
+/** Progress for the SD write (main -> renderer). */
+export interface FlashProgress {
+  /** Bytes written to the card so far. */
+  written: number;
+  /** Total image bytes. */
+  total: number;
+  /** Current write speed in bytes/second (windowed). */
+  bytesPerSec: number;
 }
 
 /**
@@ -49,16 +70,21 @@ export interface ImageProgress {
  * subscribe to a progress channel and return an unsubscribe function.
  */
 export interface InstallerApi {
+  /** Download the latest Pi OS image, decompress it, and patch in the config. */
+  buildImage(config: InstallerConfig): Promise<IpcResult<BuildResult>>;
+  onBuildProgress(cb: (p: BuildProgress) => void): () => void;
+  /** Enumerate currently-attached SAFE removable cards (never the system disk). */
   scanDrives(): Promise<IpcResult<DriveCandidate[]>>;
-  ensureImage(): Promise<IpcResult<{ imagePath: string }>>;
-  onImageProgress(cb: (p: ImageProgress) => void): () => void;
-  startFlash(args: { imagePath: string; target: FlashTarget }): Promise<IpcResult<null>>;
+  /** Write the built image to the chosen card (admin prompt; no FDA on macOS). */
+  startFlash(args: { imagePath: string; device: string }): Promise<IpcResult<null>>;
+  /** Cancel an in-flight flash (best effort). */
   cancelFlash(): Promise<IpcResult<null>>;
   onFlashProgress(cb: (p: FlashProgress) => void): () => void;
-  generateConfig(config: InstallerConfig): Promise<IpcResult<GeneratedFiles>>;
-  injectBoot(args: {
-    device: string;
-    config: InstallerConfig;
-  }): Promise<IpcResult<{ bootDir: string; generated: GeneratedFiles }>>;
+  /** Reveal a file in the OS file manager (Finder/Explorer). */
+  revealFile(path: string): Promise<IpcResult<null>>;
+  /** Open a URL (or app) in the default handler. */
+  openExternal(target: string): Promise<IpcResult<null>>;
+  /** Check whether `<hostname>.local` is already claimed on the network (mDNS). */
+  checkHostname(hostname: string): Promise<IpcResult<{ taken: boolean; address?: string }>>;
   findPi(args: { hosts: string[]; timeoutMs?: number }): Promise<IpcResult<PiDiscovery>>;
 }

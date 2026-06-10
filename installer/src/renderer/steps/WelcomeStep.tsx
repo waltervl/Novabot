@@ -28,8 +28,9 @@ export function WelcomeStep() {
       <div>
         <h2 className="text-lg font-semibold">Before you start</h2>
         <p className="text-sm text-slate-600">
-          This tool prepares a microSD card with OpenNova. Make sure you have the
-          following hardware ready.
+          This tool builds a ready-to-flash OpenNova image. You&apos;ll write it to
+          your microSD card with Raspberry Pi Imager (a free, separate app) in the
+          last step. Make sure you have the following hardware ready.
         </p>
       </div>
 
