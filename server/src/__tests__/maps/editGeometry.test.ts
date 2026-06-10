@@ -104,3 +104,31 @@ describe('editGeometry validatie', () => {
     expect(res.warnings.some(w => w.canonical === 'map0' && w.code === 'large_displacement')).toBe(true);
   });
 });
+
+describe('editGeometry brush + hit-test', () => {
+  it('applyBrush: verplaatst alleen punten binnen radius, met falloff', () => {
+    const dense = densifyPolygon(square, 0.5);
+    const anchor = { x: 5, y: 0 };
+    const out = applyBrush(dense, anchor, { x: 0, y: 1 }, 2.0);
+    const moved = out.filter((p, i) => Math.abs(p.y - dense[i].y) > 1e-9);
+    expect(moved.length).toBeGreaterThan(0);
+    const center = dense.findIndex(p => Math.abs(p.x - 5) < 0.01 && Math.abs(p.y) < 0.01);
+    expect(out[center].y).toBeCloseTo(1, 2);
+    const farIdx = dense.findIndex(p => Math.abs(p.x - 5) > 3 && Math.abs(p.y) < 0.01);
+    expect(out[farIdx].y).toBeCloseTo(0, 9);
+    const halfway = dense.findIndex(p => Math.abs(p.x - 6) < 0.01 && Math.abs(p.y) < 0.01);
+    expect(out[halfway].y).toBeGreaterThan(0.1);
+    expect(out[halfway].y).toBeLessThan(0.95);
+  });
+
+  it('hitTestVertex: vindt dichtstbijzijnde vertex binnen tolerantie', () => {
+    expect(hitTestVertex(square, { x: 10.2, y: -0.1 }, 0.5)).toBe(1);
+    expect(hitTestVertex(square, { x: 5, y: 5 }, 0.5)).toBe(-1);
+  });
+
+  it('hitTestEdge: geeft invoeg-index op het geraakte segment', () => {
+    const hit = hitTestEdge(square, { x: 5, y: 0.1 }, 0.5);
+    expect(hit).toEqual({ insertIndex: 1, point: { x: 5, y: 0 } });
+    expect(hitTestEdge(square, { x: 5, y: 5 }, 0.5)).toBeNull();
+  });
+});
