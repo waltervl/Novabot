@@ -60,6 +60,12 @@
   },
   "status": {
     "mowingProgress": "Mowing Progress",
+    "cuttingHeight": "Cutting height",
+    "bladeRpm": "Blade speed",
+    "elapsed": "Elapsed",
+    "eta": "Time left",
+    "mowSpeed": "Mow speed",
+    "area": "Area",
     "error": "Error",
     "errorCode": "Code: {{code}}"
   },

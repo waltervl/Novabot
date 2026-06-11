@@ -47,6 +47,12 @@
   },
   "status": {
     "mowingProgress": "Mähfortschritt",
+    "cuttingHeight": "Schnitthöhe",
+    "bladeRpm": "Messerdrehzahl",
+    "elapsed": "Vergangen",
+    "eta": "Restzeit",
+    "mowSpeed": "Mähgeschwindigkeit",
+    "area": "Fläche",
     "error": "Fehler",
     "errorCode": "Code: {{code}}"
   },

@@ -102,6 +102,12 @@
   },
   "status": {
     "mowingProgress": "Maaivoortgang",
+    "cuttingHeight": "Maaihoogte",
+    "bladeRpm": "Bladsnelheid",
+    "elapsed": "Verstreken",
+    "eta": "Resterend",
+    "mowSpeed": "Maaisnelheid",
+    "area": "Oppervlak",
     "error": "Fout",
     "errorCode": "Code: {{code}}"
   },

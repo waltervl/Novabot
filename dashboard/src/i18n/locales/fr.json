@@ -47,6 +47,12 @@
   },
   "status": {
     "mowingProgress": "Progression de la tonte",
+    "cuttingHeight": "Hauteur de coupe",
+    "bladeRpm": "Vitesse de lame",
+    "elapsed": "Écoulé",
+    "eta": "Temps restant",
+    "mowSpeed": "Vitesse de tonte",
+    "area": "Surface",
     "error": "Erreur",
     "errorCode": "Code : {{code}}"
   },
