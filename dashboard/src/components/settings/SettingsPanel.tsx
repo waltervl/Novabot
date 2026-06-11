@@ -1,12 +1,38 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   ShieldAlert, Gauge, Navigation, RotateCcw, Lightbulb, Volume2, VolumeX,
-  Lock, Search, KeyRound, Send, Brain, Eye, Route,
+  Lock, Search, KeyRound, Send, Brain, Eye, Route, Clock, CloudRain,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { io, Socket } from 'socket.io-client';
-import { sendCommand, pinQuery, pinSet, pinVerify, pinRaw, setPerceptionMode, setSemanticMode, getPerceptionStatus } from '../../api/client';
+import {
+  sendCommand, pinQuery, pinSet, pinVerify, pinRaw, setPerceptionMode, setSemanticMode, getPerceptionStatus,
+  fetchRainSettings, updateRainSettings, type RainSettings,
+} from '../../api/client';
 import { useToast } from '../common/Toast';
+
+// Headlight brightness levels (set_para_info.headlight = 0..255; 0 = off). The
+// app sends the full brightness value (default 255) — NOT the enum 2 — and 255
+// is the proven night-docking value (see CLAUDE.md LED patch).
+const HEADLIGHT_LEVELS = [
+  { value: 0, labelKey: 'settings.off' },
+  { value: 128, labelKey: 'settings.dim' },
+  { value: 255, labelKey: 'settings.bright' },
+] as const;
+
+// Common IANA timezones for the picker (mirrors the app MowerSettingsScreen).
+const TIMEZONES = [
+  'Europe/Amsterdam', 'Europe/Berlin', 'Europe/Paris', 'Europe/London',
+  'Europe/Madrid', 'Europe/Rome', 'Europe/Brussels', 'Europe/Vienna',
+  'Europe/Zurich', 'Europe/Stockholm', 'Europe/Helsinki', 'Europe/Warsaw',
+  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'Australia/Sydney', 'Asia/Tokyo', 'Asia/Shanghai', 'UTC',
+];
+
+function detectTimezone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Amsterdam'; }
+  catch { return 'Europe/Amsterdam'; }
+}
 
 interface Props {
   sn: string;
@@ -106,23 +132,31 @@ export function SettingsPanel({ sn, online, sensors }: Props) {
 
       <div className="border-t border-gray-700" />
 
-      {/* Headlight & Sound — mowing preferences */}
-      <div className="flex gap-2">
-        <ToggleRow
-          icon={Lightbulb}
-          label={t('settings.headlight')}
-          active={headlightOn}
-          disabled={disabled}
-          onToggle={() => send({ headlight: headlightOn ? 0 : 2 }, t('settings.headlight'))}
-        />
-        <ToggleRow
-          icon={soundOn ? Volume2 : VolumeX}
-          label={t('settings.sound')}
-          active={soundOn}
-          disabled={disabled}
-          onToggle={() => send({ sound: soundOn ? 0 : 2 }, t('settings.sound'))}
-        />
-      </div>
+      {/* Headlight brightness — set_para_info.headlight 0..255 (0 = off). */}
+      <HeadlightControl
+        headlightOn={headlightOn}
+        disabled={disabled}
+        onSet={(v) => send({ headlight: v }, t('settings.headlight'))}
+      />
+
+      {/* Sound */}
+      <ToggleRow
+        icon={soundOn ? Volume2 : VolumeX}
+        label={t('settings.sound')}
+        active={soundOn}
+        disabled={disabled}
+        onToggle={() => send({ sound: soundOn ? 0 : 2 }, t('settings.sound'))}
+      />
+
+      <div className="border-t border-gray-700" />
+
+      {/* Timezone — set_cfg_info { cfg_value: 1, tz } (user-initiated only). */}
+      <TimezonePanel sn={sn} disabled={disabled} />
+
+      <div className="border-t border-gray-700" />
+
+      {/* Rain auto-pause thresholds */}
+      <RainSettingsPanel sn={sn} online={online} />
 
       <div className="border-t border-gray-700" />
 
@@ -141,6 +175,203 @@ export function SettingsPanel({ sn, online, sensors }: Props) {
       {/* PIN Code Management */}
       <PinPanel sn={sn} online={online} />
 
+    </div>
+  );
+}
+
+/* ── Headlight brightness ─────────────────────────────── */
+
+function HeadlightControl({ headlightOn, disabled, onSet }: {
+  headlightOn: boolean;
+  disabled: boolean;
+  onSet: (value: number) => void;
+}) {
+  const { t } = useTranslation();
+  // The sensor only reports on/off, not the level. Track the last selected level
+  // locally; default to 255 (max) when on so the proven night-docking value wins.
+  const [level, setLevel] = useState<number>(headlightOn ? 255 : 0);
+  useEffect(() => { setLevel(prev => (headlightOn ? (prev === 0 ? 255 : prev) : 0)); }, [headlightOn]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Lightbulb className={`w-4 h-4 ${level > 0 ? 'text-yellow-300' : 'text-gray-500'}`} />
+        <span className="text-sm text-gray-300">{t('settings.headlight')}</span>
+      </div>
+      <div className="flex gap-1">
+        {HEADLIGHT_LEVELS.map(({ value, labelKey }) => (
+          <button
+            key={value}
+            onClick={() => { setLevel(value); onSet(value); }}
+            disabled={disabled}
+            className={`flex-1 text-xs py-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+              level === value
+                ? 'bg-gray-600 text-white font-medium ring-1 ring-gray-500'
+                : 'bg-gray-800 text-gray-500 hover:text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            {t(labelKey)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Timezone ─────────────────────────────────────────── */
+
+function TimezonePanel({ sn, disabled }: { sn: string; disabled: boolean }) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const [tz, setTz] = useState<string>(detectTimezone());
+  const [busy, setBusy] = useState(false);
+
+  // Ensure the detected device tz is selectable even if not in the curated list.
+  const options = TIMEZONES.includes(tz) ? TIMEZONES : [tz, ...TIMEZONES];
+
+  const save = useCallback(async () => {
+    setBusy(true);
+    try {
+      await sendCommand(sn, { set_cfg_info: { cfg_value: 1, tz } });
+      toast(t('settings.timezoneSaved', 'Tijdzone opgeslagen'), 'success');
+    } catch {
+      toast(t('settings.timezoneSaved', 'Tijdzone opgeslagen') + ' — failed', 'error');
+    }
+    setBusy(false);
+  }, [sn, tz, t, toast]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Clock className="w-4 h-4 text-sky-400" />
+        <span className="text-sm text-gray-300">{t('settings.timezone', 'Tijdzone')}</span>
+      </div>
+      <div className="flex gap-2">
+        <select
+          value={tz}
+          onChange={(e) => setTz(e.target.value)}
+          disabled={disabled || busy}
+          className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-sky-500 disabled:opacity-40"
+        >
+          {options.map((z) => <option key={z} value={z}>{z}</option>)}
+        </select>
+        <button
+          onClick={save}
+          disabled={disabled || busy}
+          className="text-xs px-3 py-1.5 rounded bg-sky-700 text-sky-100 hover:bg-sky-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          {t('settings.apply', 'Toepassen')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Rain auto-pause settings ─────────────────────────── */
+
+function RainSettingsPanel({ sn, online }: { sn: string; online: boolean }) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const [settings, setSettings] = useState<RainSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRainSettings(sn).then(s => { if (!cancelled) setSettings(s); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [sn]);
+
+  const patch = useCallback(async (body: Partial<RainSettings>) => {
+    setBusy(true);
+    try {
+      const updated = await updateRainSettings(sn, body);
+      setSettings(updated);
+    } catch {
+      toast(t('settings.rainSaveFailed', 'Opslaan mislukt'), 'error');
+    }
+    setBusy(false);
+  }, [sn, t, toast]);
+
+  if (!settings) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-gray-500">
+        <CloudRain className="w-4 h-4" />
+        <span>{t('settings.rainLoading', 'Regen-instellingen laden...')}</span>
+      </div>
+    );
+  }
+
+  const disabled = busy || !online;
+
+  return (
+    <div className="space-y-3">
+      <ToggleRow
+        icon={CloudRain}
+        label={t('settings.rainAutoPause', 'Auto-pauze bij regen')}
+        active={settings.enabled}
+        disabled={disabled}
+        onToggle={() => patch({ enabled: !settings.enabled })}
+      />
+      {settings.enabled && (
+        <div className="space-y-3 pl-1">
+          <SliderRow
+            label={t('settings.rainThresholdMm', 'Drempel (mm/u)')}
+            value={settings.thresholdMm}
+            min={0} max={5} step={0.1}
+            format={(v) => `${v.toFixed(1)} mm`}
+            disabled={disabled}
+            onCommit={(v) => patch({ thresholdMm: v })}
+          />
+          <SliderRow
+            label={t('settings.rainThresholdProb', 'Drempel (kans %)')}
+            value={settings.thresholdProbability}
+            min={0} max={100} step={5}
+            format={(v) => `${Math.round(v)}%`}
+            disabled={disabled}
+            onCommit={(v) => patch({ thresholdProbability: v })}
+          />
+          <SliderRow
+            label={t('settings.rainLookahead', 'Vooruitkijken (uur)')}
+            value={settings.lookaheadHours}
+            min={0.25} max={6} step={0.25}
+            format={(v) => `${v.toFixed(2)} h`}
+            disabled={disabled}
+            onCommit={(v) => patch({ lookaheadHours: v })}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Slider Row (commit on release) ───────────────────── */
+
+function SliderRow({ label, value, min, max, step, format, disabled, onCommit }: {
+  label: string;
+  value: number;
+  min: number; max: number; step: number;
+  format: (v: number) => string;
+  disabled: boolean;
+  onCommit: (v: number) => void;
+}) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => { setLocal(value); }, [value]);
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <label className="text-[10px] text-gray-500 uppercase tracking-wide">{label}</label>
+        <span className="text-[11px] text-gray-300 font-mono">{format(local)}</span>
+      </div>
+      <input
+        type="range"
+        min={min} max={max} step={step}
+        value={local}
+        disabled={disabled}
+        onChange={(e) => setLocal(parseFloat(e.target.value))}
+        onMouseUp={() => onCommit(local)}
+        onTouchEnd={() => onCommit(local)}
+        className="w-full h-1.5 mt-1 accent-sky-500 bg-gray-700 rounded-full appearance-none cursor-pointer disabled:opacity-40"
+      />
     </div>
   );
 }
