@@ -168,6 +168,23 @@ describe('mapEdit service: apply + revert', () => {
     expect(res.reason).toBe('busy');
   });
 
+  it('apply: idle maaier met Mode:COVERAGE (task_mode 0) blokkeert NIET', async () => {
+    // Idle maaier houdt "Mode:COVERAGE" als laatst-gekozen modus — mag Apply niet blokkeren.
+    deviceCache.set(sn, new Map([['msg', 'Mode:COVERAGE'], ['task_mode', '0']]));
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const res = await applyEdits(sn);
+    expect(res.reason).not.toBe('busy');
+    expect(res.ok).toBe(true);
+  });
+
+  it('apply: actieve cover-taak (task_mode 1) blokkeert wél', async () => {
+    deviceCache.set(sn, new Map([['msg', 'Mode:COVERAGE'], ['task_mode', '1']]));
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const res = await applyEdits(sn);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('busy');
+  });
+
   it('apply: push faalt → pendingSync gezet; retry zonder drafts pusht opnieuw', async () => {
     vi.mocked(pushMapToMowerVerbatim).mockResolvedValueOnce({ ok: false, offline: true });
     saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });

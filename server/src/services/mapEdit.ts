@@ -164,9 +164,13 @@ function isMowerBusy(sn: string): boolean {
   const sensors = deviceCache.get(sn);
   if (!sensors) return false;
   const msg = sensors.get('msg') ?? '';
+  const taskMode = parseInt(sensors.get('task_mode') ?? '0', 10);
   if (msg.includes('Work:RUNNING') || msg.includes('Work:COVERING')
       || msg.includes('Work:NAVIGATING') || msg.includes('Work:MOVING')) return true;
-  if (msg.includes('Mode:COVERAGE') && !msg.includes('Work:STANDBY') && !msg.includes('Work:IDLE')) return true;
+  // Fallback alleen bij een ACTIEVE taak (task_mode===1). Een idle maaier houdt
+  // "Mode:COVERAGE" als laatst-gekozen modus-label, wat 'm anders onterecht als
+  // bezig markeerde en Apply blokkeerde. Gelijkgetrokken met isCoverageActive.
+  if (taskMode === 1 && msg.includes('Mode:COVERAGE') && !msg.includes('Work:STANDBY') && !msg.includes('Work:IDLE')) return true;
   return false;
 }
 
