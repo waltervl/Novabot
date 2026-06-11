@@ -2,8 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef, Fragment } from 'rea
 import { MapContainer, TileLayer, Marker, Popup, Polygon, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import {
-  MapPin, Map as MapIcon, Trash2, Route, Wifi, WifiOff, Satellite, Crosshair,
-  Battery, BatteryCharging, BatteryLow, BatteryFull, Layers,
+  MapPin, Map as MapIcon, Trash2, Route, Crosshair, Layers,
   SlidersHorizontal, Save, X, RotateCcw, Pencil, Check, Scissors, Navigation,
   ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Download, Flame,
   Fence, Target, XCircle, CheckCircle2, Plus, Minus, Brush, Paintbrush, Eraser,
@@ -137,29 +136,9 @@ interface Props {
   coveredLanes?: Array<{ lat1: number; lng1: number; lat2: number; lng2: number }> | null;
 }
 
-function wifiColor(rssi: number): string {
-  if (rssi >= -50) return 'text-green-400';
-  if (rssi >= -60) return 'text-yellow-400';
-  if (rssi >= -70) return 'text-orange-400';
-  return 'text-red-400';
-}
-
-function gpsColor(sats: number): string {
-  if (sats >= 20) return 'text-green-400';
-  if (sats >= 10) return 'text-yellow-400';
-  return 'text-red-400';
-}
-
 function locColor(quality: number): string {
   if (quality >= 80) return 'text-green-400';
   if (quality >= 50) return 'text-yellow-400';
-  return 'text-red-400';
-}
-
-function batteryColor(pct: number): string {
-  if (pct >= 60) return 'text-green-400';
-  if (pct >= 30) return 'text-yellow-400';
-  if (pct >= 15) return 'text-orange-400';
   return 'text-red-400';
 }
 
@@ -2544,33 +2523,17 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
       <div className="flex items-center justify-between px-1.5 md:px-4 py-1.5 md:py-2 border-b border-gray-700 flex-shrink-0 overflow-x-auto gap-1 md:gap-2">
         <div className="flex items-center gap-1.5 md:gap-3">
           <MapPin className="w-4 h-4 text-blue-400 hidden md:block" />
-          {/* Signal icon bar */}
+          {/* Alleen loc-quality (map-relevant). Battery/wifi/GPS staan al in de
+              bovenste status-bar (DeviceChips) — hier weggelaten om dubbele info
+              boven de kaart te voorkomen. */}
           {signals && (() => {
-            const rssi = signals.wifiRssi ? parseInt(signals.wifiRssi, 10) : null;
-            const sats = signals.rtkSat ? parseInt(signals.rtkSat, 10) : null;
             const loc = signals.locQuality ? parseInt(signals.locQuality, 10) : null;
-            const bat = signals.batteryPower ? parseInt(signals.batteryPower, 10) : null;
-            const charging = signals.batteryState?.toUpperCase() === 'CHARGING';
-            const BatIcon = charging ? BatteryCharging : bat !== null && bat <= 15 ? BatteryLow : bat !== null && bat >= 80 ? BatteryFull : Battery;
+            if (loc === null) return null;
             return (
-              <div className="flex items-center gap-1 md:gap-2">
-                <span className={`inline-flex items-center gap-0.5 ${bat !== null ? batteryColor(bat) : 'text-gray-600'}`} title={bat !== null ? (charging ? t('devices.batteryCharging', { pct: bat }) : t('devices.batteryLabel', { pct: bat })) : t('devices.batteryNoData')}>
-                  <BatIcon className="w-3.5 h-3.5" />
-                  {bat !== null && <span className="hidden md:inline text-[10px] font-mono">{bat}%</span>}
-                </span>
-                <span className={`inline-flex items-center gap-0.5 ${rssi !== null ? wifiColor(rssi) : 'text-gray-600'}`} title={rssi !== null ? t('devices.wifiLabel', { rssi }) : t('devices.wifiNoData')}>
-                  {rssi !== null ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-                  {rssi !== null && <span className="hidden md:inline text-[10px] font-mono">{rssi}</span>}
-                </span>
-                <span className={`inline-flex items-center gap-0.5 ${sats !== null ? gpsColor(sats) : 'text-gray-600'}`} title={sats !== null ? t('devices.rtkLabel', { sats }) : t('devices.rtkNoData')}>
-                  <Satellite className="w-3.5 h-3.5" />
-                  {sats !== null && <span className="hidden md:inline text-[10px] font-mono">{sats}</span>}
-                </span>
-                <span className={`hidden md:inline-flex items-center gap-0.5 ${loc !== null ? locColor(loc) : 'text-gray-600'}`} title={loc !== null ? t('devices.locLabel', { loc }) : t('devices.locNoData')}>
-                  <Crosshair className="w-3.5 h-3.5" />
-                  {loc !== null && <span className="text-[10px] font-mono">{loc}%</span>}
-                </span>
-              </div>
+              <span className={`hidden md:inline-flex items-center gap-0.5 ${locColor(loc)}`} title={t('devices.locLabel', { loc })}>
+                <Crosshair className="w-3.5 h-3.5" />
+                <span className="text-[10px] font-mono">{loc}%</span>
+              </span>
             );
           })()}
         </div>
