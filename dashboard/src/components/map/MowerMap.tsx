@@ -6,7 +6,8 @@ import {
   Battery, BatteryCharging, BatteryLow, BatteryFull, Layers,
   SlidersHorizontal, Save, X, RotateCcw, Pencil, Check, Scissors, Navigation,
   ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Download, Flame,
-  Fence, Target, XCircle, CheckCircle2,
+  Fence, Target, XCircle, CheckCircle2, Plus, Minus, Brush, Paintbrush, Eraser,
+  Copy, ClipboardPaste, Spline, RefreshCw, Loader2, Move as MoveIcon,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData, TrailPoint, MapCalibration, GpsPoint } from '../../types';
@@ -16,12 +17,17 @@ import {
   navigateToPosition, stopNavigation,
   fetchVirtualWalls, createVirtualWall, deleteVirtualWall,
   calibrateCharger,
-  type VirtualWall,
+  fetchEditGeometry, saveEditDraft, discardEditDrafts, applyEdits, revertEdits,
+  getPreviewPath, refreshPreviewPath, getPlanPath, refreshPlanPath,
+  type VirtualWall, type EditGeometryDto, type CoveragePathEntry,
 } from '../../api/client';
 import { localToGps, gpsToLocal, isUsableChargerGps } from '../../utils/coords';
+import { applyBrush, densifyPolygon, hitTestEdge, offsetPolygon, pointInPolygon as pointInPolygonXY, polygonArea, simplifyPolygon, type XY } from '../../utils/editGeometry';
+import { paintCircle, eraseCircle } from '../../utils/brushPaint';
 import { useToast } from '../common/Toast';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { PolygonEditor } from './PolygonEditor';
+import { MapEditBar } from './MapEditBar';
 import { PatternOverlay, type PatternPlacement } from '../patterns/PatternOverlay';
 
 // Fix Leaflet default marker icons in Vite
@@ -37,6 +43,21 @@ L.Icon.Default.mergeOptions({
 
 // Standaard positie (Nederland)
 const DEFAULT_CENTER: [number, number] = [52.1409, 6.231];
+
+// ── Obstacle copy/paste (R6) ──────────────────────────────────────
+// Clipboard for copying an obstacle and pasting it as a new obstacle draft —
+// onto the same work map or a different one, even after switching mowers.
+// Points are LOCAL meters (charger = 0,0). Persisted to localStorage so the
+// clipboard survives reloads and mower switches.
+const OBSTACLE_CLIPBOARD_KEY = 'novabot.obstacleClipboard';
+interface ObstacleClipboard {
+  points: { x: number; y: number }[];
+  sourceName?: string | null;
+}
+// Small fixed nudge (meters) used as the paste-placement fallback when a map
+// view center isn't available, so the pasted obstacle never lands exactly on
+// top of the original.
+const PASTE_FALLBACK_DELTA = 0.7;
 
 // Kleuren per kaarttype
 const AREA_STYLES = {
@@ -86,6 +107,14 @@ interface Props {
   mapX?: string;
   mapY?: string;
   heading?: string;
+  /** Mower reachable (online + dashboard socket connected). Gates the
+   *  coverage-path preview refresh — generate_preview needs an online mower. */
+  online?: boolean;
+  /** True while the mower is actively mowing (Work:RUNNING/NAVIGATING/COVERING/
+   *  MOVING — computed in MapTab, mirrors the OpenNova app). Drives the coverage
+   *  panel to show the LIVE plan path (get_map_plan_path) instead of refusing,
+   *  and to poll it every ~5s while the overlay is shown. */
+  mowingActive?: boolean;
   signals?: SignalInfo;
   mowing?: MowingInfo;
   /** Wanneer ingesteld, toon een richting-overlay lijn op de kaart (graden, 0=N) */
@@ -352,6 +381,169 @@ function DrawClickHandler({ onPoint }: { onPoint: (latlng: [number, number]) => 
   return null;
 }
 
+/** Push/pull brush pointer handler (R3). Translates Leaflet mouse events into
+ *  LOCAL meter coords (caller supplies the GPS→local projection) and drives the
+ *  stroke lifecycle. Disables map dragging while a stroke is active, like the
+ *  draw handler. onDown returns true if it grabbed an edge (stroke begins). */
+function BrushPointerHandler({
+  toLocal, onDown, onMove, onUp,
+}: {
+  toLocal: (latlng: L.LatLng) => XY;
+  onDown: (m: XY) => boolean;
+  onMove: (m: XY) => void;
+  onUp: () => void;
+}) {
+  const map = useMap();
+  const active = useRef(false);
+  // Keep the latest callbacks in a ref so the Leaflet listeners bind ONCE (on
+  // `map`). Re-binding per render would tear down mid-stroke (cleanup runs
+  // while active.current is true → premature dragging.enable + stroke abort).
+  const cb = useRef({ toLocal, onDown, onMove, onUp });
+  useEffect(() => { cb.current = { toLocal, onDown, onMove, onUp }; });
+  useEffect(() => {
+    const down = (e: L.LeafletMouseEvent) => {
+      if (cb.current.onDown(cb.current.toLocal(e.latlng))) {
+        active.current = true;
+        map.dragging.disable();
+      }
+    };
+    const move = (e: L.LeafletMouseEvent) => {
+      if (active.current) cb.current.onMove(cb.current.toLocal(e.latlng));
+    };
+    const up = () => {
+      if (active.current) {
+        active.current = false;
+        map.dragging.enable();
+        cb.current.onUp();
+      }
+    };
+    map.on('mousedown', down);
+    map.on('mousemove', move);
+    map.on('mouseup', up);
+    map.getContainer().style.cursor = 'crosshair';
+    return () => {
+      map.off('mousedown', down);
+      map.off('mousemove', move);
+      map.off('mouseup', up);
+      if (active.current) { map.dragging.enable(); active.current = false; }
+      map.getContainer().style.cursor = '';
+    };
+  }, [map]);
+  return null;
+}
+
+/** Paint/erase brush pointer handler. Mirrors BrushPointerHandler but the brush
+ *  op is applied on mousedown too (no edge gating) and accumulated per mousemove,
+ *  like a real paint stroke. onDown returns true to begin the stroke. A circular
+ *  cursor preview (paintRadius meters) follows the pointer while in paint mode. */
+function PaintPointerHandler({
+  toLatLng, toLocal, radius, onDown, onMove, onUp,
+}: {
+  toLatLng: (latlng: L.LatLng) => L.LatLng;
+  toLocal: (latlng: L.LatLng) => XY;
+  radius: number;
+  onDown: (m: XY) => boolean;
+  onMove: (m: XY) => void;
+  onUp: () => void;
+}) {
+  const map = useMap();
+  const active = useRef(false);
+  const cursorRef = useRef<L.Circle | null>(null);
+  // Keep the latest callbacks in a ref so the Leaflet listeners bind ONCE.
+  const cb = useRef({ toLatLng, toLocal, onDown, onMove, onUp, radius });
+  useEffect(() => { cb.current = { toLatLng, toLocal, onDown, onMove, onUp, radius }; });
+  useEffect(() => {
+    const cursor = L.circle(map.getCenter(), {
+      radius: cb.current.radius,
+      color: '#f59e0b', weight: 1, fillColor: '#f59e0b', fillOpacity: 0.12,
+      interactive: false, opacity: 0,
+    }).addTo(map);
+    cursorRef.current = cursor;
+    const down = (e: L.LeafletMouseEvent) => {
+      if (cb.current.onDown(cb.current.toLocal(e.latlng))) {
+        active.current = true;
+        map.dragging.disable();
+      }
+    };
+    const move = (e: L.LeafletMouseEvent) => {
+      cursor.setLatLng(cb.current.toLatLng(e.latlng));
+      cursor.setRadius(cb.current.radius);
+      cursor.setStyle({ opacity: 1 });
+      if (active.current) cb.current.onMove(cb.current.toLocal(e.latlng));
+    };
+    const up = () => {
+      if (active.current) {
+        active.current = false;
+        map.dragging.enable();
+        cb.current.onUp();
+      }
+    };
+    map.on('mousedown', down);
+    map.on('mousemove', move);
+    map.on('mouseup', up);
+    map.getContainer().style.cursor = 'crosshair';
+    return () => {
+      map.off('mousedown', down);
+      map.off('mousemove', move);
+      map.off('mouseup', up);
+      cursor.remove();
+      cursorRef.current = null;
+      if (active.current) { map.dragging.enable(); active.current = false; }
+      map.getContainer().style.cursor = '';
+    };
+  }, [map]);
+  return null;
+}
+
+/** Move (translate) pointer handler. Mirrors PaintPointerHandler/BrushPointerHandler:
+ *  bound ONCE (listeners read the latest callbacks via a ref so they never re-bind
+ *  mid-drag). The drag begins only when the down point is INSIDE the target polygon
+ *  — otherwise the map pans normally. onDown returns true to begin a drag (which
+ *  disables map dragging); onMove gets the live local point; onUp commits. */
+function MovePointerHandler({
+  toLocal, onDown, onMove, onUp,
+}: {
+  toLocal: (latlng: L.LatLng) => XY;
+  onDown: (m: XY) => boolean;
+  onMove: (m: XY) => void;
+  onUp: () => void;
+}) {
+  const map = useMap();
+  const active = useRef(false);
+  const cb = useRef({ toLocal, onDown, onMove, onUp });
+  useEffect(() => { cb.current = { toLocal, onDown, onMove, onUp }; });
+  useEffect(() => {
+    const down = (e: L.LeafletMouseEvent) => {
+      if (cb.current.onDown(cb.current.toLocal(e.latlng))) {
+        active.current = true;
+        map.dragging.disable();
+      }
+    };
+    const move = (e: L.LeafletMouseEvent) => {
+      if (active.current) cb.current.onMove(cb.current.toLocal(e.latlng));
+    };
+    const up = () => {
+      if (active.current) {
+        active.current = false;
+        map.dragging.enable();
+        cb.current.onUp();
+      }
+    };
+    map.on('mousedown', down);
+    map.on('mousemove', move);
+    map.on('mouseup', up);
+    map.getContainer().style.cursor = 'move';
+    return () => {
+      map.off('mousedown', down);
+      map.off('mousemove', move);
+      map.off('mouseup', up);
+      if (active.current) { map.dragging.enable(); active.current = false; }
+      map.getContainer().style.cursor = '';
+    };
+  }, [map]);
+  return null;
+}
+
 /** Deselect polygons when clicking on empty map area */
 function MapClickDeselect({ onDeselect }: { onDeselect: () => void }) {
   const map = useMap();
@@ -360,6 +552,18 @@ function MapClickDeselect({ onDeselect }: { onDeselect: () => void }) {
     map.on('click', handler);
     return () => { map.off('click', handler); };
   }, [map, onDeselect]);
+  return null;
+}
+
+/** Capture the live Leaflet map instance into a ref so component-scope code
+ *  (e.g. obstacle paste placement) can read the current view center without
+ *  living inside a MapContainer child. */
+function MapInstanceCapture({ mapRef }: { mapRef: React.MutableRefObject<L.Map | null> }) {
+  const map = useMap();
+  useEffect(() => {
+    mapRef.current = map;
+    return () => { mapRef.current = null; };
+  }, [map, mapRef]);
   return null;
 }
 
@@ -389,13 +593,13 @@ const TILE_LAYERS = {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
     maxNativeZoom: 19,
-    maxZoom: 23,
+    maxZoom: 25,
   },
   street: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
     maxNativeZoom: 19,
-    maxZoom: 23,
+    maxZoom: 25,
   },
 } as const;
 
@@ -440,6 +644,41 @@ function calibratePoints(
 const DEFAULT_CAL: MapCalibration = { offsetLat: 0, offsetLng: 0, rotation: 0, scale: 1 };
 
 type AreaType = 'work' | 'obstacle' | 'unicom';
+
+// ── Edit-history snapshot stack (client-side undo/redo, R6) ──────────
+// A "draft snapshot" is the full set of currently-pending drafts, each entry
+// carrying enough to re-create it via saveEditDraft. Undo/redo move a pointer
+// over a stack of these snapshots and replay them through the EXISTING draft
+// endpoints (discardEditDrafts → re-save each entry). No server change.
+type DraftEntry =
+  | { kind: 'edit'; canonical: string; points: { x: number; y: number }[] }
+  | { kind: 'delete'; canonical: string }
+  | { kind: 'new'; mapType: 'obstacle'; parentMap: string; points: { x: number; y: number }[] };
+type DraftSnapshot = DraftEntry[];
+
+const HISTORY_CAP = 50;
+
+/** Derive a draft snapshot from the freshly-fetched edit geometry. Each map
+ *  with a non-null draft contributes one entry: new obstacle, delete, or edit. */
+function snapshotOf(geom: EditGeometryDto | null): DraftSnapshot {
+  if (!geom) return [];
+  const snap: DraftSnapshot = [];
+  for (const entry of geom.maps) {
+    const draft = entry.draft;
+    if (!draft) continue;
+    if (draft.isNew) {
+      // New obstacle drawn this session; needs a parent work map to re-create.
+      if (entry.parentMap) {
+        snap.push({ kind: 'new', mapType: 'obstacle', parentMap: entry.parentMap, points: draft.points.map(p => ({ x: p.x, y: p.y })) });
+      }
+    } else if (draft.deleted) {
+      snap.push({ kind: 'delete', canonical: entry.canonical });
+    } else {
+      snap.push({ kind: 'edit', canonical: entry.canonical, points: draft.points.map(p => ({ x: p.x, y: p.y })) });
+    }
+  }
+  return snap;
+}
 
 // ── Mower marker icon ────────────────────────────────────────────
 
@@ -678,7 +917,7 @@ function CelebrationOverlay({ area, onDismiss }: { area: number; onDismiss: () =
   );
 }
 
-export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, pathDirectionPreview, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
+export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActive, signals, mowing, pathDirectionPreview, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const [maps, setMaps] = useState<MapData[]>([]);
@@ -694,6 +933,201 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
   const [drawType, setDrawType] = useState<'work' | 'obstacle' | 'unicom'>('work');
   const [drawName, setDrawName] = useState('');
   const [showHeatmap, setShowHeatmap] = useState(false);
+
+  // ── Coverage-path preview ("show mowing path"): the real boustrophedon
+  //    path the mower will cut, fetched from the mower's coverage planner.
+  //    Reflects what's CURRENTLY on the mower — after editing, Apply first,
+  //    then Refresh path.
+  const [coveragePath, setCoveragePath] = useState<CoveragePathEntry[] | null>(null);
+  const [coverageLoading, setCoverageLoading] = useState(false);
+  const [showCoverage, setShowCoverage] = useState(false);
+  const [coverageStatus, setCoverageStatus] = useState<string | null>(null);
+  // True when the currently-shown overlay is the LIVE plan path (mower mowing),
+  // so the panel shows a subtle "live" indicator + hint instead of the idle one.
+  const [coverageLive, setCoverageLive] = useState(false);
+  // Interval handle for live plan-path polling (~5s) while the overlay is shown
+  // AND the mower is mowing. Cleared on hide / stop-mowing / unmount.
+  const coveragePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Mirror showCoverage in a ref so the poll loop can self-cancel without being
+  // re-created on every toggle.
+  const showCoverageRef = useRef(false);
+  useEffect(() => { showCoverageRef.current = showCoverage; }, [showCoverage]);
+
+  // ── Push/pull brush (R3) ────────────────────────────────────────
+  // The brush operates on the currently selected WORK or OBSTACLE polygon
+  // (unicom excluded). brushWorking holds the live LOCAL points during a stroke
+  // so we can render an in-progress dashed overlay and commit on mouseup.
+  const [brushMode, setBrushMode] = useState(false);
+  const [brushRadius, setBrushRadius] = useState(0.8);
+  const [brushWorking, setBrushWorking] = useState<XY[] | null>(null);
+
+  // ── Paint/erase brush (primary tool) ────────────────────────────
+  // Paints (union) or erases (difference) a circular brush into the selected
+  // work/obstacle polygon. paintWorking mirrors the live polygon during a stroke
+  // for the dashed overlay; successive strokes accumulate (re-seeded on commit).
+  const [paintMode, setPaintMode] = useState(false);
+  const [paintTool, setPaintTool] = useState<'paint' | 'erase'>('erase');
+  const [paintRadius, setPaintRadius] = useState(0.4);
+  const [paintWorking, setPaintWorking] = useState<XY[] | null>(null);
+
+  // ── Move/translate tool ─────────────────────────────────────────
+  // Drag a whole work/obstacle shape to reposition it (saved as a draft,
+  // undoable, applied later). The move target is pinned by CANONICAL — not by
+  // selectedMapId — because a fresh paste is a draft-only obstacle that may NOT
+  // appear in the committed `maps` list. moveWorking mirrors the live translated
+  // points during a drag for the dashed overlay; the drag re-seeds its base from
+  // the refreshed geometry on each release so successive nudges stack cleanly.
+  const [moveMode, setMoveMode] = useState(false);
+  const [moveTargetCanonical, setMoveTargetCanonical] = useState<string | null>(null);
+  const [moveWorking, setMoveWorking] = useState<XY[] | null>(null);
+
+  // Cumulative obstacle offset (R3). Repeated Expand/Shrink must offset from the
+  // ORIGINAL base by the accumulated distance — offsetting the previous result
+  // each time compounds miter rounding error (corners drift). Key = canonical.
+  const obstacleOffsetBase = useRef<Map<string, { base: XY[]; accum: number }>>(new Map());
+
+  // Live Leaflet map instance (captured via <MapInstanceCapture/>) so paste can
+  // read the current view CENTER for placement without living inside MapContainer.
+  const leafletMapRef = useRef<L.Map | null>(null);
+
+  // ── Obstacle copy/paste (R6) ────────────────────────────────────
+  // Clipboard holds an obstacle's LOCAL points (charger-relative meters). It
+  // PERSISTS across mower switches and reloads via localStorage, so a copy on
+  // one mower can be pasted onto another's work map (the relative shape is reused
+  // in the target mower's frame; absolute position may differ — the user then
+  // repositions with Paint/Move). Initialized from localStorage on mount.
+  const [obstacleClipboard, setObstacleClipboardState] = useState<ObstacleClipboard | null>(() => {
+    try {
+      const raw = localStorage.getItem(OBSTACLE_CLIPBOARD_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as ObstacleClipboard;
+      if (!parsed || !Array.isArray(parsed.points) || parsed.points.length < 3) return null;
+      return parsed;
+    } catch { return null; }
+  });
+  // Setter that mirrors to localStorage so the clipboard survives reloads.
+  const setObstacleClipboard = useCallback((c: ObstacleClipboard | null) => {
+    setObstacleClipboardState(c);
+    try {
+      if (c) localStorage.setItem(OBSTACLE_CLIPBOARD_KEY, JSON.stringify(c));
+      else localStorage.removeItem(OBSTACLE_CLIPBOARD_KEY);
+    } catch { /* localStorage may be unavailable (private mode) — keep in-memory */ }
+  }, []);
+
+  // Draft → apply-to-mower flow (R2). editGeometry mirrors the server's draft
+  // store; the floating MapEditBar surfaces pending drafts + apply/revert/discard.
+  const [editGeometry, setEditGeometry] = useState<EditGeometryDto | null>(null);
+  const [editStatus, setEditStatus] = useState('');
+  const [editStatusKind, setEditStatusKind] = useState<'info' | 'error' | 'warn' | 'ok'>('info');
+  const [applying, setApplying] = useState(false);
+
+  // Mirror editGeometry in a ref so recordHistory() can read the FRESHLY fetched
+  // geometry synchronously right after refreshEditGeometry() (the setEditGeometry
+  // state update is async and not yet visible in the same tick).
+  const editGeometryRef = useRef<EditGeometryDto | null>(null);
+  const refreshEditGeometry = useCallback(async () => {
+    if (!sn) return;
+    try {
+      const geom = await fetchEditGeometry(sn);
+      editGeometryRef.current = geom;
+      setEditGeometry(geom);
+    } catch { /* non-fatal */ }
+  }, [sn]);
+
+  // ── Undo/redo edit-history (R6) ─────────────────────────────────
+  // Client-side snapshot stack over the existing draft endpoints. history holds
+  // DraftSnapshots; historyIndex points at the currently-applied one. Mutating
+  // ops push a fresh snapshot; undo/redo replay a snapshot via applySnapshot.
+  const [history, setHistory] = useState<DraftSnapshot[]>([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  // historyIndex mirrored in a ref so keyboard handlers + the truncate logic in
+  // recordHistory read the live value without re-binding/closure staleness.
+  const historyIndexRef = useRef(0);
+  useEffect(() => { historyIndexRef.current = historyIndex; }, [historyIndex]);
+
+  // Record the current pending-draft set as a new history entry. Call AFTER a
+  // successful mutating op once refreshEditGeometry() has updated the geometry —
+  // derives the snapshot from editGeometryRef (freshly fetched, not stale state).
+  // Truncates any redo branch, caps at HISTORY_CAP. Never call during undo/redo.
+  const recordHistory = useCallback(() => {
+    const snap = snapshotOf(editGeometryRef.current);
+    setHistory(prev => {
+      const base = prev.slice(0, historyIndexRef.current + 1);
+      base.push(snap);
+      const trimmed = base.length > HISTORY_CAP ? base.slice(base.length - HISTORY_CAP) : base;
+      setHistoryIndex(trimmed.length - 1);
+      return trimmed;
+    });
+  }, []);
+
+  // Reset history to a single fresh snapshot of the current geometry. Used on
+  // mower select / editor open and after apply/revert/discard (drafts cleared).
+  const resetHistory = useCallback(() => {
+    const snap = snapshotOf(editGeometryRef.current);
+    setHistory([snap]);
+    setHistoryIndex(0);
+  }, []);
+
+  // Re-fetch the canonical map list from the server (used after draft save /
+  // apply / revert, where optimistic local edits no longer match the server).
+  const reloadMaps = useCallback(async () => {
+    if (!sn) return;
+    try {
+      const resp = await fetchMaps(sn);
+      setMaps(resp.maps);
+      setChargerGps(resp.chargerGps);
+      setChargingPose(resp.chargingPose ?? null);
+    } catch { /* keep current maps */ }
+  }, [sn]);
+
+  // Replay a snapshot onto the server: clear all drafts, then re-create each
+  // entry through the existing draft endpoints. Sequential to avoid the per-SN
+  // draft race. After replay, refresh geometry + reload maps so overlays update.
+  const applySnapshot = useCallback(async (snap: DraftSnapshot) => {
+    if (!sn) return;
+    await discardEditDrafts(sn).catch(() => {});
+    for (const entry of snap) {
+      try {
+        if (entry.kind === 'edit') {
+          await saveEditDraft(sn, { canonical: entry.canonical, points: entry.points });
+        } else if (entry.kind === 'delete') {
+          await saveEditDraft(sn, { canonical: entry.canonical, deleted: true });
+        } else {
+          await saveEditDraft(sn, { mapType: 'obstacle', parentMap: entry.parentMap, points: entry.points });
+        }
+      } catch { /* skip a failed entry, continue replay */ }
+    }
+    // Replaying changes the committed/draft geometry → the cumulative obstacle
+    // offset base is no longer valid; clear it so the next expand/shrink re-seeds.
+    obstacleOffsetBase.current.clear();
+    await refreshEditGeometry();
+    await reloadMaps();
+  }, [sn, refreshEditGeometry, reloadMaps]);
+
+  // Undo: move the pointer back one step and replay that snapshot. Moving the
+  // pointer IS the history move — do NOT recordHistory here. Guarded by
+  // historyBusy so rapid clicks don't overlap (each applySnapshot is awaited).
+  const undo = useCallback(async () => {
+    if (historyBusy || historyIndex <= 0) return;
+    setHistoryBusy(true);
+    const target = historyIndex - 1;
+    setHistoryIndex(target);
+    try { await applySnapshot(history[target]); }
+    finally { setHistoryBusy(false); }
+  }, [historyBusy, historyIndex, history, applySnapshot]);
+
+  const redo = useCallback(async () => {
+    if (historyBusy || historyIndex >= history.length - 1) return;
+    setHistoryBusy(true);
+    const target = historyIndex + 1;
+    setHistoryIndex(target);
+    try { await applySnapshot(history[target]); }
+    finally { setHistoryBusy(false); }
+  }, [historyBusy, historyIndex, history, applySnapshot]);
+
+  const canUndo = historyIndex > 0 && !historyBusy;
+  const canRedo = historyIndex < history.length - 1 && !historyBusy;
 
   // Mowing completion celebration + "vandaag gemaaid" tracking
   const [showCelebration, setShowCelebration] = useState(false);
@@ -765,6 +1199,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
       }).catch(() => setMaps([]));
       fetchTrail(sn).then(setTrail).catch(() => setTrail([]));
       fetchCalibration(sn).then(setSavedCal).catch(() => {});
+      // Initialize undo/redo history to a single fresh snapshot once the editor's
+      // geometry has loaded for this mower (usually an empty snapshot = no drafts).
+      refreshEditGeometry().then(resetHistory);
     } else {
       // No mower SN — load all maps and calibration as fallback
       fetchAllMaps().then(loaded => {
@@ -785,6 +1222,29 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
       fetchVirtualWalls(sn).then(setWalls).catch(() => setWalls([]));
     }
   }, [sn]);
+
+  // Keyboard shortcuts for undo/redo while the map editor is mounted.
+  // Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z (and Ctrl+Y) = redo. Ignored when the
+  // focus is in a text field so typing in name/rename inputs is unaffected.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) void redo();
+        else void undo();
+      } else if (key === 'y') {
+        e.preventDefault();
+        void redo();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undo, redo]);
 
 
   // Append new trail points when lat/lng changes — only while actively mowing
@@ -833,13 +1293,39 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
   // Server stuurt al GPS coords (lokaal→GPS conversie) — direct bruikbaar voor Leaflet.
   const startEditMap = useCallback((mapId: string, mapArea: Array<{ lat: number; lng: number }>) => {
     if (mapArea.length < 3) return;
+    // Mower-recorded rings carry hundreds of densely sampled points (~every
+    // 0.4 m). Editing every one is impossible (overlapping handles). Simplify
+    // adaptively to a manageable handle count via RDP in local meters
+    // (translation-invariant; the gpsToLocal/localToGps round-trip is exact),
+    // raising the tolerance until the ring drops to ~TARGET vertices. The saved
+    // draft replaces the dense ring — fine for editing, the planner re-rasterizes.
+    const TARGET = 28;
+    let verts = mapArea.map(p => [p.lat, p.lng] as [number, number]);
+    if (verts.length > TARGET && isUsableChargerGps(chargerGps)) {
+      const local = verts.map(([lat, lng]) => gpsToLocal({ lat, lng }, chargerGps));
+      let simplified = local;
+      let tol = 0.05;
+      for (let i = 0; i < 10 && simplified.length > TARGET; i++) {
+        simplified = simplifyPolygon(local, tol);
+        tol *= 1.7;
+      }
+      if (simplified.length >= 3 && simplified.length < verts.length) {
+        verts = simplified.map(pt => {
+          const g = localToGps(pt, chargerGps);
+          return [g.lat, g.lng] as [number, number];
+        });
+      }
+    }
     setEditingMapId(mapId);
-    setEditVertices(mapArea.map(p => [p.lat, p.lng] as [number, number]));
+    setEditVertices(verts);
     setEditMode('edit');
     setSelectedMapId(null);
     setEditingName(null);
+    setMoveMode(false);
+    setMoveTargetCanonical(null);
+    setMoveWorking(null);
     setUserInteracted(true);
-  }, []);
+  }, [chargerGps]);
 
   // Start drawing a new polygon
   const startDrawMap = useCallback(() => {
@@ -848,6 +1334,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
     setDrawName('');
     setEditMode('draw');
     setSelectedMapId(null);
+    setMoveMode(false);
+    setMoveTargetCanonical(null);
+    setMoveWorking(null);
     setUserInteracted(true);
   }, []);
 
@@ -888,20 +1377,268 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
     }));
   }, [maps, chargerGps, chargingPose]);
 
+  // Pending draft geometry (R2) projected to GPS for a dashed "pending" overlay.
+  // Each draft with non-null geometry (and not deleted) is drawn on top of the
+  // base maps so the user sees their edit before it is applied to the mower.
+  const draftOverlays: Array<{ canonical: string; mapType: 'work' | 'obstacle' | 'unicom'; gps: Array<{ lat: number; lng: number }> }> = useMemo(() => {
+    if (!editGeometry || !isUsableChargerGps(chargerGps)) return [];
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
+    const out: Array<{ canonical: string; mapType: 'work' | 'obstacle' | 'unicom'; gps: Array<{ lat: number; lng: number }> }> = [];
+    for (const entry of editGeometry.maps) {
+      const draft = entry.draft;
+      if (!draft || draft.deleted || draft.points.length < 3) continue;
+      const gps = draft.points.flatMap(p => {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
+        const g = localToGps({ x: p.x - offX, y: p.y - offY }, chargerGps);
+        if (!Number.isFinite(g.lat) || !Number.isFinite(g.lng)) return [];
+        return [g];
+      });
+      if (gps.length >= 3) out.push({ canonical: entry.canonical, mapType: entry.mapType, gps });
+    }
+    return out;
+  }, [editGeometry, chargerGps, chargingPose]);
+
+  // Coverage-path sub-paths projected into the SAME GPS frame as gpsMaps /
+  // draftOverlays (local → GPS with the chargingPose offset). Rendering then
+  // applies calibratePoints(..., activeCal, polyCenter), identical to maps,
+  // so the "black lines" land exactly on the work polygons.
+  const coverageGps: Array<{ id: string; gps: Array<{ lat: number; lng: number }> }> = useMemo(() => {
+    if (!coveragePath || !isUsableChargerGps(chargerGps)) return [];
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
+    const out: Array<{ id: string; gps: Array<{ lat: number; lng: number }> }> = [];
+    for (const entry of coveragePath) {
+      const gps = entry.points.flatMap(p => {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
+        const g = localToGps({ x: p.x - offX, y: p.y - offY }, chargerGps);
+        if (!Number.isFinite(g.lat) || !Number.isFinite(g.lng)) return [];
+        return [g];
+      });
+      if (gps.length >= 2) out.push({ id: entry.id, gps });
+    }
+    return out;
+  }, [coveragePath, chargerGps, chargingPose]);
+
+  // ── Live plan-path polling (while mowing) ───────────────────────
+  // Fetch the live plan path once (used by the poll loop AND the manual path).
+  // Returns true if a non-empty path was applied. Never throws.
+  const fetchPlanOnce = useCallback(async (refresh: boolean): Promise<boolean> => {
+    if (!sn) return false;
+    try {
+      const paths = refresh ? await refreshPlanPath(sn) : await getPlanPath(sn);
+      if (paths.length > 0) { setCoveragePath(paths); return true; }
+    } catch { /* keep any existing path */ }
+    return false;
+  }, [sn]);
+
+  const stopCoveragePoll = useCallback(() => {
+    if (coveragePollRef.current) {
+      clearInterval(coveragePollRef.current);
+      coveragePollRef.current = null;
+    }
+  }, []);
+
+  // Start (or restart) the ~5s live plan-path poll. The loop self-cancels if the
+  // overlay is hidden; the auto-switch effect cancels it when mowing stops.
+  const startCoveragePoll = useCallback(() => {
+    stopCoveragePoll();
+    coveragePollRef.current = setInterval(() => {
+      if (!showCoverageRef.current) { stopCoveragePoll(); return; }
+      void fetchPlanOnce(false).then((ok) => { if (!ok) void fetchPlanOnce(true); });
+    }, 5000);
+  }, [stopCoveragePoll, fetchPlanOnce]);
+
+  // Show the LIVE plan path: refresh once, fall back to cache, then poll. Used
+  // while the mower is mowing — no Error-128 risk (get_map_plan_path is safe).
+  const showLiveCoverage = useCallback(async () => {
+    if (!sn) return;
+    setCoverageLive(true);
+    setCoverageLoading(true);
+    setCoverageStatus(t('map.edit.coverageLive'));
+    try {
+      // Show whatever is cached immediately, then refresh for the freshest plan.
+      const cached = await getPlanPath(sn).catch(() => [] as CoveragePathEntry[]);
+      if (cached.length > 0) setCoveragePath(cached);
+      const ok = await fetchPlanOnce(true);
+      if (!ok && cached.length === 0) {
+        // No live plan came back and nothing cached — last resort: any cached
+        // preview, else a short "couldn't compute" note (no scary busy error).
+        const prev = await getPreviewPath(sn).catch(() => [] as CoveragePathEntry[]);
+        if (prev.length > 0) setCoveragePath(prev);
+        else setCoverageStatus(t('map.edit.coverageNone'));
+      }
+    } finally {
+      setCoverageLoading(false);
+      startCoveragePoll();
+    }
+  }, [sn, t, fetchPlanOnce, startCoveragePoll]);
+
+  // Trigger a fresh coverage-path generation on the mower, then fetch + cache.
+  // IDLE path: mirrors the app (mapIds 1, cov_direction 0). When the mower is
+  // mowing this routes to showLiveCoverage instead. On the idle "busy" (409)
+  // edge we DON'T show a scary error — we fall back to the live plan path.
+  const refreshCoverage = useCallback(async () => {
+    if (!sn) return;
+    if (mowingActive) { stopCoveragePoll(); await showLiveCoverage(); return; }
+    setCoverageLive(false);
+    stopCoveragePoll();
+    if (online === false) {
+      setCoverageStatus(t('map.edit.coverageOffline'));
+      return;
+    }
+    setCoverageLoading(true);
+    setCoverageStatus(t('map.edit.coverageLoading'));
+    try {
+      const { paths, busy } = await refreshPreviewPath(sn, { mapIds: 1, covDirection: 0 });
+      if (busy) {
+        // Genuine busy on a (reportedly) idle mower — fall back to the live plan
+        // path instead of refusing. Only if BOTH yield nothing show "none".
+        if (paths.length > 0) setCoveragePath(paths);
+        const ok = await fetchPlanOnce(true) || await fetchPlanOnce(false);
+        if (ok) { setCoverageLive(true); setCoverageStatus(t('map.edit.coverageLive')); startCoveragePoll(); }
+        else if (paths.length === 0) setCoverageStatus(t('map.edit.coverageNone'));
+        else setCoverageStatus(null);
+      } else {
+        setCoveragePath(paths);
+        setCoverageStatus(paths.length > 0 ? null : t('map.edit.coverageNone'));
+      }
+    } catch {
+      // Thrown means the mower didn't return a preview in time. Try the live
+      // plan path as a fallback before giving up.
+      const ok = await fetchPlanOnce(true) || await fetchPlanOnce(false);
+      if (ok) { setCoverageLive(true); setCoverageStatus(t('map.edit.coverageLive')); startCoveragePoll(); }
+      else setCoverageStatus(t('map.edit.coverageNone'));
+    } finally {
+      setCoverageLoading(false);
+    }
+  }, [sn, mowingActive, online, t, showLiveCoverage, fetchPlanOnce, stopCoveragePoll, startCoveragePoll]);
+
+  // Toggle handler: on first enable, show cached path instantly if present,
+  // otherwise kick off the right fetch (live plan if mowing, else idle preview).
+  // Disable hides the overlay, keeps the cache, and stops live polling.
+  const toggleCoverage = useCallback(async () => {
+    if (showCoverage) {
+      setShowCoverage(false);
+      stopCoveragePoll();
+      return;
+    }
+    setShowCoverage(true);
+    setCoverageStatus(null);
+    if (!sn) return;
+    if (mowingActive) { await showLiveCoverage(); return; }
+    setCoverageLive(false);
+    if (coveragePath && coveragePath.length > 0) return;
+    // Try the cache first (cheap GET), then a full refresh if empty.
+    try {
+      const cached = await getPreviewPath(sn);
+      if (cached.length > 0) { setCoveragePath(cached); return; }
+    } catch { /* fall through to refresh */ }
+    await refreshCoverage();
+  }, [showCoverage, coveragePath, sn, mowingActive, showLiveCoverage, refreshCoverage, stopCoveragePoll]);
+
+  // Auto-switch: when the mower transitions into/out of mowing WHILE the panel
+  // is open, switch to/from the live plan path automatically. Also stops the
+  // poll when the panel closes or the component unmounts.
+  useEffect(() => {
+    if (!showCoverage) { stopCoveragePoll(); return; }
+    if (mowingActive) {
+      if (!coveragePollRef.current) void showLiveCoverage();
+    } else {
+      // Stopped mowing: stop polling, drop the live indicator. Keep the last
+      // path on screen (no auto preview-refresh — that needs a user action /
+      // could 128 a just-finished task that hasn't cleared yet).
+      stopCoveragePoll();
+      setCoverageLive(false);
+      setCoverageStatus((s) => (s === t('map.edit.coverageLive') ? null : s));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mowingActive, showCoverage]);
+
+  // Cleanup poll on unmount.
+  useEffect(() => () => stopCoveragePoll(), [stopCoveragePoll]);
+
+  // Pending counts for the edit bar.
+  const pendingDraftCount = useMemo(
+    () => editGeometry ? editGeometry.maps.filter(m => m.draft).length : 0,
+    [editGeometry],
+  );
+  // Keep the bar visible while there is any undo/redo history to traverse, even
+  // after undoing back to an empty draft set — otherwise Redo becomes unreachable.
+  const showEditBar = !!editGeometry && (pendingDraftCount > 0 || editGeometry.pendingSync || history.length > 1);
+
   // Save edited/drawn polygon — vertices zijn Leaflet GPS coords, converteer naar lokale meters voor API.
+  //
+  // Routing (R2): editing existing work/obstacle geometry and adding new
+  // obstacles go through the DRAFT flow (saveEditDraft) — they become pending
+  // changes that the MapEditBar applies/reverts. Drawing a brand-new work area
+  // or unicom keeps the existing direct-create path (createMap); creating new
+  // top-level areas is a separate existing feature, not part of edit/draft.
   const handleSavePolygon = useCallback(() => {
     if (editVertices.length < 3 || !chargerGps) return;
     const gpsArea = editVertices.map(([lat, lng]) => ({ lat, lng }));
     const localArea = gpsArea.map(p => gpsToLocal(p, chargerGps!));
+    const points = localArea.map(p => ({ x: p.x, y: p.y }));
+
+    const finishEdit = () => {
+      setEditMode('none');
+      setEditVertices([]);
+      setEditingMapId(null);
+    };
 
     if (editMode === 'edit' && editingMapId) {
+      const target = maps.find(m => m.mapId === editingMapId);
+      const canonical = target?.canonicalName ?? null;
+      // Draft flow for existing work/obstacle geometry.
+      if (canonical && (target!.mapType === 'work' || target!.mapType === 'obstacle')) {
+        saveEditDraft(sn, { canonical, points }).then(async r => {
+          if (r.ok) {
+            await reloadMaps();
+            await refreshEditGeometry();
+            recordHistory();
+            setEditStatus('');
+            setEditStatusKind('info');
+          } else {
+            setEditStatus(r.error || t('map.edit.validationFailed'));
+            setEditStatusKind('error');
+          }
+          finishEdit();
+        }).catch(() => { finishEdit(); });
+        return;
+      }
+      // Fallback: unicom (or legacy maps without canonical) — direct update.
       updateMapArea(sn, editingMapId, localArea).then(() => {
         setMaps(prev => prev.map(m => m.mapId === editingMapId ? { ...m, mapArea: localArea } : m));
-        setEditMode('none');
-        setEditVertices([]);
-        setEditingMapId(null);
-      }).catch(() => {});
+        finishEdit();
+      }).catch(() => { finishEdit(); });
     } else if (editMode === 'draw') {
+      // New OBSTACLE → draft flow (attached to a parent work map).
+      if (drawType === 'obstacle') {
+        const selWork = maps.find(m => m.mapId === selectedMapId && m.mapType === 'work');
+        const parent = selWork ?? maps.find(m => m.mapType === 'work');
+        const parentMap = parent?.canonicalName ?? null;
+        if (!parentMap) {
+          setEditStatus(t('map.edit.validationFailed'));
+          setEditStatusKind('error');
+          finishEdit();
+          return;
+        }
+        saveEditDraft(sn, { mapType: 'obstacle', parentMap, points }).then(async r => {
+          if (r.ok) {
+            await reloadMaps();
+            await refreshEditGeometry();
+            recordHistory();
+            setEditStatus('');
+            setEditStatusKind('info');
+          } else {
+            setEditStatus(r.error || t('map.edit.validationFailed'));
+            setEditStatusKind('error');
+          }
+          finishEdit();
+        }).catch(() => { finishEdit(); });
+        return;
+      }
+      // New WORK area or UNICOM → existing direct-create path (unchanged).
       const typeMeta = AREA_TYPE_META[drawType];
       const trimmedName = drawName.trim();
       const name = trimmedName || (() => {
@@ -918,7 +1655,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
         setSelectedMapId(newMap.mapId);
       }).catch(() => {});
     }
-  }, [editVertices, editMode, editingMapId, sn, gpsMaps, drawType, drawName, AREA_TYPE_META, chargerGps]);
+  }, [editVertices, editMode, editingMapId, sn, maps, selectedMapId, gpsMaps, drawType, drawName, AREA_TYPE_META, chargerGps, reloadMaps, refreshEditGeometry, recordHistory, t]);
 
   // Cancel edit/draw
   const cancelEditPolygon = useCallback(() => {
@@ -926,6 +1663,640 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
     setEditVertices([]);
     setEditingMapId(null);
   }, []);
+
+  // ── Draft apply / revert / discard (R2) ─────────────────────────
+  const handleApplyEdits = useCallback(async () => {
+    if (!sn || applying) return;
+    setApplying(true);
+    const r = await applyEdits(sn).catch(() => null);
+    setApplying(false);
+    if (!r) {
+      setEditStatus(t('map.edit.pushFailed'));
+      setEditStatusKind('error');
+      await refreshEditGeometry();
+      return;
+    }
+    if (r.ok) {
+      const warnings = r.validation?.warnings ?? [];
+      const warnText = warnings.map(w => `${w.canonical}: ${w.message}`).join('\n');
+      setEditStatus([t('map.edit.applied'), warnText].filter(Boolean).join('\n'));
+      setEditStatusKind(warnings.length ? 'warn' : 'ok');
+      // Drafts are committed → the obstacle base in maps is now the new origin.
+      obstacleOffsetBase.current.clear();
+      await reloadMaps();
+      await refreshEditGeometry();
+      resetHistory(); // drafts cleared after apply → fresh empty history
+      return;
+    }
+    switch (r.reason) {
+      case 'validation': {
+        const errors = r.validation?.errors ?? [];
+        setEditStatus(errors.map(e => `${e.canonical}: ${e.message}`).join('\n') || t('map.edit.validationFailed'));
+        setEditStatusKind('error');
+        break; // keep drafts
+      }
+      case 'busy':
+      case 'locked':
+        setEditStatus(t('map.edit.busy'));
+        setEditStatusKind('error');
+        break;
+      case 'offline':
+        setEditStatus(t('map.edit.offline'));
+        setEditStatusKind('error');
+        break;
+      case 'no_changes':
+        setEditStatus(t('map.edit.noChanges'));
+        setEditStatusKind('info');
+        await refreshEditGeometry();
+        break;
+      case 'push_failed':
+      case 'bundle_failed':
+        setEditStatus(t('map.edit.pushFailed'));
+        setEditStatusKind('error');
+        await refreshEditGeometry();
+        break;
+      default:
+        setEditStatus(t('map.edit.validationFailed'));
+        setEditStatusKind('error');
+        await refreshEditGeometry();
+    }
+  }, [sn, applying, reloadMaps, refreshEditGeometry, resetHistory, t]);
+
+  const handleRevertEdits = useCallback(async () => {
+    if (!sn || applying) return;
+    if (!window.confirm(t('map.edit.confirmRevert'))) return;
+    setApplying(true);
+    const r = await revertEdits(sn).catch(() => null);
+    setApplying(false);
+    if (r?.ok) {
+      setEditStatus(t('map.edit.applied'));
+      setEditStatusKind('ok');
+    } else {
+      setEditStatus(r?.reason === 'no_changes' ? t('map.edit.nothingToRevert') : t('map.edit.pushFailed'));
+      setEditStatusKind(r?.reason === 'no_changes' ? 'info' : 'error');
+    }
+    obstacleOffsetBase.current.clear();
+    await reloadMaps();
+    await refreshEditGeometry();
+    resetHistory(); // server-side revert cleared drafts → fresh history
+  }, [sn, applying, reloadMaps, refreshEditGeometry, resetHistory, t]);
+
+  const handleDiscardEdits = useCallback(async () => {
+    if (!sn || applying) return;
+    if (!window.confirm(t('map.edit.confirmDiscard'))) return;
+    setApplying(true);
+    await discardEditDrafts(sn).catch(() => {});
+    setApplying(false);
+    setEditStatus('');
+    setEditStatusKind('info');
+    obstacleOffsetBase.current.clear();
+    await reloadMaps();
+    await refreshEditGeometry();
+    resetHistory(); // drafts discarded → fresh empty history
+  }, [sn, applying, reloadMaps, refreshEditGeometry, resetHistory, t]);
+
+  // Latest LOCAL points for a canonical: the pending DRAFT if one exists
+  // (editGeometry mirrors the server draft store), else the committed geometry
+  // from the maps list. Both are local meters (charger = 0,0); no GPS round-trip.
+  const latestLocalPoints = useCallback((canonical: string): XY[] | null => {
+    const draftEntry = editGeometry?.maps.find(e => e.canonical === canonical);
+    if (draftEntry?.draft && !draftEntry.draft.deleted && draftEntry.draft.points.length >= 3) {
+      return draftEntry.draft.points.map(p => ({ x: p.x, y: p.y }));
+    }
+    const m = maps.find(p => p.canonicalName === canonical);
+    if (m && m.mapArea.length >= 3) return m.mapArea.map(p => ({ x: p.x, y: p.y }));
+    return null;
+  }, [editGeometry, maps]);
+
+  // ── Obstacle expand / shrink (R3, Part A) ───────────────────────
+  // LOCAL points come straight from the maps list (mapArea is local meters,
+  // charger = 0,0) — never via a GPS round-trip. Cumulative offset is computed
+  // from a cached ORIGINAL base by the accumulated distance, so repeated clicks
+  // do NOT compound the miter-join rounding of offsetPolygon.
+  const OBSTACLE_OFFSET_STEP = 0.05; // meters per click
+  const MIN_OBSTACLE_OFFSET_AREA = 0.5; // m² floor when shrinking
+
+  const offsetSelectedObstacle = useCallback(async (dir: 1 | -1) => {
+    if (!sn || applying) return;
+    const target = maps.find(m => m.mapId === selectedMapId);
+    if (!target || target.mapType !== 'obstacle' || !target.canonicalName) return;
+    const canonical = target.canonicalName;
+
+    // Seed the offset base ONCE from the current geometry (a prior brush draft
+    // if present, else the committed map). All subsequent clicks offset from
+    // that FIXED base by the running `accum` total — never from the previous
+    // offset result — so miter-join rounding never compounds across clicks.
+    // The cache is cleared on apply/revert/discard so the next session re-seeds.
+    let entry = obstacleOffsetBase.current.get(canonical);
+    if (!entry) {
+      const seed = latestLocalPoints(canonical) ?? target.mapArea.map(p => ({ x: p.x, y: p.y }));
+      entry = { base: seed, accum: 0 };
+      obstacleOffsetBase.current.set(canonical, entry);
+    }
+
+    const nextAccum = entry.accum + dir * OBSTACLE_OFFSET_STEP;
+    const next = offsetPolygon(entry.base, nextAccum);
+
+    if (dir < 0 && polygonArea(next) < MIN_OBSTACLE_OFFSET_AREA) {
+      setEditStatus(t('map.edit.tooSmall'));
+      setEditStatusKind('warn');
+      return;
+    }
+
+    const r = await saveEditDraft(sn, { canonical, points: next.map(p => ({ x: p.x, y: p.y })) }).catch(() => null);
+    if (!r || !r.ok) {
+      setEditStatus(r?.error || t('map.edit.validationFailed'));
+      setEditStatusKind('error');
+      return;
+    }
+    entry.accum = nextAccum;
+    setEditStatus('');
+    setEditStatusKind('info');
+    await refreshEditGeometry();
+    recordHistory();
+    await reloadMaps();
+  }, [sn, applying, maps, selectedMapId, latestLocalPoints, refreshEditGeometry, reloadMaps, recordHistory, t]);
+
+  // ── Obstacle copy / paste (R6) ──────────────────────────────────
+  // COPY: read the selected obstacle's LOCAL points (same source expand/shrink
+  // uses — the maps list `mapArea`, charger-relative meters) and stash them in
+  // the persisted clipboard. Gated identically to expand/shrink (exactly one
+  // obstacle map selected).
+  const copySelectedObstacle = useCallback(() => {
+    const target = maps.find(m => m.mapId === selectedMapId);
+    if (!target || target.mapType !== 'obstacle' || !target.canonicalName) return;
+    if (target.mapArea.length < 3) return;
+    const points = target.mapArea.map(p => ({ x: p.x, y: p.y }));
+    setObstacleClipboard({ points, sourceName: target.mapName ?? target.canonicalName ?? null });
+    setEditStatus(t('map.edit.copied'));
+    setEditStatusKind('info');
+  }, [maps, selectedMapId, setObstacleClipboard, t]);
+
+  // PASTE: drop the clipboard shape as a NEW obstacle DRAFT attached to a work
+  // map. Parent work map preference:
+  //   1. the selected map if it IS a work map (same-map / different-map paste —
+  //      the user selects another work map first, then Paste),
+  //   2. else the work map whose polygon CONTAINS the computed paste point,
+  //   3. else the first work map.
+  // Cross-mower: the clipboard persists via localStorage, so after switching
+  // mowers Paste attaches the same relative shape to the NEW mower's work map.
+  //
+  // Placement: translate the clipboard points so their centroid lands at the
+  // current Leaflet view CENTER (visible + not overlapping the original). If the
+  // map instance / charger GPS isn't available, fall back to a small fixed +0.7m
+  // x/y offset. The result becomes a pending dashed obstacle draft, included in
+  // the next Apply and undoable via the F1 history.
+  const pasteObstacle = useCallback(async () => {
+    if (!sn || applying) return;
+    const clip = obstacleClipboard;
+    if (!clip || clip.points.length < 3) return;
+
+    // Centroid of the clipboard shape (simple vertex average — adequate for
+    // placement; exact area-centroid not needed here).
+    const n = clip.points.length;
+    const cx = clip.points.reduce((s, p) => s + p.x, 0) / n;
+    const cy = clip.points.reduce((s, p) => s + p.y, 0) / n;
+
+    // Desired centroid in the mapArea LOCAL frame. Prefer the Leaflet view
+    // center → local (mirrors brushToLocal: gpsToLocal yields the charger-origin
+    // frame, add the pose offset back to land in the mapArea frame). Fall back to
+    // original-centroid + fixed delta when no map/GPS is available.
+    let targetCx = cx + PASTE_FALLBACK_DELTA;
+    let targetCy = cy + PASTE_FALLBACK_DELTA;
+    const lmap = leafletMapRef.current;
+    if (lmap && isUsableChargerGps(chargerGps)) {
+      try {
+        const center = lmap.getCenter();
+        const offX = chargingPose?.x ?? 0;
+        const offY = chargingPose?.y ?? 0;
+        const l = gpsToLocal({ lat: center.lat, lng: center.lng }, chargerGps);
+        const vc = { x: l.x + offX, y: l.y + offY };
+        if (Number.isFinite(vc.x) && Number.isFinite(vc.y)) {
+          targetCx = vc.x;
+          targetCy = vc.y;
+        }
+      } catch { /* keep fixed-offset fallback */ }
+    }
+
+    const dx = targetCx - cx;
+    const dy = targetCy - cy;
+    const translated = clip.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
+
+    // Choose the parent work map canonical.
+    const sel = maps.find(m => m.mapId === selectedMapId);
+    const works = maps.filter(m => m.mapType === 'work' && m.canonicalName);
+    let parent: MapData | undefined;
+    if (sel && sel.mapType === 'work' && sel.canonicalName) {
+      parent = sel; // explicit (same-map or different-map) selection
+    } else {
+      // Work map whose polygon contains the paste centroid, else the first work.
+      parent = works.find(m => pointInPolygonXY({ x: targetCx, y: targetCy }, m.mapArea)) ?? works[0];
+    }
+    if (!parent || !parent.canonicalName) {
+      setEditStatus(t('map.edit.pasteNoWork'));
+      setEditStatusKind('warn');
+      return;
+    }
+
+    const r = await saveEditDraft(sn, {
+      mapType: 'obstacle',
+      parentMap: parent.canonicalName,
+      points: translated,
+    }).catch(() => null);
+    if (!r || !r.ok) {
+      setEditStatus(r?.error || t('map.edit.validationFailed'));
+      setEditStatusKind('error');
+      return;
+    }
+    await refreshEditGeometry();
+    recordHistory();
+    await reloadMaps();
+    // Auto-activate Move on the freshly pasted obstacle so the user can drag it
+    // into position immediately. The paste's saveEditDraft response carries the
+    // server-assigned canonical — the cleanest identifier (the pasted obstacle is
+    // a draft-only map, may not be in the committed `maps` list). We do NOT touch
+    // selectedMapId here: the draft obstacle has no maps-list entry to select, and
+    // changing selectedMapId would trip the move-exit effect.
+    if (r.canonical) {
+      setMoveTargetCanonical(r.canonical);
+      setMoveWorking(null);
+      moveStroke.current = null;
+      moveWorkingRef.current = null;
+      setMoveMode(true);
+    }
+    setEditStatus(t('map.edit.pasted'));
+    setEditStatusKind('info');
+  }, [sn, applying, obstacleClipboard, maps, selectedMapId, chargerGps, chargingPose, refreshEditGeometry, recordHistory, reloadMaps, t]);
+
+  // ── Push/pull brush (R3, Part B) ────────────────────────────────
+  // Working state for a brush stroke: the densified base ring + the anchor that
+  // was grabbed. delta is applied via applyBrush on every mousemove.
+  const brushStroke = useRef<{ canonical: string; base: XY[]; anchor: XY } | null>(null);
+  // Latest working polygon mirrored in a ref so mouseup reads the exact last
+  // value regardless of React state-batching timing.
+  const brushWorkingRef = useRef<XY[] | null>(null);
+
+  // The selected map eligible for the brush (work or obstacle, not unicom).
+  const brushTarget = useMemo(() => {
+    const m = maps.find(p => p.mapId === selectedMapId);
+    if (!m || !m.canonicalName) return null;
+    if (m.mapType !== 'work' && m.mapType !== 'obstacle') return null;
+    return m;
+  }, [maps, selectedMapId]);
+
+  const enterBrushMode = useCallback(() => {
+    setEditMode('none');
+    setEditVertices([]);
+    setEditingMapId(null);
+    setPaintMode(false);
+    setPaintWorking(null);
+    setMoveMode(false);
+    setMoveTargetCanonical(null);
+    setMoveWorking(null);
+    setBrushMode(true);
+    setBrushWorking(null);
+    brushStroke.current = null;
+  }, []);
+
+  const exitBrushMode = useCallback(() => {
+    setBrushMode(false);
+    setBrushWorking(null);
+    brushStroke.current = null;
+  }, []);
+
+  // Begin a stroke: hit-test the polygon edge near the pointer; if hit, grab.
+  // Source from the LATEST geometry (prior brush draft if present) so successive
+  // strokes accumulate rather than reverting to the committed base.
+  const handleBrushDown = useCallback((m: XY) => {
+    if (!brushTarget || !chargerGps) return false;
+    const canonical = brushTarget.canonicalName!;
+    const localPts = latestLocalPoints(canonical);
+    if (!localPts || localPts.length < 3) return false;
+    const hit = hitTestEdge(localPts, m, brushRadius * 2);
+    if (!hit) return false;
+    const base = densifyPolygon(localPts, brushRadius / 4);
+    brushStroke.current = { canonical, base, anchor: m };
+    brushWorkingRef.current = base;
+    setBrushWorking(base);
+    return true;
+  }, [brushTarget, chargerGps, brushRadius, latestLocalPoints]);
+
+  // During a stroke: push/pull the densified ring by the cursor delta.
+  const handleBrushMove = useCallback((m: XY) => {
+    const stroke = brushStroke.current;
+    if (!stroke) return;
+    const delta = { x: m.x - stroke.anchor.x, y: m.y - stroke.anchor.y };
+    const next = applyBrush(stroke.base, stroke.anchor, delta, brushRadius);
+    brushWorkingRef.current = next;
+    setBrushWorking(next);
+  }, [brushRadius]);
+
+  // End a stroke: commit the working polygon as a draft, then re-source.
+  const handleBrushUp = useCallback(async () => {
+    const stroke = brushStroke.current;
+    brushStroke.current = null;
+    if (!stroke) return;
+    const working = brushWorkingRef.current;
+    brushWorkingRef.current = null;
+    setBrushWorking(null);
+    if (!working || working.length < 3 || !sn) return;
+    const r = await saveEditDraft(sn, {
+      canonical: stroke.canonical,
+      points: working.map(p => ({ x: p.x, y: p.y })),
+    }).catch(() => null);
+    if (!r || !r.ok) {
+      setEditStatus(r?.error || t('map.edit.validationFailed'));
+      setEditStatusKind('error');
+      return;
+    }
+    setEditStatus('');
+    setEditStatusKind('info');
+    await refreshEditGeometry();
+    recordHistory();
+    await reloadMaps();
+  }, [sn, refreshEditGeometry, reloadMaps, recordHistory, t]);
+
+  // Live in-progress brush overlay projected to GPS (same charger/pose shift as
+  // gpsMaps / draftOverlays).
+  const brushOverlayGps = useMemo(() => {
+    if (!brushWorking || !isUsableChargerGps(chargerGps)) return null;
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
+    const gps = brushWorking.flatMap(p => {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
+      const g = localToGps({ x: p.x - offX, y: p.y - offY }, chargerGps);
+      if (!Number.isFinite(g.lat) || !Number.isFinite(g.lng)) return [];
+      return [g];
+    });
+    return gps.length >= 3 ? gps : null;
+  }, [brushWorking, chargerGps, chargingPose]);
+
+  // GPS → mapArea-local frame for the brush. gpsToLocal yields {p.x-offX, p.y-offY}
+  // (the frame gpsMaps renders into); add the pose offset back to match mapArea.
+  const brushToLocal = useCallback((latlng: L.LatLng): XY => {
+    if (!isUsableChargerGps(chargerGps)) return { x: NaN, y: NaN };
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
+    const l = gpsToLocal({ lat: latlng.lat, lng: latlng.lng }, chargerGps);
+    return { x: l.x + offX, y: l.y + offY };
+  }, [chargerGps, chargingPose]);
+
+  // ── Paint/erase brush (primary tool) ────────────────────────────
+  // Working ring mirrored in a ref so mouseup reads the exact last value
+  // regardless of React state-batching. canonical pins the stroke's target.
+  const paintStroke = useRef<{ canonical: string } | null>(null);
+  const paintWorkingRef = useRef<XY[] | null>(null);
+
+  // The selected map eligible for paint (work or obstacle, not unicom) — same
+  // gating as the push/pull brush.
+  const paintTarget = useMemo(() => {
+    const m = maps.find(p => p.mapId === selectedMapId);
+    if (!m || !m.canonicalName) return null;
+    if (m.mapType !== 'work' && m.mapType !== 'obstacle') return null;
+    return m;
+  }, [maps, selectedMapId]);
+
+  const enterPaintMode = useCallback(() => {
+    setEditMode('none');
+    setEditVertices([]);
+    setEditingMapId(null);
+    setBrushMode(false);
+    setBrushWorking(null);
+    brushStroke.current = null;
+    setMoveMode(false);
+    setMoveTargetCanonical(null);
+    setMoveWorking(null);
+    setPaintMode(true);
+    setPaintWorking(null);
+    paintStroke.current = null;
+    paintWorkingRef.current = null;
+  }, []);
+
+  const exitPaintMode = useCallback(() => {
+    setPaintMode(false);
+    setPaintWorking(null);
+    paintStroke.current = null;
+    paintWorkingRef.current = null;
+  }, []);
+
+  // Selecting a different map exits paint mode (the working ring was seeded from
+  // the previous map). Re-enter from the new map's tool toolbar.
+  useEffect(() => {
+    setPaintMode(false);
+    setPaintWorking(null);
+    paintStroke.current = null;
+    paintWorkingRef.current = null;
+  }, [selectedMapId]);
+
+  // Apply one brush op (paint=union / erase=difference) at a local point.
+  const applyPaintOp = useCallback((prev: XY[], m: XY): XY[] => {
+    return paintTool === 'paint'
+      ? paintCircle(prev, m, paintRadius)
+      : eraseCircle(prev, m, paintRadius);
+  }, [paintTool, paintRadius]);
+
+  // Begin a stroke: seed the working ring from the LATEST geometry (prior draft
+  // if present) so successive strokes stack, then apply one op at the down point.
+  const handlePaintDown = useCallback((m: XY) => {
+    if (!paintTarget || !chargerGps) return false;
+    const canonical = paintTarget.canonicalName!;
+    const localPts = latestLocalPoints(canonical);
+    if (!localPts || localPts.length < 3) return false;
+    const next = (paintTool === 'paint' ? paintCircle : eraseCircle)(localPts, m, paintRadius);
+    paintStroke.current = { canonical };
+    paintWorkingRef.current = next;
+    setPaintWorking(next);
+    return true;
+  }, [paintTarget, chargerGps, paintTool, paintRadius, latestLocalPoints]);
+
+  // During a stroke: accumulate the op onto the working ring.
+  const handlePaintMove = useCallback((m: XY) => {
+    if (!paintStroke.current) return;
+    const prev = paintWorkingRef.current;
+    if (!prev || prev.length < 3) return;
+    const next = applyPaintOp(prev, m);
+    paintWorkingRef.current = next;
+    setPaintWorking(next);
+  }, [applyPaintOp]);
+
+  // End a stroke: commit the working polygon as a draft, then re-source so the
+  // next stroke stacks on the refreshed geometry. Paint mode stays ON.
+  const handlePaintUp = useCallback(async () => {
+    const stroke = paintStroke.current;
+    paintStroke.current = null;
+    if (!stroke) return;
+    const working = paintWorkingRef.current;
+    paintWorkingRef.current = null;
+    setPaintWorking(null);
+    if (!working || working.length < 3 || !sn) return;
+    const r = await saveEditDraft(sn, {
+      canonical: stroke.canonical,
+      points: working.map(p => ({ x: p.x, y: p.y })),
+    }).catch(() => null);
+    if (!r || !r.ok) {
+      setEditStatus(r?.error || t('map.edit.validationFailed'));
+      setEditStatusKind('error');
+      return;
+    }
+    setEditStatus('');
+    setEditStatusKind('info');
+    await refreshEditGeometry();
+    recordHistory();
+    await reloadMaps();
+  }, [sn, refreshEditGeometry, reloadMaps, recordHistory, t]);
+
+  // Live in-progress paint overlay projected to GPS (same charger/pose shift).
+  const paintOverlayGps = useMemo(() => {
+    if (!paintWorking || !isUsableChargerGps(chargerGps)) return null;
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
+    const gps = paintWorking.flatMap(p => {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
+      const g = localToGps({ x: p.x - offX, y: p.y - offY }, chargerGps);
+      if (!Number.isFinite(g.lat) || !Number.isFinite(g.lng)) return [];
+      return [g];
+    });
+    return gps.length >= 3 ? gps : null;
+  }, [paintWorking, chargerGps, chargingPose]);
+
+  // GPS → mapArea-local frame for paint (same as brushToLocal).
+  const paintToLocal = brushToLocal;
+  // Identity latlng passthrough for the cursor preview (kept calibration-naive;
+  // the brush operates in unrotated frame, like the live overlay before calibrate).
+  const paintCursorLatLng = useCallback((latlng: L.LatLng): L.LatLng => latlng, []);
+
+  // ── Move/translate tool ─────────────────────────────────────────
+  // Current LOCAL points for a canonical = the pending DRAFT points if present
+  // (a fresh paste / prior edit), else the committed `maps` entry's mapArea.
+  // Same source ordering as latestLocalPoints, but keyed for the move target —
+  // which may be a draft-only obstacle (paste) not yet in the maps list.
+  const geometryFor = useCallback((canonical: string): XY[] | null => {
+    const draftEntry = editGeometry?.maps.find(e => e.canonical === canonical);
+    if (draftEntry?.draft && !draftEntry.draft.deleted && draftEntry.draft.points.length >= 3) {
+      return draftEntry.draft.points.map(p => ({ x: p.x, y: p.y }));
+    }
+    const m = maps.find(p => p.canonicalName === canonical);
+    if (m && m.mapArea.length >= 3) return m.mapArea.map(p => ({ x: p.x, y: p.y }));
+    return null;
+  }, [editGeometry, maps]);
+
+  const exitMoveMode = useCallback(() => {
+    setMoveMode(false);
+    setMoveTargetCanonical(null);
+    setMoveWorking(null);
+    moveStroke.current = null;
+    moveWorkingRef.current = null;
+  }, []);
+
+  // Enter move mode targeting a specific canonical. Mirrors how paint/brush
+  // exit each other — this clears the other edit modes first.
+  const enterMoveMode = useCallback((canonical: string) => {
+    setEditMode('none');
+    setEditVertices([]);
+    setEditingMapId(null);
+    setBrushMode(false);
+    setBrushWorking(null);
+    brushStroke.current = null;
+    setPaintMode(false);
+    setPaintWorking(null);
+    paintStroke.current = null;
+    paintWorkingRef.current = null;
+    setMoveTargetCanonical(canonical);
+    setMoveWorking(null);
+    moveStroke.current = null;
+    moveWorkingRef.current = null;
+    setMoveMode(true);
+  }, []);
+
+  // Drag-in-progress state: the base points captured at mousedown + the grabbed
+  // anchor. delta = current − anchor is added to every base point on mousemove.
+  const moveStroke = useRef<{ canonical: string; base: XY[]; anchor: XY } | null>(null);
+  const moveWorkingRef = useRef<XY[] | null>(null);
+
+  // Begin a drag — only if the down point is INSIDE the target polygon (so the
+  // user grabs the shape; outside lets the map pan). Seeds the base from the
+  // LATEST geometry (draft if present) so successive nudges stack.
+  const handleMoveDown = useCallback((m: XY): boolean => {
+    if (!moveTargetCanonical || !chargerGps) return false;
+    const pts = geometryFor(moveTargetCanonical);
+    if (!pts || pts.length < 3) return false;
+    if (!pointInPolygonXY(m, pts)) return false; // must press inside the shape
+    moveStroke.current = { canonical: moveTargetCanonical, base: pts, anchor: m };
+    moveWorkingRef.current = pts;
+    setMoveWorking(pts);
+    return true;
+  }, [moveTargetCanonical, chargerGps, geometryFor]);
+
+  // During a drag: translate every base point by (current − anchor).
+  const handleMoveMove = useCallback((m: XY) => {
+    const stroke = moveStroke.current;
+    if (!stroke) return;
+    const dx = m.x - stroke.anchor.x;
+    const dy = m.y - stroke.anchor.y;
+    const next = stroke.base.map(p => ({ x: p.x + dx, y: p.y + dy }));
+    moveWorkingRef.current = next;
+    setMoveWorking(next);
+  }, []);
+
+  // End a drag: commit the translated shape as a draft, refresh + record history,
+  // then re-seed from the refreshed geometry. Move mode stays ON so the user can
+  // nudge again. A zero-delta tap (anchor == release) writes the same points back
+  // — harmless, the server validates identically; we skip it to avoid noise.
+  const handleMoveUp = useCallback(async () => {
+    const stroke = moveStroke.current;
+    moveStroke.current = null;
+    if (!stroke) return;
+    const working = moveWorkingRef.current;
+    moveWorkingRef.current = null;
+    setMoveWorking(null);
+    if (!working || working.length < 3 || !sn) return;
+    // No-op tap (didn't actually move) → don't write a draft / history entry.
+    const moved = working.some((p, i) => p.x !== stroke.base[i]?.x || p.y !== stroke.base[i]?.y);
+    if (!moved) return;
+    const r = await saveEditDraft(sn, {
+      canonical: stroke.canonical,
+      points: working.map(p => ({ x: p.x, y: p.y })),
+    }).catch(() => null);
+    if (!r || !r.ok) {
+      setEditStatus(r?.error || t('map.edit.validationFailed'));
+      setEditStatusKind('error');
+      return;
+    }
+    setEditStatus('');
+    setEditStatusKind('info');
+    await refreshEditGeometry();
+    recordHistory();
+    await reloadMaps();
+  }, [sn, refreshEditGeometry, reloadMaps, recordHistory, t]);
+
+  // Live in-progress move overlay projected to GPS (same charger/pose shift as
+  // gpsMaps / draftOverlays / paint overlay).
+  const moveOverlayGps = useMemo(() => {
+    if (!moveWorking || !isUsableChargerGps(chargerGps)) return null;
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
+    const gps = moveWorking.flatMap(p => {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return [];
+      const g = localToGps({ x: p.x - offX, y: p.y - offY }, chargerGps);
+      if (!Number.isFinite(g.lat) || !Number.isFinite(g.lng)) return [];
+      return [g];
+    });
+    return gps.length >= 3 ? gps : null;
+  }, [moveWorking, chargerGps, chargingPose]);
+
+  // GPS → mapArea-local frame for move (identical conversion to brushToLocal).
+  const moveToLocal = brushToLocal;
+
+  // Move mode is also a "selected map" type tool — selecting a different map (or
+  // entering paint via the effect below) must exit it. The selectedMapId effect
+  // (used by paint) is reused; mirror it for move so a new selection drops out.
+  useEffect(() => {
+    setMoveMode(false);
+    setMoveTargetCanonical(null);
+    setMoveWorking(null);
+    moveStroke.current = null;
+    moveWorkingRef.current = null;
+  }, [selectedMapId]);
 
   // Add point in draw mode
   const handleDrawPoint = useCallback((latlng: [number, number]) => {
@@ -1270,6 +2641,34 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
               <span className="hidden md:inline">{t('map.heat')}</span>
             </button>
           )}
+          {/* Coverage-path preview toggle — the real "black lines" the mower
+              will cut, so the user can verify edits cut closer. */}
+          {polygonMaps.length > 0 && editMode === 'none' && !calibrating && sn && (
+            <button
+              onClick={toggleCoverage}
+              disabled={coverageLoading}
+              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
+                showCoverage ? 'bg-zinc-900/70 text-zinc-200 border border-zinc-600' : 'bg-gray-700/50 text-gray-400 hover:text-zinc-200 hover:bg-zinc-900/40'
+              } ${coverageLoading ? 'opacity-60 cursor-wait' : ''}`}
+              title={t('map.edit.coverageShow')}
+            >
+              {coverageLoading
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <Spline className="w-3 h-3" />}
+              <span className="hidden md:inline">{t('map.edit.coverageShow')}</span>
+            </button>
+          )}
+          {/* Refresh coverage path — re-trigger after an Apply to mower */}
+          {showCoverage && editMode === 'none' && !calibrating && sn && (
+            <button
+              onClick={refreshCoverage}
+              disabled={coverageLoading}
+              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-gray-700/50 text-gray-400 hover:text-zinc-200 hover:bg-zinc-900/40 ${coverageLoading ? 'opacity-60 cursor-wait' : ''}`}
+              title={t('map.edit.coverageRefresh')}
+            >
+              <RefreshCw className={`w-3 h-3 ${coverageLoading ? 'animate-spin' : ''}`} />
+            </button>
+          )}
           {/* Export button (hidden on mobile) */}
           {polygonMaps.length > 0 && editMode === 'none' && !calibrating && (
             <button
@@ -1381,7 +2780,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
         <MapContainer
           center={position}
           zoom={20}
-          maxZoom={23}
+          maxZoom={25}
           className="h-full w-full"
           zoomControl={true}
           scrollWheelZoom={true}
@@ -1394,6 +2793,8 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
             maxZoom={TILE_LAYERS[tileLayer].maxZoom}
             maxNativeZoom={TILE_LAYERS[tileLayer].maxNativeZoom}
           />
+          {/* Capture the Leaflet instance so paste can read the view center (R6) */}
+          <MapInstanceCapture mapRef={leafletMapRef} />
           {/* Saved map polygons with calibration applied */}
           {polygonMaps.map(m => {
             const positions = calibratePoints(m.mapArea, activeCal, polyCenter);
@@ -1424,6 +2825,81 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
               </Polygon>
             );
           })}
+          {/* Pending draft overlays (R2) — dashed, drawn on top of saved maps.
+              Hidden while actively editing so the in-progress editor is clear. */}
+          {editMode === 'none' && draftOverlays.map(d => {
+            const positions = calibratePoints(d.gps, activeCal, polyCenter);
+            const base = getAreaStyle(d.mapType);
+            return (
+              <Polygon
+                key={`draft-${d.canonical}`}
+                positions={positions}
+                pathOptions={{ ...base, dashArray: '6 4', weight: 2, fillOpacity: 0.18, opacity: 0.9 }}
+              />
+            );
+          })}
+          {/* Coverage-path preview — the real boustrophedon mowing lines the
+              mower will cut ("black lines"). Drawn above the satellite tiles,
+              projected into the same frame as the work polygons. */}
+          {showCoverage && coverageGps.map(cp => (
+            <Polyline
+              key={`cov-${cp.id}`}
+              positions={calibratePoints(cp.gps, activeCal, polyCenter)}
+              pathOptions={{ color: '#111827', weight: 1, opacity: 0.7, lineCap: 'round', lineJoin: 'round' }}
+            />
+          ))}
+          {/* Push/pull brush (R3): live in-progress stroke + pointer handler. */}
+          {brushMode && brushOverlayGps && brushOverlayGps.length >= 3 && (
+            <Polygon
+              positions={calibratePoints(brushOverlayGps, activeCal, polyCenter)}
+              pathOptions={{ color: '#a78bfa', weight: 2, dashArray: '6 4', fillOpacity: 0.12, fillColor: '#a78bfa' }}
+            />
+          )}
+          {brushMode && editMode === 'none' && !calibrating && (
+            <BrushPointerHandler
+              toLocal={brushToLocal}
+              onDown={handleBrushDown}
+              onMove={handleBrushMove}
+              onUp={handleBrushUp}
+            />
+          )}
+          {/* Paint/erase brush (primary tool): live in-progress stroke. */}
+          {paintMode && paintOverlayGps && paintOverlayGps.length >= 3 && (
+            <Polygon
+              positions={calibratePoints(paintOverlayGps, activeCal, polyCenter)}
+              pathOptions={{
+                color: paintTool === 'paint' ? '#34d399' : '#f59e0b',
+                weight: 2, dashArray: '6 4', fillOpacity: 0.14,
+                fillColor: paintTool === 'paint' ? '#34d399' : '#f59e0b',
+              }}
+            />
+          )}
+          {paintMode && editMode === 'none' && !calibrating && (
+            <PaintPointerHandler
+              toLatLng={paintCursorLatLng}
+              toLocal={paintToLocal}
+              radius={paintRadius}
+              onDown={handlePaintDown}
+              onMove={handlePaintMove}
+              onUp={handlePaintUp}
+            />
+          )}
+          {/* Move/translate tool: live in-progress dashed overlay of the shape at
+              its dragged position, plus the pointer handler. */}
+          {moveMode && moveOverlayGps && moveOverlayGps.length >= 3 && (
+            <Polygon
+              positions={calibratePoints(moveOverlayGps, activeCal, polyCenter)}
+              pathOptions={{ color: '#22d3ee', weight: 2, dashArray: '6 4', fillOpacity: 0.14, fillColor: '#22d3ee' }}
+            />
+          )}
+          {moveMode && moveTargetCanonical && editMode === 'none' && !calibrating && (
+            <MovePointerHandler
+              toLocal={moveToLocal}
+              onDown={handleMoveDown}
+              onMove={handleMoveMove}
+              onUp={handleMoveUp}
+            />
+          )}
           {/* Polygon editor overlay */}
           {editMode !== 'none' && editVertices.length >= 2 && (
             <PolygonEditor vertices={editVertices} onChange={setEditVertices} color={editorColor} />
@@ -1684,7 +3160,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
           <FitToMaps maps={polygonMaps} onFitted={() => { setMapsFitted(true); setUserInteracted(true); }} />
           <RecenterMap position={position} hasManualInteraction={userInteracted} waitForFit={polygonMaps.length > 0 && !mapsFitted} />
           <UserInteractionTracker onInteract={() => setUserInteracted(true)} />
-          {editMode === 'none' && <MapClickDeselect onDeselect={() => setSelectedMapId(null)} />}
+          {editMode === 'none' && !brushMode && !paintMode && !moveMode && <MapClickDeselect onDeselect={() => setSelectedMapId(null)} />}
           <ResizeHandler />
         </MapContainer>
 
@@ -1936,7 +3412,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
         )}
 
         {/* Selected map info panel */}
-        {selectedMapId && !calibrating && editMode === 'none' && (() => {
+        {selectedMapId && !calibrating && editMode === 'none' && !brushMode && !paintMode && !moveMode && (() => {
           const m = polygonMaps.find(p => p.mapId === selectedMapId);
           if (!m) return null;
           const style = getAreaStyle(m.mapType, m.mapId, m.mapName);
@@ -2020,28 +3496,288 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, signals, mowing, p
                   </div>
                 );
               })()}
-              <div className="mt-2 pt-2 border-t border-gray-700 flex items-center gap-2">
-                <button
-                  onClick={(e) => { e.stopPropagation(); startEditMap(m.mapId, m.mapArea); }}
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/70 hover:text-emerald-300 transition-colors"
-                >
-                  <Pencil className="w-3 h-3" />
-                  {t('common.edit')}
-                </button>
-                <button
-                  onClick={() => {
-                    setConfirmDeleteMapId(m.mapId);
-                    setConfirmDeleteMapName(m.mapName || m.mapId);
-                  }}
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-900/40 text-red-400 hover:bg-red-900/70 hover:text-red-300 transition-colors"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  {t('common.delete')}
-                </button>
+              <div className="mt-2 pt-2 border-t border-gray-700">
+                {/* PRIMARY tool: Paint brush — work + obstacle only */}
+                {(m.mapType === 'work' || m.mapType === 'obstacle') && m.canonicalName && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); enterPaintMode(); }}
+                    className="w-full mb-2 inline-flex items-center justify-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded bg-amber-500 text-gray-900 hover:bg-amber-400 transition-colors shadow"
+                    title={t('map.edit.paintHint')}
+                  >
+                    <Paintbrush className="w-4 h-4" />
+                    {t('map.edit.paintTool')}
+                  </button>
+                )}
+                {/* Secondary tools */}
+                <div className="flex items-center flex-wrap gap-2">
+                  {/* Push/pull brush (R3) — work + obstacle only */}
+                  {(m.mapType === 'work' || m.mapType === 'obstacle') && m.canonicalName && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); enterBrushMode(); }}
+                      className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-violet-900/40 text-violet-300 hover:bg-violet-900/70 hover:text-violet-200 transition-colors"
+                      title={t('map.edit.brushOn')}
+                    >
+                      <Brush className="w-3 h-3" />
+                      {t('map.edit.brush')}
+                    </button>
+                  )}
+                  {/* Move/translate the whole shape — work + obstacle (with a
+                      canonical, since the draft flow keys on it). Primary use is
+                      repositioning a pasted obstacle, but allowed for work too. */}
+                  {(m.mapType === 'work' || m.mapType === 'obstacle') && m.canonicalName && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); enterMoveMode(m.canonicalName!); }}
+                      className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/70 hover:text-cyan-200 transition-colors"
+                      title={t('map.edit.moveHint')}
+                    >
+                      <MoveIcon className="w-3 h-3" />
+                      {t('map.edit.move')}
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); startEditMap(m.mapId, m.mapArea); }}
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/70 hover:text-emerald-300 transition-colors"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    {t('common.edit')}
+                  </button>
+                  {/* Obstacle expand / shrink (R3, Part A) */}
+                  {m.mapType === 'obstacle' && m.canonicalName && (
+                    <>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); offsetSelectedObstacle(1); }}
+                        disabled={applying}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-sky-900/40 text-sky-300 hover:bg-sky-900/70 hover:text-sky-200 transition-colors disabled:opacity-50"
+                        title={t('map.edit.expand')}
+                      >
+                        <Plus className="w-3 h-3" />
+                        {t('map.edit.expand')}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); offsetSelectedObstacle(-1); }}
+                        disabled={applying}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-sky-900/40 text-sky-300 hover:bg-sky-900/70 hover:text-sky-200 transition-colors disabled:opacity-50"
+                        title={t('map.edit.shrink')}
+                      >
+                        <Minus className="w-3 h-3" />
+                        {t('map.edit.shrink')}
+                      </button>
+                      {/* Copy obstacle to clipboard (R6) — persists for paste onto
+                          this or another work map, even after switching mowers. */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); copySelectedObstacle(); }}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-indigo-900/40 text-indigo-300 hover:bg-indigo-900/70 hover:text-indigo-200 transition-colors"
+                        title={t('map.edit.copy')}
+                      >
+                        <Copy className="w-3 h-3" />
+                        {t('map.edit.copy')}
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={() => {
+                      setConfirmDeleteMapId(m.mapId);
+                      setConfirmDeleteMapName(m.mapName || m.mapId);
+                    }}
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-900/40 text-red-400 hover:bg-red-900/70 hover:text-red-300 transition-colors"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    {t('common.delete')}
+                  </button>
+                </div>
               </div>
             </div>
           );
         })()}
+
+        {/* Obstacle paste button (R6) — reachable even with nothing selected,
+            since paste targets a WORK map (not the selected obstacle). Disabled
+            when there is no work map to attach to. Hidden during edit/draw/brush/
+            paint/calibrate to avoid clutter. The clipboard persists across mower
+            switches (localStorage), so this stays available after switching. */}
+        {obstacleClipboard && !calibrating && editMode === 'none' && !brushMode && !paintMode && !moveMode && (() => {
+          const hasWork = maps.some(m => m.mapType === 'work' && m.canonicalName);
+          return (
+            <div className="absolute bottom-3 right-3 z-[1000]">
+              <button
+                onClick={(e) => { e.stopPropagation(); pasteObstacle(); }}
+                disabled={applying || !hasWork}
+                className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shadow disabled:opacity-50 disabled:cursor-not-allowed"
+                title={hasWork ? t('map.edit.paste') : t('map.edit.pasteNoWork')}
+              >
+                <ClipboardPaste className="w-4 h-4" />
+                {t('map.edit.paste')}
+              </button>
+            </div>
+          );
+        })()}
+
+        {/* Push/pull brush control panel (R3) */}
+        {brushMode && !calibrating && (
+          <div className="absolute bottom-3 left-3 z-[1000] bg-gray-900/95 backdrop-blur border border-violet-700/60 rounded-lg p-3 shadow-xl w-64">
+            <div className="flex items-center gap-2 mb-2">
+              <Brush className="w-4 h-4 text-violet-300" />
+              <span className="text-sm font-medium text-violet-200">{t('map.edit.brushOn')}</span>
+              <button
+                onClick={exitBrushMode}
+                className="ml-auto text-gray-500 hover:text-gray-300 flex-shrink-0"
+                title={t('common.cancel')}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-gray-400">
+              <span className="whitespace-nowrap">{t('map.edit.radius')}</span>
+              <input
+                type="range"
+                min={0.3}
+                max={2.0}
+                step={0.1}
+                value={brushRadius}
+                onChange={e => setBrushRadius(parseFloat(e.target.value))}
+                className="flex-1 accent-violet-500"
+              />
+              <span className="font-mono text-violet-300 w-10 text-right">{brushRadius.toFixed(1)}m</span>
+            </div>
+          </div>
+        )}
+
+        {/* Paint/erase brush control panel (primary tool) */}
+        {paintMode && !calibrating && (
+          <div className="absolute bottom-3 left-3 z-[1000] bg-gray-900/95 backdrop-blur border border-amber-600/60 rounded-lg p-3 shadow-xl w-72">
+            <div className="flex items-center gap-2 mb-2">
+              <Paintbrush className="w-4 h-4 text-amber-300" />
+              <span className="text-sm font-medium text-amber-200">{t('map.edit.paintTool')}</span>
+              <button
+                onClick={exitPaintMode}
+                className="ml-auto text-gray-500 hover:text-gray-300 flex-shrink-0"
+                title={t('common.done')}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {/* Paint / Erase toggle */}
+            <div className="grid grid-cols-2 gap-1.5 mb-2">
+              <button
+                onClick={() => setPaintTool('paint')}
+                className={`inline-flex items-center justify-center gap-1.5 text-xs font-medium px-2 py-1.5 rounded transition-colors ${
+                  paintTool === 'paint'
+                    ? 'bg-emerald-500 text-gray-900'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <Paintbrush className="w-3.5 h-3.5" />
+                {t('map.edit.paint')}
+              </button>
+              <button
+                onClick={() => setPaintTool('erase')}
+                className={`inline-flex items-center justify-center gap-1.5 text-xs font-medium px-2 py-1.5 rounded transition-colors ${
+                  paintTool === 'erase'
+                    ? 'bg-amber-500 text-gray-900'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <Eraser className="w-3.5 h-3.5" />
+                {t('map.edit.erase')}
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-gray-400">
+              <span className="whitespace-nowrap">{t('map.edit.paintRadius')}</span>
+              <input
+                type="range"
+                min={0.15}
+                max={1.2}
+                step={0.05}
+                value={paintRadius}
+                onChange={e => setPaintRadius(parseFloat(e.target.value))}
+                className="flex-1 accent-amber-500"
+              />
+              <span className="font-mono text-amber-300 w-10 text-right">{paintRadius.toFixed(2)}m</span>
+            </div>
+            <p className="mt-2 text-[10px] text-gray-500 leading-snug">{t('map.edit.paintHint')}</p>
+          </div>
+        )}
+
+        {/* Move/translate control panel */}
+        {moveMode && !calibrating && (
+          <div className="absolute bottom-3 left-3 z-[1000] bg-gray-900/95 backdrop-blur border border-cyan-600/60 rounded-lg p-3 shadow-xl w-64">
+            <div className="flex items-center gap-2 mb-1.5">
+              <MoveIcon className="w-4 h-4 text-cyan-300" />
+              <span className="text-sm font-medium text-cyan-200">{t('map.edit.move')}</span>
+              <button
+                onClick={exitMoveMode}
+                className="ml-auto text-gray-500 hover:text-gray-300 flex-shrink-0"
+                title={t('common.done')}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400 leading-snug">{t('map.edit.moveHint')}</p>
+          </div>
+        )}
+
+        {/* Coverage-path preview hint + status (bottom-left). Persistent while
+            the overlay is on so the user knows it reflects the mower's CURRENT
+            map — Apply edits first, then Refresh. */}
+        {showCoverage && editMode === 'none' && !calibrating && !brushMode && !paintMode && !moveMode && (
+          <div className="absolute bottom-3 left-3 z-[1000] bg-gray-900/95 backdrop-blur border border-zinc-600/60 rounded-lg p-3 shadow-xl w-64">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Spline className="w-4 h-4 text-zinc-300" />
+              <span className="text-sm font-medium text-zinc-200">
+                {coverageLive ? t('map.edit.coverageLive') : t('map.edit.coverageShow')}
+              </span>
+              {coverageLive && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  live
+                </span>
+              )}
+              <button
+                onClick={() => { setShowCoverage(false); stopCoveragePoll(); }}
+                className="ml-auto text-gray-500 hover:text-gray-300 flex-shrink-0"
+                title={t('common.cancel')}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {coverageStatus && (
+              <p className={`text-[11px] leading-snug mb-1.5 flex items-center gap-1 ${coverageLive ? 'text-emerald-300' : 'text-amber-300'}`}>
+                {coverageLoading && <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" />}
+                {coverageStatus}
+              </p>
+            )}
+            <p className="text-[10px] text-gray-500 leading-snug">
+              {coverageLive ? t('map.edit.coverageLiveHint') : t('map.edit.coverageHint')}
+            </p>
+            <button
+              onClick={refreshCoverage}
+              disabled={coverageLoading}
+              className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-xs font-medium px-2 py-1 rounded bg-zinc-700 text-zinc-100 hover:bg-zinc-600 transition-colors disabled:opacity-50 disabled:cursor-wait"
+            >
+              <RefreshCw className={`w-3 h-3 ${coverageLoading ? 'animate-spin' : ''}`} />
+              {t('map.edit.coverageRefresh')}
+            </button>
+          </div>
+        )}
+
+        {/* Draft → apply-to-mower bar (R2) */}
+        {showEditBar && (
+          <MapEditBar
+            pendingCount={pendingDraftCount}
+            pendingSync={editGeometry!.pendingSync}
+            hasVersions={editGeometry!.hasVersions}
+            status={editStatus}
+            statusKind={editStatusKind}
+            busy={applying || historyBusy}
+            onApply={handleApplyEdits}
+            onRevert={handleRevertEdits}
+            onDiscard={handleDiscardEdits}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndo={undo}
+            onRedo={redo}
+          />
+        )}
       </div>
 
       {/* Confirm map delete dialog */}

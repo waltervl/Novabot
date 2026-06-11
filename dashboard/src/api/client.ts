@@ -612,3 +612,77 @@ async function postEdit(sn: string, action: 'apply' | 'revert'): Promise<EditApp
 }
 export async function applyEdits(sn: string): Promise<EditApplyDto> { return postEdit(sn, 'apply'); }
 export async function revertEdits(sn: string): Promise<EditApplyDto> { return postEdit(sn, 'revert'); }
+
+// ── Coverage Path Preview ───────────────────────────────────────
+// Mirrors the OpenNova app (api.ts getPreviewPath / refreshPreviewPath).
+// Each entry is one polyline sub-path in LOCAL meters (charger = 0,0) —
+// "{map_id}_{sub_id}" id format, same shape the mower's coverage planner
+// returns. Project local→GPS the same way the map polygons are projected.
+
+export interface CoveragePathEntry { id: string; points: { x: number; y: number }[] }
+
+/** GET cached preview path. Returns [] if nothing cached. */
+export async function getPreviewPath(sn: string): Promise<CoveragePathEntry[]> {
+  const res = await get(`${BASE}/preview-path/${encodeURIComponent(sn)}`);
+  const data = await res.json() as { paths?: CoveragePathEntry[] };
+  return data.paths ?? [];
+}
+
+/** Result of a refresh: the (possibly freshly generated) paths plus a `busy`
+ *  flag set when the mower is mid-coverage (server replies 409 with cached
+ *  paths). We never throw on 409 — we surface it via `busy` so the caller can
+ *  keep showing the cached lines and tell the user why a refresh was skipped. */
+export interface RefreshPreviewResult { paths: CoveragePathEntry[]; busy: boolean }
+
+/** POST refresh-preview-path. Triggers generate_preview_cover_path on the
+ *  mower (server-side), waits ~3.5 s, fetches via the extended backchannel.
+ *  Body params mirror the server contract exactly: `map_ids` (number|number[],
+ *  server default 1) and `cov_direction` (number). The app passes mapIds:1. */
+export async function refreshPreviewPath(
+  sn: string,
+  opts?: { mapIds?: number | number[]; covDirection?: number },
+): Promise<RefreshPreviewResult> {
+  const body: Record<string, unknown> = {};
+  if (opts?.mapIds !== undefined) body.map_ids = opts.mapIds;
+  if (opts?.covDirection !== undefined) body.cov_direction = opts.covDirection;
+  const res = await fetch(`${BASE}/refresh-preview-path/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  // 409 = coverage task active: body still carries cached paths. Don't throw.
+  if (res.status === 409) {
+    const data = await res.json().catch(() => ({})) as { paths?: CoveragePathEntry[] };
+    return { paths: data.paths ?? [], busy: true };
+  }
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const data = await res.json() as { ok?: boolean; paths?: CoveragePathEntry[]; error?: string };
+  if (data.ok === false) throw new Error(data.error || 'refresh-preview-path failed');
+  return { paths: data.paths ?? [], busy: false };
+}
+
+// ── Live plan path (works DURING mowing) ────────────────────────
+// Mirrors the preview methods but uses the mower's get_map_plan_path, which is
+// safe while a coverage task is active (no Error-128 risk). The OpenNova app
+// prefers this "planned path" over the idle preview while the mower mows.
+// Server routes: GET /planned-path/:sn and POST /refresh-plan-path/:sn — both
+// reply with `{ paths }` (POST also `{ ok, count }`). Same CoveragePathEntry
+// shape (local meters) as the preview path.
+
+/** GET cached live plan path. Returns [] if nothing cached. */
+export async function getPlanPath(sn: string): Promise<CoveragePathEntry[]> {
+  const res = await get(`${BASE}/planned-path/${encodeURIComponent(sn)}`);
+  const data = await res.json() as { paths?: CoveragePathEntry[] };
+  return data.paths ?? [];
+}
+
+/** POST refresh-plan-path. Triggers get_map_plan_path via the extended
+ *  backchannel (8s timeout), caches + returns the parsed paths. 503 if offline,
+ *  504 if the mower didn't respond in time. */
+export async function refreshPlanPath(sn: string): Promise<CoveragePathEntry[]> {
+  const res = await fetch(`${BASE}/refresh-plan-path/${encodeURIComponent(sn)}`, { method: 'POST' });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const data = await res.json() as { ok?: boolean; paths?: CoveragePathEntry[]; error?: string };
+  if (data.ok === false) throw new Error(data.error || 'refresh-plan-path failed');
+  return data.paths ?? [];
+}
