@@ -83,15 +83,52 @@ export function CameraTile({ sn, topics = DEFAULT_TOPICS, onClose }: Props) {
     return () => ro.disconnect();
   }, [expanded]);
 
+  // Verplaatsbaar (sleep aan de header) zodat je 'm van de schermrand kunt halen
+  // en daarna rechtsonder kunt resizen. Positie = translate-offset, persistent.
+  const [pos, setPos] = useState<{ dx: number; dy: number }>(() => {
+    try {
+      const s = localStorage.getItem('novabot.cameraTilePos');
+      if (s) return JSON.parse(s) as { dx: number; dy: number };
+    } catch { /* ignore */ }
+    return { dx: 0, dy: 0 };
+  });
+  useEffect(() => {
+    try { localStorage.setItem('novabot.cameraTilePos', JSON.stringify(pos)); } catch { /* ignore */ }
+  }, [pos]);
+  const dragRef = useRef<{ startX: number; startY: number; baseDx: number; baseDy: number } | null>(null);
+  const onHeaderMouseDown = (e: React.MouseEvent) => {
+    // Niet slepen vanaf de knoppen/select in de header.
+    if ((e.target as HTMLElement).closest('button,select')) return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, baseDx: pos.dx, baseDy: pos.dy };
+    e.preventDefault();
+  };
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      setPos({ dx: d.baseDx + (e.clientX - d.startX), dy: d.baseDy + (e.clientY - d.startY) });
+    };
+    const up = () => { dragRef.current = null; };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+  }, []);
+
+  const transform = `translate(${pos.dx}px, ${pos.dy}px)`;
+
   return (
     <div
       ref={boxRef}
       className="bg-gray-900/95 backdrop-blur border border-gray-700 rounded-2xl shadow-xl overflow-hidden flex flex-col"
       style={expanded
-        ? { resize: 'both', overflow: 'hidden', width: 300, height: 210, minWidth: 220, minHeight: 150, maxWidth: '92vw', maxHeight: '82vh' }
-        : undefined}
+        ? { resize: 'both', overflow: 'hidden', width: 300, height: 210, minWidth: 220, minHeight: 150, maxWidth: '92vw', maxHeight: '82vh', transform }
+        : { transform }}
     >
-      <div className="flex items-center gap-2 px-3 py-2">
+      <div
+        className="flex items-center gap-2 px-3 py-2 cursor-move select-none"
+        onMouseDown={onHeaderMouseDown}
+        title={t('camera.dragHint', 'Sleep om te verplaatsen')}
+      >
         <Camera className="w-4 h-4 text-emerald-400 shrink-0" />
         <span className="text-xs font-semibold text-gray-200">
           {t('camera.camera', 'Camera')}
