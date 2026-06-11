@@ -97,6 +97,13 @@ target_link_libraries(coverage_smoke
     ${OpenCV_LIBS}
 )
 
+add_executable(coverage_grid_plan src/coverage_grid_plan_main.cc)
+target_link_libraries(coverage_grid_plan
+  PRIVATE
+    coverage_vendor_glue
+    ${OpenCV_LIBS}
+)
+
 add_executable(coverage_vendor_glue_test
   tests/test_vendor_glue.cc
 )

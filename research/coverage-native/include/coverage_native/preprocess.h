@@ -6,6 +6,9 @@
 
 namespace coverage_native {
 
+cv::Mat preprocessObstacleMap(const cv::Mat& map,
+                              const CoverageParameters& params);
+
 cv::Mat preprocessMap(const cv::Mat& obstacle_map, const cv::Mat& coverage_map,
                       const CoverageParameters& params);
 

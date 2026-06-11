@@ -40,8 +40,8 @@ CoverageParameters makeCoverageParametersFromPixels(
   params.obstacle_erode_value = 2 * obstacle_inflation_px + 1;
   params.coverage_erode_value = forceOddKernelSize(coverage_length_px);
   params.boundary_erode_value = 2 * boundary_inflation_px + 1;
-  params.obstacle_open_iterations = 1;
-  params.coverage_open_iterations = 1;
+  params.obstacle_open_iterations = 2;
+  params.coverage_open_iterations = 2;
   params.boundary_open_iterations = 2;
   return params;
 }

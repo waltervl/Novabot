@@ -48,24 +48,17 @@ std::vector<std::size_t> cellsByDescendingArea(
   return positions;
 }
 
-GridPath chooseNearestSweep(const std::vector<std::vector<Point_2>>& sweeps,
-                            const GridPoint& current) {
-  if (sweeps.empty()) {
-    throw std::invalid_argument("cannot choose from empty sweep set");
+GridPath orientPathFromCurrent(GridPath path, const GridPoint& current) {
+  if (path.size() < 2) {
+    return path;
   }
 
-  GridPath best_path = pointsToGridPath(sweeps.front());
-  double best_distance = squaredDistance(current, best_path.front());
-
-  for (std::size_t i = 1; i < sweeps.size(); ++i) {
-    GridPath candidate = pointsToGridPath(sweeps[i]);
-    const double distance = squaredDistance(current, candidate.front());
-    if (distance < best_distance) {
-      best_distance = distance;
-      best_path = std::move(candidate);
-    }
+  const double front_distance = squaredDistance(current, path.front());
+  const double back_distance = squaredDistance(current, path.back());
+  if (back_distance < front_distance) {
+    std::reverse(path.begin(), path.end());
   }
-  return best_path;
+  return path;
 }
 
 }  // namespace
@@ -74,23 +67,26 @@ CellPathMap generateCoverageGridPlan(const cv::Mat& map,
                                      const GridPoint& start,
                                      const GridPlanOptions& options) {
   const cv::Mat preprocessed =
-      preprocessMap(map, map, options.parameters);
+      preprocessObstacleMap(map, options.parameters);
   const std::vector<GridContour> contours = findCoverageContours(preprocessed);
   if (contours.empty()) {
     throw std::runtime_error("coverage map produced no contours");
   }
 
   const PolygonWithHoles polygon = contoursToPolygonWithHoles(contours);
-  const std::vector<Polygon_2> cells =
-      decomposeCoveragePolygon(polygon, options.decomposition);
-  const std::vector<std::vector<std::vector<Point_2>>> sweeps =
-      computeSweepsForCells(cells, options.parameters.coverage_length_px);
+  const DecompositionResult decomposition =
+      decomposeCoveragePolygonWithDirection(polygon, options.decomposition);
+  const std::vector<std::vector<Point_2>> sweeps =
+      computeVendorSweepsForCells(decomposition,
+                                  options.parameters.coverage_length_px,
+                                  options.decomposition);
 
   CellPathMap plan;
   GridPoint current = start;
   int output_cell_index = 0;
-  for (const std::size_t cell_index : cellsByDescendingArea(cells)) {
-    GridPath path = chooseNearestSweep(sweeps[cell_index], current);
+  for (const std::size_t cell_index : cellsByDescendingArea(decomposition.cells)) {
+    GridPath path = orientPathFromCurrent(pointsToGridPath(sweeps[cell_index]),
+                                          current);
     if (!path.empty()) {
       current = path.back();
     }

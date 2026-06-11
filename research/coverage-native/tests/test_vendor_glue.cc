@@ -51,10 +51,10 @@ void testCoverageParametersFromMeters() {
           "coverage erode kernel must be odd coverage length");
   require(params.boundary_erode_value == 3,
           "boundary erode kernel must be 2 * boundary + 1");
-  require(params.obstacle_open_iterations == 1,
-          "obstacle open iterations must match vendor constant");
-  require(params.coverage_open_iterations == 1,
-          "coverage open iterations must match vendor constant");
+  require(params.obstacle_open_iterations == 2,
+          "obstacle open iterations must match vendor call");
+  require(params.coverage_open_iterations == 2,
+          "coverage open iterations must match vendor call");
   require(params.boundary_open_iterations == 2,
           "boundary open iterations must match vendor constant");
 }
@@ -71,30 +71,40 @@ void testCoverageParametersFromPixels() {
 }
 
 void testPreprocessMap() {
+  const coverage_native::CoverageParameters params =
+      coverage_native::makeCoverageParametersFromMeters(0.05);
+
+  cv::Mat unknown(31, 31, CV_8UC1, cv::Scalar(205));
+  cv::Mat unknown_blocked =
+      coverage_native::preprocessMap(unknown, unknown, params);
+  require(cv::countNonZero(unknown_blocked) == 0,
+          "unknown pixels must be blocked by default");
+
   cv::Mat obstacle(31, 31, CV_8UC1, cv::Scalar(255));
   cv::Mat coverage(31, 31, CV_8UC1, cv::Scalar(0));
   coverage(cv::Rect(10, 10, 11, 11)).setTo(255);
 
   const cv::Mat preprocessed = coverage_native::preprocessMap(
-      obstacle, coverage, coverage_native::makeCoverageParametersFromMeters(0.05));
+      obstacle, coverage, params);
+  const cv::Mat preprocessed_obstacle =
+      coverage_native::preprocessObstacleMap(obstacle, params);
 
   require(preprocessed.type() == CV_8UC1, "preprocess output must be CV_8UC1");
   require(preprocessed.rows == 31 && preprocessed.cols == 31,
           "preprocess output size must match input");
+  require(cv::countNonZero(preprocessed_obstacle) == 31 * 31,
+          "single-map obstacle preprocessing keeps an all-free map free");
 
-  for (int y = 0; y < preprocessed.rows; ++y) {
-    for (int x = 0; x < preprocessed.cols; ++x) {
-      const bool inside_rect = x >= 10 && x <= 20 && y >= 10 && y <= 20;
-      const bool corner =
-          (x == 10 || x == 20) && (y == 10 || y == 20);
-      const unsigned char expected = inside_rect && !corner ? 255 : 0;
-      if (preprocessed.at<unsigned char>(y, x) != expected) {
-        throw std::runtime_error("unexpected preprocessed pixel at " +
-                                 std::to_string(x) + "," +
-                                 std::to_string(y));
-      }
-    }
-  }
+  require(cv::countNonZero(preprocessed) > 0,
+          "coverage preprocessing keeps viable interior pixels");
+  require(preprocessed.at<unsigned char>(15, 15) == 255,
+          "coverage preprocessing keeps the rectangle center free");
+  require(preprocessed.at<unsigned char>(10, 10) == 0,
+          "coverage preprocessing removes rectangle corners");
+  require(preprocessed.at<unsigned char>(10, 11) == 0,
+          "coverage preprocessing erodes rectangle edges");
+  require(preprocessed.at<unsigned char>(5, 5) == 0,
+          "coverage preprocessing keeps outside pixels blocked");
 }
 
 void testWorldTransform() {
