@@ -33,5 +33,7 @@ WORKDIR /src
 COPY . /src
 
 RUN cmake -S /src -B /src/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  && cmake --build /src/build --target coverage_smoke --parallel \
+  && cmake --build /src/build --parallel \
+  && cd /src/build \
+  && ctest --output-on-failure \
   && /src/build/coverage_smoke

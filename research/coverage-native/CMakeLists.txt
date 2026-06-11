@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(coverage_native LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -67,6 +69,21 @@ target_link_libraries(coverage_geometry
     ${COVERAGE_NATIVE_CGAL_LIBS}
 )
 
+add_library(coverage_vendor_glue STATIC
+  src/params.cc
+  src/preprocess.cc
+  src/world_convert.cc
+)
+target_include_directories(coverage_vendor_glue
+  PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(coverage_vendor_glue
+  PUBLIC
+    ${OpenCV_LIBS}
+)
+target_compile_options(coverage_vendor_glue PRIVATE -Wall)
+
 add_executable(coverage_smoke src/smoke_bcd_sweep.cc)
 target_link_libraries(coverage_smoke
   PRIVATE
@@ -74,3 +91,17 @@ target_link_libraries(coverage_smoke
     ${OpenCV_LIBS}
 )
 
+add_executable(coverage_vendor_glue_test
+  tests/test_vendor_glue.cc
+)
+target_include_directories(coverage_vendor_glue_test
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(coverage_vendor_glue_test
+  PRIVATE
+    coverage_vendor_glue
+    ${OpenCV_LIBS}
+)
+
+add_test(NAME coverage_vendor_glue_test COMMAND coverage_vendor_glue_test)
