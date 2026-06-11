@@ -263,9 +263,11 @@ export function offsetPolygon(pts: XY[], dist: number): XY[] {
     const j = (i + 1) % n;
     area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
   }
-  // Bij CW-polygon: keer het teken van de offset om zodat "positief = outset" altijd geldt.
+  // De normalen hieronder zijn INWAARTS, dus een positieve verschuiving zou naar
+  // binnen (krimp) gaan. We willen "positief = outset (expand)", dus negeren we
+  // het teken; de winding-sign houdt het consistent voor CCW én CW polygonen.
   const sign = area >= 0 ? 1 : -1;
-  const offset = dist * sign;
+  const offset = -dist * sign;
 
   const result: XY[] = [];
 
