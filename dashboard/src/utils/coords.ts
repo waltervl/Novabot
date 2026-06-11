@@ -36,7 +36,10 @@ export function gpsToLocal(p: GpsPoint, chargerGps: GpsPoint): LocalPoint {
  * the page (issue #15).
  */
 export function isUsableChargerGps(g: GpsPoint | null | undefined): g is GpsPoint {
-  return !!g && Number.isFinite(g.lat) && Number.isFinite(g.lng);
+  return !!g && Number.isFinite(g.lat) && Number.isFinite(g.lng)
+    // Reject (0,0) "null island": never a real charger position, and plotting
+    // the whole map relative to it dumps the mower into the Atlantic.
+    && !(Math.abs(g.lat) < 1e-3 && Math.abs(g.lng) < 1e-3);
 }
 
 /**

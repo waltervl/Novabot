@@ -215,6 +215,21 @@ describe('MapRepository', () => {
     it('getChargerGps returns null if no calibration', () => {
       expect(mapRepo.getChargerGps(sn)).toBeNull();
     });
+
+    it('getChargerGps treats a (0,0) anchor as unset (null island)', () => {
+      // A docked mower without an RTK fix reports 0,0 and used to freeze the
+      // anchor there. getChargerGps must report it as unset so the dashboard
+      // auto-detect re-captures the real position.
+      mapRepo.setCalibration(sn, { charger_lat: 0, charger_lng: 0 });
+      expect(mapRepo.getChargerGps(sn)).toBeNull();
+    });
+
+    it('getChargerGps still returns a real anchor near 0 longitude', () => {
+      // Greenwich/equator-adjacent real fixes (e.g. lng≈0) must NOT be dropped:
+      // only the exact (0,0) null-island is rejected.
+      mapRepo.setCalibration(sn, { charger_lat: 51.48, charger_lng: 0.0 });
+      expect(mapRepo.getChargerGps(sn)).toEqual({ lat: 51.48, lng: 0.0 });
+    });
   });
 
   describe('polygon offset', () => {

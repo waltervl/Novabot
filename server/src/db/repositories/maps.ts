@@ -533,6 +533,12 @@ export class MapRepository {
   getChargerGps(mowerSn: string): { lat: number; lng: number } | null {
     const row = this._getChargerGps.get(mowerSn) as { charger_lat: number | null; charger_lng: number | null } | undefined;
     if (!row || row.charger_lat == null || row.charger_lng == null) return null;
+    // Treat a (0,0) anchor as unset. "Null island" in the Atlantic is never a
+    // real charger position — it gets captured when a mower is briefly docked
+    // before its first RTK fix (it reports 0,0). Returning null lets the
+    // dashboard's auto-detect re-capture from the docked mower instead of
+    // freezing forever on the bad value (the truthy {0,0} object blocked it).
+    if (Math.abs(row.charger_lat) < 1e-3 && Math.abs(row.charger_lng) < 1e-3) return null;
     return { lat: row.charger_lat, lng: row.charger_lng };
   }
 

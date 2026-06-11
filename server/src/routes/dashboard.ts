@@ -565,7 +565,11 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
       const rechargeNum = parseInt(rechargeRaw, 10);
       const atDock = Number.isFinite(rechargeNum) && rechargeNum > 0;
 
-      if (atDock && Number.isFinite(lat) && Number.isFinite(lng)) {
+      // Never persist (0,0): a docked mower without an RTK fix reports null
+      // island, and a stored (0,0) used to freeze the anchor (getChargerGps
+      // now treats it as unset, but skipping the write avoids the churn).
+      const isNullIsland = Math.abs(lat) < 1e-3 && Math.abs(lng) < 1e-3;
+      if (atDock && Number.isFinite(lat) && Number.isFinite(lng) && !isNullIsland) {
         mapRepo.setChargerGps(sn, lat, lng);
         chargerGps = { lat, lng };
         console.log(`[MAP] Auto-detected charger GPS for ${sn} from mower-at-dock: ${lat}, ${lng}`);
