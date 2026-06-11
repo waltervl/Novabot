@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, Pause, Square, PlugZap, ArrowUp, X, ChevronDown, MapPin,
   Map as MapIcon, Sparkles, RotateCw, Navigation, Settings2,
   Power, Camera, Gauge, Battery, Eye, MoreHorizontal, Slice,
+  Home, SkipForward,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData, GpsPoint, LocalPoint } from '../../types';
@@ -13,6 +14,13 @@ import {
 } from '../../api/client';
 import { localToGps } from '../../utils/coords';
 import { mmToCutterhigh, workMapToArea, nextCmdNum } from '../../utils/mqtt';
+import {
+  deriveMowerActivity,
+  deriveHasError,
+  isInterruptedCoverage as isInterruptedCoverageFn,
+  isMowerBusy,
+  type MowerActivity,
+} from '../../utils/mowerActivity';
 import { useToast } from '../common/Toast';
 import { PatternPicker } from '../patterns/PatternPicker';
 import { loadPattern, transformToGps, type NormContour } from '../../utils/patternUtils.js';
@@ -55,6 +63,27 @@ export function MowerControls({
   const [mapName, setMapName] = useState('');
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
+
+  // Work-map count drives the "no map" gate on the Start button (mirrors the
+  // app's serverMapCount === 0). Fetched once per SN; the firmware's map_num
+  // sensor lags after deletes so we trust the server list like the app does.
+  const [workMapCount, setWorkMapCount] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setWorkMapCount(null);
+    fetchMaps(sn)
+      .then(resp => {
+        if (cancelled) return;
+        setWorkMapCount(resp.maps.filter(x => x.mapType === 'work' && x.mapArea.length >= 3).length);
+      })
+      .catch(() => { if (!cancelled) setWorkMapCount(0); });
+    return () => { cancelled = true; };
+  }, [sn]);
+
+  // Long-pause tracking (mirrors app: amber + confirm once paused > 15 min).
+  const LONG_PAUSE_THRESHOLD_MS = 15 * 60 * 1000;
+  const pauseStartRef = useRef<number | null>(null);
+  const [pausedForMs, setPausedForMs] = useState(0);
 
   // Mode: 'map' (start_navigation) | 'pattern' (start_run+pattern poly) |
   // 'edge' (extended start_edge_cut). Mirrors app StartMowSheet's mode picker.
@@ -317,25 +346,96 @@ export function MowerControls({
     patternMode, patternId, patternContours, patternCenter, patternSize, patternRotation,
     onPathDirectionChange, onPatternPlacementChange, onStarted, chargerGps, t, toast]);
 
-  // Mower is in an active task — firmware would reject a duplicate
-  // start_navigation with Error 2 (issue #13). Detect via msg, which
-  // is NOT translated by getDeviceSnapshot (sensors.work_status is
-  // translated to a human label like "Idle"/"Ready", so a raw int
-  // compare can't be done here). msg stays in firmware form
-  // "Mode:X Work:Y Recharge:Z".
-  const sensorMsg = sensors?.msg ?? '';
-  const mowerBusy =
-    /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(sensorMsg)
-    || /Recharge:(MOVING|RUNNING|GOING)/.test(sensorMsg);
+  // ── Activity-driven control state (mirrors app HomeScreen) ──────────────
+  // The mower's derived activity decides which control buttons are shown,
+  // hidden, or disabled — exactly like the OpenNova app. While mowing you
+  // cannot start another session; while returning you only get Stop, etc.
+  const hasError = deriveHasError(sensors);
+  const activity: MowerActivity = deriveMowerActivity(sensors, { online: online || demoActive, hasError });
+  // Mower is mid-task — firmware would reject a duplicate start_navigation
+  // (Error 2). Detect via the raw msg field (work_status arrives translated).
+  const mowerBusy = isMowerBusy(sensors);
+  const noMap = workMapCount === 0;
+  const interruptedCoverage = isInterruptedCoverageFn(sensors);
 
+  // Long-pause timer — start when activity becomes 'paused', clear otherwise.
+  useEffect(() => {
+    if (activity !== 'paused') {
+      pauseStartRef.current = null;
+      setPausedForMs(0);
+      return;
+    }
+    if (pauseStartRef.current === null) pauseStartRef.current = Date.now();
+    const tick = () => {
+      const start = pauseStartRef.current;
+      if (start !== null) setPausedForMs(Date.now() - start);
+    };
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => clearInterval(id);
+  }, [activity]);
+  const isLongPause = pausedForMs > LONG_PAUSE_THRESHOLD_MS;
+
+  // `busy`/offline gating applied on top of the per-activity gating.
   const disabled = busy || (!online && !demoActive);
-  // startDisabled also blocks while the mower is already executing a task,
-  // so users can still hit Pause/Stop/Go-home but cannot fire a duplicate
-  // start that the firmware would reject.
-  const startDisabled = disabled || mowerBusy;
+  // The Start button is additionally blocked while the mower is already
+  // executing a task, has an error, has no map, or is offline.
+  const startDisabled = disabled || mowerBusy || hasError || noMap || (!online && !demoActive);
   const btnBase = 'inline-flex items-center justify-center p-1 sm:p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
   // Hidden on mobile, shown on desktop — no inline-flex from btnBase to avoid Tailwind display conflict
   const btnHidden = 'hidden md:inline-flex items-center justify-center p-1 sm:p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
+
+  // ── Activity-driven action handlers (mirror app HomeScreen) ─────────────
+
+  // Go home: go_pile → 500ms → go_to_charge with chargerpile {200,200} sentinel
+  // (matches app sendGoHome exactly).
+  const sendGoHome = useCallback(async () => {
+    setBusy(true);
+    try {
+      await sendCommand(sn, { go_pile: {} });
+      await new Promise(r => setTimeout(r, 500));
+      await sendCommand(sn, {
+        go_to_charge: { cmd_num: nextCmdNum(), chargerpile: { latitude: 200, longitude: 200 } },
+      });
+      toast(`✓ ${t('controls.goToCharge')}`, 'success');
+    } catch (err) {
+      const detail = err instanceof Error ? `: ${err.message}` : '';
+      toast(`✗ ${t('controls.goToCharge')}${detail}`, 'error');
+    }
+    setBusy(false);
+  }, [sn, t, toast]);
+
+  // Pause an active coverage session.
+  const handlePause = useCallback(() => {
+    void send({ pause_navigation: { cmd_num: nextCmdNum() } }, t('controls.pause'));
+  }, [send, t]);
+
+  // Resume a paused coverage session. Long pauses (>15 min) carry localization-
+  // drift risk, so confirm first (mirrors app long-pause confirm).
+  const handleResume = useCallback(() => {
+    if (isLongPause && !window.confirm(
+      `Paused for ${Math.floor(pausedForMs / 60000)} min. Long pauses can cause localization drift and the mower may drive off the map. Resume anyway?`,
+    )) return;
+    void send({ resume_navigation: { cmd_num: nextCmdNum() } }, t('controls.resume'));
+  }, [send, t, isLongPause, pausedForMs]);
+
+  // Stop an active mowing/edge session: confirm, then stop_navigation (+
+  // stop_boundary_follow for edge, best-effort).
+  const handleStopMowing = useCallback(async (edge: boolean) => {
+    if (!window.confirm('Stop mowing? The mower will halt where it is and the current session ends. It will NOT return to the dock.')) return;
+    await send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop'));
+    if (edge) {
+      try { await sendExtendedCommand(sn, { stop_boundary_follow: {} }); } catch { /* best-effort */ }
+    }
+  }, [send, sn, t]);
+
+  // Stop a return-to-dock: stop_to_charge cancels the auto_recharge action;
+  // stop_navigation + stop_boundary_follow clear any lingering goals.
+  const handleStopReturning = useCallback(async () => {
+    await send({ stop_to_charge: {} }, t('controls.stop'));
+    await sendCommand(sn, { stop_navigation: { cmd_num: nextCmdNum() } }).catch(() => {});
+    try { await sendExtendedCommand(sn, { stop_boundary_follow: {} }); } catch { /* best-effort */ }
+  }, [send, sn, t]);
 
   const [previewing, setPreviewing] = useState(false);
 
@@ -389,85 +489,125 @@ export function MowerControls({
           {demoActive && <span className="hidden sm:inline">Demo</span>}
         </button>
 
-        <button
-          onClick={() => {
-            const next = !expanded;
-            setExpanded(next);
-            setSettingsExpanded(false);
-            setMappingExpanded(false);
-            setMoreExpanded(false);
-            onPathDirectionChange?.(next ? pathDirection : null);
-          }}
-          disabled={startDisabled}
-          className={`inline-flex items-center gap-1 text-xs h-7 px-1.5 sm:px-2.5 rounded transition-colors ${
-            expanded
-              ? 'bg-emerald-600 text-white'
-              : 'bg-gray-700/60 text-gray-400 hover:text-white hover:bg-emerald-700'
-          } disabled:opacity-30 disabled:cursor-not-allowed`}
-          title={mowerBusy ? t('controls.busy') : online ? t('controls.startMowing') : t('controls.mowerOffline')}
-        >
-          <Play className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">{t('controls.start')}</span>
-          <ChevronDown className={`w-3 h-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-        </button>
+        {/* ── Activity-driven primary controls (mirror app HomeScreen) ──────
+            Shown/hidden/enabled per the mower's derived activity so the
+            dashboard behaves exactly like the app: e.g. while mowing the
+            Start button is hidden and you get Pause/Stop/Go-Home instead. */}
 
-        <button
-          onClick={() => send({ pause_navigation: { cmd_num: nextCmdNum() } }, t('controls.pause'))}
-          disabled={disabled}
-          className={`${btnBase} bg-gray-700/60 text-yellow-400 hover:bg-yellow-700/40`}
-          title={t('controls.pause')}
-        >
-          <Pause className="w-3.5 h-3.5" />
-        </button>
-
-        <button
-          onClick={() => send({ resume_navigation: { cmd_num: nextCmdNum() } }, t('controls.resume'))}
-          disabled={disabled}
-          className={`${btnBase} bg-gray-700/60 text-blue-400 hover:bg-blue-700/40`}
-          title={t('controls.resume')}
-        >
-          <Play className="w-3.5 h-3.5" />
-        </button>
-
-        <button
-          onClick={() => send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop'))}
-          disabled={disabled}
-          className={`${btnBase} bg-gray-700/60 text-red-400 hover:bg-red-700/40`}
-          title={t('controls.stop')}
-        >
-          <Square className="w-3.5 h-3.5" />
-        </button>
-
-        {/* Secondary buttons — hidden on mobile, inline on desktop */}
-        <button
-          onClick={async () => {
-            // Mirror app's HomeScreen.sendGoHome flow exactly: go_pile alone is
-            // the legacy preamble; the real return-to-charge is go_to_charge
-            // with cmd_num + chargerpile sentinel. Without the second packet
-            // the mower acks but does nothing. Issue #16.
-            try {
-              setBusy(true);
-              await sendCommand(sn, { go_pile: {} });
-              await new Promise(r => setTimeout(r, 500));
-              await sendCommand(sn, {
-                go_to_charge: {
-                  cmd_num: nextCmdNum(),
-                  chargerpile: { latitude: 200, longitude: 200 },
-                },
-              });
-              toast(`✓ ${t('controls.goToCharge')}`, 'success');
-            } catch (err) {
-              const detail = err instanceof Error ? `: ${err.message}` : '';
-              toast(`✗ ${t('controls.goToCharge')}${detail}`, 'error');
+        {/* START — shown when idle, charging, error, offline. Opens the
+            start dropdown; when an interrupted coverage is parked on the dock
+            it resumes instead (label "Resume"). Disabled on error/offline/
+            no-map/busy. */}
+        {(activity === 'idle' || activity === 'charging' || activity === 'error' || activity === 'offline') && (
+          <button
+            onClick={() => {
+              if (interruptedCoverage) {
+                void send({ resume_navigation: { cmd_num: nextCmdNum() } }, t('controls.resume'));
+                return;
+              }
+              const next = !expanded;
+              setExpanded(next);
+              setSettingsExpanded(false);
+              setMappingExpanded(false);
+              setMoreExpanded(false);
+              onPathDirectionChange?.(next ? pathDirection : null);
+            }}
+            disabled={startDisabled}
+            className={`inline-flex items-center gap-1 text-xs h-7 px-1.5 sm:px-2.5 rounded transition-colors ${
+              expanded
+                ? 'bg-emerald-600 text-white'
+                : 'bg-gray-700/60 text-gray-400 hover:text-white hover:bg-emerald-700'
+            } disabled:opacity-30 disabled:cursor-not-allowed`}
+            title={
+              hasError ? (t('controls.clearErrorFirst') ?? 'Clear error first')
+              : noMap ? (t('controls.noMapCreateFirst') ?? 'Create a map first')
+              : mowerBusy ? t('controls.busy')
+              : (online || demoActive) ? t('controls.startMowing')
+              : t('controls.mowerOffline')
             }
-            setBusy(false);
-          }}
-          disabled={disabled}
-          className={`${btnHidden} bg-gray-700/60 text-yellow-300 hover:bg-yellow-700/40`}
-          title={t('controls.goToCharge')}
-        >
-          <PlugZap className="w-3.5 h-3.5" />
-        </button>
+          >
+            {interruptedCoverage ? <SkipForward className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">
+              {interruptedCoverage ? t('controls.resume') : t('controls.start')}
+            </span>
+            {!interruptedCoverage && (
+              <ChevronDown className={`w-3 h-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+            )}
+          </button>
+        )}
+
+        {/* PAUSE — only while actively mowing or edge-cutting. */}
+        {(activity === 'mowing' || activity === 'edge_cutting') && (
+          <button
+            onClick={handlePause}
+            disabled={disabled}
+            className={`${btnBase} bg-gray-700/60 text-yellow-400 hover:bg-yellow-700/40`}
+            title={t('controls.pause')}
+          >
+            <Pause className="w-3.5 h-3.5" />
+          </button>
+        )}
+
+        {/* RESUME — only while paused. Amber when paused > 15 min (long-pause
+            drift risk), with a confirm before resuming. */}
+        {activity === 'paused' && (
+          <button
+            onClick={handleResume}
+            disabled={disabled}
+            className={`${btnBase} ${isLongPause ? 'bg-amber-600 text-white hover:bg-amber-500' : 'bg-gray-700/60 text-green-400 hover:bg-green-700/40'}`}
+            title={isLongPause ? `Paused ${Math.floor(pausedForMs / 60000)} min — resume (confirm)` : t('controls.resume')}
+          >
+            <Play className="w-3.5 h-3.5" />
+          </button>
+        )}
+
+        {/* STOP — mowing/edge (confirm), paused, or returning. Hidden when
+            idle/charging/mapping. */}
+        {(activity === 'mowing' || activity === 'edge_cutting') && (
+          <button
+            onClick={() => { void handleStopMowing(activity === 'edge_cutting'); }}
+            disabled={disabled}
+            className={`${btnBase} bg-gray-700/60 text-red-400 hover:bg-red-700/40`}
+            title={t('controls.stop')}
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {activity === 'paused' && (
+          <button
+            onClick={() => send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop'))}
+            disabled={disabled}
+            className={`${btnBase} bg-gray-700/60 text-red-400 hover:bg-red-700/40`}
+            title={t('controls.stop')}
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {activity === 'returning' && (
+          <button
+            onClick={() => { void handleStopReturning(); }}
+            disabled={disabled}
+            className={`${btnBase} bg-gray-700/60 text-red-400 hover:bg-red-700/40`}
+            title={t('controls.stop')}
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
+        )}
+
+        {/* GO-HOME — idle, error, mowing, edge, paused (NOT charging, returning,
+            mapping, offline-enabled). Disabled when offline. Mirrors the app's
+            Go-Home visibility (hidden on dock / while returning). */}
+        {(activity === 'idle' || activity === 'error' || activity === 'mowing'
+          || activity === 'edge_cutting' || activity === 'paused' || activity === 'offline') && (
+          <button
+            onClick={() => { void sendGoHome(); }}
+            disabled={disabled || (!online && !demoActive)}
+            className={`${btnBase} bg-gray-700/60 text-yellow-300 hover:bg-yellow-700/40`}
+            title={t('controls.goToCharge')}
+          >
+            <Home className="w-3.5 h-3.5" />
+          </button>
+        )}
 
         <button
           onClick={async () => {

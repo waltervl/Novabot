@@ -1555,6 +1555,13 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mowingActive, showCoverage]);
 
+  // Auto-toon het maaipad zodra de maaier gaat maaien — geen knop-druk nodig.
+  // Vuurt alleen op de overgang naar mowing (mowingActive in deps); sluit de
+  // gebruiker de overlay handmatig, dan blijft die dicht tot de volgende sessie.
+  useEffect(() => {
+    if (mowingActive) setShowCoverage(true);
+  }, [mowingActive]);
+
   // Cleanup poll on unmount.
   useEffect(() => () => stopCoveragePoll(), [stopCoveragePoll]);
 

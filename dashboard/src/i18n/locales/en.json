@@ -99,6 +99,8 @@
   "controls": {
     "startMowing": "Start mowing",
     "mowerOffline": "Mower offline",
+    "clearErrorFirst": "Clear error first",
+    "noMapCreateFirst": "Create a map first",
     "start": "Start",
     "pause": "Pause",
     "resume": "Resume",
