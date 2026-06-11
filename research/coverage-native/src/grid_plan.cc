@@ -59,6 +59,64 @@ std::vector<GridContour> safeContourFamilyForTopLevel(
   return safe_family;
 }
 
+long long cross(const GridPoint& a, const GridPoint& b, const GridPoint& c) {
+  return static_cast<long long>(b.x - a.x) * static_cast<long long>(c.y - a.y) -
+         static_cast<long long>(b.y - a.y) * static_cast<long long>(c.x - a.x);
+}
+
+bool pointOnSegment(const GridPoint& point, const GridPoint& a,
+                    const GridPoint& b) {
+  if (cross(a, b, point) != 0) {
+    return false;
+  }
+  return std::min(a.x, b.x) <= point.x && point.x <= std::max(a.x, b.x) &&
+         std::min(a.y, b.y) <= point.y && point.y <= std::max(a.y, b.y);
+}
+
+bool endpointOverlapsPreviousSegment(const GridPoint& endpoint,
+                                     const GridPoint& neighbor,
+                                     const CellPathMap& plan,
+                                     bool trim_shared_corner) {
+  for (const auto& entry : plan) {
+    const GridPath& previous = entry.second;
+    for (std::size_t i = 1; i < previous.size(); ++i) {
+      const GridPoint& a = previous[i - 1];
+      const GridPoint& b = previous[i];
+      if (cross(endpoint, neighbor, a) == 0 &&
+          cross(endpoint, neighbor, b) == 0 &&
+          pointOnSegment(endpoint, a, b)) {
+        if ((endpoint.x == a.x && endpoint.y == a.y) ||
+            (endpoint.x == b.x && endpoint.y == b.y)) {
+          return trim_shared_corner && pointOnSegment(neighbor, a, b);
+        }
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void trimSweepEndpointOverlaps(std::vector<Point_2>& sweep,
+                               const CellPathMap& plan) {
+  bool changed = true;
+  while (changed && sweep.size() > 1) {
+    changed = false;
+    if (endpointOverlapsPreviousSegment(pointToGridPoint(sweep.front()),
+                                        pointToGridPoint(sweep[1]), plan,
+                                        false)) {
+      sweep.erase(sweep.begin());
+      changed = true;
+    }
+    if (sweep.size() > 1 &&
+        endpointOverlapsPreviousSegment(
+            pointToGridPoint(sweep.back()),
+            pointToGridPoint(sweep[sweep.size() - 2]), plan, true)) {
+      sweep.pop_back();
+      changed = true;
+    }
+  }
+}
+
 void appendDecompositionPlan(const DecompositionResult& decomposition,
                              const std::vector<std::vector<Point_2>>& sweeps,
                              GridPoint& current, int& output_cell_index,
@@ -86,6 +144,7 @@ void appendDecompositionPlan(const DecompositionResult& decomposition,
     emitted[position] = true;
 
     std::vector<Point_2> sweep = sweeps[position];
+    trimSweepEndpointOverlaps(sweep, plan);
     if (shouldReverseNextSweep(Point_2(current.x, current.y), sweep)) {
       std::reverse(sweep.begin(), sweep.end());
     }

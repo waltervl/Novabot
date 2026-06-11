@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
-#include <limits>
 #include <numeric>
 
 #include <CGAL/Boolean_set_operations_2.h>
@@ -13,11 +12,6 @@
 
 namespace coverage_native {
 namespace {
-
-double pointManhattanDistance(const Point_2& a, const GridPoint& b) {
-  return std::abs(CGAL::to_double(a.x()) - static_cast<double>(b.x)) +
-         std::abs(CGAL::to_double(a.y()) - static_cast<double>(b.y));
-}
 
 void walkThroughGraph(std::vector<CellNode>& nodes, int index, int& remaining,
                       std::deque<CellNode>& ordered) {
@@ -134,20 +128,13 @@ int getCellIndexOfPoint(const std::vector<Polygon_2>& cells,
     }
   }
 
-  double best_distance = std::numeric_limits<double>::max();
-  int best_index = -1;
+  int fallback_index = -1;
   for (std::size_t i = 0; i < cells.size(); ++i) {
-    double cell_best = std::numeric_limits<double>::max();
-    for (VertexConstIterator vertex = cells[i].vertices_begin();
-         vertex != cells[i].vertices_end(); ++vertex) {
-      cell_best = std::min(cell_best, pointManhattanDistance(*vertex, point));
-    }
-    if (cell_best < best_distance) {
-      best_distance = cell_best;
-      best_index = static_cast<int>(i);
+    if (cells[i].vertices_begin() != cells[i].vertices_end()) {
+      fallback_index = static_cast<int>(i);
     }
   }
-  return best_index;
+  return fallback_index;
 }
 
 std::vector<int> getTravellingPath(const std::vector<CellNode>& nodes,
