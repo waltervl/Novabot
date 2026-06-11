@@ -945,7 +945,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const [coveragePath, setCoveragePath] = useState<CoveragePathEntry[] | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
-  const [coverageStatus, setCoverageStatus] = useState<string | null>(null);
+  // coverageStatus-waarde wordt niet meer getoond (hint-paneel verwijderd) — alleen
+  // de setter blijft voor de bestaande logica-flow. Waarde bewust gediscard.
+  const [, setCoverageStatus] = useState<string | null>(null);
   // True when the currently-shown overlay is the LIVE plan path (mower mowing),
   // so the panel shows a subtle "live" indicator + hint instead of the idle one.
   const [coverageLive, setCoverageLive] = useState(false);
@@ -2684,6 +2686,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
                 ? <Loader2 className="w-3 h-3 animate-spin" />
                 : <Spline className="w-3 h-3" />}
               <span className="hidden md:inline">{t('map.edit.coverageShow')}</span>
+              {coverageLive && !coverageLoading && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title={t('map.edit.coverageLive')} />
+              )}
             </button>
           )}
           {/* Refresh coverage path — re-trigger after an Apply to mower */}
@@ -3753,49 +3758,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
           </div>
         )}
 
-        {/* Coverage-path preview hint + status (bottom-left). Persistent while
-            the overlay is on so the user knows it reflects the mower's CURRENT
-            map — Apply edits first, then Refresh. */}
-        {showCoverage && editMode === 'none' && !calibrating && !brushMode && !paintMode && !moveMode && (
-          <div className="absolute bottom-3 left-3 z-[1000] bg-gray-900/95 backdrop-blur border border-zinc-600/60 rounded-lg p-3 shadow-xl w-64">
-            <div className="flex items-center gap-2 mb-1.5">
-              <Spline className="w-4 h-4 text-zinc-300" />
-              <span className="text-sm font-medium text-zinc-200">
-                {coverageLive ? t('map.edit.coverageLive') : t('map.edit.coverageShow')}
-              </span>
-              {coverageLive && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-300">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  live
-                </span>
-              )}
-              <button
-                onClick={() => { setShowCoverage(false); stopCoveragePoll(); }}
-                className="ml-auto text-gray-500 hover:text-gray-300 flex-shrink-0"
-                title={t('common.cancel')}
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            {coverageStatus && (
-              <p className={`text-[11px] leading-snug mb-1.5 flex items-center gap-1 ${coverageLive ? 'text-emerald-300' : 'text-amber-300'}`}>
-                {coverageLoading && <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" />}
-                {coverageStatus}
-              </p>
-            )}
-            <p className="text-[10px] text-gray-500 leading-snug">
-              {coverageLive ? t('map.edit.coverageLiveHint') : t('map.edit.coverageHint')}
-            </p>
-            <button
-              onClick={refreshCoverage}
-              disabled={coverageLoading}
-              className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-xs font-medium px-2 py-1 rounded bg-zinc-700 text-zinc-100 hover:bg-zinc-600 transition-colors disabled:opacity-50 disabled:cursor-wait"
-            >
-              <RefreshCw className={`w-3 h-3 ${coverageLoading ? 'animate-spin' : ''}`} />
-              {t('map.edit.coverageRefresh')}
-            </button>
-          </div>
-        )}
+        {/* Geen floating hint-paneel meer — alleen de toolbar-toggle + refresh-icon
+            bovenin (met live-stip + spinner) is genoeg. coverageStatus wordt nog
+            in de logica gezet maar bewust niet als paneel getoond. */}
 
         {/* Draft → apply-to-mower bar (R2) */}
         {showEditBar && (
