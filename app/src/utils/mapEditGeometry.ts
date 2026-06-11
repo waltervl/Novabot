@@ -163,9 +163,10 @@ export const DISPLACEMENT_WARN_M = 1.0;
  * Valideer de volledige (merged) set. `originals` = canonical → originele punten
  * (alleen voor displacement-warning; lege Map = geen warning-check).
  */
-export function validateMapSet(input: MapSetInput, originals: Map<string, XY[]>): ValidationResult {
+export function validateMapSet(input: MapSetInput, originals: Map<string, XY[]>, editedCanonicals?: Set<string>): ValidationResult {
   const errors: ValidationIssue[] = [];
   const warnings: ValidationIssue[] = [];
+  const isEdited = (canonical: string) => !editedCanonicals || editedCanonicals.has(canonical);
   const checkCommon = (canonical: string, pts: XY[], minArea: number) => {
     if (pts.length < 3) { errors.push({ canonical, code: 'too_few_points', message: 'Minimaal 3 punten nodig' }); return false; }
     if (selfIntersects(pts)) { errors.push({ canonical, code: 'self_intersect', message: 'Lijn kruist zichzelf' }); return false; }
@@ -176,8 +177,11 @@ export function validateMapSet(input: MapSetInput, originals: Map<string, XY[]>)
     }
     return true;
   };
-  for (const w of input.work) checkCommon(w.canonical, w.points, MIN_WORK_AREA_M2);
+  for (const w of input.work) {
+    if (isEdited(w.canonical)) checkCommon(w.canonical, w.points, MIN_WORK_AREA_M2);
+  }
   for (const o of input.obstacles) {
+    if (!isEdited(o.canonical)) continue;
     if (!checkCommon(o.canonical, o.points, MIN_OBSTACLE_AREA_M2)) continue;
     const parent = input.work.find(w => w.canonical === o.parentMap);
     if (parent === undefined) {

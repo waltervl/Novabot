@@ -80,6 +80,24 @@ describe('editGeometry validatie', () => {
     expect(maxDisplacement(square, square)).toBeCloseTo(0, 6);
   });
 
+  it('validateMapSet: editedCanonicals — onaangeraakte (zelf-kruisende) map blokkeert niet', () => {
+    const bowtie = [{ x: 0, y: 0 }, { x: 10, y: 10 }, { x: 10, y: 0 }, { x: 0, y: 10 }]; // zelf-kruisend
+    const goodObstacle = [{ x: 2, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 4 }, { x: 2, y: 4 }];
+    // map0 (zelf-kruisend) is NIET bewerkt; alleen het obstakel is een draft.
+    const res = validateMapSet({
+      work: [{ canonical: 'map0', points: bowtie }],
+      obstacles: [{ canonical: 'map0_0_obstacle', parentMap: 'map0', points: goodObstacle }],
+    }, new Map(), new Set(['map0_0_obstacle']));
+    // map0's self-intersect mag NIET als fout verschijnen; het obstakel is geldig.
+    expect(res.errors.some(e => e.canonical === 'map0')).toBe(false);
+    // Zonder editedCanonicals zou map0 wél falen (backwards-compat):
+    const all = validateMapSet({
+      work: [{ canonical: 'map0', points: bowtie }],
+      obstacles: [],
+    }, new Map());
+    expect(all.errors.some(e => e.canonical === 'map0' && e.code === 'self_intersect')).toBe(true);
+  });
+
   it('validateMapSet: goede set = ok, fouten worden per canonical gemeld', () => {
     const ok = validateMapSet({
       work: [{ canonical: 'map0', points: square }],

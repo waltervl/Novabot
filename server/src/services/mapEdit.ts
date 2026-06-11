@@ -265,7 +265,11 @@ export async function applyEdits(sn: string): Promise<ApplyResult> {
         obstacles.push({ canonical, parentMap: d?.parent_map ?? parentMapOf(canonical) ?? '', points: pts });
       }
     }
-    const validation = validateMapSet({ work, obstacles }, originals);
+    // Alleen de daadwerkelijk bewerkte polygonen (drafts) hard valideren —
+    // onaangeraakte mower-maps (vaak licht zelf-kruisend door GPS-ruis) mogen een
+    // edit niet blokkeren. De drafts-set bevat alle bewerkte canonicals.
+    const editedCanonicals = new Set(drafts.map(d => d.canonical_name));
+    const validation = validateMapSet({ work, obstacles }, originals, editedCanonicals);
     if (!validation.ok) return { ok: false, reason: 'validation', validation };
 
     // Snapshot + mutaties in één transactie
