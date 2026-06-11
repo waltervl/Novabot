@@ -1,0 +1,10 @@
+case	width	height	max_value	sha256	source	note
+replay_demo_show	178	188	255	0c4055892ba589f4d46e2d54af8d17cab15af2e187a4aee3ea2b2c83df58486f	research/coverage-replay/cp/share/coverage_planner/map/demo_show.pgm	coverage_planner/share/map demo_show
+replay_test_low_efficiency	128	144	255	2797ad4dd323c745de85dbca9cfaed5b544998a2b03609015253fd0a017c814a	research/coverage-replay/cp/share/coverage_planner/map/test_low_efficiency.pgm	coverage_planner/share/map test_low_efficiency
+replay_map	384	384	255	57eaad9291fcf02e068cbcd1874990694838a74a3304755bae1bd7b726c4522f	research/coverage-replay/cp/share/coverage_planner/map/map.pgm	coverage_planner/share/map map
+replay_zxl_own_house	417	499	255	f16b088604088e01da764369db5edea15c0dd39bdc6805f878e4b5790a3d00fa	research/coverage-replay/cp/share/coverage_planner/map/zxl_own_house.pgm	coverage_planner/share/map zxl_own_house
+debug_sh_map	1133	1198	255	9e478f87e697a9320c81ce6db102e1144f8d9d4534bdea805c9034bad1374d47	research/firmware/mower_firmware_6.0.3/debug_sh/map.pgm	mower_firmware_6.0.3 debug_sh map
+debug_sh_map0	1133	1198	255	c32451b2a6a1a1501c79e19822f2ee780fad671d059427cd7c5c7484916de66a	research/firmware/mower_firmware_6.0.3/debug_sh/map0.pgm	mower_firmware_6.0.3 debug_sh map0
+debug_sh_home0_map0	1133	1198	255	c32451b2a6a1a1501c79e19822f2ee780fad671d059427cd7c5c7484916de66a	research/firmware/mower_firmware_6.0.3/debug_sh/home0/map0.pgm	mower_firmware_6.0.3 debug_sh home0/map0
+debug_sh_home0_map1	351	254	255	f62e1901c323fae195b5b295a1f05808c3a0f81977eb5c298cbabaea5ebdeb22	research/firmware/mower_firmware_6.0.3/debug_sh/home0/map1.pgm	mower_firmware_6.0.3 debug_sh home0/map1
+lfin1231000211_backup_map0	181	124	255	afedf704763ce5797e7185861fe88db720a0b2e0b0ffaa092e3031bc42f250c6	research/maps/LFIN1231000211_backup_20260409_1118/mower_home0/map0.pgm	LFIN1231000211 backup 20260409 map0
