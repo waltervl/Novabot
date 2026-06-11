@@ -185,6 +185,16 @@ describe('mapEdit service: apply + revert', () => {
     expect(res.reason).toBe('busy');
   });
 
+  it('apply: maaier op dock aan het laden (gepauzeerde taak) blokkeert NIET', async () => {
+    // Battery-low recharge houdt task_mode op 1 + Mode:COVERAGE, maar docked+charging
+    // is veilig om map-edits toe te passen (obstakel plaatsen terwijl-ie laadt).
+    deviceCache.set(sn, new Map([['msg', 'Mode:COVERAGE'], ['task_mode', '1'], ['battery_state', 'CHARGING']]));
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const res = await applyEdits(sn);
+    expect(res.reason).not.toBe('busy');
+    expect(res.ok).toBe(true);
+  });
+
   it('apply: push faalt → pendingSync gezet; retry zonder drafts pusht opnieuw', async () => {
     vi.mocked(pushMapToMowerVerbatim).mockResolvedValueOnce({ ok: false, offline: true });
     saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });

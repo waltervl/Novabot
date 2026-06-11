@@ -163,6 +163,12 @@ export function discardDrafts(sn: string): void {
 function isMowerBusy(sn: string): boolean {
   const sensors = deviceCache.get(sn);
   if (!sensors) return false;
+  // Op de dock / aan het laden = NIET bezig: map-edits toepassen is dan veilig,
+  // ook als er nog een gepauzeerde cover-taak geladen is (battery-low recharge
+  // houdt task_mode op 1 + Mode:COVERAGE → anders onterecht "bezig"). Dit is
+  // precies het scenario "obstakel plaatsen terwijl de maaier op het dock laadt".
+  const batteryState = (sensors.get('battery_state') ?? '').toUpperCase();
+  if (batteryState === 'CHARGING' || batteryState === 'FULL') return false;
   const msg = sensors.get('msg') ?? '';
   const taskMode = parseInt(sensors.get('task_mode') ?? '0', 10);
   if (msg.includes('Work:RUNNING') || msg.includes('Work:COVERING')
