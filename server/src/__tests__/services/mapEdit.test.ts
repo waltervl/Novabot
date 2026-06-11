@@ -68,6 +68,35 @@ describe('mapEdit service: geometry + drafts', () => {
     expect(g.maps.find(m => m.canonical === 'map0_0_obstacle')!.draft?.deleted).toBe(true);
   });
 
+  it('saveDraft: bewerk een net-geplakt nieuw obstakel via zijn draft-canonical (geen "Onbekende kaart")', () => {
+    // Paste/draw → nieuw obstakel-draft met server-toegekende canonical.
+    const pasted = saveDraft(sn, { mapType: 'obstacle', parentMap: 'map0',
+      points: [{ x: 10, y: 10 }, { x: 12, y: 10 }, { x: 12, y: 12 }, { x: 10, y: 12 }] });
+    expect(pasted.ok).toBe(true);
+    const canonical = pasted.canonical!;          // bv. map0_1_obstacle
+    // Verplaatsen/bewerken stuurt {canonical, points} — dit moet de draft updaten,
+    // niet falen met "Onbekende kaart" (het is geen committed map).
+    const moved = saveDraft(sn, { canonical, points: [{ x: 20, y: 20 }, { x: 22, y: 20 }, { x: 22, y: 22 }, { x: 20, y: 22 }] });
+    expect(moved.ok).toBe(true);
+    expect(moved.error).toBeUndefined();
+    const g = getEditGeometry(sn);
+    const entry = g.maps.find(m => m.canonical === canonical)!;
+    expect(entry.draft?.points[0]).toEqual({ x: 20, y: 20 });
+    expect(mapEditsRepo.listDrafts(sn).filter(d => d.canonical_name === canonical).length).toBe(1); // geen duplicaat
+  });
+
+  it('saveDraft: verwijder een nog niet-gecommit nieuw obstakel = draft weg', () => {
+    const pasted = saveDraft(sn, { mapType: 'obstacle', parentMap: 'map0',
+      points: [{ x: 10, y: 10 }, { x: 12, y: 10 }, { x: 12, y: 12 }, { x: 10, y: 12 }] });
+    const canonical = pasted.canonical!;
+    expect(saveDraft(sn, { canonical, deleted: true }).ok).toBe(true);
+    expect(mapEditsRepo.listDrafts(sn).filter(d => d.canonical_name === canonical).length).toBe(0);
+  });
+
+  it('saveDraft: echt onbekende canonical → "Onbekende kaart"', () => {
+    expect(saveDraft(sn, { canonical: 'map9_9_obstacle', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] }).ok).toBe(false);
+  });
+
   it('saveDraft: weigert delete van work-map en kapotte polygon', () => {
     expect(saveDraft(sn, { canonical: 'map0', deleted: true }).ok).toBe(false);
     expect(saveDraft(sn, { canonical: 'map0', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }).ok).toBe(false);

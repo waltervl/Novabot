@@ -99,19 +99,40 @@ export interface SaveDraftResult { ok: boolean; canonical?: string; error?: stri
 export function saveDraft(sn: string, input: SaveDraftInput): SaveDraftResult {
   if (input.canonical) {
     const row = mapRepo.findBySnAndCanonical(sn, input.canonical);
-    if (!row) return { ok: false, error: `Onbekende kaart ${input.canonical}` };
-    if (row.map_type === 'unicom') return { ok: false, error: 'Unicom-paden zijn niet bewerkbaar' };
-    if (input.deleted) {
-      if (row.map_type !== 'obstacle') return { ok: false, error: 'Alleen obstacles kunnen verwijderd worden' };
+    if (row) {
+      if (row.map_type === 'unicom') return { ok: false, error: 'Unicom-paden zijn niet bewerkbaar' };
+      if (input.deleted) {
+        if (row.map_type !== 'obstacle') return { ok: false, error: 'Alleen obstacles kunnen verwijderd worden' };
+        mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: input.canonical, map_id: row.map_id,
+          map_type: 'obstacle', parent_map: parentMapOf(input.canonical), draft_area: null, deleted: 1 });
+        return { ok: true, canonical: input.canonical };
+      }
+      if (!input.points || input.points.length < 3) return { ok: false, error: 'Minimaal 3 punten nodig' };
       mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: input.canonical, map_id: row.map_id,
-        map_type: 'obstacle', parent_map: parentMapOf(input.canonical), draft_area: null, deleted: 1 });
+        map_type: row.map_type as 'work' | 'obstacle', parent_map: parentMapOf(input.canonical),
+        draft_area: JSON.stringify(input.points), deleted: 0 });
       return { ok: true, canonical: input.canonical };
     }
-    if (!input.points || input.points.length < 3) return { ok: false, error: 'Minimaal 3 punten nodig' };
-    mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: input.canonical, map_id: row.map_id,
-      map_type: row.map_type as 'work' | 'obstacle', parent_map: parentMapOf(input.canonical),
-      draft_area: JSON.stringify(input.points), deleted: 0 });
-    return { ok: true, canonical: input.canonical };
+    // Geen committed map — maar mogelijk een bestaande DRAFT (een net-geplakt of
+    // -getekend nieuw obstakel leeft alleen als draft, met een server-toegekende
+    // canonical). Bewerken/verplaatsen/verwijderen daarvan moet gewoon werken.
+    const draft = mapEditsRepo.listDrafts(sn).find(d => d.canonical_name === input.canonical);
+    if (draft) {
+      if (draft.map_type === 'unicom') return { ok: false, error: 'Unicom-paden zijn niet bewerkbaar' };
+      if (input.deleted) {
+        // Een nog niet-gecommit nieuw obstakel verwijderen = de draft droppen.
+        if (!draft.map_id) { mapEditsRepo.deleteDraft(sn, input.canonical); return { ok: true, canonical: input.canonical }; }
+        mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: input.canonical, map_id: draft.map_id,
+          map_type: 'obstacle', parent_map: draft.parent_map, draft_area: null, deleted: 1 });
+        return { ok: true, canonical: input.canonical };
+      }
+      if (!input.points || input.points.length < 3) return { ok: false, error: 'Minimaal 3 punten nodig' };
+      mapEditsRepo.upsertDraft({ mower_sn: sn, canonical_name: input.canonical, map_id: draft.map_id,
+        map_type: draft.map_type as 'work' | 'obstacle', parent_map: draft.parent_map,
+        draft_area: JSON.stringify(input.points), deleted: 0 });
+      return { ok: true, canonical: input.canonical };
+    }
+    return { ok: false, error: `Onbekende kaart ${input.canonical}` };
   }
 
   if (input.mapType !== 'obstacle' || !input.parentMap) {
