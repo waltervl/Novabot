@@ -9,6 +9,7 @@
 
 #include "coverage_native/contour_bridge.h"
 #include "coverage_native/params.h"
+#include "coverage_native/planner.h"
 #include "coverage_native/preprocess.h"
 #include "coverage_native/world_convert.h"
 
@@ -148,6 +149,31 @@ void testContoursConvertToPolygonWithHole() {
           "axis-aligned hole simplifies to four vertices");
 }
 
+void testDecompositionAndSweeps() {
+  cv::Mat map(90, 90, CV_8UC1, cv::Scalar(0));
+  cv::rectangle(map, cv::Rect(10, 10, 60, 60), cv::Scalar(255), cv::FILLED);
+
+  const PolygonWithHoles polygon = coverage_native::contoursToPolygonWithHoles(
+      coverage_native::findCoverageContours(map));
+
+  const std::vector<Polygon_2> auto_cells =
+      coverage_native::decomposeCoveragePolygon(
+          polygon, coverage_native::DecompositionOptions{});
+  require(auto_cells.size() == 1, "simple rectangle decomposes to one cell");
+
+  const std::vector<Polygon_2> directed_cells =
+      coverage_native::decomposeCoveragePolygon(
+          polygon, coverage_native::DecompositionOptions{true, 0});
+  require(directed_cells.size() == 1,
+          "specified-direction rectangle decomposes to one cell");
+
+  const std::vector<std::vector<std::vector<Point_2>>> sweeps =
+      coverage_native::computeSweepsForCells(auto_cells, 3.0);
+  require(sweeps.size() == 1, "one cell returns one sweep-set collection");
+  require(!sweeps[0].empty(), "cell has at least one sweep candidate");
+  require(!sweeps[0][0].empty(), "sweep candidate contains waypoints");
+}
+
 }  // namespace
 
 int main() {
@@ -158,6 +184,7 @@ int main() {
     testWorldTransform();
     testContourExtractionFiltersSmallAreas();
     testContoursConvertToPolygonWithHole();
+    testDecompositionAndSweeps();
   } catch (const std::exception& e) {
     std::cerr << "coverage_vendor_glue_test: " << e.what() << "\n";
     return EXIT_FAILURE;
