@@ -29,6 +29,7 @@ import { useActiveMowerContext } from '../context/ActiveMowerContext';
 import { useMowQueue } from '../context/MowQueueContext';
 import { isOpenNovaFirmware } from '../utils/firmwareCapability';
 import { fixQualityLabel } from '../utils/fixQuality';
+import { parseFinishedAreas, prefixedAreaId, parseCoveringPoints } from '../utils/coverPathProgress';
 import { MowerPickerChevron } from '../components/MowerPickerChevron';
 import { ApiClient, type Schedule } from '../services/api';
 import { getServerUrl, getToken } from '../services/auth';
@@ -93,48 +94,8 @@ interface MowerDerived {
 }
 
 // ── Cover path helpers ──────────────────────────────────────────────
-//
-// Mower publishes cover_path.covered via report_state_timer_data.  Server
-// (sensorData.ts) forwards the raw strings through the sensor state pipe;
-// we just parse them here for the live map view.
-
-function parseFinishedAreas(
-  raw: string | undefined,
-  mapId: string | undefined,
-): string[] | undefined {
-  if (!raw) return undefined;
-  // Mower stream: " 0 1 2 3 4 5 6 7 8 9 10 11 12 13" → sub-area indices.
-  // Server gives plannedPaths[].id = "{map_id}_{sub_id}" (e.g. "1_0", "1_100")
-  // so we prefix each index with the active cover_map_id to match. Also emit
-  // the bare index so components built against the raw format still work.
-  const ids = raw.trim().split(/\s+/).filter(s => s.length > 0);
-  if (mapId && mapId.length > 0) {
-    return ids.flatMap(sub => [`${mapId}_${sub}`, sub]);
-  }
-  return ids;
-}
-
-function prefixedAreaId(
-  raw: string | undefined,
-  mapId: string | undefined,
-): string | undefined {
-  if (!raw) return undefined;
-  if (mapId && mapId.length > 0) return `${mapId}_${raw}`;
-  return raw;
-}
-
-function parseCoveringPoints(raw: string | undefined): Array<{ x: number; y: number }> | undefined {
-  if (!raw) return undefined;
-  // "2.48 -1.62,2.49 -1.63" — comma separates points, space separates x/y
-  const points: Array<{ x: number; y: number }> = [];
-  for (const chunk of raw.split(',')) {
-    const [xs, ys] = chunk.trim().split(/\s+/);
-    const x = parseFloat(xs);
-    const y = parseFloat(ys);
-    if (!isNaN(x) && !isNaN(y)) points.push({ x, y });
-  }
-  return points.length > 0 ? points : undefined;
-}
+// Verplaatst naar de gedeelde util (app + dashboard): app/src/utils/coverPathProgress.ts.
+// parseFinishedAreas / prefixedAreaId / parseCoveringPoints worden bovenaan geïmporteerd.
 
 function deriveMower(mower: DeviceState | null): MowerDerived | null {
   if (!mower) return null;
@@ -1954,7 +1915,7 @@ export default function HomeScreen() {
                 fill
                 interactive
                 trail={freshSession ? [] : mowingTrail}
-                plannedPaths={freshSession ? [] : plannedPaths}
+                plannedPaths={plannedPaths}
                 finishedAreas={freshSession ? [] : parseFinishedAreas(
                   devices.get(mower.sn)?.sensors?.finished_area,
                   devices.get(mower.sn)?.sensors?.cover_map_id,

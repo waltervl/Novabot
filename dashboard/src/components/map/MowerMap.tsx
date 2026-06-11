@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, Fragment } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polygon, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import {
@@ -29,6 +29,7 @@ import { ConfirmDialog } from '../common/ConfirmDialog';
 import { PolygonEditor } from './PolygonEditor';
 import { MapEditBar } from './MapEditBar';
 import { MowingStatsCard } from '../status/MowingStatsCard';
+import { parseFinishedAreas, prefixedAreaId } from '../../utils/coverPathProgress';
 import { PatternOverlay, type PatternPlacement } from '../patterns/PatternOverlay';
 
 // Fix Leaflet default marker icons in Vite
@@ -1432,6 +1433,23 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
     }
     return out;
   }, [coveragePath, chargerGps, chargingPose]);
+
+  // Live coverage-voortgang — DEZELFDE classificatie als de OpenNova app
+  // (MowingProgressMap), via de gedeelde util. finished → dik groen, actief →
+  // emerald tot covering_area_points, resterend → dunne lijn.
+  const coverProgress = useMemo(() => {
+    const finished = new Set(
+      parseFinishedAreas(mowingSensors.finished_area, mowingSensors.cover_map_id) ?? [],
+    );
+    const activeId = prefixedAreaId(mowingSensors.covering_area_id, mowingSensors.cover_map_id);
+    const activePoints = parseInt(mowingSensors.covering_area_points ?? '0', 10) || 0;
+    return { finished, activeId, activePoints };
+  }, [
+    mowingSensors.finished_area,
+    mowingSensors.cover_map_id,
+    mowingSensors.covering_area_id,
+    mowingSensors.covering_area_points,
+  ]);
 
   // ── Live plan-path polling (while mowing) ───────────────────────
   // Fetch the live plan path once (used by the poll loop AND the manual path).
@@ -2874,13 +2892,33 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
           {/* Coverage-path preview — the real boustrophedon mowing lines the
               mower will cut ("black lines"). Drawn above the satellite tiles,
               projected into the same frame as the work polygons. */}
-          {showCoverage && coverageGps.map(cp => (
-            <Polyline
-              key={`cov-${cp.id}`}
-              positions={calibratePoints(cp.gps, activeCal, polyCenter)}
-              pathOptions={{ color: '#111827', weight: 1, opacity: 0.7, lineCap: 'round', lineJoin: 'round' }}
-            />
-          ))}
+          {showCoverage && coverageGps.map(cp => {
+            const isFinished = coverProgress.finished.has(cp.id);
+            const isActive = cp.id === coverProgress.activeId;
+            const full = calibratePoints(cp.gps, activeCal, polyCenter);
+            // Finished sub-area → dik groen ("gemaaid"), zoals de app.
+            if (isFinished) {
+              return (
+                <Polyline key={`cov-${cp.id}`} positions={full}
+                  pathOptions={{ color: 'rgba(34,197,94,0.9)', weight: 3.5, opacity: 1, lineCap: 'round', lineJoin: 'round' }} />
+              );
+            }
+            // Resterend → dunne hint-lijn; voor het actieve sub-path tekenen we
+            // de al-gedekte portie (0..covering_area_points) dik-groen eroverheen.
+            const done = isActive && coverProgress.activePoints >= 2
+              ? calibratePoints(cp.gps.slice(0, coverProgress.activePoints), activeCal, polyCenter)
+              : null;
+            return (
+              <Fragment key={`cov-${cp.id}`}>
+                <Polyline positions={full}
+                  pathOptions={{ color: 'rgba(255,255,255,0.35)', weight: 1, opacity: 0.8, lineCap: 'round', lineJoin: 'round' }} />
+                {done && done.length >= 2 && (
+                  <Polyline positions={done}
+                    pathOptions={{ color: 'rgba(34,197,94,0.95)', weight: 3.5, opacity: 1, lineCap: 'round', lineJoin: 'round' }} />
+                )}
+              </Fragment>
+            );
+          })}
           {/* Push/pull brush (R3): live in-progress stroke + pointer handler. */}
           {brushMode && brushOverlayGps && brushOverlayGps.length >= 3 && (
             <Polygon

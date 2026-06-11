@@ -477,6 +477,29 @@ export default function MapScreen() {
     return () => clearInterval(interval);
   }, [isMowing, mower?.sn, demo.enabled]);
 
+  // Tijdens maaien: haal het ECHTE coverage-pad van de maaier op. refresh-plan-path
+  // populeert de server-cache via get_map_plan_path (geen Error-128 risico). Zonder
+  // deze trigger blijft plannedPaths leeg en zie je alleen de decoratieve strepen.
+  // Het pad zelf verandert niet tijdens het maaien (alleen welke segmenten "klaar"
+  // zijn — dat komt uit finishedAreaSet/sensors), dus een rustige 20s-poll volstaat
+  // om het pad te laden en bij een map-wissel actueel te houden.
+  useEffect(() => {
+    if (!isMowing || !mower?.sn || demo.enabled) return;
+    let cancelled = false;
+    const pullPath = async () => {
+      try {
+        const url = await getServerUrl();
+        if (!url) return;
+        const api = new ApiClient(url);
+        const paths = await api.refreshPlanPath(mower.sn).catch(() => []);
+        if (!cancelled && Array.isArray(paths) && paths.length > 0) setPlannedPaths(paths);
+      } catch { /* ignore */ }
+    };
+    pullPath();
+    const interval = setInterval(pullPath, 20000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [isMowing, mower?.sn, demo.enabled]);
+
   // ── Pan + Zoom state ─────────────────────────────────────────────
   const scale = useSharedValue(1);
   const translateX = useSharedValue(0);
@@ -1270,8 +1293,11 @@ export default function MapScreen() {
                             </SvgText>
                           );
                         })()}
-                        {/* Direction stripes (thin — planned mow direction) */}
-                        {isMowing && m.mapType === 'work' && (
+                        {/* Direction stripes — alleen als FALLBACK zolang het echte
+                            coverage-pad (plannedPaths) nog niet geladen is. Zodra het
+                            echte pad binnen is (refreshPlanPath tijdens maaien) tonen
+                            we dat i.p.v. deze decoratieve strepen. */}
+                        {isMowing && m.mapType === 'work' && plannedPaths.length === 0 && (
                           <G clipPath={`url(#clip-${m.mapId})`}>
                             {generateCoverageStripes(svgPts, pathDir, 100, 6).map((l, i) => (
                               <Line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke="rgba(34,197,94,0.25)" strokeWidth={1.5} />
