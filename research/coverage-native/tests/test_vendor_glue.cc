@@ -8,6 +8,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "coverage_native/contour_bridge.h"
+#include "coverage_native/grid_plan.h"
 #include "coverage_native/params.h"
 #include "coverage_native/planner.h"
 #include "coverage_native/preprocess.h"
@@ -205,6 +206,19 @@ void testPathAssessmentAndCellOrdering() {
           "cell order is descending contour area");
 }
 
+void testGenerateCoverageGridPlanForSimpleMap() {
+  cv::Mat map(90, 90, CV_8UC1, cv::Scalar(0));
+  cv::rectangle(map, cv::Rect(10, 10, 60, 60), cv::Scalar(255), cv::FILLED);
+
+  const coverage_native::CellPathMap plan =
+      coverage_native::generateCoverageGridPlan(
+          map, coverage_native::GridPoint{15, 15},
+          coverage_native::GridPlanOptions{});
+
+  require(plan.size() == 1, "simple map generates one planned cell");
+  require(!plan.begin()->second.empty(), "planned cell contains grid points");
+}
+
 }  // namespace
 
 int main() {
@@ -217,6 +231,7 @@ int main() {
     testContoursConvertToPolygonWithHole();
     testDecompositionAndSweeps();
     testPathAssessmentAndCellOrdering();
+    testGenerateCoverageGridPlanForSimpleMap();
   } catch (const std::exception& e) {
     std::cerr << "coverage_vendor_glue_test: " << e.what() << "\n";
     return EXIT_FAILURE;

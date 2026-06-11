@@ -71,6 +71,7 @@ target_link_libraries(coverage_geometry
 
 add_library(coverage_vendor_glue STATIC
   src/contour_bridge.cc
+  src/grid_plan.cc
   src/params.cc
   src/planner.cc
   src/preprocess.cc
