@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 #include <stdexcept>
+#include <vector>
 
 #include <CGAL/number_utils.h>
 
@@ -16,8 +16,8 @@ namespace {
 
 GridPoint pointToGridPoint(const Point_2& point) {
   return {
-      static_cast<int>(std::lround(CGAL::to_double(point.x()))),
-      static_cast<int>(std::lround(CGAL::to_double(point.y()))),
+      static_cast<int>(CGAL::to_double(point.x())),
+      static_cast<int>(CGAL::to_double(point.y())),
   };
 }
 
@@ -30,35 +30,72 @@ GridPath pointsToGridPath(const std::vector<Point_2>& points) {
   return path;
 }
 
-double squaredDistance(const GridPoint& a, const GridPoint& b) {
-  const double dx = static_cast<double>(a.x - b.x);
-  const double dy = static_cast<double>(a.y - b.y);
-  return dx * dx + dy * dy;
+bool contourWithinSafeBorder(const GridContour& contour, int cols, int rows) {
+  for (const cv::Point& point : contour.points) {
+    if ((cols - 4) < point.x || point.x < 3 ||
+        (rows - 4) < point.y || point.y < 3) {
+      return false;
+    }
+  }
+  return true;
 }
 
-std::vector<std::size_t> cellsByDescendingArea(
-    const std::vector<Polygon_2>& cells) {
-  std::vector<std::size_t> positions(cells.size());
-  std::iota(positions.begin(), positions.end(), 0);
-  std::sort(positions.begin(), positions.end(),
-            [&cells](std::size_t a, std::size_t b) {
-              return std::abs(CGAL::to_double(cells[a].area())) >
-                     std::abs(CGAL::to_double(cells[b].area()));
-            });
-  return positions;
+std::vector<GridContour> safeContourFamilyForTopLevel(
+    const std::vector<GridContour>& contours, std::size_t top_level_position,
+    int cols, int rows) {
+  std::vector<GridContour> family =
+      contourFamilyForTopLevel(contours, top_level_position);
+  if (family.empty() || !contourWithinSafeBorder(family.front(), cols, rows)) {
+    return {};
+  }
+
+  std::vector<GridContour> safe_family;
+  safe_family.push_back(family.front());
+  for (std::size_t i = 1; i < family.size(); ++i) {
+    if (contourWithinSafeBorder(family[i], cols, rows)) {
+      safe_family.push_back(family[i]);
+    }
+  }
+  return safe_family;
 }
 
-GridPath orientPathFromCurrent(GridPath path, const GridPoint& current) {
-  if (path.size() < 2) {
-    return path;
+void appendDecompositionPlan(const DecompositionResult& decomposition,
+                             const std::vector<std::vector<Point_2>>& sweeps,
+                             GridPoint& current, int& output_cell_index,
+                             CellPathMap& plan) {
+  std::vector<CellNode> nodes =
+      calculateDecompositionAdjacency(decomposition.cells);
+  int start_cell = getCellIndexOfPoint(decomposition.cells, current);
+  if (start_cell < 0) {
+    start_cell = 0;
   }
 
-  const double front_distance = squaredDistance(current, path.front());
-  const double back_distance = squaredDistance(current, path.back());
-  if (back_distance < front_distance) {
-    std::reverse(path.begin(), path.end());
+  const std::vector<int> travelling_path =
+      getTravellingPath(nodes, start_cell);
+  std::vector<bool> emitted(decomposition.cells.size(), false);
+
+  for (const int cell_index : travelling_path) {
+    if (cell_index < 0 ||
+        cell_index >= static_cast<int>(decomposition.cells.size())) {
+      continue;
+    }
+    const std::size_t position = static_cast<std::size_t>(cell_index);
+    if (emitted[position]) {
+      continue;
+    }
+    emitted[position] = true;
+
+    std::vector<Point_2> sweep = sweeps[position];
+    if (shouldReverseNextSweep(Point_2(current.x, current.y), sweep)) {
+      std::reverse(sweep.begin(), sweep.end());
+    }
+
+    GridPath path = pointsToGridPath(sweep);
+    if (!path.empty()) {
+      current = path.back();
+    }
+    plan.emplace(output_cell_index++, std::move(path));
   }
-  return path;
 }
 
 }  // namespace
@@ -73,24 +110,30 @@ CellPathMap generateCoverageGridPlan(const cv::Mat& map,
     throw std::runtime_error("coverage map produced no contours");
   }
 
-  const PolygonWithHoles polygon = contoursToPolygonWithHoles(contours);
-  const DecompositionResult decomposition =
-      decomposeCoveragePolygonWithDirection(polygon, options.decomposition);
-  const std::vector<std::vector<Point_2>> sweeps =
-      computeVendorSweepsForCells(decomposition,
-                                  options.parameters.coverage_length_px,
-                                  options.decomposition);
-
   CellPathMap plan;
   GridPoint current = start;
   int output_cell_index = 0;
-  for (const std::size_t cell_index : cellsByDescendingArea(decomposition.cells)) {
-    GridPath path = orientPathFromCurrent(pointsToGridPath(sweeps[cell_index]),
-                                          current);
-    if (!path.empty()) {
-      current = path.back();
+  for (const std::size_t top_level_position :
+       topLevelContourPositionsByDescendingArea(contours)) {
+    const std::vector<GridContour> family = safeContourFamilyForTopLevel(
+        contours, top_level_position, preprocessed.cols, preprocessed.rows);
+    if (family.empty()) {
+      continue;
     }
-    plan.emplace(output_cell_index++, std::move(path));
+
+    const PolygonWithHoles polygon = contoursToPolygonWithHoles(family);
+    const DecompositionResult decomposition =
+        decomposeCoveragePolygonWithDirection(polygon, options.decomposition);
+    const std::vector<std::vector<Point_2>> sweeps =
+        computeVendorSweepsForCells(decomposition,
+                                    options.parameters.coverage_length_px,
+                                    options.decomposition);
+    appendDecompositionPlan(decomposition, sweeps, current, output_cell_index,
+                            plan);
+  }
+
+  if (plan.empty()) {
+    throw std::runtime_error("coverage map produced no safe contours");
   }
   return plan;
 }
