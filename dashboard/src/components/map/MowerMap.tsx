@@ -575,18 +575,40 @@ function UserInteractionTracker({ onInteract }: { onInteract: () => void }) {
 // regional aerial provider) if they want better resolution.
 const TILE_LAYERS = {
   satellite: {
+    label: 'Esri satelliet (globaal)',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
     maxNativeZoom: 19,
     maxZoom: 25,
   },
+  // PDOK Actueel orthoHR — officiële NL luchtfoto, ~8 cm. ALLEEN Nederland
+  // (daarbuiten leveren de tiles niets). Veel scherper dan Esri/Google voor NL.
+  pdok: {
+    label: 'PDOK luchtfoto (NL, scherpst)',
+    url: 'https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg',
+    attribution: '&copy; <a href="https://www.pdok.nl">PDOK</a> / Beeldmateriaal Nederland',
+    maxNativeZoom: 21,
+    maxZoom: 25,
+  },
+  // Google satelliet — vaak hoge resolutie, maar ONOFFICIËLE tile-URL (Google
+  // Maps ToS); kan zonder waarschuwing breken. Bewust als optie, niet default.
+  google: {
+    label: 'Google satelliet (hi-res, onofficieel)',
+    url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+    attribution: 'Imagery &copy; Google',
+    maxNativeZoom: 20,
+    maxZoom: 25,
+  },
   street: {
+    label: 'Straatkaart (OSM)',
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
     maxNativeZoom: 19,
     maxZoom: 25,
   },
 } as const;
+
+type TileLayerKey = keyof typeof TILE_LAYERS;
 
 // ── Calibration transform ────────────────────────────────────────
 
@@ -913,7 +935,17 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   // anders staat de trail op de verkeerde plek (rauwe GPS heeft een base-offset).
   const [trail, setTrail] = useState<Array<{ x: number; y: number; ts: number }>>([]);
   const [showTrail, setShowTrail] = useState(true);
-  const [tileLayer, setTileLayer] = useState<'satellite' | 'street'>('satellite');
+  const [tileLayer, setTileLayer] = useState<TileLayerKey>(() => {
+    try {
+      const saved = localStorage.getItem('novabot.tileLayer');
+      if (saved && saved in TILE_LAYERS) return saved as TileLayerKey;
+    } catch { /* ignore */ }
+    return 'satellite';
+  });
+  const changeTileLayer = useCallback((key: TileLayerKey) => {
+    setTileLayer(key);
+    try { localStorage.setItem('novabot.tileLayer', key); } catch { /* ignore */ }
+  }, []);
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
 
   // Polygon edit/draw state
@@ -2764,16 +2796,20 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
               <span className="hidden md:inline">{t('camera.camera')}</span>
             </button>
           )}
-          <button
-            onClick={() => setTileLayer(tileLayer === 'satellite' ? 'street' : 'satellite')}
-            className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
-              tileLayer === 'satellite' ? 'bg-blue-900/50 text-blue-400' : 'bg-gray-700/50 text-gray-500'
-            }`}
-            title={tileLayer === 'satellite' ? t('map.switchToStreet') : t('map.switchToSatellite')}
-          >
-            <Layers className="w-3 h-3" />
-            <span className="hidden md:inline">{tileLayer === 'satellite' ? t('map.sat') : t('map.streetMap')}</span>
-          </button>
+          <span className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded bg-gray-700/50 text-gray-300" title={t('map.switchToSatellite')}>
+            <Layers className="w-3 h-3 shrink-0" />
+            <select
+              value={tileLayer}
+              onChange={(e) => changeTileLayer(e.target.value as TileLayerKey)}
+              className="bg-transparent text-gray-200 text-[11px] focus:outline-none cursor-pointer max-w-[8rem] md:max-w-none"
+            >
+              {(Object.keys(TILE_LAYERS) as TileLayerKey[]).map((key) => (
+                <option key={key} value={key} className="bg-gray-800 text-gray-200">
+                  {TILE_LAYERS[key].label}
+                </option>
+              ))}
+            </select>
+          </span>
           {polygonMaps.length > 0 && (() => {
             const counts = { work: 0, obstacle: 0, unicom: 0, other: 0 };
             // Channel filename pattern: only inter-map unicoms are user-
@@ -3246,7 +3282,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
 
         {/* Live camera tile — floating top-right, OpenNova custom firmware only. */}
         {showCamera && cameraAvailable && sn && (
-          <div className="absolute top-3 right-3 z-[1000] w-72 max-w-[calc(100vw-1.5rem)]">
+          <div className="absolute top-3 right-3 z-[1000] max-w-[calc(100vw-1.5rem)]">
             <CameraTile sn={sn} onClose={() => setShowCamera(false)} />
           </div>
         )}

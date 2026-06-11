@@ -12,7 +12,7 @@
  * Mirrors the OpenNova app's CameraScreen topic list. Custom-firmware only
  * (the proxy 404s on stock firmware); the parent gates rendering on that.
  */
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Camera, ChevronDown, ChevronUp, X, RefreshCw, CameraOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -60,8 +60,37 @@ export function CameraTile({ sn, topics = DEFAULT_TOPICS, onClose }: Props) {
     setStreamKey((k) => k + 1);
   };
 
+  // Resizable kaart-tile: herstel opgeslagen grootte + bewaar bij elke resize.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!expanded) return;
+    const el = boxRef.current;
+    if (!el) return;
+    try {
+      const saved = localStorage.getItem('novabot.cameraTileSize');
+      if (saved) {
+        const { w, h } = JSON.parse(saved) as { w?: number; h?: number };
+        if (w) el.style.width = `${w}px`;
+        if (h) el.style.height = `${h}px`;
+      }
+    } catch { /* ignore */ }
+    const ro = new ResizeObserver(() => {
+      try {
+        localStorage.setItem('novabot.cameraTileSize', JSON.stringify({ w: el.offsetWidth, h: el.offsetHeight }));
+      } catch { /* ignore */ }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [expanded]);
+
   return (
-    <div className="bg-gray-900/95 backdrop-blur border border-gray-700 rounded-2xl shadow-xl overflow-hidden">
+    <div
+      ref={boxRef}
+      className="bg-gray-900/95 backdrop-blur border border-gray-700 rounded-2xl shadow-xl overflow-hidden flex flex-col"
+      style={expanded
+        ? { resize: 'both', overflow: 'hidden', width: 300, height: 210, minWidth: 220, minHeight: 150, maxWidth: '92vw', maxHeight: '82vh' }
+        : undefined}
+    >
       <div className="flex items-center gap-2 px-3 py-2">
         <Camera className="w-4 h-4 text-emerald-400 shrink-0" />
         <span className="text-xs font-semibold text-gray-200">
@@ -103,7 +132,7 @@ export function CameraTile({ sn, topics = DEFAULT_TOPICS, onClose }: Props) {
 
       {/* Mount the <img> (open the MJPEG connection) only while expanded. */}
       {expanded && (
-        <div className="relative bg-black aspect-video">
+        <div className="relative bg-black flex-1 min-h-0">
           {error ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-3">
               <CameraOff className="w-7 h-7 text-gray-500" />
