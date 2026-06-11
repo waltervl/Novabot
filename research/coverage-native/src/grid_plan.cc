@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include <CGAL/squared_distance_2.h>
 #include <CGAL/number_utils.h>
 
 #include "coverage_native/contour_bridge.h"
@@ -59,60 +60,113 @@ std::vector<GridContour> safeContourFamilyForTopLevel(
   return safe_family;
 }
 
-long long cross(const GridPoint& a, const GridPoint& b, const GridPoint& c) {
-  return static_cast<long long>(b.x - a.x) * static_cast<long long>(c.y - a.y) -
-         static_cast<long long>(b.y - a.y) * static_cast<long long>(c.x - a.x);
+constexpr double kRepeatEndpointDistanceThreshold = 0.1;
+
+bool isTinyEndpointSegment(const Point_2& endpoint, const Point_2& neighbor) {
+  return CGAL::to_double(CGAL::squared_distance(endpoint, neighbor)) <
+         kRepeatEndpointDistanceThreshold;
 }
 
-bool pointOnSegment(const GridPoint& point, const GridPoint& a,
-                    const GridPoint& b) {
-  if (cross(a, b, point) != 0) {
+bool pointOnCollinearSegment(const Point_2& point, const Point_2& segment_a,
+                             const Point_2& segment_b) {
+  return CGAL::collinear(segment_a, segment_b, point) &&
+         CGAL::collinear_are_ordered_along_line(segment_a, point, segment_b);
+}
+
+bool segmentsOverlapOnLine(const Point_2& a0, const Point_2& a1,
+                           const Point_2& b0, const Point_2& b1) {
+  const double dx = std::fabs(CGAL::to_double(a1.x() - a0.x()));
+  const double dy = std::fabs(CGAL::to_double(a1.y() - a0.y()));
+  const bool use_x = dx >= dy;
+
+  const double a_start = use_x ? CGAL::to_double(a0.x())
+                               : CGAL::to_double(a0.y());
+  const double a_end =
+      use_x ? CGAL::to_double(a1.x()) : CGAL::to_double(a1.y());
+  const double b_start = use_x ? CGAL::to_double(b0.x())
+                               : CGAL::to_double(b0.y());
+  const double b_end =
+      use_x ? CGAL::to_double(b1.x()) : CGAL::to_double(b1.y());
+
+  const double overlap_start =
+      std::max(std::min(a_start, a_end), std::min(b_start, b_end));
+  const double overlap_end =
+      std::min(std::max(a_start, a_end), std::max(b_start, b_end));
+  return (overlap_end - overlap_start) > 1e-9;
+}
+
+bool segmentContainsSegment(const Point_2& container_a,
+                            const Point_2& container_b,
+                            const Point_2& candidate_a,
+                            const Point_2& candidate_b) {
+  return pointOnCollinearSegment(candidate_a, container_a, container_b) &&
+         pointOnCollinearSegment(candidate_b, container_a, container_b);
+}
+
+bool eraseEndpoint(std::vector<Point_2>& sweep, bool head) {
+  if (sweep.empty()) {
     return false;
   }
-  return std::min(a.x, b.x) <= point.x && point.x <= std::max(a.x, b.x) &&
-         std::min(a.y, b.y) <= point.y && point.y <= std::max(a.y, b.y);
-}
-
-bool endpointOverlapsPreviousSegment(const GridPoint& endpoint,
-                                     const GridPoint& neighbor,
-                                     const CellPathMap& plan,
-                                     bool trim_shared_corner) {
-  for (const auto& entry : plan) {
-    const GridPath& previous = entry.second;
-    for (std::size_t i = 1; i < previous.size(); ++i) {
-      const GridPoint& a = previous[i - 1];
-      const GridPoint& b = previous[i];
-      if (cross(endpoint, neighbor, a) == 0 &&
-          cross(endpoint, neighbor, b) == 0 &&
-          pointOnSegment(endpoint, a, b)) {
-        if ((endpoint.x == a.x && endpoint.y == a.y) ||
-            (endpoint.x == b.x && endpoint.y == b.y)) {
-          return trim_shared_corner && pointOnSegment(neighbor, a, b);
-        }
-        return true;
-      }
-    }
+  if (head) {
+    sweep.erase(sweep.begin());
+  } else {
+    sweep.pop_back();
   }
-  return false;
+  return true;
 }
 
-void trimSweepEndpointOverlaps(std::vector<Point_2>& sweep,
-                               const CellPathMap& plan) {
-  bool changed = true;
-  while (changed && sweep.size() > 1) {
-    changed = false;
-    if (endpointOverlapsPreviousSegment(pointToGridPoint(sweep.front()),
-                                        pointToGridPoint(sweep[1]), plan,
-                                        false)) {
-      sweep.erase(sweep.begin());
-      changed = true;
+bool trimRepeatEndpointPair(std::vector<Point_2>& current, bool current_head,
+                            std::vector<Point_2>& other, bool other_head) {
+  const Point_2& current_endpoint =
+      current_head ? current.front() : current.back();
+  const Point_2& current_neighbor =
+      current_head ? current[1] : current[current.size() - 2];
+  const Point_2& other_endpoint = other_head ? other.front() : other.back();
+  const Point_2& other_neighbor =
+      other_head ? other[1] : other[other.size() - 2];
+
+  if (!CGAL::collinear(current_endpoint, current_neighbor, other_endpoint) ||
+      !CGAL::collinear(current_endpoint, current_neighbor, other_neighbor) ||
+      !segmentsOverlapOnLine(current_endpoint, current_neighbor,
+                             other_endpoint, other_neighbor)) {
+    return false;
+  }
+
+  if (segmentContainsSegment(other_endpoint, other_neighbor, current_endpoint,
+                             current_neighbor)) {
+    return eraseEndpoint(current, current_head);
+  }
+  return eraseEndpoint(other, other_head);
+}
+
+void normalizeRepeatSweepEndpoints(std::vector<std::vector<Point_2>>& sweeps) {
+  for (std::size_t i = 0; i < sweeps.size(); ++i) {
+    std::vector<Point_2>& current = sweeps[i];
+    if (current.size() < 4) {
+      continue;
     }
-    if (sweep.size() > 1 &&
-        endpointOverlapsPreviousSegment(
-            pointToGridPoint(sweep.back()),
-            pointToGridPoint(sweep[sweep.size() - 2]), plan, true)) {
-      sweep.pop_back();
-      changed = true;
+
+    if (isTinyEndpointSegment(current.front(), current[1])) {
+      current.erase(current.begin());
+      continue;
+    }
+    if (isTinyEndpointSegment(current.back(), current[current.size() - 2])) {
+      current.pop_back();
+      continue;
+    }
+
+    for (std::size_t j = i + 1; j < sweeps.size(); ++j) {
+      std::vector<Point_2>& other = sweeps[j];
+      if (other.size() < 4) {
+        continue;
+      }
+
+      if (trimRepeatEndpointPair(current, true, other, true) ||
+          trimRepeatEndpointPair(current, true, other, false) ||
+          trimRepeatEndpointPair(current, false, other, false) ||
+          trimRepeatEndpointPair(current, false, other, true)) {
+        break;
+      }
     }
   }
 }
@@ -144,7 +198,6 @@ void appendDecompositionPlan(const DecompositionResult& decomposition,
     emitted[position] = true;
 
     std::vector<Point_2> sweep = sweeps[position];
-    trimSweepEndpointOverlaps(sweep, plan);
     if (shouldReverseNextSweep(Point_2(current.x, current.y), sweep)) {
       std::reverse(sweep.begin(), sweep.end());
     }
@@ -183,10 +236,11 @@ CellPathMap generateCoverageGridPlan(const cv::Mat& map,
     const PolygonWithHoles polygon = contoursToPolygonWithHoles(family);
     const DecompositionResult decomposition =
         decomposeCoveragePolygonWithDirection(polygon, options.decomposition);
-    const std::vector<std::vector<Point_2>> sweeps =
+    std::vector<std::vector<Point_2>> sweeps =
         computeVendorSweepsForCells(decomposition,
                                     options.parameters.coverage_length_px,
                                     options.decomposition);
+    normalizeRepeatSweepEndpoints(sweeps);
     appendDecompositionPlan(decomposition, sweeps, current, output_cell_index,
                             plan);
   }

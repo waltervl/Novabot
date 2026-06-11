@@ -18,6 +18,7 @@ def main():
     oracle = pathlib.Path(sys.argv[2])
     cases = [
         ("replay_demo_show", "s0", "92", "103", "auto", "auto"),
+        ("replay_demo_show", "s0", "92", "103", "0", "dir0"),
         ("replay_demo_show", "s1", "52", "55", "auto", "auto"),
         ("replay_demo_show", "s1", "52", "55", "45", "dir45"),
         ("debug_sh_home0_map1", "s0", "171", "120", "45", "dir45"),
