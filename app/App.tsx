@@ -58,6 +58,7 @@ import OtaScreen from './src/screens/OtaScreen';
 import MowerSettingsScreen from './src/screens/MowerSettingsScreen';
 import JoystickScreen from './src/screens/JoystickScreen';
 import MappingScreen from './src/screens/MappingScreen';
+import MapEditScreen from './src/screens/MapEditScreen';
 import CameraScreen from './src/screens/CameraScreen';
 
 // Existing provisioning screens
@@ -184,6 +185,7 @@ function MapTabScreen() {
     <MapStack.Navigator screenOptions={screenOptions}>
       <MapStack.Screen name="MapMain" component={MapScreen} />
       <MapStack.Screen name="Mapping" component={MappingScreen} />
+      <MapStack.Screen name="MapEdit" component={MapEditScreen} />
     </MapStack.Navigator>
   );
 }
