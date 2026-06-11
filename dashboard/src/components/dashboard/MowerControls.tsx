@@ -437,6 +437,29 @@ export function MowerControls({
     try { await sendExtendedCommand(sn, { stop_boundary_follow: {} }); } catch { /* best-effort */ }
   }, [send, sn, t]);
 
+  // Return-to-home: tijdens maaien/edge eerst vragen (stoppen-of-pauzeren), zoals
+  // de OpenNova app. Bij idle direct naar huis.
+  const [showReturnDialog, setShowReturnDialog] = useState(false);
+  const handleGoHomeClick = useCallback(() => {
+    if (activity === 'mowing' || activity === 'edge_cutting') { setShowReturnDialog(true); return; }
+    void sendGoHome();
+  }, [activity, sendGoHome]);
+  // Taak beëindigen & terug: stop_navigation (+ boundary), dan naar huis.
+  const endTaskAndReturn = useCallback(async () => {
+    setShowReturnDialog(false);
+    await send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop'));
+    try { await sendExtendedCommand(sn, { stop_boundary_follow: {} }); } catch { /* best-effort */ }
+    await new Promise(r => setTimeout(r, 500));
+    await sendGoHome();
+  }, [send, sn, t, sendGoHome]);
+  // Taak pauzeren & terug: pause_navigation, dan naar huis (hervatten kan later).
+  const pauseAndReturn = useCallback(async () => {
+    setShowReturnDialog(false);
+    await send({ pause_navigation: { cmd_num: nextCmdNum() } }, t('controls.pause'));
+    await new Promise(r => setTimeout(r, 500));
+    await sendGoHome();
+  }, [send, t, sendGoHome]);
+
   const [previewing, setPreviewing] = useState(false);
 
   const handlePreview = useCallback(async () => {
@@ -600,7 +623,7 @@ export function MowerControls({
         {(activity === 'idle' || activity === 'error' || activity === 'mowing'
           || activity === 'edge_cutting' || activity === 'paused' || activity === 'offline') && (
           <button
-            onClick={() => { void sendGoHome(); }}
+            onClick={handleGoHomeClick}
             disabled={disabled || (!online && !demoActive)}
             className={`${btnBase} bg-gray-700/60 text-yellow-300 hover:bg-yellow-700/40`}
             title={t('controls.goToCharge')}
@@ -1167,6 +1190,46 @@ export function MowerControls({
                 {t('controls.confirmReboot')}
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Return-to-home keuze (zoals de OpenNova app): beëindigen of pauzeren + terug. */}
+      {showReturnDialog && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowReturnDialog(false)} />
+          <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl max-w-sm w-full p-6">
+            <div className="flex justify-center mb-4">
+              <div className="w-14 h-14 rounded-full flex items-center justify-center bg-yellow-500/15">
+                <Home className="w-7 h-7 text-yellow-300" />
+              </div>
+            </div>
+            <p className="text-center text-white font-medium text-lg leading-snug mb-2">
+              {t('controls.returnHome', 'Naar het laadstation')}
+            </p>
+            <p className="text-center text-gray-400 text-sm mb-6">
+              {t('controls.returnHomeDesc', 'Hoe moet de maaier terugkeren?')}
+            </p>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => { void endTaskAndReturn(); }}
+                className="py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-xl transition-colors"
+              >
+                {t('controls.endTaskReturn', 'Taak beëindigen & terug')}
+              </button>
+              <button
+                onClick={() => { void pauseAndReturn(); }}
+                className="py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors"
+              >
+                {t('controls.pauseTaskReturn', 'Taak pauzeren & terug')}
+              </button>
+              <button
+                onClick={() => setShowReturnDialog(false)}
+                className="py-2.5 bg-white/10 hover:bg-white/15 text-gray-300 text-sm font-medium rounded-xl transition-colors"
+              >
+                {t('common.cancel', 'Annuleren')}
+              </button>
+            </div>
           </div>
         </div>
       )}
