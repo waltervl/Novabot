@@ -156,7 +156,7 @@ export type ValidationCode = 'too_few_points' | 'self_intersect' | 'too_small' |
 export interface ValidationIssue { canonical: string; code: ValidationCode; message: string }
 export interface ValidationResult { ok: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[] }
 
-export const MIN_OBSTACLE_AREA_M2 = 0.5;
+export const MIN_OBSTACLE_AREA_M2 = 0.05; // kleine obstakels (paaltje/sproeier, ~0.2 m2) zijn legitiem
 export const MIN_WORK_AREA_M2 = 5;
 export const DISPLACEMENT_WARN_M = 1.0;
 
