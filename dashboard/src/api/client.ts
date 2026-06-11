@@ -276,6 +276,86 @@ export async function fetchRainForecast(sn: string): Promise<RainForecast> {
   return data;
 }
 
+/** Set the per-session "ignore rain" flag (mirrors app StartMowSheet confirmRainStart). */
+export async function setRainIgnoreSession(sn: string, active: boolean): Promise<void> {
+  await post(`${BASE}/rain-ignore-session/${encodeURIComponent(sn)}`, { active });
+}
+
+// ── Rain auto-pause settings (per mower) ───────────────────────
+export interface RainSettings {
+  enabled: boolean;
+  thresholdMm: number;
+  thresholdProbability: number;
+  lookaheadHours: number;
+}
+
+export async function fetchRainSettings(sn: string): Promise<RainSettings> {
+  return (await get(`${BASE}/rain-settings/${encodeURIComponent(sn)}`)).json();
+}
+
+export async function updateRainSettings(sn: string, body: Partial<RainSettings>): Promise<RainSettings> {
+  const res = await fetch(`${BASE}/rain-settings/${encodeURIComponent(sn)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+// ── Re-anchor (post-restore frame re-anchoring) ────────────────
+export type ReanchorPhase =
+  | 'idle' | 'check' | 'anchor' | 'relock' | 'wait'
+  | 'needs_drive' | 'needs_position' | 'dock' | 'verify' | 'done' | 'error';
+export interface ReanchorStatus {
+  phase: ReanchorPhase;
+  message: string;
+  msgKey?: string;
+  ok?: boolean;
+  error?: string;
+  pose?: { x: number; y: number };
+  dist?: number;
+  ts: number;
+  onDock: boolean;
+  rtkFixed: boolean;
+  relocked: boolean;
+}
+
+export async function reanchorAction(
+  sn: string,
+  action: 'auto' | 'continue_dock' | 'verify',
+): Promise<{ ok: boolean; error?: string; message?: string }> {
+  const res = await fetch(`${BASE}/reanchor/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  return res.json();
+}
+
+export async function fetchReanchorStatus(sn: string): Promise<ReanchorStatus> {
+  const data = await (await get(`${BASE}/reanchor/${encodeURIComponent(sn)}/status`)).json();
+  return data.status;
+}
+
+/**
+ * First upcoming hour within the lookahead horizon where rain is likely, else null.
+ * Mirrors the app's fetchIncomingRain (StartMowSheet.tsx): mm >= 0.1 OR prob >= 50,
+ * within the next ~3h. Pure — operates on an already-fetched forecast.
+ */
+export function findIncomingRain(
+  forecast: RainForecast,
+  nowMs: number = Date.now(),
+  horizonMs: number = 3 * 60 * 60 * 1000,
+): { atMs: number; mm: number; prob: number } | null {
+  if (!forecast.available || !forecast.upcoming?.length) return null;
+  for (const h of forecast.upcoming) {
+    const at = new Date(h.time).getTime();
+    if (at < nowMs || at - nowMs > horizonMs) continue;
+    if (h.mm >= 0.1 || h.prob >= 50) return { atMs: at, mm: h.mm, prob: h.prob };
+  }
+  return null;
+}
+
 // ── Extended Mower Commands ────────────────────────────────────
 
 export async function navigateToPosition(sn: string, latitude: number, longitude: number, angle = 0): Promise<CommandResult> {
