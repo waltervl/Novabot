@@ -14,6 +14,7 @@ set(ETH_SOLVERS_ROOT "${ETH_ROOT}/polygon_coverage_solvers")
 
 find_package(CGAL 5.0 REQUIRED COMPONENTS Core)
 find_package(OpenCV 4.2 REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 message(STATUS "CGAL_VERSION=${CGAL_VERSION}")
 message(STATUS "OpenCV_VERSION=${OpenCV_VERSION}")
@@ -118,3 +119,11 @@ target_link_libraries(coverage_vendor_glue_test
 )
 
 add_test(NAME coverage_vendor_glue_test COMMAND coverage_vendor_glue_test)
+add_test(
+  NAME coverage_oracle_replay_demo_auto
+  COMMAND
+    ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle_replay_demo_auto.py"
+    "$<TARGET_FILE:coverage_grid_plan>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/oracle"
+)

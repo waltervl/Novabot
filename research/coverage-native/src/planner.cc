@@ -5,6 +5,8 @@
 #include <limits>
 #include <stdexcept>
 
+#include <CGAL/number_utils.h>
+
 #include "polygon_coverage_geometry/bcd.h"
 #include "polygon_coverage_geometry/decomposition.h"
 #include "polygon_coverage_geometry/sweep.h"
@@ -41,6 +43,83 @@ double altitudeSum(const std::vector<Polygon_2>& cells) {
     sum += polygon_coverage_planning::findBestSweepDir(cell);
   }
   return sum;
+}
+
+double sweepNormalCoordinate(const Point_2& point,
+                             const Direction_2& sweep_direction) {
+  const Vector_2 direction = sweep_direction.vector();
+  const double dx = CGAL::to_double(direction.x());
+  const double dy = CGAL::to_double(direction.y());
+  const double x = CGAL::to_double(point.x());
+  const double y = CGAL::to_double(point.y());
+  return (-dy * x) + (dx * y);
+}
+
+bool strictlyBetween(double value, double a, double b) {
+  constexpr double kEpsilon = 1.0e-6;
+  const double low = std::min(a, b);
+  const double high = std::max(a, b);
+  return value > low + kEpsilon && value < high - kEpsilon;
+}
+
+void insertVendorFinalSweep(const Polygon_2& cell,
+                            const Direction_2& sweep_direction,
+                            std::vector<Point_2>* sweep) {
+  if (sweep == nullptr || sweep->size() < 3) {
+    return;
+  }
+
+  const Point_2& final_point = sweep->back();
+  const Point_2& previous_start = (*sweep)[sweep->size() - 3];
+  const Point_2& previous_end = (*sweep)[sweep->size() - 2];
+  if (CGAL::collinear(final_point, final_point + sweep_direction.vector(),
+                      previous_end)) {
+    return;
+  }
+  if (CGAL::collinear(previous_start, previous_end, final_point)) {
+    return;
+  }
+
+  const double previous_coordinate =
+      (sweepNormalCoordinate(previous_start, sweep_direction) +
+       sweepNormalCoordinate(previous_end, sweep_direction)) /
+      2.0;
+  const double final_coordinate =
+      sweepNormalCoordinate(final_point, sweep_direction);
+
+  if (!strictlyBetween((previous_coordinate + final_coordinate) / 2.0,
+                       previous_coordinate, final_coordinate)) {
+    return;
+  }
+
+  const Vector_2 direction = sweep_direction.vector();
+  const Vector_2 normal(-direction.y(), direction.x());
+  const FT previous_exact_coordinate =
+      (normal.x() * previous_start.x()) + (normal.y() * previous_start.y());
+  const FT final_exact_coordinate =
+      (normal.x() * final_point.x()) + (normal.y() * final_point.y());
+  const FT shift =
+      (previous_exact_coordinate - final_exact_coordinate) /
+      (FT(2) * normal.squared_length());
+  const Point_2 midpoint =
+      final_point + (normal * shift);
+
+  Segment_2 segment;
+  if (!polygon_coverage_planning::findSweepSegment(
+          cell, Line_2(midpoint, sweep_direction), &segment) ||
+      segment.is_degenerate()) {
+    return;
+  }
+
+  Point_2 source = segment.source();
+  Point_2 target = segment.target();
+  if (CGAL::squared_distance(previous_end, target) <
+      CGAL::squared_distance(previous_end, source)) {
+    std::swap(source, target);
+  }
+
+  sweep->insert(std::prev(sweep->end()), source);
+  sweep->insert(std::prev(sweep->end()), target);
 }
 
 }  // namespace
@@ -133,6 +212,7 @@ std::vector<std::vector<Point_2>> computeVendorSweepsForCells(
         sweep.empty()) {
       throw std::runtime_error("computeSweep returned no sweep");
     }
+    insertVendorFinalSweep(cell, sweep_direction, &sweep);
     sweeps.push_back(std::move(sweep));
   }
   return sweeps;
