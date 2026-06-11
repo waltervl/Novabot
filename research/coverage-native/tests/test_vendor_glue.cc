@@ -186,6 +186,41 @@ void testDecompositionAndSweeps() {
   require(!sweeps[0][0].empty(), "sweep candidate contains waypoints");
 }
 
+void testVendorSweepSkipsSyntheticFinalMidpoint() {
+  Polygon_2 cell;
+  cell.push_back(Point_2(0, 0));
+  cell.push_back(Point_2(20, 0));
+  cell.push_back(Point_2(20, 10));
+  cell.push_back(Point_2(0, 5));
+  if (!cell.is_counterclockwise_oriented()) {
+    cell.reverse_orientation();
+  }
+
+  coverage_native::DecompositionResult decomposition;
+  decomposition.cells.push_back(cell);
+
+  const std::vector<std::vector<Point_2>> sweeps =
+      coverage_native::computeVendorSweepsForCells(
+          decomposition, 3.0, coverage_native::DecompositionOptions{true, 0});
+  require(sweeps.size() == 1, "single synthetic cell returns one sweep");
+
+  const std::vector<Point_2>& sweep = sweeps.front();
+  require(sweep.size() == 9,
+          "vendor final sweep falls back to final vertex line without midpoint");
+  requireNear(CGAL::to_double(sweep[6].x()), 20.0, 1e-9,
+              "pre-final sweep source x");
+  requireNear(CGAL::to_double(sweep[6].y()), 9.0, 1e-9,
+              "pre-final sweep source y");
+  requireNear(CGAL::to_double(sweep[7].x()), 16.0, 1e-9,
+              "pre-final sweep target x");
+  requireNear(CGAL::to_double(sweep[7].y()), 9.0, 1e-9,
+              "pre-final sweep target y");
+  requireNear(CGAL::to_double(sweep[8].x()), 20.0, 1e-9,
+              "final vertex sweep x");
+  requireNear(CGAL::to_double(sweep[8].y()), 10.0, 1e-9,
+              "final vertex sweep y");
+}
+
 void testPathAssessmentAndCellOrdering() {
   const coverage_native::GridPath path = {
       {0, 0},
@@ -240,6 +275,7 @@ int main() {
     testContourExtractionFiltersSmallAreas();
     testContoursConvertToPolygonWithHole();
     testDecompositionAndSweeps();
+    testVendorSweepSkipsSyntheticFinalMidpoint();
     testPathAssessmentAndCellOrdering();
     testGenerateCoverageGridPlanForSimpleMap();
   } catch (const std::exception& e) {

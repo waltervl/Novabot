@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 
@@ -45,81 +46,127 @@ double altitudeSum(const std::vector<Polygon_2>& cells) {
   return sum;
 }
 
-double sweepNormalCoordinate(const Point_2& point,
-                             const Direction_2& sweep_direction) {
-  const Vector_2 direction = sweep_direction.vector();
-  const double dx = CGAL::to_double(direction.x());
-  const double dy = CGAL::to_double(direction.y());
-  const double x = CGAL::to_double(point.x());
-  const double y = CGAL::to_double(point.y());
-  return (-dy * x) + (dx * y);
+bool waypointsEndAtFinalVertex(const std::vector<Point_2>& waypoints,
+                               const Point_2& final_vertex) {
+  return (!waypoints.empty() && waypoints.back() == final_vertex) ||
+         (waypoints.size() > 1 &&
+          *std::prev(waypoints.end(), 2) == final_vertex);
 }
 
-bool strictlyBetween(double value, double a, double b) {
-  constexpr double kEpsilon = 1.0e-6;
-  const double low = std::min(a, b);
-  const double high = std::max(a, b);
-  return value > low + kEpsilon && value < high - kEpsilon;
-}
+bool computeVendorSweep(
+    const Polygon_2& cell,
+    const polygon_coverage_planning::visibility_graph::VisibilityGraph&
+        visibility_graph,
+    const FT offset, const Direction_2& direction, bool counter_clockwise,
+    std::vector<Point_2>* waypoints) {
+  if (waypoints == nullptr) {
+    return false;
+  }
+  waypoints->clear();
+  const FT k_sq_offset = offset * offset;
 
-void insertVendorFinalSweep(const Polygon_2& cell,
-                            const Direction_2& sweep_direction,
-                            std::vector<Point_2>* sweep) {
-  if (sweep == nullptr || sweep->size() < 3) {
-    return;
+  if (!cell.is_counterclockwise_oriented()) {
+    return false;
   }
 
-  const Point_2& final_point = sweep->back();
-  const Point_2& previous_start = (*sweep)[sweep->size() - 3];
-  const Point_2& previous_end = (*sweep)[sweep->size() - 2];
-  if (CGAL::collinear(final_point, final_point + sweep_direction.vector(),
-                      previous_end)) {
-    return;
+  Line_2 sweep(Point_2(0.0, 0.0), direction);
+  const std::vector<Point_2> sorted_points =
+      polygon_coverage_planning::sortVerticesToLine(cell, sweep);
+  sweep = Line_2(sorted_points.front(), direction);
+
+  Vector_2 offset_vector = sweep.perpendicular(sorted_points.front()).to_vector();
+  offset_vector = offset * offset_vector /
+                  std::sqrt(CGAL::to_double(offset_vector.squared_length()));
+  const CGAL::Aff_transformation_2<K> full_offset(CGAL::TRANSLATION,
+                                                  offset_vector);
+  const CGAL::Aff_transformation_2<K> vendor_final_offset(
+      CGAL::TRANSLATION, FT(0.6) * offset_vector);
+
+  Segment_2 sweep_segment;
+  bool has_sweep_segment =
+      polygon_coverage_planning::findSweepSegment(cell, sweep, &sweep_segment);
+  int sweep_count = 0;
+  bool tried_vendor_final_offset = false;
+
+  while (has_sweep_segment) {
+    ++sweep_count;
+    if (counter_clockwise) {
+      sweep_segment = sweep_segment.opposite();
+    }
+
+    if (!waypoints->empty()) {
+      std::vector<Point_2> shortest_path;
+      if (!polygon_coverage_planning::calculateShortestPath(
+              visibility_graph, waypoints->back(), sweep_segment.source(),
+              &shortest_path)) {
+        return false;
+      }
+      for (auto it = std::next(shortest_path.begin());
+           it != std::prev(shortest_path.end()); ++it) {
+        waypoints->push_back(*it);
+      }
+    }
+
+    waypoints->push_back(sweep_segment.source());
+    if (!sweep_segment.is_degenerate()) {
+      waypoints->push_back(sweep_segment.target());
+    }
+
+    const Line_2 previous_sweep = sweep;
+    sweep = sweep.transform(full_offset);
+    const Segment_2 previous_sweep_segment =
+        counter_clockwise ? sweep_segment.opposite() : sweep_segment;
+    has_sweep_segment =
+        polygon_coverage_planning::findSweepSegment(cell, sweep,
+                                                    &sweep_segment);
+
+    if (!has_sweep_segment &&
+        !waypointsEndAtFinalVertex(*waypoints, sorted_points.back())) {
+      if (sweep_count > 3 && !tried_vendor_final_offset) {
+        sweep = previous_sweep.transform(vendor_final_offset);
+        has_sweep_segment =
+            polygon_coverage_planning::findSweepSegment(cell, sweep,
+                                                        &sweep_segment);
+        tried_vendor_final_offset = true;
+      }
+
+      if (!has_sweep_segment) {
+        sweep = Line_2(sorted_points.back(), direction);
+        has_sweep_segment =
+            polygon_coverage_planning::findSweepSegment(cell, sweep,
+                                                        &sweep_segment);
+        if (!has_sweep_segment) {
+          return false;
+        }
+      }
+
+      if (CGAL::squared_distance(sweep_segment, previous_sweep_segment) <
+          FT(0.1)) {
+        break;
+      }
+    }
+
+    if (has_sweep_segment) {
+      std::vector<Point_2>::const_iterator unobservable_point =
+          sorted_points.end();
+      polygon_coverage_planning::checkObservability(
+          previous_sweep_segment, sweep_segment, sorted_points, k_sq_offset,
+          &unobservable_point);
+      if (unobservable_point != sorted_points.end()) {
+        sweep = Line_2(*unobservable_point, direction);
+        has_sweep_segment =
+            polygon_coverage_planning::findSweepSegment(cell, sweep,
+                                                        &sweep_segment);
+        if (!has_sweep_segment) {
+          return false;
+        }
+      }
+    }
+
+    counter_clockwise = !counter_clockwise;
   }
-  if (CGAL::collinear(previous_start, previous_end, final_point)) {
-    return;
-  }
 
-  const double previous_coordinate =
-      (sweepNormalCoordinate(previous_start, sweep_direction) +
-       sweepNormalCoordinate(previous_end, sweep_direction)) /
-      2.0;
-  const double final_coordinate =
-      sweepNormalCoordinate(final_point, sweep_direction);
-
-  if (!strictlyBetween((previous_coordinate + final_coordinate) / 2.0,
-                       previous_coordinate, final_coordinate)) {
-    return;
-  }
-
-  const Vector_2 direction = sweep_direction.vector();
-  const Vector_2 normal(-direction.y(), direction.x());
-  const FT previous_exact_coordinate =
-      (normal.x() * previous_start.x()) + (normal.y() * previous_start.y());
-  const FT final_exact_coordinate =
-      (normal.x() * final_point.x()) + (normal.y() * final_point.y());
-  const FT shift =
-      (previous_exact_coordinate - final_exact_coordinate) /
-      (FT(2) * normal.squared_length());
-  const Point_2 midpoint =
-      final_point + (normal * shift);
-
-  Segment_2 segment;
-  if (!polygon_coverage_planning::findSweepSegment(
-          cell, Line_2(midpoint, sweep_direction), &segment) ||
-      segment.is_degenerate()) {
-    return;
-  }
-
-  Point_2 source = segment.source();
-  Point_2 target = segment.target();
-  if (CGAL::squared_distance(previous_end, target) <
-      CGAL::squared_distance(previous_end, source)) {
-    std::swap(source, target);
-  }
-
-  sweep->insert(std::prev(sweep->end()), source);
-  sweep->insert(std::prev(sweep->end()), target);
+  return true;
 }
 
 }  // namespace
@@ -206,13 +253,12 @@ std::vector<std::vector<Point_2>> computeVendorSweepsForCells(
     polygon_coverage_planning::visibility_graph::VisibilityGraph visibility_graph(
         cell);
     std::vector<Point_2> sweep;
-    if (!polygon_coverage_planning::computeSweep(
-            cell, visibility_graph, coverage_length_px, sweep_direction,
-            true, &sweep) ||
+    if (!computeVendorSweep(
+            cell, visibility_graph, coverage_length_px, sweep_direction, true,
+            &sweep) ||
         sweep.empty()) {
       throw std::runtime_error("computeSweep returned no sweep");
     }
-    insertVendorFinalSweep(cell, sweep_direction, &sweep);
     sweeps.push_back(std::move(sweep));
   }
   return sweeps;
