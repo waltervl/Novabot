@@ -82,8 +82,16 @@ export function MowingStatsCard({ sensors, compact }: Props) {
   const elapsed = fmtSeconds(parseFloat(s.cov_work_time ?? ''));
   const eta = fmtMinutes(parseFloat(s.cov_estimate_time ?? ''));
   const mowSpeed = s.mow_speed != null && s.mow_speed !== '' ? s.mow_speed : null;
-  const areaRaw = s.cov_area ?? s.covering_area;
-  const area = areaRaw != null && areaRaw !== '' && parseFloat(areaRaw) > 0 ? areaRaw : null;
+  // Area: gemaaid (cov_area) van totaal (cov_area + cov_remaining_area), afgerond.
+  const covered = parseFloat(s.cov_area ?? s.covering_area ?? '');
+  const remaining = parseFloat(s.cov_remaining_area ?? '');
+  const hasCovered = Number.isFinite(covered) && covered >= 0;
+  const total = hasCovered && Number.isFinite(remaining) && remaining >= 0 ? covered + remaining : null;
+  const area = hasCovered
+    ? (total != null && total > 0
+        ? `${Math.round(covered)} / ${Math.round(total)} m²`
+        : `${Math.round(covered)} m²`)
+    : null;
 
   const iconSize = 'w-4 h-4';
 
@@ -129,13 +137,13 @@ export function MowingStatsCard({ sensors, compact }: Props) {
       chips.push({
         icon: <Grid2x2 className={iconSize} />,
         label: t('status.area', 'Area'),
-        value: `${area} m²`,
+        value: area,
       });
     }
   }
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
+    <div className="bg-gray-900/95 backdrop-blur border border-gray-700 rounded-2xl p-4 shadow-xl">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <Scissors className="w-4 h-4 text-emerald-400" />
