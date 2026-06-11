@@ -74,6 +74,7 @@ add_library(coverage_vendor_glue STATIC
   src/params.cc
   src/planner.cc
   src/preprocess.cc
+  src/tsp.cc
   src/world_convert.cc
 )
 target_include_directories(coverage_vendor_glue

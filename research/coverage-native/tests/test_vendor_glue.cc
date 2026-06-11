@@ -11,6 +11,7 @@
 #include "coverage_native/params.h"
 #include "coverage_native/planner.h"
 #include "coverage_native/preprocess.h"
+#include "coverage_native/tsp.h"
 #include "coverage_native/world_convert.h"
 
 namespace {
@@ -174,6 +175,36 @@ void testDecompositionAndSweeps() {
   require(!sweeps[0][0].empty(), "sweep candidate contains waypoints");
 }
 
+void testPathAssessmentAndCellOrdering() {
+  const coverage_native::GridPath path = {
+      {0, 0},
+      {3, 4},
+      {6, 4},
+  };
+
+  requireNear(coverage_native::calculatePathLength(path), 8.0, 1e-9,
+              "path length sums euclidean segments");
+  require(coverage_native::calculateRotations(path) == 3,
+          "rotation proxy is waypoint count");
+
+  coverage_native::CellPathMap paths;
+  paths.emplace(0, path);
+  requireNear(coverage_native::pathAssessFunction(paths), 6.8875, 1e-9,
+              "path assessment matches recovered vendor weights");
+
+  std::vector<coverage_native::GridContour> contours = {
+      {{cv::Point(0, 0), cv::Point(1, 0), cv::Point(0, 1)}, 10.0, 7},
+      {{cv::Point(0, 0), cv::Point(5, 0), cv::Point(0, 5)}, 50.0, 8},
+      {{cv::Point(0, 0), cv::Point(3, 0), cv::Point(0, 3)}, 20.0, 9},
+  };
+
+  const std::vector<int> ordered =
+      coverage_native::orderContourIndicesByDescendingArea(contours);
+  require(ordered.size() == 3, "all contours must be ordered");
+  require(ordered[0] == 8 && ordered[1] == 9 && ordered[2] == 7,
+          "cell order is descending contour area");
+}
+
 }  // namespace
 
 int main() {
@@ -185,6 +216,7 @@ int main() {
     testContourExtractionFiltersSmallAreas();
     testContoursConvertToPolygonWithHole();
     testDecompositionAndSweeps();
+    testPathAssessmentAndCellOrdering();
   } catch (const std::exception& e) {
     std::cerr << "coverage_vendor_glue_test: " << e.what() << "\n";
     return EXIT_FAILURE;
