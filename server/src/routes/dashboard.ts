@@ -747,8 +747,11 @@ function isCoverageActive(sn: string): boolean {
   // planner is still "busy" from its point of view, and generate_preview
   // will still 128-error. Block until task_mode drops to 0.
   if (workStatus === '9' && taskMode === 1) return true;
-  // Safe fallback: COVERAGE mode with any non-idle state
-  if (msg.includes('Mode:COVERAGE') && !msg.includes('Work:STANDBY') && !msg.includes('Work:IDLE')) {
+  // Fallback: COVERAGE mode with an ACTIVE task. Gated on task_mode===1 — an
+  // idle mower keeps "Mode:COVERAGE" as its last-selected mode label even when
+  // it isn't running, which previously false-flagged it as busy and blocked the
+  // preview generation. Only an active cover task (task_mode 1) actually 128s.
+  if (taskMode === 1 && msg.includes('Mode:COVERAGE') && !msg.includes('Work:STANDBY') && !msg.includes('Work:IDLE')) {
     return true;
   }
   return false;
