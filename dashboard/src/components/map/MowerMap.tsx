@@ -573,7 +573,20 @@ function UserInteractionTracker({ onInteract }: { onInteract: () => void }) {
 // for NL parcels but it's the only sane global default. A future setting
 // could let the operator paste a custom XYZ template (Mapbox, Google,
 // regional aerial provider) if they want better resolution.
-const TILE_LAYERS = {
+// Wereldwijd: één globale default (Esri) + per-regio hi-res providers die
+// alleen verschijnen / auto-geselecteerd worden waar ze geldig zijn. `bounds`
+// = [zuid, west, noord, oost] (lat/lng); zonder bounds = globaal. Nieuwe landen
+// toevoegen = één entry erbij met de juiste WMTS-URL + bounds.
+interface TileLayerDef {
+  label: string;
+  url: string;
+  attribution: string;
+  maxNativeZoom: number;
+  maxZoom: number;
+  bounds?: [number, number, number, number];
+}
+
+const TILE_LAYERS: Record<string, TileLayerDef> = {
   satellite: {
     label: 'Esri satelliet (globaal)',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -581,23 +594,33 @@ const TILE_LAYERS = {
     maxNativeZoom: 19,
     maxZoom: 25,
   },
-  // PDOK Actueel orthoHR — officiële NL luchtfoto, ~8 cm. ALLEEN Nederland
-  // (daarbuiten leveren de tiles niets). Veel scherper dan Esri/Google voor NL.
-  pdok: {
-    label: 'PDOK luchtfoto (NL, scherpst)',
-    url: 'https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg',
-    attribution: '&copy; <a href="https://www.pdok.nl">PDOK</a> / Beeldmateriaal Nederland',
-    maxNativeZoom: 21,
-    maxZoom: 25,
-  },
   // Google satelliet — vaak hoge resolutie, maar ONOFFICIËLE tile-URL (Google
-  // Maps ToS); kan zonder waarschuwing breken. Bewust als optie, niet default.
+  // Maps ToS); kan zonder waarschuwing breken. Globaal, bewust niet default.
   google: {
     label: 'Google satelliet (hi-res, onofficieel)',
     url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
     attribution: 'Imagery &copy; Google',
     maxNativeZoom: 20,
     maxZoom: 25,
+  },
+  // ── Regionale hi-res (officiële open data) ──
+  // PDOK Actueel orthoHR — officiële NL luchtfoto, ~8 cm. Alleen Nederland.
+  pdok: {
+    label: 'PDOK luchtfoto (NL, ~8 cm)',
+    url: 'https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg',
+    attribution: '&copy; <a href="https://www.pdok.nl">PDOK</a> / Beeldmateriaal Nederland',
+    maxNativeZoom: 21,
+    maxZoom: 25,
+    bounds: [50.7, 3.2, 53.7, 7.3],
+  },
+  // USGS National Map imagery — officiële VS luchtfoto (NAIP), hi-res. Alleen VS.
+  usgs: {
+    label: 'USGS imagery (VS)',
+    url: 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Imagery &copy; USGS / The National Map',
+    maxNativeZoom: 20,
+    maxZoom: 25,
+    bounds: [24.5, -125, 49.5, -66.9],
   },
   street: {
     label: 'Straatkaart (OSM)',
@@ -606,9 +629,16 @@ const TILE_LAYERS = {
     maxNativeZoom: 19,
     maxZoom: 25,
   },
-} as const;
+};
 
-type TileLayerKey = keyof typeof TILE_LAYERS;
+type TileLayerKey = string;
+
+function tileLayerInBounds(def: TileLayerDef, lat: number | null, lng: number | null): boolean {
+  if (!def.bounds) return true; // globaal
+  if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  const [s, w, n, e] = def.bounds;
+  return lat >= s && lat <= n && lng >= w && lng <= e;
+}
 
 // ── Calibration transform ────────────────────────────────────────
 
@@ -935,14 +965,18 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   // anders staat de trail op de verkeerde plek (rauwe GPS heeft een base-offset).
   const [trail, setTrail] = useState<Array<{ x: number; y: number; ts: number }>>([]);
   const [showTrail, setShowTrail] = useState(true);
+  // true zodra de gebruiker zélf een laag koos (of er een opgeslagen keuze is) →
+  // dan geen auto-selectie meer op basis van locatie.
+  const tileManualRef = useRef(false);
   const [tileLayer, setTileLayer] = useState<TileLayerKey>(() => {
     try {
       const saved = localStorage.getItem('novabot.tileLayer');
-      if (saved && saved in TILE_LAYERS) return saved as TileLayerKey;
+      if (saved && saved in TILE_LAYERS) { tileManualRef.current = true; return saved; }
     } catch { /* ignore */ }
     return 'satellite';
   });
   const changeTileLayer = useCallback((key: TileLayerKey) => {
+    tileManualRef.current = true;
     setTileLayer(key);
     try { localStorage.setItem('novabot.tileLayer', key); } catch { /* ignore */ }
   }, []);
@@ -1211,6 +1245,20 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   // Used to shift all local coords so that the physical charger position
   // projects onto chargerGps instead of the local origin (0,0).
   const [chargingPose, setChargingPose] = useState<{ x: number; y: number; orientation: number } | null>(null);
+
+  // Auto-selecteer de scherpste regionale satelliet-laag voor de locatie van de
+  // maaier (charger-GPS, anders live GPS). Globaal valt terug op Esri. Slaat over
+  // zodra de gebruiker zelf een laag koos (tileManualRef).
+  useEffect(() => {
+    if (tileManualRef.current) return;
+    const aLat = chargerGps?.lat ?? (lat ? parseFloat(lat) : null);
+    const aLng = chargerGps?.lng ?? (lng ? parseFloat(lng) : null);
+    if (aLat == null || aLng == null || !Number.isFinite(aLat) || !Number.isFinite(aLng)) return;
+    const regional = (Object.keys(TILE_LAYERS) as TileLayerKey[]).find(
+      k => TILE_LAYERS[k].bounds && tileLayerInBounds(TILE_LAYERS[k], aLat, aLng),
+    );
+    if (regional) setTileLayer(regional); // geen localStorage-save → blijft "auto"
+  }, [chargerGps, lat, lng]);
 
   // Calibration state
   const [savedCal, setSavedCal] = useState<MapCalibration>(DEFAULT_CAL);
@@ -2803,11 +2851,17 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
               onChange={(e) => changeTileLayer(e.target.value as TileLayerKey)}
               className="bg-transparent text-gray-200 text-[11px] focus:outline-none cursor-pointer max-w-[8rem] md:max-w-none"
             >
-              {(Object.keys(TILE_LAYERS) as TileLayerKey[]).map((key) => (
-                <option key={key} value={key} className="bg-gray-800 text-gray-200">
-                  {TILE_LAYERS[key].label}
-                </option>
-              ))}
+              {(Object.keys(TILE_LAYERS) as TileLayerKey[])
+                .filter((key) => key === tileLayer || tileLayerInBounds(
+                  TILE_LAYERS[key],
+                  chargerGps?.lat ?? (lat ? parseFloat(lat) : null),
+                  chargerGps?.lng ?? (lng ? parseFloat(lng) : null),
+                ))
+                .map((key) => (
+                  <option key={key} value={key} className="bg-gray-800 text-gray-200">
+                    {TILE_LAYERS[key].label}
+                  </option>
+                ))}
             </select>
           </span>
           {polygonMaps.length > 0 && (() => {
