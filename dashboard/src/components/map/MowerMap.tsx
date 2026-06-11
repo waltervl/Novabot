@@ -2508,11 +2508,13 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   // When there is no base yet (mower never auto-detected) we adopt the clicked
   // point as the base so a charger can still be placed manually.
   const handlePlaceCharger = useCallback((lat: number, lng: number) => {
-    const baseLat = savedCal.chargerLat;
-    const baseLng = savedCal.chargerLng;
-    const updated: MapCalibration = (baseLat == null || baseLng == null)
-      ? { ...savedCal, chargerLat: lat, chargerLng: lng, offsetLat: 0, offsetLng: 0 }
-      : { ...savedCal, offsetLat: lat - baseLat, offsetLng: lng - baseLng };
+    // Always set the real charger anchor (base) — never a visual offset. The
+    // drop point IS where the charger physically sits, so the anchor moves there
+    // and the charger + polygons shift together. No relocateCharger: the local
+    // polygon coords are unchanged and nothing is pushed to the mower. Setting
+    // the base (not an offset) keeps the app consistent with the dashboard — the
+    // app reads chargerGps directly and ignores offset.
+    const updated: MapCalibration = { ...savedCal, chargerLat: lat, chargerLng: lng, offsetLat: 0, offsetLng: 0 };
     setSavedCal(updated);
     setPlacingCharger(false);
     saveCalibration(sn, updated).then(() => {
@@ -3163,8 +3165,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
               draggable
               eventHandlers={{
                 dragend: (e) => {
-                  // Same path as the menu "Laadstation" placement: store a visual
-                  // offset only, never the base, never push to the mower.
+                  // Same path as the menu "Laadstation" placement: set the real
+                  // charger anchor (base) to the drop point. Anchor + polygons
+                  // shift together; never pushes to the mower.
                   const { lat, lng } = e.target.getLatLng();
                   handlePlaceCharger(lat, lng);
                 },
