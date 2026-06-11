@@ -9,7 +9,7 @@ import {
   Copy, ClipboardPaste, Spline, RefreshCw, Loader2, Move as MoveIcon, Camera,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { MapData, TrailPoint, MapCalibration, GpsPoint } from '../../types';
+import type { MapData, MapCalibration, GpsPoint } from '../../types';
 import {
   fetchMaps, fetchAllMaps, fetchTrail, clearTrail, fetchCalibration, saveCalibration,
   deleteMap, renameMap, updateMapArea, createMap, exportMaps,
@@ -907,7 +907,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const mowingSensors = sensors ?? {};
   const { toast } = useToast();
   const [maps, setMaps] = useState<MapData[]>([]);
-  const [trail, setTrail] = useState<TrailPoint[]>([]);
+  // Trail in LOKALE meters (map_position frame), net als de maaier-icoon en de
+  // polygonen. De server /trail endpoint geeft default lokale punten {x,y,ts};
+  // we projecteren ze via DEZELFDE localToGps(charger)-transform als de maaier,
+  // anders staat de trail op de verkeerde plek (rauwe GPS heeft een base-offset).
+  const [trail, setTrail] = useState<Array<{ x: number; y: number; ts: number }>>([]);
   const [showTrail, setShowTrail] = useState(true);
   const [tileLayer, setTileLayer] = useState<'satellite' | 'street'>('satellite');
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
@@ -1196,7 +1200,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
         setChargerGps(resp.chargerGps);
         setChargingPose(resp.chargingPose ?? null);
       }).catch(() => setMaps([]));
-      fetchTrail(sn).then(setTrail).catch(() => setTrail([]));
+      // Server /trail geeft default lokale punten {x,y,ts} (ondanks de TrailPoint-
+      // type-naam) — gebruik ze rechtstreeks als lokale trail.
+      fetchTrail(sn).then(pts => setTrail(pts as unknown as Array<{ x: number; y: number; ts: number }>)).catch(() => setTrail([]));
       fetchCalibration(sn).then(setSavedCal).catch(() => {});
       // Initialize undo/redo history to a single fresh snapshot once the editor's
       // geometry has loaded for this mower (usually an empty snapshot = no drafts).
@@ -1252,21 +1258,22 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const isMowing = !!mowingActive || mowing?.workStatus === '1';
   useEffect(() => {
     if (!isMowing) return;
-    if (!lat || !lng || lat === '0' || lng === '0') return;
-    const numLat = parseFloat(lat);
-    const numLng = parseFloat(lng);
-    if (isNaN(numLat) || isNaN(numLng)) return;
+    // Lokale map_position (cm-nauwkeurig, zelfde frame als de maaier-icoon) i.p.v.
+    // rauwe GPS — anders staat de trail op de verkeerde plek.
+    const mx = mapX != null ? parseFloat(mapX) : NaN;
+    const my = mapY != null ? parseFloat(mapY) : NaN;
+    if (isNaN(mx) || isNaN(my)) return;
 
     setTrail(prev => {
       if (prev.length > 0) {
         const last = prev[prev.length - 1];
-        if (Math.abs(last.lat - numLat) < 0.0000005 && Math.abs(last.lng - numLng) < 0.0000005) {
+        if (Math.abs(last.x - mx) < 0.01 && Math.abs(last.y - my) < 0.01) {
           return prev;
         }
       }
-      return [...prev, { lat: numLat, lng: numLng, ts: Date.now() }];
+      return [...prev, { x: mx, y: my, ts: Date.now() }];
     });
-  }, [lat, lng, isMowing]);
+  }, [mapX, mapY, isMowing]);
 
   const handleClearTrail = useCallback(() => {
     clearTrail(sn).then(() => setTrail([])).catch(() => {});
@@ -2366,9 +2373,16 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
     return sum > 0 ? sum : null;
   }, [maps]);
 
+  // Trail (lokale map_position) → GPS via EXACT dezelfde transform als de maaier-
+  // icoon: localToGps({x,y} − chargingPose, chargerGps) + calibratie-offset. Zo
+  // valt de trail samen met de maaier, de polygonen en het coverage-pad.
   const trailPositions: [number, number][] = trail.flatMap(p => {
-    const lat = p.lat + (Number.isFinite(activeCal.offsetLat) ? activeCal.offsetLat : 0);
-    const lng = p.lng + (Number.isFinite(activeCal.offsetLng) ? activeCal.offsetLng : 0);
+    if (!isUsableChargerGps(chargerGps)) return [];
+    const offLat = Number.isFinite(activeCal.offsetLat) ? activeCal.offsetLat : 0;
+    const offLng = Number.isFinite(activeCal.offsetLng) ? activeCal.offsetLng : 0;
+    const g = localToGps({ x: p.x - (chargingPose?.x ?? 0), y: p.y - (chargingPose?.y ?? 0) }, chargerGps);
+    const lat = g.lat + offLat;
+    const lng = g.lng + offLng;
     return Number.isFinite(lat) && Number.isFinite(lng) ? [[lat, lng] as [number, number]] : [];
   });
 
@@ -2386,18 +2400,20 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const coverageStats = useMemo(() => {
     if (trail.length === 0) return new Map<string, { points: number; area: number }>();
     const stats = new Map<string, { points: number; area: number }>();
-    for (const m of polygonMaps) {
-      const style = getAreaStyle(m.mapType, m.mapId, m.mapName);
-      if (style !== AREA_STYLES.work) continue;
-      const area = polygonAreaM2(m.mapArea);
+    // Trail én maps zijn lokaal {x,y} → lokale point-in-polygon + lokale area.
+    for (const m of maps) {
+      if (!Array.isArray(m.mapArea) || m.mapArea.length < 3) continue;
+      if (getAreaStyle(m.mapType, m.mapId, m.mapName) !== AREA_STYLES.work) continue;
+      const local = m.mapArea as XY[];
+      const area = polygonArea(local);
       let count = 0;
       for (const tp of trail) {
-        if (pointInPolygon(tp.lat, tp.lng, m.mapArea)) count++;
+        if (pointInPolygonXY({ x: tp.x, y: tp.y }, local)) count++;
       }
       stats.set(m.mapId, { points: count, area });
     }
     return stats;
-  }, [trail, polygonMaps]);
+  }, [trail, maps]);
 
   // Charger GPS: ALLEEN uit opgeslagen calibratie — nooit live GPS (voorkomt drift bij refresh)
   const resolvedChargerLat = savedCal.chargerLat || null;
