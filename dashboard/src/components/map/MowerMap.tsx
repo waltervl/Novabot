@@ -2932,8 +2932,10 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
               });
             return <CoverageStripes lanes={coveredLanes} workPolys={wPolys} />;
           })()}
-          {/* GPS trail centerline — verberg tijdens maaien (hatching toont coverage) */}
-          {showTrail && !showHeatmap && mowing?.workStatus !== '1' && trailPositions.length >= 2 && (
+          {/* GPS trail centerline — ook TIJDENS maaien tonen als voortgang (waar de
+              maaier al geweest is). Eerder verborgen bij work_status==='1', maar dat
+              verstopte de maai-voortgang precies wanneer je 'm wilt zien. */}
+          {showTrail && !showHeatmap && trailPositions.length >= 2 && (
             <Polyline
               positions={trailPositions}
               pathOptions={{
