@@ -29,6 +29,23 @@ describe('translateValue rtk_fix_quality', () => {
   });
 });
 
+describe('updateDeviceData null/non-object payloads (crash guard)', () => {
+  // JSON.parse accepts these WITHOUT throwing — `parsed` becomes null or a
+  // non-object, and Object.keys(null) used to crash the broker handler. Must
+  // return null and never throw for any of them.
+  it.each([
+    ['literal null', 'null'],
+    ['bare number', '123'],
+    ['bare bool', 'true'],
+    ['bare string', '"hello"'],
+    ['empty buffer', ''],
+    ['garbage', 'not json'],
+  ])('returns null without throwing for %s', (_label, raw) => {
+    expect(() => updateDeviceData('LFIN9999000002', Buffer.from(raw))).not.toThrow();
+    expect(updateDeviceData('LFIN9999000002', Buffer.from(raw))).toBeNull();
+  });
+});
+
 describe('frame_unvalidated lifecycle in updateDeviceData', () => {
   const docked = (sn: string) =>
     updateDeviceData(sn, Buffer.from(JSON.stringify({ report_state_robot: { recharge_status: 9 } })));

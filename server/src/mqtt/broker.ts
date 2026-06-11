@@ -1050,12 +1050,20 @@ export async function startMqttBroker(): Promise<void> {
 
       // In demo mode: skip echte maaier status updates (simulator stuurt eigen data)
       if (!isDemoMode(forwardSn)) {
-        const changes = updateDeviceData(forwardSn, effectiveBuf);
-        if (consumeWifiRssiRefreshRequest(forwardSn)) {
-          publishToDevice(forwardSn, { get_wifi_rssi: {} });
+        // Defensive: an MQTT publish handler must NEVER crash the process. A
+        // malformed/null payload that slips past the parsers should be dropped,
+        // not take the whole broker down (it crash-looped on a mower spamming
+        // literal "null" — see updateDeviceData guard).
+        try {
+          const changes = updateDeviceData(forwardSn, effectiveBuf);
+          if (consumeWifiRssiRefreshRequest(forwardSn)) {
+            publishToDevice(forwardSn, { get_wifi_rssi: {} });
+          }
+          forwardToHomeAssistant(packet.topic, effectiveBuf, forwardSn, changes);
+          forwardToDashboard(forwardSn, changes);
+        } catch (e) {
+          console.warn(`${C.red}[MQTT] device-data handler error for ${forwardSn}: ${(e as Error)?.message ?? e}${C.reset}`);
         }
-        forwardToHomeAssistant(packet.topic, effectiveBuf, forwardSn, changes);
-        forwardToDashboard(forwardSn, changes);
       }
     }
 
