@@ -69,6 +69,20 @@ export function paintCircle(poly: XY[], center: XY, radius: number): XY[] {
   return simplifyPolygon(ring, RESULT_SIMPLIFY_TOL);
 }
 
+/**
+ * "Make valid": los zelf-kruisingen op door de polygon met zichzelf te unioneren.
+ * polygon-clipping normaliseert dan het pad tot een geldige (niet-kruisende)
+ * buitenrand. Geeft de grootste buitenrand terug; valt terug op de input als de
+ * operatie niets oplevert. Gebruik dit voordat een bewerkte polygon wordt
+ * opgeslagen zodat een edit nooit op "lijn kruist zichzelf" blokkeert.
+ */
+export function makeValidPolygon(poly: XY[]): XY[] {
+  if (poly.length < 3) return poly;
+  const res = pc.union([toClosedCoords(poly)], [toClosedCoords(poly)]);
+  const ring = largestOuterRing(res);
+  return ring.length >= 3 ? ring : poly;
+}
+
 /** Subtract the brush circle from poly (remove area locally). */
 export function eraseCircle(poly: XY[], center: XY, radius: number): XY[] {
   if (poly.length < 3) return poly;

@@ -1,4 +1,6 @@
 import type { DeviceState, SensorDef, MapData, MapsResponse, TrailPoint, MapCalibration, Schedule, WorkRecord, SignalHistoryPoint, LocalPoint } from '../types';
+import { selfIntersects } from '../utils/editGeometry';
+import { makeValidPolygon } from '../utils/brushPaint';
 
 const BASE = '/api/dashboard';
 
@@ -597,8 +599,18 @@ export async function saveEditDraft(sn: string, body: {
   canonical?: string; mapType?: 'work' | 'obstacle'; parentMap?: string;
   points?: { x: number; y: number }[]; deleted?: boolean;
 }): Promise<{ ok: boolean; canonical?: string; error?: string }> {
+  // Schoon zelf-kruisende polygonen op vóór opslaan (polygon-clipping union met
+  // zichzelf → geldige buitenrand). Voorkomt dat een edit op "lijn kruist
+  // zichzelf" blokkeert; alleen toegepast als de vorm écht kruist (anders
+  // ongemoeid). De firmware (ClipperLib) zou 't ook oplossen, maar zo blijft de
+  // opgeslagen geometrie + de weergave netjes.
+  let out = body;
+  if (body.points && body.points.length >= 3 && selfIntersects(body.points)) {
+    const fixed = makeValidPolygon(body.points);
+    if (fixed.length >= 3) out = { ...body, points: fixed };
+  }
   const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/draft`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out),
   });
   return res.json();
 }
