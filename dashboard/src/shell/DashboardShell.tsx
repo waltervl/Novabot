@@ -13,8 +13,6 @@ import { NetworkHealthCard } from '../components/drawer/NetworkHealthCard';
 import { LiveStatusCard } from '../components/drawer/LiveStatusCard';
 import { ServerLogTail } from '../components/drawer/ServerLogTail';
 import { MowerControls } from '../components/dashboard/MowerControls';
-import { MowingStatsCard } from '../components/status/MowingStatsCard';
-import { deriveMowerActivity } from '../utils/mowerActivity';
 import { LongPauseBanner } from './LongPauseBanner';
 import { MdnsConflictBanner } from './MdnsConflictBanner';
 
@@ -74,16 +72,6 @@ function ShellInner() {
           </div>
         )}
       </div>
-
-      {activeMower && (() => {
-        const act = deriveMowerActivity(activeMower.sensors, { online: activeMower.online });
-        if (act !== 'mowing' && act !== 'edge_cutting') return null;
-        return (
-          <div className="px-4 py-2 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
-            <MowingStatsCard sensors={activeMower.sensors} />
-          </div>
-        );
-      })()}
 
       <MdnsConflictBanner />
       <LongPauseBanner mower={activeMower} />

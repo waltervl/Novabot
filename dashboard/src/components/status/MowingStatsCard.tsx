@@ -5,6 +5,9 @@ interface Props {
   sensors: Record<string, string>;
   /** Compact layout for the map overlay: progress + key chips only. */
   compact?: boolean;
+  /** Totale zone-oppervlakte (m²) = polygon-area van de work-map(s), zoals de
+   *  app toont. Coverage-planner-schatting (cov_area+remaining) wijkt hiervan af. */
+  totalAreaM2?: number | null;
 }
 
 /**
@@ -72,7 +75,7 @@ function Chip({ icon, label, value }: ChipProps) {
   );
 }
 
-export function MowingStatsCard({ sensors, compact }: Props) {
+export function MowingStatsCard({ sensors, compact, totalAreaM2 }: Props) {
   const { t } = useTranslation();
   const s = sensors ?? {};
 
@@ -82,16 +85,23 @@ export function MowingStatsCard({ sensors, compact }: Props) {
   const elapsed = fmtSeconds(parseFloat(s.cov_work_time ?? ''));
   const eta = fmtMinutes(parseFloat(s.cov_estimate_time ?? ''));
   const mowSpeed = s.mow_speed != null && s.mow_speed !== '' ? s.mow_speed : null;
-  // Area: gemaaid (cov_area) van totaal (cov_area + cov_remaining_area), afgerond.
-  const covered = parseFloat(s.cov_area ?? s.covering_area ?? '');
-  const remaining = parseFloat(s.cov_remaining_area ?? '');
-  const hasCovered = Number.isFinite(covered) && covered >= 0;
-  const total = hasCovered && Number.isFinite(remaining) && remaining >= 0 ? covered + remaining : null;
-  const area = hasCovered
-    ? (total != null && total > 0
+  // Area = echte zone-oppervlakte (polygon-area, zoals de app), met gemaaid =
+  // progress% van het totaal. Valt terug op de coverage-schatting (cov_area +
+  // cov_remaining_area) als de polygon-area niet beschikbaar is.
+  let area: string | null = null;
+  if (totalAreaM2 != null && totalAreaM2 > 0) {
+    const done = Math.round((progress / 100) * totalAreaM2);
+    area = `${done} / ${Math.round(totalAreaM2)} m²`;
+  } else {
+    const covered = parseFloat(s.cov_area ?? s.covering_area ?? '');
+    const remaining = parseFloat(s.cov_remaining_area ?? '');
+    if (Number.isFinite(covered) && covered >= 0) {
+      const total = Number.isFinite(remaining) && remaining >= 0 ? covered + remaining : null;
+      area = total != null && total > 0
         ? `${Math.round(covered)} / ${Math.round(total)} m²`
-        : `${Math.round(covered)} m²`)
-    : null;
+        : `${Math.round(covered)} m²`;
+    }
+  }
 
   const iconSize = 'w-4 h-4';
 
@@ -117,7 +127,15 @@ export function MowingStatsCard({ sensors, compact }: Props) {
       value: `~${eta} left`,
     });
   }
-  // Compact (overlay) layout keeps only height / blade / ETA.
+  // Area (gemaaid / totaal m²) ook in de compacte overlay tonen.
+  if (area) {
+    chips.push({
+      icon: <Grid2x2 className={iconSize} />,
+      label: t('status.area', 'Area'),
+      value: area,
+    });
+  }
+  // Volledige layout voegt verstreken tijd + snelheid toe.
   if (!compact) {
     if (elapsed) {
       chips.push({
@@ -131,13 +149,6 @@ export function MowingStatsCard({ sensors, compact }: Props) {
         icon: <Gauge className={iconSize} />,
         label: t('status.mowSpeed', 'Mow speed'),
         value: mowSpeed,
-      });
-    }
-    if (area) {
-      chips.push({
-        icon: <Grid2x2 className={iconSize} />,
-        label: t('status.area', 'Area'),
-        value: area,
       });
     }
   }

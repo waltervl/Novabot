@@ -32,6 +32,7 @@ export function MapTab({ mower, connected, liveOutlines, coveredLanes }: Props) 
     <MowerMap
       sn={mower.sn}
       mowingActive={isMowing}
+      sensors={mower.sensors}
       lat={mower.sensors.latitude}
       lng={mower.sensors.longitude}
       mapX={mower.sensors.map_position_x}

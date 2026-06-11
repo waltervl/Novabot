@@ -28,6 +28,7 @@ import { useToast } from '../common/Toast';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { PolygonEditor } from './PolygonEditor';
 import { MapEditBar } from './MapEditBar';
+import { MowingStatsCard } from '../status/MowingStatsCard';
 import { PatternOverlay, type PatternPlacement } from '../patterns/PatternOverlay';
 
 // Fix Leaflet default marker icons in Vite
@@ -115,6 +116,8 @@ interface Props {
    *  panel to show the LIVE plan path (get_map_plan_path) instead of refusing,
    *  and to poll it every ~5s while the overlay is shown. */
   mowingActive?: boolean;
+  /** Volledige sensor-map (mower.sensors) — voor de MowingStatsCard tijdens maaien. */
+  sensors?: Record<string, string>;
   signals?: SignalInfo;
   mowing?: MowingInfo;
   /** Wanneer ingesteld, toon een richting-overlay lijn op de kaart (graden, 0=N) */
@@ -917,8 +920,9 @@ function CelebrationOverlay({ area, onDismiss }: { area: number; onDismiss: () =
   );
 }
 
-export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActive, signals, mowing, pathDirectionPreview, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
+export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActive, sensors, signals, mowing, pathDirectionPreview, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
   const { t } = useTranslation();
+  const mowingSensors = sensors ?? {};
   const { toast } = useToast();
   const [maps, setMaps] = useState<MapData[]>([]);
   const [trail, setTrail] = useState<TrailPoint[]>([]);
@@ -1133,23 +1137,28 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const [showCelebration, setShowCelebration] = useState(false);
   const [lastMowedDate, setLastMowedDate] = useState<string | null>(null);
   const prevWorkStatusRef = useRef<string>('0');
+  const prevMowingRef = useRef(false);
   const celebrationArea = useRef(0);
 
   useEffect(() => {
     const ws = mowing?.workStatus ?? '0';
     const progress = parseInt(mowing?.mowingProgress ?? '0', 10);
-    // Maaien gestart → wis oude trail
-    if (prevWorkStatusRef.current !== '1' && ws === '1') {
+    const nowMowing = !!mowingActive;
+    // Maaien gestart → wis oude trail. Gebruik de msg-based mowingActive i.p.v.
+    // work_status==='1' — dat veld staat tijdens maaien niet altijd op '1', wat
+    // ervoor zorgde dat de trail nooit werd geleegd/opgebouwd.
+    if (!prevMowingRef.current && nowMowing) {
       setTrail([]);
     }
-    // Transitie: maaien klaar (status 1→x met progress >=95%)
-    if (prevWorkStatusRef.current === '1' && ws !== '1' && progress >= 95) {
+    // Transitie: maaien klaar (was mowing, nu niet, met progress >=95%)
+    if (prevMowingRef.current && !nowMowing && progress >= 95) {
       celebrationArea.current = parseFloat(mowing?.coveringArea ?? '0');
       setShowCelebration(true);
       setLastMowedDate(new Date().toLocaleDateString());
     }
     prevWorkStatusRef.current = ws;
-  }, [mowing?.workStatus, mowing?.mowingProgress, mowing?.coveringArea]);
+    prevMowingRef.current = nowMowing;
+  }, [mowingActive, mowing?.workStatus, mowing?.mowingProgress, mowing?.coveringArea]);
 
   // Place charger mode
   const [placingCharger, setPlacingCharger] = useState(false);
@@ -1247,8 +1256,10 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   }, [undo, redo]);
 
 
-  // Append new trail points when lat/lng changes — only while actively mowing
-  const isMowing = mowing?.workStatus === '1';
+  // Append new trail points when lat/lng changes — only while actively mowing.
+  // Gebruik mowingActive (msg-based) i.p.v. work_status==='1': dat veld klopt
+  // niet altijd tijdens maaien, waardoor de trail leeg bleef.
+  const isMowing = !!mowingActive || mowing?.workStatus === '1';
   useEffect(() => {
     if (!isMowing) return;
     if (!lat || !lng || lat === '0' || lng === '0') return;
@@ -2338,6 +2349,16 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const [mapsFitted, setMapsFitted] = useState(false);
 
   const polygonMaps = gpsMaps.filter(m => m.mapArea.length >= 3);
+  // Totale zone-oppervlakte = som van de work-map polygon-area's (m², lokale
+  // meters). Dit is de "echte" oppervlakte zoals de app toont (bv. 204 m²),
+  // i.t.t. de coverage-planner-schatting cov_area+cov_remaining (lager).
+  const totalWorkAreaM2 = useMemo(() => {
+    const sum = maps
+      .filter(m => m.mapType === 'work' && Array.isArray(m.mapArea) && m.mapArea.length >= 3)
+      .reduce((acc, m) => acc + polygonArea(m.mapArea as XY[]), 0);
+    return sum > 0 ? sum : null;
+  }, [maps]);
+
   const trailPositions: [number, number][] = trail.flatMap(p => {
     const lat = p.lat + (Number.isFinite(activeCal.offsetLat) ? activeCal.offsetLat : 0);
     const lng = p.lng + (Number.isFinite(activeCal.offsetLng) ? activeCal.offsetLng : 0);
@@ -3172,6 +3193,13 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
           {editMode === 'none' && !brushMode && !paintMode && !moveMode && <MapClickDeselect onDeselect={() => setSelectedMapId(null)} />}
           <ResizeHandler />
         </MapContainer>
+
+        {/* Mowing stats — floating card op de kaart tijdens maaien (compact). */}
+        {mowingActive && (
+          <div className="absolute bottom-3 left-3 z-[1000] w-[calc(100vw-1.5rem)] sm:w-72 pointer-events-none">
+            <MowingStatsCard sensors={mowingSensors} compact totalAreaM2={totalWorkAreaM2} />
+          </div>
+        )}
 
         {/* Calibration panel — floating on map */}
         {calibrating && (
