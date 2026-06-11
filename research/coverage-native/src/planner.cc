@@ -16,8 +16,9 @@
 namespace coverage_native {
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kDirectionScale = 100.0;
+constexpr double kVendorDegreesToRadians = 0.01745;
+constexpr double kVendorQuarterTurnRadians = 1.5707;
 
 Direction_2 scaledDirectionFromRadians(double radians) {
   const int dx = static_cast<int>(std::cos(radians) * kDirectionScale);
@@ -30,12 +31,19 @@ Direction_2 scaledDirectionFromRadians(double radians) {
 
 Direction_2 decompositionDirectionFromCoverageDegrees(unsigned char degrees) {
   return scaledDirectionFromRadians(
-      (static_cast<double>(degrees) * kPi / 180.0) + kPi / 2.0);
+      (static_cast<double>(degrees) * kVendorDegreesToRadians) +
+      kVendorQuarterTurnRadians);
 }
 
-Direction_2 sweepDirectionFromCoverageDegrees(unsigned char degrees) {
+double directionAngle(const Direction_2& direction) {
+  const Vector_2 vector = direction.vector();
+  return std::atan2(CGAL::to_double(vector.y()), CGAL::to_double(vector.x()));
+}
+
+Direction_2 specifiedSweepDirectionFromDecompositionDirection(
+    const Direction_2& decomposition_direction) {
   return scaledDirectionFromRadians(
-      static_cast<double>(degrees) * kPi / 180.0);
+      directionAngle(decomposition_direction) + kVendorQuarterTurnRadians);
 }
 
 double altitudeSum(const std::vector<Polygon_2>& cells) {
@@ -246,8 +254,8 @@ std::vector<std::vector<Point_2>> computeVendorSweepsForCells(
     Direction_2 sweep_direction(1, 0);
     polygon_coverage_planning::findBestSweepDir(cell, &sweep_direction);
     if (options.specify_direction) {
-      sweep_direction =
-          sweepDirectionFromCoverageDegrees(options.coverage_direction_degrees);
+      sweep_direction = specifiedSweepDirectionFromDecompositionDirection(
+          decomposition.decomposition_direction);
     }
 
     polygon_coverage_planning::visibility_graph::VisibilityGraph visibility_graph(

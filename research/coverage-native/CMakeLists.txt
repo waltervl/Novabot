@@ -120,7 +120,7 @@ target_link_libraries(coverage_vendor_glue_test
 
 add_test(NAME coverage_vendor_glue_test COMMAND coverage_vendor_glue_test)
 add_test(
-  NAME coverage_oracle_replay_demo_auto
+  NAME coverage_oracle_exact_subset
   COMMAND
     ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle_replay_demo_auto.py"

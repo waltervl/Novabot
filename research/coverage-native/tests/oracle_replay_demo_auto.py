@@ -17,21 +17,29 @@ def main():
     cli = pathlib.Path(sys.argv[1])
     oracle = pathlib.Path(sys.argv[2])
     cases = [
-        ("s0", "92", "103"),
-        ("s1", "52", "55"),
+        ("replay_demo_show", "s0", "92", "103", "auto", "auto"),
+        ("replay_demo_show", "s1", "52", "55", "auto", "auto"),
+        ("replay_demo_show", "s1", "52", "55", "45", "dir45"),
+        ("debug_sh_home0_map1", "s0", "171", "120", "45", "dir45"),
+        ("debug_sh_home0_map1", "s1", "97", "72", "45", "dir45"),
+        ("lfin1231000211_backup_map0", "s0", "89", "64", "90", "dir90"),
+        ("lfin1231000211_backup_map0", "s1", "54", "40", "90", "dir90"),
     ]
 
-    for start_id, start_x, start_y in cases:
+    for case_name, start_id, start_x, start_y, cov_dir, golden_name in cases:
+        args = [str(cli), str(oracle / f"cases/{case_name}.pgm"), start_x, start_y]
+        if cov_dir != "auto":
+            args.append(cov_dir)
         result = subprocess.run(
-            [str(cli), str(oracle / "cases/replay_demo_show.pgm"), start_x, start_y],
+            args,
             check=True,
             text=True,
             capture_output=True,
         )
         native = json.loads(result.stdout)
-        golden = load_json(oracle / f"goldens/grid/replay_demo_show/{start_id}/auto.json")
+        golden = load_json(oracle / f"goldens/grid/{case_name}/{start_id}/{golden_name}.json")
         if native != golden:
-            print(f"replay_demo_show {start_id}/auto differs", file=sys.stderr)
+            print(f"{case_name} {start_id}/{cov_dir} differs", file=sys.stderr)
             return 1
 
     return 0

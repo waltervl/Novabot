@@ -197,6 +197,7 @@ void testVendorSweepSkipsSyntheticFinalMidpoint() {
   }
 
   coverage_native::DecompositionResult decomposition;
+  decomposition.decomposition_direction = Direction_2(0, -99);
   decomposition.cells.push_back(cell);
 
   const std::vector<std::vector<Point_2>> sweeps =
@@ -219,6 +220,33 @@ void testVendorSweepSkipsSyntheticFinalMidpoint() {
               "final vertex sweep x");
   requireNear(CGAL::to_double(sweep[8].y()), 10.0, 1e-9,
               "final vertex sweep y");
+}
+
+void testSpecifiedDirectionUsesVendorSweepAngle() {
+  Polygon_2 cell;
+  cell.push_back(Point_2(0, 0));
+  cell.push_back(Point_2(20, 0));
+  cell.push_back(Point_2(20, 10));
+  cell.push_back(Point_2(0, 10));
+  if (!cell.is_counterclockwise_oriented()) {
+    cell.reverse_orientation();
+  }
+
+  coverage_native::DecompositionResult decomposition;
+  decomposition.decomposition_direction = Direction_2(0, 99);
+  decomposition.cells.push_back(cell);
+
+  const std::vector<std::vector<Point_2>> sweeps =
+      coverage_native::computeVendorSweepsForCells(
+          decomposition, 3.0, coverage_native::DecompositionOptions{true, 0});
+  require(sweeps.size() == 1, "single specified cell returns one sweep");
+
+  const std::vector<Point_2>& sweep = sweeps.front();
+  require(!sweep.empty(), "specified sweep contains waypoints");
+  requireNear(CGAL::to_double(sweep.front().x()), 20.0, 1e-9,
+              "specified covDir=0 starts from vendor sweep x");
+  requireNear(CGAL::to_double(sweep.front().y()), 10.0, 1e-9,
+              "specified covDir=0 starts from vendor sweep y");
 }
 
 void testPathAssessmentAndCellOrdering() {
@@ -276,6 +304,7 @@ int main() {
     testContoursConvertToPolygonWithHole();
     testDecompositionAndSweeps();
     testVendorSweepSkipsSyntheticFinalMidpoint();
+    testSpecifiedDirectionUsesVendorSweepAngle();
     testPathAssessmentAndCellOrdering();
     testGenerateCoverageGridPlanForSimpleMap();
   } catch (const std::exception& e) {
