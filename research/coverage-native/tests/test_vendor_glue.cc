@@ -5,7 +5,9 @@
 #include <string>
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
+#include "coverage_native/contour_bridge.h"
 #include "coverage_native/params.h"
 #include "coverage_native/preprocess.h"
 #include "coverage_native/world_convert.h"
@@ -112,6 +114,40 @@ void testWorldTransform() {
   requireNear(bottom_right.y, 2.525, 1e-9, "bottom-right y");
 }
 
+void testContourExtractionFiltersSmallAreas() {
+  cv::Mat map(80, 80, CV_8UC1, cv::Scalar(0));
+  cv::rectangle(map, cv::Rect(5, 5, 20, 20), cv::Scalar(255), cv::FILLED);
+  cv::rectangle(map, cv::Rect(50, 50, 5, 5), cv::Scalar(255), cv::FILLED);
+
+  const std::vector<coverage_native::GridContour> contours =
+      coverage_native::findCoverageContours(map);
+
+  require(contours.size() == 1, "only contours with area > 200 survive");
+  require(contours[0].area > 200.0, "surviving contour area");
+  require(contours[0].original_index >= 0,
+          "surviving contour keeps discovery index");
+}
+
+void testContoursConvertToPolygonWithHole() {
+  cv::Mat map(90, 90, CV_8UC1, cv::Scalar(0));
+  cv::rectangle(map, cv::Rect(10, 10, 60, 60), cv::Scalar(255), cv::FILLED);
+  cv::rectangle(map, cv::Rect(30, 30, 22, 22), cv::Scalar(0), cv::FILLED);
+
+  const std::vector<coverage_native::GridContour> contours =
+      coverage_native::findCoverageContours(map);
+  require(contours.size() == 2, "outer contour and hole must survive");
+
+  const PolygonWithHoles polygon =
+      coverage_native::contoursToPolygonWithHoles(contours);
+
+  require(polygon.outer_boundary().size() == 4,
+          "axis-aligned outer contour simplifies to four vertices");
+  require(std::distance(polygon.holes_begin(), polygon.holes_end()) == 1,
+          "inner contour becomes one hole");
+  require(polygon.holes_begin()->size() == 4,
+          "axis-aligned hole simplifies to four vertices");
+}
+
 }  // namespace
 
 int main() {
@@ -120,6 +156,8 @@ int main() {
     testCoverageParametersFromPixels();
     testPreprocessMap();
     testWorldTransform();
+    testContourExtractionFiltersSmallAreas();
+    testContoursConvertToPolygonWithHole();
   } catch (const std::exception& e) {
     std::cerr << "coverage_vendor_glue_test: " << e.what() << "\n";
     return EXIT_FAILURE;

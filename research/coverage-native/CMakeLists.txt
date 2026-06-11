@@ -70,6 +70,7 @@ target_link_libraries(coverage_geometry
 )
 
 add_library(coverage_vendor_glue STATIC
+  src/contour_bridge.cc
   src/params.cc
   src/preprocess.cc
   src/world_convert.cc
@@ -77,9 +78,11 @@ add_library(coverage_vendor_glue STATIC
 target_include_directories(coverage_vendor_glue
   PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${ETH_GEOMETRY_ROOT}/include"
 )
 target_link_libraries(coverage_vendor_glue
   PUBLIC
+    coverage_geometry
     ${OpenCV_LIBS}
 )
 target_compile_options(coverage_vendor_glue PRIVATE -Wall)
