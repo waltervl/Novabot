@@ -6,7 +6,7 @@ import {
   SlidersHorizontal, Save, X, RotateCcw, Pencil, Check, Scissors, Navigation,
   ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Download, Flame,
   Fence, Target, XCircle, CheckCircle2, Plus, Minus, Brush, Paintbrush, Eraser,
-  Copy, ClipboardPaste, Spline, RefreshCw, Loader2, Move as MoveIcon,
+  Copy, ClipboardPaste, Spline, RefreshCw, Loader2, Move as MoveIcon, Camera,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData, TrailPoint, MapCalibration, GpsPoint } from '../../types';
@@ -30,6 +30,8 @@ import { MapEditBar } from './MapEditBar';
 import { MowingStatsCard } from '../status/MowingStatsCard';
 import { parseFinishedAreas, prefixedAreaId } from '../../utils/coverPathProgress';
 import { PatternOverlay, type PatternPlacement } from '../patterns/PatternOverlay';
+import { CameraTile } from './CameraTile';
+import { isOpenNovaFirmware } from '../../utils/firmwareCapability';
 
 // Fix Leaflet default marker icons in Vite
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
@@ -925,6 +927,12 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const [coveragePath, setCoveragePath] = useState<CoveragePathEntry[] | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
+  // Live camera tile — only available on OpenNova custom firmware (the
+  // `camera_stream.py` daemon ships only there; the proxy 404s otherwise).
+  const [showCamera, setShowCamera] = useState(false);
+  const cameraAvailable = isOpenNovaFirmware(
+    (sensors?.sw_version ?? sensors?.version) ?? undefined,
+  );
   // coverageStatus-waarde wordt niet meer getoond (hint-paneel verwijderd) — alleen
   // de setter blijft voor de bestaande logica-flow. Waarde bewust gediscard.
   const [, setCoverageStatus] = useState<string | null>(null);
@@ -2727,6 +2735,19 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
               <span className="hidden md:inline">{t('map.calibrateCharger')}</span>
             </button>
           )}
+          {/* Live camera toggle — OpenNova custom firmware only. */}
+          {cameraAvailable && sn && (
+            <button
+              onClick={() => setShowCamera((v) => !v)}
+              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
+                showCamera ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-700/50' : 'bg-gray-700/50 text-gray-400 hover:text-emerald-400 hover:bg-emerald-900/30'
+              }`}
+              title={t('camera.camera')}
+            >
+              <Camera className="w-3 h-3" />
+              <span className="hidden md:inline">{t('camera.camera')}</span>
+            </button>
+          )}
           <button
             onClick={() => setTileLayer(tileLayer === 'satellite' ? 'street' : 'satellite')}
             className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
@@ -3204,6 +3225,13 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
         {mowingActive && (
           <div className="absolute bottom-3 left-3 z-[1000] w-[calc(100vw-1.5rem)] sm:w-72 pointer-events-none">
             <MowingStatsCard sensors={mowingSensors} compact totalAreaM2={totalWorkAreaM2} />
+          </div>
+        )}
+
+        {/* Live camera tile — floating top-right, OpenNova custom firmware only. */}
+        {showCamera && cameraAvailable && sn && (
+          <div className="absolute top-3 right-3 z-[1000] w-72 max-w-[calc(100vw-1.5rem)]">
+            <CameraTile sn={sn} onClose={() => setShowCamera(false)} />
           </div>
         )}
 
