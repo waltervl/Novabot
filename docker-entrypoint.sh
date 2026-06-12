@@ -79,7 +79,7 @@ no-hosts
 EOF
   dnsmasq --no-daemon &
   DNSMASQ_PID=$!
-  trap "kill $DNSMASQ_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" SIGTERM SIGINT
+  trap "kill $DNSMASQ_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" TERM INT
   echo "  DNS:   *.lfibot.com → ${TARGET_IP}"
 fi
 
