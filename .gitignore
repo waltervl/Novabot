@@ -116,3 +116,5 @@ LFIN1231000211-2026-05-07T07-17-portable.novabotmap
 
 .playwright-mcp
 .preview
+
+.jwt_secret
