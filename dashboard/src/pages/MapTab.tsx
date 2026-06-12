@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import type { DeviceState } from '../types';
 import { MowerMap } from '../components/map/MowerMap';
+import type { PatternPlacement } from '../components/patterns/PatternOverlay';
 
 type OtaProgressEntry = { status: string; percentage: number | null; timestamp: number };
 
@@ -10,9 +11,14 @@ interface Props {
   liveOutlines: Map<string, Array<{ lat: number; lng: number }>>;
   coveredLanes: Map<string, Array<{ lat1: number; lng1: number; lat2: number; lng2: number }>>;
   otaProgress: Map<string, OtaProgressEntry>;
+  /** Bumped by the Start-sheet Preview button to show a fresh coverage preview. */
+  previewRequest?: { nonce: number; covDirection: number; canonicals: string[] } | null;
+  /** Placed pattern overlay (controls→map) + map-click handler (map→controls). */
+  patternPlacement?: PatternPlacement | null;
+  onMapClickForPattern?: (center: { lat: number; lng: number }) => void;
 }
 
-export function MapTab({ mower, connected, liveOutlines, coveredLanes }: Props) {
+export function MapTab({ mower, connected, liveOutlines, coveredLanes, previewRequest, patternPlacement, onMapClickForPattern }: Props) {
   const { t } = useTranslation();
   if (!mower) {
     return <div className="p-8 text-zinc-500">{t('pages.selectMowerForMap')}</div>;
@@ -56,6 +62,9 @@ export function MapTab({ mower, connected, liveOutlines, coveredLanes }: Props) 
       }}
       liveOutline={liveOutlines.get(mower.sn) ?? null}
       coveredLanes={coveredLanes.get(mower.sn) ?? null}
+      previewRequest={previewRequest}
+      patternPlacement={patternPlacement}
+      onMapClickForPattern={onMapClickForPattern}
     />
   );
 }

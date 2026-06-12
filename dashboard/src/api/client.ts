@@ -557,8 +557,24 @@ export async function deleteOtaVersion(id: number): Promise<void> {
   await fetch(`${BASE}/ota/versions/${id}`, { method: 'DELETE' });
 }
 
-export async function triggerOta(sn: string, versionId: number, force = false): Promise<{ ok: boolean; version: string }> {
-  return (await post(`${BASE}/ota/trigger/${encodeURIComponent(sn)}`, { version_id: versionId, force })).json();
+export async function triggerOta(
+  sn: string,
+  versionId: number,
+  force = false,
+): Promise<{
+  ok: boolean;
+  version?: string;
+  backup?: { filename: string; bytes: number; createdAt: number; reason: string } | null;
+  error?: string;
+  detail?: string;
+}> {
+  const res = await fetch(`${BASE}/ota/trigger/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version_id: versionId, force }),
+  });
+  const body = await res.json().catch(() => ({}));
+  return { ok: res.ok, ...body };
 }
 
 export async function fetchFirmwareFiles(): Promise<FirmwareFile[]> {

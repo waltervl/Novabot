@@ -68,6 +68,25 @@ function isValidConfig(config: InstallerConfig | undefined): boolean {
   if (config.network.type === 'wifi' && config.network.ssid.trim().length === 0) {
     return false;
   }
+  // When SSH is enabled it must be usable: a valid username plus either an
+  // 8+ char password or a public key. Otherwise sshd would run with no way in.
+  if (config.ssh?.enabled) {
+    const username = config.ssh.username.trim();
+    if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username)) {
+      return false;
+    }
+    const password = config.ssh.password;
+    // A provided password must itself be valid (8+ chars) — a short one is
+    // rejected even if a key is present, matching the configModel guard.
+    if (password.length > 0 && password.length < 8) {
+      return false;
+    }
+    const hasUsableSecret =
+      password.length >= 8 || (config.ssh.publicKey ?? '').trim().length > 0;
+    if (!hasUsableSecret) {
+      return false;
+    }
+  }
   return true;
 }
 

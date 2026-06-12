@@ -322,6 +322,7 @@
       "coverageRadiusSaved": "Coverage-Radius gespeichert",
       "coverageRadiusSaveFailed": "Coverage-Radius konnte nicht gespeichert werden",
       "coverageRadiusInvalid": "Radius muss 0.20-1.20 m sein",
+      "coverageStart": "Mäher startet hier",
       "coverageRefresh": "Auf Server neu berechnen"
     }
   },
@@ -479,6 +480,9 @@
     "high": "Hoch",
     "reset": "Auf Standardwerte zurücksetzen",
     "resetDone": "Einstellungen zurückgesetzt",
+    "defaultDirection": "Standard-Mährichtung",
+    "saveToMower": "Auf Mäher speichern",
+    "saved": "Einstellungen gespeichert",
     "off": "Aus",
     "dim": "Schwach",
     "bright": "Hell",

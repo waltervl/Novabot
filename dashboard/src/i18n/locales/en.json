@@ -328,6 +328,7 @@
       "coverageRadiusSaved": "Coverage radius saved",
       "coverageRadiusSaveFailed": "Could not save coverage radius",
       "coverageRadiusInvalid": "Radius must be 0.20-1.20 m",
+      "coverageStart": "Mower starts here",
       "coverageRefresh": "Recompute on server"
     }
   },
@@ -468,6 +469,9 @@
     "high": "High",
     "reset": "Reset to defaults",
     "resetDone": "Settings reset",
+    "defaultDirection": "Default mowing direction",
+    "saveToMower": "Save to mower",
+    "saved": "Settings saved",
     "off": "Off",
     "dim": "Dim",
     "bright": "Bright",

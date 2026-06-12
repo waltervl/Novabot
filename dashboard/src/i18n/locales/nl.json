@@ -368,6 +368,7 @@
       "coverageRadiusSaved": "Coverage-radius opgeslagen",
       "coverageRadiusSaveFailed": "Coverage-radius opslaan mislukt",
       "coverageRadiusInvalid": "Radius moet 0.20-1.20 m zijn",
+      "coverageStart": "Maaier start hier",
       "coverageRefresh": "Herbereken op server"
     }
   },
@@ -508,6 +509,9 @@
     "high": "Hoog",
     "reset": "Standaardwaarden herstellen",
     "resetDone": "Instellingen hersteld",
+    "defaultDirection": "Standaard maairichting",
+    "saveToMower": "Opslaan naar maaier",
+    "saved": "Instellingen opgeslagen",
     "off": "Uit",
     "dim": "Zwak",
     "bright": "Fel",

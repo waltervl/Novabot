@@ -1,3 +1,20 @@
+/**
+ * SSH access baked into the image. The flashed Pi runs `sshd`, but modern
+ * Raspberry Pi OS ships with NO default `pi`/`raspberry` account — so without
+ * this an enabled daemon has no one to log in as. When `enabled`, the first-boot
+ * script creates `username` and either sets `password` (password login) and/or
+ * installs `publicKey` into `authorized_keys` (key login). A key WITHOUT a
+ * password locks the account password so password auth can't use an empty secret.
+ */
+export interface SshConfig {
+  enabled: boolean;
+  username: string;
+  /** Login password; may be empty when `publicKey` is provided (key-only). */
+  password: string;
+  /** Optional single-line OpenSSH public key added to authorized_keys. */
+  publicKey?: string;
+}
+
 export interface InstallerConfig {
   hostname: string;
   network:
@@ -5,6 +22,8 @@ export interface InstallerConfig {
     | { type: 'wifi'; ssid: string; password: string; country: string };
   timezone: string;
   connectionPath: 'opennova-app' | 'novabot-app';
+  /** SSH access. Omitted by legacy callers → daemon enabled, no account created. */
+  ssh?: SshConfig;
 }
 
 export interface GeneratedFiles {

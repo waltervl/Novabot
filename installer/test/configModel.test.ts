@@ -120,3 +120,92 @@ describe('generateFiles', () => {
     expect(tzLine).not.toContain(' rm');
   });
 });
+
+describe('generateFiles — SSH', () => {
+  const sshBase = { ...base, connectionPath: 'opennova-app' as const };
+
+  it('legacy callers (no ssh block) still just enable the daemon, no account', () => {
+    const g = generateFiles(sshBase);
+    expect(g.firstrunSh).toContain('systemctl enable ssh');
+    expect(g.firstrunSh).not.toContain('useradd');
+    expect(g.firstrunSh).not.toContain('chpasswd');
+  });
+
+  it('creates the account with a password and adds it to sudo', () => {
+    const g = generateFiles({
+      ...sshBase,
+      ssh: { enabled: true, username: 'opennova', password: 'hunter2pass' },
+    });
+    expect(g.firstrunSh).toContain('systemctl enable ssh');
+    expect(g.firstrunSh).toContain("useradd -m -s /bin/bash 'opennova'");
+    expect(g.firstrunSh).toMatch(/printf '%s:%s\\n' 'opennova' 'hunter2pass' \| chpasswd/);
+    expect(g.firstrunSh).toContain('usermod -aG "$g" \'opennova\'');
+    expect(g.firstrunSh).not.toContain('passwd -l');
+  });
+
+  it('installs a public key when provided', () => {
+    const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc123 me@host';
+    const g = generateFiles({
+      ...sshBase,
+      ssh: { enabled: true, username: 'opennova', password: 'hunter2pass', publicKey: key },
+    });
+    expect(g.firstrunSh).toContain('install -d -m 0700 /home/opennova/.ssh');
+    expect(g.firstrunSh).toContain(`printf '%s\\n' '${key}' >> /home/opennova/.ssh/authorized_keys`);
+  });
+
+  it('key-only (no password) LOCKS the account password', () => {
+    const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc123 me@host';
+    const g = generateFiles({
+      ...sshBase,
+      ssh: { enabled: true, username: 'opennova', password: '', publicKey: key },
+    });
+    expect(g.firstrunSh).toContain("passwd -l 'opennova'");
+    expect(g.firstrunSh).not.toContain('chpasswd');
+    expect(g.firstrunSh).toContain('authorized_keys');
+  });
+
+  it('disabled SSH emits no enable and no account', () => {
+    const g = generateFiles({
+      ...sshBase,
+      ssh: { enabled: false, username: 'opennova', password: 'hunter2pass' },
+    });
+    expect(g.firstrunSh).not.toContain('systemctl enable ssh');
+    expect(g.firstrunSh).not.toContain('useradd');
+  });
+
+  it('REJECTS an unsafe username', () => {
+    expect(() =>
+      generateFiles({ ...sshBase, ssh: { enabled: true, username: 'Bad User', password: 'hunter2pass' } }),
+    ).toThrow(/username/i);
+    expect(() =>
+      generateFiles({ ...sshBase, ssh: { enabled: true, username: 'root', password: 'hunter2pass' } }),
+    ).toThrow(/root/i);
+  });
+
+  it('REJECTS a too-short password and a newline-laden one', () => {
+    expect(() =>
+      generateFiles({ ...sshBase, ssh: { enabled: true, username: 'opennova', password: 'short' } }),
+    ).toThrow(/at least 8/i);
+    expect(() =>
+      generateFiles({
+        ...sshBase,
+        ssh: { enabled: true, username: 'opennova', password: 'good\npass\nrm -rf /' },
+      }),
+    ).toThrow(/control characters/i);
+  });
+
+  it('REJECTS a bogus public key (authorized_keys injection guard)', () => {
+    expect(() =>
+      generateFiles({
+        ...sshBase,
+        ssh: { enabled: true, username: 'opennova', password: '', publicKey: 'not-a-real-key' },
+      }),
+    ).toThrow(/valid OpenSSH key/i);
+  });
+
+  it('REJECTS enabling SSH with neither a password nor a key', () => {
+    expect(() =>
+      generateFiles({ ...sshBase, ssh: { enabled: true, username: 'opennova', password: '' } }),
+    ).toThrow(/no password or public key/i);
+  });
+});

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { installer } from '../ipc';
-import type { InstallerConfig } from '../../shared/types';
+import type { InstallerConfig, SshConfig } from '../../shared/types';
 
 interface ConfigStepProps {
   config?: InstallerConfig;
@@ -33,18 +33,37 @@ export function ConfigStep({ config, onChange, onHostnameTakenChange }: ConfigSt
   );
   const [showPassword, setShowPassword] = useState(false);
 
+  // SSH access. On by default with a working account so the Pi is reachable over
+  // SSH out of the box (modern Pi OS has no default `pi` user).
+  const [sshEnabled, setSshEnabled] = useState(config?.ssh?.enabled ?? true);
+  const [sshUser, setSshUser] = useState(config?.ssh?.username ?? 'opennova');
+  const [sshPass, setSshPass] = useState(config?.ssh?.password ?? '');
+  const [sshKey, setSshKey] = useState(config?.ssh?.publicKey ?? '');
+  const [showSshPass, setShowSshPass] = useState(false);
+
   // Assemble the config and lift it whenever any field changes.
   useEffect(() => {
     const network: InstallerConfig['network'] =
       networkType === 'wifi'
         ? { type: 'wifi', ssid, password, country }
         : { type: 'ethernet' };
-    onChange({ hostname, network, timezone, connectionPath });
+    const ssh: SshConfig = {
+      enabled: sshEnabled,
+      username: sshUser.trim(),
+      password: sshPass,
+      publicKey: sshKey.trim() || undefined,
+    };
+    onChange({ hostname, network, timezone, connectionPath, ssh });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostname, networkType, ssid, password, country, timezone, connectionPath]);
+  }, [hostname, networkType, ssid, password, country, timezone, connectionPath, sshEnabled, sshUser, sshPass, sshKey]);
 
   const hostnameInvalid = hostname.trim().length === 0;
   const ssidInvalid = networkType === 'wifi' && ssid.trim().length === 0;
+  // Mirror the wizard's SSH advance-guard so the user gets inline feedback.
+  const sshUserInvalid = sshEnabled && !/^[a-z_][a-z0-9_-]{0,31}$/.test(sshUser.trim());
+  const sshPassTooShort = sshEnabled && sshPass.length > 0 && sshPass.length < 8;
+  const sshNeedsSecret =
+    sshEnabled && sshPass.length < 8 && sshKey.trim().length === 0;
 
   // Warn (don't block) if `<hostname>.local` is already taken on the network —
   // e.g. another OpenNova server — which would make this Pi unreachable by name.
@@ -174,6 +193,84 @@ export function ConfigStep({ config, onChange, onHostnameTakenChange }: ConfigSt
           spellCheck={false}
         />
       </Field>
+
+      <fieldset>
+        <div className="flex items-center justify-between gap-3 mb-2.5">
+          <legend className="eyebrow">Remote access (SSH)</legend>
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <span className="text-sm font-semibold text-ink-dim">
+              {sshEnabled ? 'On' : 'Off'}
+            </span>
+            <input
+              type="checkbox"
+              checked={sshEnabled}
+              onChange={(e) => setSshEnabled(e.target.checked)}
+              className="h-4 w-4 accent-green"
+            />
+          </label>
+        </div>
+        {sshEnabled && (
+          <div className="space-y-4 border-l-2 border-green/50 pl-4">
+            <Field label="Username" htmlFor="ssh-user">
+              <input
+                id="ssh-user"
+                type="text"
+                value={sshUser}
+                onChange={(e) => setSshUser(e.target.value.toLowerCase())}
+                className="field"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              {sshUserInvalid && (
+                <Note tone="danger">
+                  Lowercase letters, digits, - or _, starting with a letter (max 32).
+                </Note>
+              )}
+            </Field>
+            <Field label="Password" htmlFor="ssh-pass">
+              <div className="relative">
+                <input
+                  id="ssh-pass"
+                  type={showSshPass ? 'text' : 'password'}
+                  value={sshPass}
+                  onChange={(e) => setSshPass(e.target.value)}
+                  className="field pr-12"
+                  autoComplete="new-password"
+                  placeholder="At least 8 characters"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSshPass((s) => !s)}
+                  className="absolute inset-y-0 right-0 grid w-12 place-items-center text-ink-faint hover:text-green transition-colors"
+                  aria-label={showSshPass ? 'Hide password' : 'Show password'}
+                  title={showSshPass ? 'Hide password' : 'Show password'}
+                >
+                  {showSshPass ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+              {sshPassTooShort && (
+                <Note tone="danger">Password must be at least 8 characters.</Note>
+              )}
+            </Field>
+            <Field label="Public key (optional)" htmlFor="ssh-key">
+              <textarea
+                id="ssh-key"
+                value={sshKey}
+                onChange={(e) => setSshKey(e.target.value)}
+                className="field font-mono text-xs leading-relaxed"
+                rows={3}
+                spellCheck={false}
+                placeholder="ssh-ed25519 AAAA… your@machine"
+              />
+            </Field>
+            {sshNeedsSecret && (
+              <Note tone="warn">
+                Set a password of 8+ characters or paste a public key so you can log in.
+              </Note>
+            )}
+          </div>
+        )}
+      </fieldset>
 
       <fieldset>
         <legend className="eyebrow mb-2.5">Which app will you use?</legend>

@@ -1,7 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ShieldAlert, Gauge, Navigation, RotateCcw, Lightbulb, Volume2, VolumeX,
-  Lock, Search, KeyRound, Send, Brain, Eye, Route, Clock, CloudRain,
+  Lock, Search, KeyRound, Send, Brain, Eye, Route, Clock, CloudRain, Compass, Save, Minus, Plus,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { io, Socket } from 'socket.io-client';
@@ -41,50 +41,99 @@ interface Props {
 }
 
 const LEVELS = [1, 2, 3] as const;
+// Joystick speed/handling levels — the firmware expects 100/200/300 (NOT 1/2/3).
+// Mirrors the app MowerSettingsScreen CONTROLLER_LEVELS.
+const CONTROLLER_LEVELS = [100, 200, 300] as const;
 
-const DEFAULTS = {
-  obstacle_avoidance_sensitivity: 3,
-  manual_controller_v: 2,
-  manual_controller_w: 2,
-  headlight: 0,
-  sound: 0,
-};
+// All set_para_info fields the mower accepts. mqtt_node treats every set_para_info
+// as a FULL overwrite of para.value, so sending one field clobbers the rest back
+// to defaults (e.g. path_direction → 0). We therefore batch ALL fields behind one
+// explicit Save, exactly like the app's "Confirm" flow.
+interface ParaState {
+  sensitivity: number;       // obstacle_avoidance_sensitivity 1..3
+  pathDirection: number;     // path_direction 0..180 (default mowing direction)
+  speed: number;             // manual_controller_v 100/200/300
+  handling: number;          // manual_controller_w 100/200/300
+  headlight: number;         // 0..255 (0 = off)
+  sound: boolean;            // sound 2/0
+}
+
+const PARA_DEFAULTS: ParaState = { sensitivity: 3, pathDirection: 0, speed: 200, handling: 200, headlight: 0, sound: false };
+
+function readPara(s: Record<string, string>, prevHeadlight: number): ParaState {
+  const intIn = (v: string | undefined, lo: number, hi: number, dflt: number) => {
+    const n = parseInt(v ?? '', 10);
+    return Number.isFinite(n) && n >= lo && n <= hi ? n : dflt;
+  };
+  const levelIn = (v: string | undefined, levels: readonly number[], dflt: number) => {
+    const n = parseInt(v ?? '', 10);
+    return levels.includes(n) ? n : dflt;
+  };
+  return {
+    sensitivity: levelIn(s.obstacle_avoidance_sensitivity, LEVELS, 2),
+    pathDirection: intIn(s.path_direction, 0, 180, 0),
+    speed: levelIn(s.manual_controller_v, CONTROLLER_LEVELS, 200),
+    handling: levelIn(s.manual_controller_w, CONTROLLER_LEVELS, 200),
+    // The sensor only reports headlight on/off (2 vs other), not the brightness
+    // level — preserve the last chosen brightness when it reports on.
+    headlight: s.headlight === '2' ? (prevHeadlight > 0 ? prevHeadlight : 255) : 0,
+    sound: s.sound === '2',
+  };
+}
 
 export function SettingsPanel({ sn, online, sensors }: Props) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);
 
-  const send = useCallback(async (payload: Record<string, unknown>, label: string) => {
-    setBusy(true);
-    try {
-      await sendCommand(sn, { set_para_info: payload });
-      toast(`${label}`, 'success');
-    } catch {
-      toast(`${label} — failed`, 'error');
-    }
-    setBusy(false);
-  }, [sn, toast]);
+  const [para, setPara] = useState<ParaState>(() => readPara(sensors, 255));
+  const [saved, setSaved] = useState<ParaState>(para);
+  const dirty = useMemo(() => JSON.stringify(para) !== JSON.stringify(saved), [para, saved]);
+  const dirtyRef = useRef(dirty);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+  const headlightRef = useRef(para.headlight);
+  useEffect(() => { headlightRef.current = para.headlight; }, [para.headlight]);
 
-  const handleReset = useCallback(async () => {
+  // Hydrate from the live sensors, but never stomp on the operator's pending
+  // edits — only re-sync when there is nothing unsaved.
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    const next = readPara(sensors, headlightRef.current);
+    // Only re-sync when something actually changed — sensors tick frequently and
+    // we don't want to re-render the panel (or fight the operator) for no reason.
+    setPara(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    setSaved(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+  }, [sensors]);
+
+  const setField = useCallback(<K extends keyof ParaState>(k: K, v: ParaState[K]) => {
+    setPara(p => ({ ...p, [k]: v }));
+  }, []);
+
+  const handleSave = useCallback(async () => {
     setBusy(true);
     try {
-      await sendCommand(sn, { set_para_info: DEFAULTS });
-      toast(t('settings.resetDone'), 'success');
+      // One batched set_para_info — all fields together so none get clobbered.
+      await sendCommand(sn, { set_para_info: {
+        sound: para.sound ? 2 : 0,
+        headlight: para.headlight,
+        path_direction: para.pathDirection,
+        obstacle_avoidance_sensitivity: para.sensitivity,
+        manual_controller_v: para.speed,
+        manual_controller_w: para.handling,
+      } });
+      setSaved(para);
+      toast(t('settings.saved', 'Instellingen opgeslagen'), 'success');
     } catch {
-      toast(t('settings.resetDone') + ' — failed', 'error');
+      toast(t('settings.saved', 'Instellingen opgeslagen') + ' — failed', 'error');
     }
     setBusy(false);
-  }, [sn, t, toast]);
+  }, [sn, para, t, toast]);
+
+  // Reset is LOCAL only — sets the defaults into the editor; the operator still
+  // presses Save to push them (keeps the single-overwrite contract intact).
+  const handleReset = useCallback(() => setPara({ ...PARA_DEFAULTS }), []);
 
   const disabled = busy || !online;
-
-  const sensitivity = parseInt(sensors.obstacle_avoidance_sensitivity ?? '0', 10);
-  const maxSpeed = parseInt(sensors.manual_controller_v ?? '0', 10);
-  const handling = parseInt(sensors.manual_controller_w ?? '0', 10);
-  const headlightOn = sensors.headlight === '2';
-  const soundOn = sensors.sound === '2';
-
   const levelLabels = [t('settings.low'), t('settings.medium'), t('settings.high')];
 
   return (
@@ -93,82 +142,99 @@ export function SettingsPanel({ sn, online, sensors }: Props) {
       <SegmentedSetting
         icon={ShieldAlert}
         label={t('settings.obstacleSensitivity')}
-        value={sensitivity}
+        value={para.sensitivity}
         levels={LEVELS}
         levelLabels={levelLabels}
         disabled={disabled}
         colors={['text-green-400', 'text-yellow-400', 'text-red-400']}
-        onChange={(v) => send({ obstacle_avoidance_sensitivity: v }, t('settings.obstacleSensitivity'))}
+        onChange={(v) => setField('sensitivity', v)}
       />
 
-      {/* AI Perception Controls */}
+      {/* Default mowing direction (path_direction 0..180°, 15° steps) */}
+      <DirectionStepper
+        value={para.pathDirection}
+        disabled={disabled}
+        onChange={(v) => setField('pathDirection', v)}
+      />
+
+      {/* AI Perception Controls (own immediate commands — not set_para_info) */}
       <PerceptionPanel sn={sn} online={online} />
 
       <div className="border-t border-gray-700" />
 
-      {/* Max Speed */}
+      {/* Max Speed (manual_controller_v 100/200/300) */}
       <SegmentedSetting
         icon={Gauge}
         label={t('settings.maxSpeed')}
-        value={maxSpeed}
-        levels={LEVELS}
+        value={para.speed}
+        levels={CONTROLLER_LEVELS}
         levelLabels={levelLabels}
         disabled={disabled}
         colors={['text-green-400', 'text-yellow-400', 'text-red-400']}
-        onChange={(v) => send({ manual_controller_v: v }, t('settings.maxSpeed'))}
+        onChange={(v) => setField('speed', v)}
       />
 
-      {/* Handling */}
+      {/* Handling (manual_controller_w 100/200/300) */}
       <SegmentedSetting
         icon={Navigation}
         label={t('settings.handling')}
-        value={handling}
-        levels={LEVELS}
+        value={para.handling}
+        levels={CONTROLLER_LEVELS}
         levelLabels={levelLabels}
         disabled={disabled}
         colors={['text-green-400', 'text-yellow-400', 'text-red-400']}
-        onChange={(v) => send({ manual_controller_w: v }, t('settings.handling'))}
+        onChange={(v) => setField('handling', v)}
       />
 
       <div className="border-t border-gray-700" />
 
       {/* Headlight brightness — set_para_info.headlight 0..255 (0 = off). */}
       <HeadlightControl
-        headlightOn={headlightOn}
+        value={para.headlight}
         disabled={disabled}
-        onSet={(v) => send({ headlight: v }, t('settings.headlight'))}
+        onChange={(v) => setField('headlight', v)}
       />
 
       {/* Sound */}
       <ToggleRow
-        icon={soundOn ? Volume2 : VolumeX}
+        icon={para.sound ? Volume2 : VolumeX}
         label={t('settings.sound')}
-        active={soundOn}
+        active={para.sound}
         disabled={disabled}
-        onToggle={() => send({ sound: soundOn ? 0 : 2 }, t('settings.sound'))}
+        onToggle={() => setField('sound', !para.sound)}
       />
+
+      {/* Batched Save + local Reset — all set_para_info fields go together. */}
+      <div className="flex gap-2">
+        <button
+          onClick={handleReset}
+          disabled={disabled}
+          className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded bg-gray-700 text-gray-400 hover:text-white hover:bg-gray-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          {t('settings.reset')}
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={disabled || !dirty}
+          className={`flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+            dirty ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-gray-700 text-gray-400'
+          }`}
+        >
+          <Save className="w-3.5 h-3.5" />
+          {dirty ? t('settings.saveToMower', 'Opslaan naar maaier') : t('settings.saved', 'Instellingen opgeslagen')}
+        </button>
+      </div>
 
       <div className="border-t border-gray-700" />
 
-      {/* Timezone — set_cfg_info { cfg_value: 1, tz } (user-initiated only). */}
+      {/* Timezone — set_cfg_info { cfg_value: 1, tz } (separate command). */}
       <TimezonePanel sn={sn} disabled={disabled} />
 
       <div className="border-t border-gray-700" />
 
-      {/* Rain auto-pause thresholds */}
+      {/* Rain auto-pause thresholds (server-side, immediate) */}
       <RainSettingsPanel sn={sn} online={online} />
-
-      <div className="border-t border-gray-700" />
-
-      {/* Reset to defaults */}
-      <button
-        onClick={handleReset}
-        disabled={disabled}
-        className="w-full inline-flex items-center justify-center gap-2 text-xs px-3 py-2 rounded bg-gray-700 text-gray-400 hover:text-white hover:bg-gray-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-      >
-        <RotateCcw className="w-3.5 h-3.5" />
-        {t('settings.reset')}
-      </button>
 
       <div className="border-t border-gray-700" />
 
@@ -179,33 +245,66 @@ export function SettingsPanel({ sn, online, sensors }: Props) {
   );
 }
 
-/* ── Headlight brightness ─────────────────────────────── */
+/* ── Default mowing direction stepper (0..180°, 15° steps) ───── */
 
-function HeadlightControl({ headlightOn, disabled, onSet }: {
-  headlightOn: boolean;
+function DirectionStepper({ value, disabled, onChange }: {
+  value: number;
   disabled: boolean;
-  onSet: (value: number) => void;
+  onChange: (deg: number) => void;
 }) {
   const { t } = useTranslation();
-  // The sensor only reports on/off, not the level. Track the last selected level
-  // locally; default to 255 (max) when on so the proven night-docking value wins.
-  const [level, setLevel] = useState<number>(headlightOn ? 255 : 0);
-  useEffect(() => { setLevel(prev => (headlightOn ? (prev === 0 ? 255 : prev) : 0)); }, [headlightOn]);
-
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <Lightbulb className={`w-4 h-4 ${level > 0 ? 'text-yellow-300' : 'text-gray-500'}`} />
+        <Compass className="w-4 h-4 text-sky-400" />
+        <span className="text-sm text-gray-300">{t('settings.defaultDirection', 'Standaard maairichting')}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onChange(Math.max(0, value - 15))}
+          disabled={disabled || value <= 0}
+          className="w-9 h-9 rounded bg-gray-800 text-white text-lg hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <Minus className="w-4 h-4 mx-auto" />
+        </button>
+        <div className="flex-1 flex items-center justify-center gap-2 bg-gray-800 rounded py-1.5">
+          <Navigation className="w-4 h-4 text-sky-300" style={{ transform: `rotate(${value}deg)` }} />
+          <span className="text-sm font-mono text-white tabular-nums">{value}°</span>
+        </div>
+        <button
+          onClick={() => onChange(Math.min(180, value + 15))}
+          disabled={disabled || value >= 180}
+          className="w-9 h-9 rounded bg-gray-800 text-white text-lg hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <Plus className="w-4 h-4 mx-auto" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Headlight brightness ─────────────────────────────── */
+
+function HeadlightControl({ value, disabled, onChange }: {
+  value: number;
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Lightbulb className={`w-4 h-4 ${value > 0 ? 'text-yellow-300' : 'text-gray-500'}`} />
         <span className="text-sm text-gray-300">{t('settings.headlight')}</span>
       </div>
       <div className="flex gap-1">
-        {HEADLIGHT_LEVELS.map(({ value, labelKey }) => (
+        {HEADLIGHT_LEVELS.map(({ value: lvl, labelKey }) => (
           <button
-            key={value}
-            onClick={() => { setLevel(value); onSet(value); }}
+            key={lvl}
+            onClick={() => onChange(lvl)}
             disabled={disabled}
             className={`flex-1 text-xs py-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-              level === value
+              value === lvl
                 ? 'bg-gray-600 text-white font-medium ring-1 ring-gray-500'
                 : 'bg-gray-800 text-gray-500 hover:text-gray-300 hover:bg-gray-700'
             }`}
@@ -794,7 +893,7 @@ function SegmentedSetting({ icon: Icon, label, value, levels, levelLabels, disab
   colors: string[];
   onChange: (v: number) => void;
 }) {
-  const activeIdx = levels.indexOf(value as 1 | 2 | 3);
+  const activeIdx = levels.indexOf(value);
 
   return (
     <div className="space-y-2">

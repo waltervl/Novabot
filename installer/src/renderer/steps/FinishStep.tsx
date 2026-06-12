@@ -5,9 +5,11 @@ import { CheckBadge } from './BuildStep';
 interface FinishStepProps {
   /** The hostname the user configured; the Pi advertises it as `<hostname>.local`. */
   hostname?: string;
+  /** SSH username, when SSH is enabled — shown as a login hint. */
+  sshUser?: string;
 }
 
-export function FinishStep({ hostname }: FinishStepProps) {
+export function FinishStep({ hostname, sshUser }: FinishStepProps) {
   const mdnsHost =
     hostname && hostname.trim().length > 0 ? `${hostname.trim()}.local` : 'opennova.local';
 
@@ -57,6 +59,11 @@ export function FinishStep({ hostname }: FinishStepProps) {
           <button type="button" onClick={() => openAdmin(foundHost)} className="btn-go mt-4">
             Open OpenNova
           </button>
+          {sshUser && (
+            <p className="mt-4 text-sm font-semibold text-ink-dim">
+              SSH: <span className="code">ssh {sshUser}@{foundHost}</span>
+            </p>
+          )}
         </div>
       ) : (
         <div className="space-y-5">

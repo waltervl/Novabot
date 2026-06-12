@@ -47,6 +47,96 @@ function assertSafeWifi(ssid: string, password: string, country: string): void {
   }
 }
 
+/**
+ * Validate SSH account details BEFORE they are interpolated into the first-boot
+ * script. The username is restricted to a strict POSIX charset so it is safe to
+ * use UNQUOTED in filesystem paths (`/home/<user>/.ssh`). The password is piped
+ * to `chpasswd` and the key is appended to `authorized_keys`, so both must be
+ * single-line — a newline in either would break chpasswd or inject an extra
+ * authorized_keys entry (with attacker-chosen options). Throws on anything unsafe.
+ */
+function assertSafeSsh(username: string, password: string, publicKey?: string): void {
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username)) {
+    throw new Error(
+      'SSH username must start with a lowercase letter or _ and contain only lowercase letters, digits, - or _ (max 32 chars).',
+    );
+  }
+  if (username === 'root') {
+    throw new Error('SSH username cannot be root.');
+  }
+  const control = /[\u0000-\u001f\u007f]/;
+  const hasPw = password.length > 0;
+  const key = publicKey?.trim() ?? '';
+  if (!hasPw && !key) {
+    throw new Error('SSH is enabled but no password or public key was provided.');
+  }
+  if (hasPw) {
+    if (control.test(password)) {
+      throw new Error('SSH password must not contain newlines or control characters.');
+    }
+    if (password.length < 8) {
+      throw new Error('SSH password must be at least 8 characters.');
+    }
+  }
+  if (key) {
+    if (control.test(key)) {
+      throw new Error('SSH public key must be a single line without control characters.');
+    }
+    const keyRe =
+      /^(ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/=]+( \S.*)?$/;
+    if (!keyRe.test(key)) {
+      throw new Error('SSH public key is not a valid OpenSSH key line (e.g. "ssh-ed25519 AAAA... comment").');
+    }
+  }
+}
+
+/**
+ * First-boot SSH setup. Returns the shell block that enables `sshd` and — when
+ * the installer supplied SSH details — creates the login account. Returns an
+ * empty string when SSH is explicitly disabled. Legacy callers that pass no
+ * `ssh` block get ONLY the daemon enabled (the historical behaviour), so the
+ * account-creation path is strictly additive.
+ */
+function sshSetup(cfg: InstallerConfig): string {
+  const ssh = cfg.ssh;
+  const enabled = ssh?.enabled ?? true;
+  if (!enabled) {
+    return '';
+  }
+
+  // Enable the daemon on the normal boot whenever SSH is on.
+  let out = `# ── SSH access ───────────────────────────────────────────────────────────────
+systemctl enable ssh 2>/dev/null || ln -sf /lib/systemd/system/ssh.service /etc/systemd/system/multi-user.target.wants/ssh.service 2>/dev/null || true
+`;
+
+  if (ssh) {
+    assertSafeSsh(ssh.username, ssh.password, ssh.publicKey);
+    const u = ssh.username; // validated charset → safe to interpolate unquoted in paths
+    const hasPw = ssh.password.length > 0;
+    const key = ssh.publicKey?.trim() ?? '';
+
+    out += `id -u ${shQuote(u)} >/dev/null 2>&1 || useradd -m -s /bin/bash ${shQuote(u)}
+for g in sudo users adm netdev plugdev; do usermod -aG "$g" ${shQuote(u)} 2>/dev/null || true; done
+`;
+    if (hasPw) {
+      out += `printf '%s:%s\\n' ${shQuote(u)} ${shQuote(ssh.password)} | chpasswd
+`;
+    } else {
+      // Key-only: lock the password so password auth can't log in with an empty secret.
+      out += `passwd -l ${shQuote(u)} 2>/dev/null || true
+`;
+    }
+    if (key) {
+      out += `install -d -m 0700 /home/${u}/.ssh
+printf '%s\\n' ${shQuote(key)} >> /home/${u}/.ssh/authorized_keys
+chmod 600 /home/${u}/.ssh/authorized_keys
+chown -R ${shQuote(u)}:${shQuote(u)} /home/${u}/.ssh
+`;
+    }
+  }
+  return out;
+}
+
 function composeYml(cfg: InstallerConfig): string {
   const dns = cfg.connectionPath === 'novabot-app'
     ? '      ENABLE_DNS: "true"\n      UPSTREAM_DNS: "1.1.1.1"\n'
@@ -216,9 +306,7 @@ set +e
 
 hostnamectl set-hostname ${shQuote(cfg.hostname)} 2>/dev/null || echo ${shQuote(cfg.hostname)} > /etc/hostname
 ${wifi}
-# Enable SSH on the normal boot.
-systemctl enable ssh 2>/dev/null || ln -sf /lib/systemd/system/ssh.service /etc/systemd/system/multi-user.target.wants/ssh.service 2>/dev/null || true
-
+${sshSetup(cfg)}
 # Install the deferred OpenNova setup service (runs after the network is up).
 install -d /usr/local/lib/opennova
 cat > /usr/local/lib/opennova/setup.sh <<'OPENNOVA_SETUP'

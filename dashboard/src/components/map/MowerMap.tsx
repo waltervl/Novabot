@@ -4,7 +4,7 @@ import L from 'leaflet';
 import {
   MapPin, Map as MapIcon, Trash2, Route, Crosshair, Layers,
   SlidersHorizontal, Save, X, RotateCcw, Pencil, Check, Scissors, Navigation,
-  ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Download, Flame,
+  ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Flame,
   Fence, Target, XCircle, CheckCircle2, Plus, Minus, Brush, Paintbrush, Eraser,
   Copy, ClipboardPaste, Spline, RefreshCw, Loader2, Move as MoveIcon, Camera,
 } from 'lucide-react';
@@ -12,7 +12,7 @@ import { useTranslation } from 'react-i18next';
 import type { MapData, MapCalibration, GpsPoint } from '../../types';
 import {
   fetchMaps, fetchAllMaps, fetchTrail, clearTrail, fetchCalibration, saveCalibration,
-  deleteMap, renameMap, updateMapArea, createMap, exportMaps,
+  deleteMap, renameMap, updateMapArea, createMap,
   navigateToPosition, stopNavigation,
   fetchVirtualWalls, createVirtualWall, deleteVirtualWall,
   calibrateCharger,
@@ -128,6 +128,10 @@ interface Props {
   mowing?: MowingInfo;
   /** Wanneer ingesteld, toon een richting-overlay lijn op de kaart (graden, 0=N) */
   pathDirectionPreview?: number | null;
+  /** Bumped (nonce) by the Start-sheet "Preview" button to show a FRESH coverage
+   *  preview at the configured cov_direction for the selected work-area
+   *  canonical(s) (one, or all when "All work areas" is selected). */
+  previewRequest?: { nonce: number; covDirection: number; canonicals: string[] } | null;
   /** Callback when a new map is saved (draw/edit) — used for draw-to-start flow */
   onMapSaved?: (map: MapData) => void;
   /** Live growing polygon boundary during autonomous mapping (report_state_map_outline) */
@@ -958,7 +962,7 @@ function CelebrationOverlay({ area, onDismiss }: { area: number; onDismiss: () =
   );
 }
 
-export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sensors, signals, mowing, pathDirectionPreview, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
+export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sensors, signals, mowing, pathDirectionPreview, previewRequest, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
   const { t } = useTranslation();
   const mowingSensors = sensors ?? {};
   const { toast } = useToast();
@@ -1631,7 +1635,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // online mower and does not send generate_preview_cover_path. When the mower is
   // mowing this routes to showLiveCoverage instead because get_map_plan_path is
   // the right source for the active task.
-  const refreshCoverage = useCallback(async () => {
+  const refreshCoverage = useCallback(async (dirOverride?: number) => {
     if (!sn) return;
     if (mowingActive) { stopCoveragePoll(); await showLiveCoverage(); return; }
     setCoverageLive(false);
@@ -1644,7 +1648,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
         : maps.find(m => m.mapType === 'work');
       const sx = Number(mapX);
       const sy = Number(mapY);
-      const dir = Number(mowing?.covDirection);
+      // Prefer the direction the operator just set in the Start sheet; fall back
+      // to the mower's last reported cov_direction only when not previewing.
+      const dir = dirOverride ?? Number(mowing?.covDirection);
       const radius = Number(coverageRadiusDraft);
       const result = await nativePreviewPath(sn, {
         canonical: selectedStoredMap?.canonicalName ?? undefined,
@@ -1665,6 +1671,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // Toggle handler: on first enable, show cached path instantly if present,
   // otherwise kick off the right fetch (live plan if mowing, else idle preview).
   // Disable hides the overlay, keeps the cache, and stops live polling.
+  // Pure VISIBILITY toggle: show/hide the coverage that already exists. It never
+  // regenerates — generation happens via the Start-sheet "Preview" button (with
+  // the work-area selector + direction) or automatically while mowing.
   const toggleCoverage = useCallback(async () => {
     if (showCoverage) {
       setShowCoverage(false);
@@ -1677,13 +1686,16 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     if (mowingActive) { await showLiveCoverage(); return; }
     setCoverageLive(false);
     if (coveragePath && coveragePath.length > 0) return;
-    // Try the cache first (cheap GET), then a full refresh if empty.
+    // Nothing in memory — reveal the last CACHED server preview (cheap GET, NO
+    // generation). If there is none yet, hint to use the Preview button.
     try {
       const cached = await getPreviewPath(sn);
-      if (cached.length > 0) { setCoveragePath(cached); return; }
-    } catch { /* fall through to refresh */ }
-    await refreshCoverage();
-  }, [showCoverage, coveragePath, sn, mowingActive, showLiveCoverage, refreshCoverage, stopCoveragePoll]);
+      if (cached.length > 0) setCoveragePath(cached);
+      else setCoverageStatus(t('map.edit.coverageNone'));
+    } catch {
+      setCoverageStatus(t('map.edit.coverageNone'));
+    }
+  }, [showCoverage, coveragePath, sn, mowingActive, showLiveCoverage, stopCoveragePoll, t]);
 
   // Auto-switch: when the mower transitions into/out of mowing WHILE the panel
   // is open, switch to/from the live plan path automatically. Also stops the
@@ -1709,6 +1721,64 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   useEffect(() => {
     if (mowingActive) setShowCoverage(true);
   }, [mowingActive]);
+
+  // Generate a fresh coverage preview for one OR MANY work maps (honors the
+  // Start-sheet work-area selector: "All work areas" → every work map, a single
+  // selection → just that map). Static preview: no progress coloring, no poll.
+  const lastPreviewParamsRef = useRef<{ canonicals: string[]; covDirection: number } | null>(null);
+  const previewMaps = useCallback(async (canonicals: string[], covDirection: number) => {
+    if (!sn || canonicals.length === 0) return;
+    lastPreviewParamsRef.current = { canonicals, covDirection };
+    setShowCoverage(true);
+    setCoverageLive(false);
+    stopCoveragePoll();
+    setCoveragePath(null);
+    setCoverageLoading(true);
+    setCoverageStatus(t('map.edit.coverageLoading'));
+    try {
+      const sx = Number(mapX), sy = Number(mapY);
+      const startLocal = Number.isFinite(sx) && Number.isFinite(sy) ? { x: sx, y: sy } : undefined;
+      const merged: CoveragePathEntry[] = [];
+      let failed = 0;
+      for (const canonical of canonicals) {
+        try {
+          // Try with the live start; if that zone rejects it (e.g. start outside
+          // its grid), retry once letting the server pick the charging pose.
+          let result;
+          try {
+            result = await nativePreviewPath(sn, { canonical, startLocal, covDirection });
+          } catch {
+            result = await nativePreviewPath(sn, { canonical, covDirection });
+          }
+          // Prefix ids per map so cells from different zones don't collide as keys.
+          for (const p of result.paths) merged.push({ ...p, id: `${canonical}:${p.id}` });
+        } catch (err) {
+          failed++;
+          console.warn(`[coverage preview] ${canonical} failed:`, err);
+        }
+      }
+      setCoveragePath(merged);
+      if (merged.length === 0) {
+        setCoverageStatus(t('map.edit.coverageNone'));
+        toast(`✗ ${t('map.edit.coverageNone')}`, 'error');
+      } else {
+        setCoverageStatus(null);
+        if (failed > 0) toast(`⚠ ${canonicals.length - failed}/${canonicals.length} ✓`, 'info');
+      }
+    } finally {
+      setCoverageLoading(false);
+    }
+  }, [sn, mapX, mapY, t, toast, stopCoveragePoll]);
+
+  // Start-sheet "Preview" knop → verse coverage-preview met de gekozen richting
+  // en de geselecteerde werkgebieden (alle of één).
+  const lastPreviewNonceRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!previewRequest) return;
+    if (previewRequest.nonce === lastPreviewNonceRef.current) return;
+    lastPreviewNonceRef.current = previewRequest.nonce;
+    void previewMaps(previewRequest.canonicals, previewRequest.covDirection);
+  }, [previewRequest, previewMaps]);
 
   // Cleanup poll on unmount.
   useEffect(() => () => stopCoveragePoll(), [stopCoveragePoll]);
@@ -2565,15 +2635,6 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     });
   }, [sn, savedCal, t]);
 
-  // Export handler
-  const handleExport = useCallback(() => {
-    if (!chargerHasGps) return;
-    exportMaps(sn, { lat: resolvedChargerLat!, lng: resolvedChargerLng! }).then(url => {
-      window.open(url, '_blank');
-      toast(t('map.exported'), 'success');
-    }).catch(() => toast(t('map.exportFailed'), 'error'));
-  }, [sn, resolvedChargerLat, resolvedChargerLng, chargerHasGps, t]);
-
   // Push maps to mower via SSH
   // Navigate-to handler — GPS coords direct van Leaflet klik
   const handleNavigateClick = useCallback((lat: number, lng: number) => {
@@ -2850,28 +2911,17 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
           {/* Refresh coverage path — re-trigger after an Apply to mower */}
           {showCoverage && editMode === 'none' && !calibrating && sn && (
             <button
-              onClick={refreshCoverage}
+              onClick={() => {
+                if (mowingActive) { void refreshCoverage(); return; }
+                const lp = lastPreviewParamsRef.current;
+                if (lp) void previewMaps(lp.canonicals, lp.covDirection);
+                else void refreshCoverage();
+              }}
               disabled={coverageLoading}
               className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-gray-700/50 text-gray-400 hover:text-zinc-200 hover:bg-zinc-900/40 ${coverageLoading ? 'opacity-60 cursor-wait' : ''}`}
               title={t('map.edit.coverageRefresh')}
             >
               <RefreshCw className={`w-3 h-3 ${coverageLoading ? 'animate-spin' : ''}`} />
-            </button>
-          )}
-          {/* Export button (hidden on mobile) */}
-          {polygonMaps.length > 0 && editMode === 'none' && !calibrating && (
-            <button
-              onClick={handleExport}
-              disabled={!chargerHasGps}
-              className={`hidden md:inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded transition-colors ${
-                chargerHasGps
-                  ? 'bg-gray-700/50 text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30'
-                  : 'bg-gray-700/30 text-gray-600 cursor-not-allowed'
-              }`}
-              title={chargerHasGps ? t('map.exportTooltip') : t('map.exportNoCharger')}
-            >
-              <Download className="w-3 h-3" />
-              {t('map.export')}
             </button>
           )}
           {/* Place/reposition charger button — highlighted when no charger position set */}
@@ -3025,7 +3075,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
                 positions={positions}
                 pathOptions={style}
                 eventHandlers={{
-                  click: editMode === 'none' ? (e) => {
+                  // While placing a pattern, the polygon must NOT swallow the click
+                  // (stopPropagation) — let it reach the map's PatternClickHandler.
+                  click: (editMode === 'none' && !onMapClickForPattern) ? (e) => {
                     L.DomEvent.stopPropagation(e);
                     setSelectedMapId(prev => prev === m.mapId ? null : m.mapId);
                   } : undefined,
@@ -3054,8 +3106,12 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
               mower will cut ("black lines"). Drawn above the satellite tiles,
               projected into the same frame as the work polygons. */}
           {showCoverage && coverageGps.map(cp => {
-            const isFinished = coverProgress.finished.has(cp.id);
-            const isActive = cp.id === coverProgress.activeId;
+            // Finished/active coloring only while ACTUALLY mowing (live plan). A
+            // static preview must NOT inherit the previous session's progress —
+            // finished_area lingers in the sensors after a mow, which would paint
+            // the fresh preview as "already done". Preview => uniform planned path.
+            const isFinished = coverageLive && coverProgress.finished.has(cp.id);
+            const isActive = coverageLive && cp.id === coverProgress.activeId;
             const full = calibratePoints(cp.gps, activeCal, polyCenter);
             // Finished sub-area → dik groen ("gemaaid"), zoals de app.
             if (isFinished) {
@@ -3069,10 +3125,16 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
             const done = isActive && coverProgress.activePoints >= 2
               ? calibratePoints(cp.gps.slice(0, coverProgress.activePoints), activeCal, polyCenter)
               : null;
+            // Static preview → thicker, clearly visible lines. Live "remaining"
+            // (behind the green done-portion) stays a thin faint hint so the
+            // mowed part keeps standing out.
+            const baseStyle = coverageLive
+              ? { color: 'rgba(255,255,255,0.35)', weight: 1, opacity: 0.8 }
+              : { color: 'rgba(56,189,248,0.9)', weight: 1.5, opacity: 0.9 };
             return (
               <Fragment key={`cov-${cp.id}`}>
                 <Polyline positions={full}
-                  pathOptions={{ color: 'rgba(255,255,255,0.35)', weight: 1, opacity: 0.8, lineCap: 'round', lineJoin: 'round' }} />
+                  pathOptions={{ ...baseStyle, lineCap: 'round', lineJoin: 'round' }} />
                 {done && done.length >= 2 && (
                   <Polyline positions={done}
                     pathOptions={{ color: 'rgba(34,197,94,0.95)', weight: 3.5, opacity: 1, lineCap: 'round', lineJoin: 'round' }} />
@@ -3373,7 +3435,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
                   dashArray: '6, 3',
                 }}
                 eventHandlers={{
-                  click: editMode === 'none' ? (e) => {
+                  click: (editMode === 'none' && !onMapClickForPattern) ? (e) => {
                     L.DomEvent.stopPropagation(e);
                   } : undefined,
                 }}

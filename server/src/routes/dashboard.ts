@@ -52,6 +52,7 @@ import {
   parseCoveragePlannerRadius,
   selectCoveragePlannerRadius,
 } from '../services/coveragePlannerRadius.js';
+import { ensureBetaFlashSafe } from '../services/firmwareSafety.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -4295,8 +4296,9 @@ dashboardRouter.delete('/ota/versions/:id', (req: Request, res: Response) => {
 });
 
 // POST /api/dashboard/ota/trigger/:sn — stuur ota_upgrade_cmd naar apparaat
-dashboardRouter.post('/ota/trigger/:sn', (req: Request, res: Response) => {
+dashboardRouter.post('/ota/trigger/:sn', async (req: Request, res: Response) => {
   const { sn } = req.params;
+  let gate: Awaited<ReturnType<typeof ensureBetaFlashSafe>> | undefined;
   const { version_id } = req.body as { version_id?: number };
 
   if (!version_id) {
@@ -4401,6 +4403,23 @@ dashboardRouter.post('/ota/trigger/:sn', (req: Request, res: Response) => {
       console.log(`\x1b[38;5;208m[OTA] Encrypted ota_upgrade_cmd naar charger ${sn}\x1b[0m`);
     }
   } else {
+    // ── BETA gate: custom/opennova firmware must have a fresh backup first ──
+    try {
+      gate = await ensureBetaFlashSafe(sn, otaVersion.version);
+    } catch (err) {
+      console.error(`\x1b[31m[OTA] BETA gate error voor ${sn}:\x1b[0m`, err);
+      res.status(500).json({ error: 'BETA_GATE_ERROR', detail: 'Kon backup-gate niet uitvoeren' });
+      return;
+    }
+    if (!gate.allowed) {
+      console.warn(`\x1b[31m[OTA] BETA flash geblokkeerd voor ${sn}: ${gate.detail}\x1b[0m`);
+      res.status(409).json({ error: gate.error, detail: gate.detail });
+      return;
+    }
+    if (gate.backup) {
+      console.log(`\x1b[38;5;208m[OTA] BETA backup ok (${gate.reason}): ${gate.backup.filename}\x1b[0m`);
+    }
+
     const mowerOtaCommand = {
       ota_upgrade_cmd: {
         cmd: 'upgrade',
@@ -4424,7 +4443,13 @@ dashboardRouter.post('/ota/trigger/:sn', (req: Request, res: Response) => {
     }
   }
 
-  res.json({ ok: true, command: 'ota_upgrade_cmd', version: otaVersion.version, target: sn });
+  res.json({
+    ok: true,
+    command: 'ota_upgrade_cmd',
+    version: otaVersion.version,
+    target: sn,
+    backup: gate && gate.allowed ? gate.backup : null,
+  });
 });
 
 // ── LoRa address allocation ──────────────────────────────────────
