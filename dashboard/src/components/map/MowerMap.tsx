@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef, Fragment } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, Fragment, type ReactNode } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polygon, Polyline, Tooltip, CircleMarker, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import {
@@ -6,7 +6,7 @@ import {
   SlidersHorizontal, Save, X, RotateCcw, Pencil, Check, Scissors, Navigation,
   ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Flame,
   Fence, Target, XCircle, CheckCircle2, Plus, Minus, Brush, Paintbrush, Eraser,
-  Copy, ClipboardPaste, Spline, RefreshCw, Loader2, Move as MoveIcon, Camera,
+  Copy, ClipboardPaste, Spline, RefreshCw, Loader2, Move as MoveIcon, Camera, Eye,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData, MapCalibration, GpsPoint } from '../../types';
@@ -17,7 +17,7 @@ import {
   fetchVirtualWalls, createVirtualWall, deleteVirtualWall,
   calibrateCharger,
   fetchEditGeometry, saveEditDraft, discardEditDrafts, applyEdits, revertEdits,
-  getPreviewPath, nativePreviewPath, getPlanPath, refreshPlanPath,
+  refreshPreviewPath, getPlanPath, refreshPlanPath,
   fetchCoveragePlannerRadius, updateCoveragePlannerRadius,
   type VirtualWall, type EditGeometryDto, type CoveragePathEntry,
 } from '../../api/client';
@@ -50,6 +50,20 @@ const DEFAULT_CENTER: [number, number] = [52.1409, 6.231];
 const DEFAULT_COVERAGE_RADIUS = 0.61;
 const MIN_COVERAGE_RADIUS = 0.2;
 const MAX_COVERAGE_RADIUS = 1.2;
+
+function previewMapIdsFromCanonicals(canonicals: string[]): number {
+  const weights = new Set<number>();
+  for (const canonical of canonicals) {
+    const match = canonical.match(/^map(\d+)$/);
+    if (!match) continue;
+    const idx = Number(match[1]);
+    if (idx === 0) weights.add(1);
+    else if (idx === 1) weights.add(10);
+    else if (idx === 2) weights.add(100);
+  }
+  const mask = Array.from(weights).reduce((sum, value) => sum + value, 0);
+  return mask || 1;
+}
 // Grace window before a mowing session is considered ended. The msg-based
 // `mowingActive` flag briefly drops to false on every between-lane turn, blade
 // pause, or obstacle stop; keeping the live plan + progress sticky for this long
@@ -149,6 +163,13 @@ interface Props {
   offsetPreview?: Array<{ lat: number; lng: number }> | null;
   /** Afgelegde maai-banen van demo simulator */
   coveredLanes?: Array<{ lat1: number; lng1: number; lat2: number; lng2: number }> | null;
+  /** Mower control buttons (start/pause/stop/…) rendered at the left of the
+   *  floating tool-bar over the map. Supplied by the shell so the big controls
+   *  component stays intact; the bar just hosts it. */
+  controlsSlot?: ReactNode;
+  /** Reports when the map is actually fetching the mower coverage preview, so
+   *  the shell can keep the Preview button disabled until the path is back. */
+  onPreviewLoading?: (loading: boolean) => void;
 }
 
 function locColor(quality: number): string {
@@ -181,7 +202,7 @@ function FitToMaps({ maps, onFitted }: { maps: Array<{ mapArea: Array<{ lat: num
     }
     if (allPoints.length < 2) return;
     const bounds = L.latLngBounds(allPoints);
-    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 23 });
+    map.fitBounds(bounds, { padding: [28, 28], maxZoom: 24 });
     setFitted(true);
     onFitted?.();
   }, [map, maps, fitted, onFitted]);
@@ -967,7 +988,7 @@ function CelebrationOverlay({ area, onDismiss }: { area: number; onDismiss: () =
   );
 }
 
-export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sensors, signals, mowing, pathDirectionPreview, previewRequest, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
+export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sensors, signals, mowing, pathDirectionPreview, previewRequest, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes, controlsSlot, onPreviewLoading }: Props) {
   const { t } = useTranslation();
   const mowingSensors = sensors ?? {};
   // ── Sticky live-session flag (hysteresis) ───────────────────────────
@@ -1046,9 +1067,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   const [drawName, setDrawName] = useState('');
   const [showHeatmap, setShowHeatmap] = useState(false);
 
-  // ── Coverage-path preview ("show mowing path"): the real boustrophedon
-  //    path the mower will cut. Idle preview is computed server-side with the
-  //    packaged native planner; live mowing still polls the mower's plan path.
+  // ── Coverage-path preview ("show mowing path"): idle preview is generated
+  //    by the mower through generate_preview_cover_path/get_preview_cover_path;
+  //    live mowing still polls the mower's plan path.
   const [coveragePath, setCoveragePath] = useState<CoveragePathEntry[] | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
@@ -1060,12 +1081,25 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // Live camera tile — only available on OpenNova custom firmware (the
   // `camera_stream.py` daemon ships only there; the proxy 404s otherwise).
   const [showCamera, setShowCamera] = useState(false);
-  // Tool-rail flyout: which floating-rail button has its popover open (the
-  // coverage-radius stepper or the tile-layer picker). null = none open.
-  const [railFlyout, setRailFlyout] = useState<null | 'radius' | 'tiles'>(null);
-  // Shared base style for the floating tool-rail icon buttons.
-  const railBtnBase = 'relative grid place-items-center w-9 h-9 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-wait';
-  const railIdle = 'text-gray-300 bg-gray-800/50 hover:bg-gray-700/70';
+  // Tool-bar flyout: which category popover is open (Weergave / Bewerken /
+  // Coverage / Dock). null = none. Only one open at a time.
+  const [railFlyout, setRailFlyout] = useState<null | 'view' | 'edit' | 'coverage' | 'dock'>(null);
+  // Satellite-layer picker is a side submenu off the Weergave flyout (it stays
+  // compact instead of listing every layer inline). Auto-closes with Weergave.
+  const [railTileSub, setRailTileSub] = useState(false);
+  useEffect(() => { if (railFlyout !== 'view') setRailTileSub(false); }, [railFlyout]);
+  // Tile labels are shown without their parenthetical suffix (e.g. "PDOK
+  // luchtfoto (NL, ~8 cm)" → "PDOK luchtfoto"); the full label stays as the
+  // hover title so the resolution/region hint isn't lost.
+  const cleanTileLabel = (s: string) => s.replace(/\s*\([^)]*\)/g, '').trim();
+  // Shared styles for the floating tool-bar category buttons + flyout panels.
+  const railCat = (open: boolean) =>
+    `relative inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg text-xs font-semibold transition-colors ${open ? 'bg-gray-700 text-white' : 'text-gray-300 bg-gray-800/50 hover:bg-gray-700/70'}`;
+  const railPanel = 'absolute top-full left-0 mt-2 z-[950] bg-gray-900/95 backdrop-blur border border-gray-700 rounded-xl p-1 shadow-xl min-w-[210px]';
+  const railRow = (active: boolean) =>
+    `flex w-full items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] transition-colors ${active ? 'bg-emerald-600/15 text-emerald-300' : 'text-gray-300 hover:bg-gray-700/60'}`;
+  const railHdr = 'px-2.5 pt-1.5 pb-1 text-[9px] font-bold uppercase tracking-[0.12em] text-gray-500';
+  const railDot = <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-gray-900" />;
   const cameraAvailable = isOpenNovaFirmware(
     (sensors?.sw_version ?? sensors?.version) ?? undefined,
   );
@@ -1688,49 +1722,53 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     }
   }, [sn, coverageRadiusDraft, toast, t]);
 
-  // Server-side native coverage preview. This deliberately does not require an
-  // online mower and does not send generate_preview_cover_path. When the mower is
-  // mowing this routes to showLiveCoverage instead because get_map_plan_path is
-  // the right source for the active task.
+  // Stock mower coverage preview. This routes through generate_preview_cover_path
+  // and get_preview_cover_path, matching the Novabot app's advanced-settings
+  // preview flow. When the mower is mowing this routes to showLiveCoverage
+  // instead because get_map_plan_path is the right source for the active task.
   const refreshCoverage = useCallback(async (dirOverride?: number) => {
     if (!sn) return;
     if (liveSession) { stopCoveragePoll(); await showLiveCoverage(); return; }
     setCoverageLive(false);
     stopCoveragePoll();
+    setCoveragePath(null);
     setCoverageLoading(true);
     setCoverageStatus(t('map.edit.coverageLoading'));
     try {
       const selectedStoredMap = selectedMapId
         ? maps.find(m => m.mapId === selectedMapId && m.mapType === 'work')
         : maps.find(m => m.mapType === 'work');
-      const sx = Number(mapX);
-      const sy = Number(mapY);
+      const canonicals = selectedStoredMap?.canonicalName
+        ? [selectedStoredMap.canonicalName]
+        : maps
+          .filter(m => m.mapType === 'work' && m.canonicalName)
+          .map(m => m.canonicalName!)
+          .filter(Boolean);
       // Prefer the direction the operator just set in the Start sheet; fall back
       // to the mower's last reported cov_direction only when not previewing.
       const dir = dirOverride ?? Number(mowing?.covDirection);
-      const radius = Number(coverageRadiusDraft);
-      const result = await nativePreviewPath(sn, {
-        canonical: selectedStoredMap?.canonicalName ?? undefined,
-        startLocal: Number.isFinite(sx) && Number.isFinite(sy) ? { x: sx, y: sy } : undefined,
-        covDirection: Number.isFinite(dir) ? dir : 0,
-        coverageRadius: Number.isFinite(radius) ? radius : undefined,
+      const covDirection = Number.isFinite(dir) && dir >= 0 && dir <= 180
+        ? Math.round(dir)
+        : undefined;
+      const result = await refreshPreviewPath(sn, {
+        mapIds: previewMapIdsFromCanonicals(canonicals),
+        ...(covDirection !== undefined ? { covDirection } : {}),
       });
       setCoveragePath(result.paths);
-      setCoverageStatus(result.paths.length > 0 ? null : t('map.edit.coverageNone'));
+      setCoverageStatus(result.busy
+        ? t('map.edit.coverageBusy')
+        : result.paths.length > 0 ? null : t('map.edit.coverageNone'));
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       setCoverageStatus(detail || t('map.edit.coverageNone'));
+      toast(detail || t('map.edit.coverageNone'), 'error');
     } finally {
       setCoverageLoading(false);
     }
-  }, [sn, liveSession, maps, selectedMapId, mapX, mapY, mowing?.covDirection, coverageRadiusDraft, t, showLiveCoverage, stopCoveragePoll]);
+  }, [sn, liveSession, maps, selectedMapId, mowing?.covDirection, t, toast, showLiveCoverage, stopCoveragePoll]);
 
-  // Toggle handler: on first enable, show cached path instantly if present,
-  // otherwise kick off the right fetch (live plan if mowing, else idle preview).
-  // Disable hides the overlay, keeps the cache, and stops live polling.
-  // Pure VISIBILITY toggle: show/hide the coverage that already exists. It never
-  // regenerates — generation happens via the Start-sheet "Preview" button (with
-  // the work-area selector + direction) or automatically while mowing.
+  // Toggle handler: hide is pure visibility; show triggers the right mower
+  // source. Idle uses a fresh stock preview, live mowing uses the live plan.
   const toggleCoverage = useCallback(async () => {
     if (showCoverage) {
       setShowCoverage(false);
@@ -1741,18 +1779,8 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     setCoverageStatus(null);
     if (!sn) return;
     if (liveSession) { await showLiveCoverage(); return; }
-    setCoverageLive(false);
-    if (coveragePath && coveragePath.length > 0) return;
-    // Nothing in memory — reveal the last CACHED server preview (cheap GET, NO
-    // generation). If there is none yet, hint to use the Preview button.
-    try {
-      const cached = await getPreviewPath(sn);
-      if (cached.length > 0) setCoveragePath(cached);
-      else setCoverageStatus(t('map.edit.coverageNone'));
-    } catch {
-      setCoverageStatus(t('map.edit.coverageNone'));
-    }
-  }, [showCoverage, coveragePath, sn, liveSession, showLiveCoverage, stopCoveragePoll, t]);
+    await refreshCoverage();
+  }, [showCoverage, sn, liveSession, showLiveCoverage, stopCoveragePoll, refreshCoverage]);
 
   // Auto-switch: when the mower transitions into/out of mowing WHILE the panel
   // is open, switch to/from the live plan path automatically. Also stops the
@@ -1792,41 +1820,42 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     stopCoveragePoll();
     setCoveragePath(null);
     setCoverageLoading(true);
+    onPreviewLoading?.(true);
     setCoverageStatus(t('map.edit.coverageLoading'));
     try {
-      const sx = Number(mapX), sy = Number(mapY);
-      const startLocal = Number.isFinite(sx) && Number.isFinite(sy) ? { x: sx, y: sy } : undefined;
-      const merged: CoveragePathEntry[] = [];
-      let failed = 0;
-      for (const canonical of canonicals) {
-        try {
-          // Try with the live start; if that zone rejects it (e.g. start outside
-          // its grid), retry once letting the server pick the charging pose.
-          let result;
-          try {
-            result = await nativePreviewPath(sn, { canonical, startLocal, covDirection });
-          } catch {
-            result = await nativePreviewPath(sn, { canonical, covDirection });
-          }
-          // Prefix ids per map so cells from different zones don't collide as keys.
-          for (const p of result.paths) merged.push({ ...p, id: `${canonical}:${p.id}` });
-        } catch (err) {
-          failed++;
-          console.warn(`[coverage preview] ${canonical} failed:`, err);
-        }
-      }
-      setCoveragePath(merged);
-      if (merged.length === 0) {
+      const result = await refreshPreviewPath(sn, {
+        mapIds: previewMapIdsFromCanonicals(canonicals),
+        covDirection,
+      });
+      if (result.busy) {
+        // 409: the server returned a CACHED path because it still believes the
+        // mower is busy. Never silently swap in stale data — surface it clearly
+        // and leave the overlay empty so it's obvious there was no fresh result.
+        setCoverageStatus(t('map.edit.previewBusy', 'Mower busy, no fresh preview'));
+        toast(`✗ ${t('map.edit.previewBusy', 'Mower busy, no fresh preview')}`, 'error');
+      } else if (result.paths.length === 0) {
         setCoverageStatus(t('map.edit.coverageNone'));
         toast(`✗ ${t('map.edit.coverageNone')}`, 'error');
       } else {
+        setCoveragePath(result.paths);
         setCoverageStatus(null);
-        if (failed > 0) toast(`⚠ ${canonicals.length - failed}/${canonicals.length} ✓`, 'info');
+        if (result.ackTimeout) {
+          // The mower didn't ack the regenerate in time; the returned file may be
+          // the previous one. Show it, but say it might not be up to date.
+          toast(`⚠ ${t('map.edit.previewStale', 'Preview may not be up to date')}`, 'error');
+        } else {
+          toast(`✓ ${t('map.edit.previewUpdated', 'Preview updated')}`, 'success');
+        }
       }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setCoverageStatus(detail || t('map.edit.coverageNone'));
+      toast(`✗ ${t('map.edit.coverageNone')}`, 'error');
     } finally {
       setCoverageLoading(false);
+      onPreviewLoading?.(false);
     }
-  }, [sn, mapX, mapY, t, toast, stopCoveragePoll]);
+  }, [sn, t, toast, stopCoveragePoll, onPreviewLoading]);
 
   // Start-sheet "Preview" knop → verse coverage-preview met de gekozen richting
   // en de geselecteerde werkgebieden (alle of één).
@@ -3341,7 +3370,15 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
               </Polygon>
             );
           })}
-          <FitToMaps maps={polygonMaps} onFitted={() => { setMapsFitted(true); setUserInteracted(true); }} />
+          <FitToMaps
+            maps={(() => {
+              // Open zoomed in on the FIRST work map (map 1 / the dock map) instead
+              // of fitting every zone + obstacle, which zooms too far out.
+              const work = polygonMaps.filter(m => getAreaStyle(m.mapType, m.mapId, m.mapName) === AREA_STYLES.work);
+              return work.length > 0 ? [work[0]] : polygonMaps;
+            })()}
+            onFitted={() => { setMapsFitted(true); setUserInteracted(true); }}
+          />
           <RecenterMap position={position} hasManualInteraction={userInteracted} waitForFit={polygonMaps.length > 0 && !mapsFitted} />
           <UserInteractionTracker onInteract={() => setUserInteracted(true)} />
           {editMode === 'none' && !brushMode && !paintMode && !moveMode && <MapClickDeselect onDeselect={() => setSelectedMapId(null)} />}
@@ -3353,152 +3390,178 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
             clears the Leaflet zoom control (left) and the camera tile (right).
             Hidden while calibrating (that panel owns top-left). */}
         {!calibrating && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[900] flex flex-row items-center gap-1 max-w-[calc(100%-1.5rem)] overflow-x-auto bg-gray-900/85 backdrop-blur border border-gray-700 rounded-2xl p-1.5 shadow-xl">
-            {/* VIEW */}
-            <div className="flex flex-row items-center gap-1">
-              {trail.length > 0 && (
-                <button
-                  onClick={() => setShowTrail(!showTrail)}
-                  className={`${railBtnBase} ${showTrail ? 'bg-cyan-900/60 text-cyan-300' : railIdle}`}
-                  title={showTrail ? t('map.hideTrail') : t('map.showTrail')}
-                >
-                  <Route className="w-4 h-4" />
-                </button>
-              )}
-              {trail.length > 0 && (
-                <button
-                  onClick={handleClearTrail}
-                  className={`${railBtnBase} text-gray-400 hover:bg-red-900/30 hover:text-red-300`}
-                  title="Clear GPS trail"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-              {trail.length > 10 && (
-                <button
-                  onClick={() => setShowHeatmap(!showHeatmap)}
-                  className={`${railBtnBase} ${showHeatmap ? 'bg-orange-900/60 text-orange-300' : railIdle}`}
-                  title={showHeatmap ? t('map.hideHeatmap') : t('map.showHeatmap')}
-                >
-                  <Flame className="w-4 h-4" />
-                </button>
-              )}
-              {/* Tile-layer picker (flyout) */}
-              <div className="relative">
-                <button
-                  onClick={() => setRailFlyout(f => (f === 'tiles' ? null : 'tiles'))}
-                  className={`${railBtnBase} ${railFlyout === 'tiles' ? 'bg-gray-700 text-white' : railIdle}`}
-                  title={t('map.switchToSatellite')}
-                >
-                  <Layers className="w-4 h-4" />
-                </button>
-                {railFlyout === 'tiles' && (
-                  <div className="absolute top-full left-0 mt-2 z-[950] bg-gray-900/95 backdrop-blur border border-gray-700 rounded-xl p-1 shadow-xl min-w-[190px]">
-                    {(Object.keys(TILE_LAYERS) as TileLayerKey[])
-                      .filter((key) => key === tileLayer || tileLayerInBounds(
-                        TILE_LAYERS[key],
-                        chargerGps?.lat ?? (lat ? parseFloat(lat) : null),
-                        chargerGps?.lng ?? (lng ? parseFloat(lng) : null),
-                      ))
-                      .map((key) => (
-                        <button
-                          key={key}
-                          onClick={() => { changeTileLayer(key); setRailFlyout(null); }}
-                          className={`w-full text-left px-3 py-1.5 rounded-lg text-xs ${key === tileLayer ? 'bg-emerald-600/20 text-emerald-300' : 'text-gray-300 hover:bg-gray-700/60'}`}
-                        >
-                          {TILE_LAYERS[key].label}
-                        </button>
-                      ))}
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[900] flex flex-row flex-wrap justify-center items-center gap-1 max-w-[calc(100%-1.5rem)] bg-gray-900/85 backdrop-blur border border-gray-700 rounded-2xl p-1.5 shadow-xl">
+            {/* Mower controls (start/pause/stop/…) supplied by the shell. */}
+            {controlsSlot && (
+              <>
+                <div className="flex flex-row items-center">{controlsSlot}</div>
+                <div className="w-px self-stretch bg-gray-700/50 my-0.5" />
+              </>
+            )}
+            {/* WEERGAVE — tiles + display toggles */}
+            <div className="relative">
+              <button
+                onClick={() => setRailFlyout(f => (f === 'view' ? null : 'view'))}
+                className={railCat(railFlyout === 'view')}
+                title={t('map.toolView', 'Weergave')}
+              >
+                <Eye className="w-4 h-4" />
+                <span className="hidden sm:inline">{t('map.toolView', 'Weergave')}</span>
+                <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${railFlyout === 'view' ? 'rotate-180' : ''}`} />
+                {(showTrail || showHeatmap || showCamera) && railDot}
+              </button>
+              {railFlyout === 'view' && (
+                <div className={railPanel}>
+                  {/* Satellite layer — compact row that opens a side submenu */}
+                  <div className="relative">
+                    <button onClick={() => setRailTileSub(v => !v)} className={railRow(false)} title={TILE_LAYERS[tileLayer].label}>
+                      <Layers className="w-4 h-4 opacity-70 shrink-0" />
+                      <span className="flex-1 text-left truncate">{cleanTileLabel(TILE_LAYERS[tileLayer].label)}</span>
+                      <ChevronRight className={`w-3.5 h-3.5 text-gray-500 transition-transform ${railTileSub ? 'rotate-90' : ''}`} />
+                    </button>
+                    {railTileSub && (
+                      <div className="absolute left-full top-0 ml-2 z-[960] bg-gray-900/95 backdrop-blur border border-gray-700 rounded-xl p-1 shadow-xl min-w-[200px]">
+                        <div className={railHdr}>{t('map.switchToSatellite')}</div>
+                        {(Object.keys(TILE_LAYERS) as TileLayerKey[])
+                          .filter((key) => key === tileLayer || tileLayerInBounds(
+                            TILE_LAYERS[key],
+                            chargerGps?.lat ?? (lat ? parseFloat(lat) : null),
+                            chargerGps?.lng ?? (lng ? parseFloat(lng) : null),
+                          ))
+                          .map((key) => (
+                            <button key={key} onClick={() => { changeTileLayer(key); setRailTileSub(false); }} className={railRow(key === tileLayer)} title={TILE_LAYERS[key].label}>
+                              <Layers className="w-4 h-4 opacity-70" />{cleanTileLabel(TILE_LAYERS[key].label)}
+                            </button>
+                          ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                  {(trail.length > 0 || (cameraAvailable && sn)) && (
+                    <div className={railHdr}>{t('map.toolShow', 'Tonen')}</div>
+                  )}
+                  {trail.length > 0 && (
+                    <button onClick={() => setShowTrail(!showTrail)} className={railRow(showTrail)}>
+                      <Route className="w-4 h-4 opacity-70" />{showTrail ? t('map.hideTrail') : t('map.showTrail')}
+                    </button>
+                  )}
+                  {trail.length > 10 && (
+                    <button onClick={() => setShowHeatmap(!showHeatmap)} className={railRow(showHeatmap)}>
+                      <Flame className="w-4 h-4 opacity-70" />{showHeatmap ? t('map.hideHeatmap') : t('map.showHeatmap')}
+                    </button>
+                  )}
+                  {trail.length > 0 && (
+                    <button onClick={() => handleClearTrail()} className={railRow(false)}>
+                      <Trash2 className="w-4 h-4 opacity-70" />{t('map.clearTrail', 'Trail wissen')}
+                    </button>
+                  )}
+                  {cameraAvailable && sn && (
+                    <button onClick={() => setShowCamera(v => !v)} className={railRow(showCamera)}>
+                      <Camera className="w-4 h-4 opacity-70" />{t('camera.camera')}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* EDIT */}
+            {/* BEWERKEN — draw / navigate / no-go / calibrate */}
             {editMode === 'none' && (
               <>
                 <div className="w-px self-stretch bg-gray-700/50 my-0.5" />
-                <div className="flex flex-row items-center gap-1">
+                <div className="relative">
                   <button
-                    onClick={startDrawMap}
-                    className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-emerald-900/30 hover:text-emerald-300`}
-                    title={t('map.drawNew')}
+                    onClick={() => setRailFlyout(f => (f === 'edit' ? null : 'edit'))}
+                    className={railCat(railFlyout === 'edit')}
+                    title={t('map.toolEdit', 'Bewerken')}
                   >
                     <Pencil className="w-4 h-4" />
+                    <span className="hidden sm:inline">{t('map.toolEdit', 'Bewerken')}</span>
+                    <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${railFlyout === 'edit' ? 'rotate-180' : ''}`} />
+                    {(navigateMode || wallDrawMode) && railDot}
                   </button>
-                  {sn && (navigateMode ? (
-                    <button
-                      onClick={() => { setNavigateMode(false); setWallDrawMode(false); }}
-                      className={`${railBtnBase} bg-blue-600 text-white animate-pulse`}
-                      title={t('controls.navigateTo')}
-                    >
-                      <Target className="w-4 h-4" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => { setNavigateMode(true); setWallDrawMode(false); setPlacingCharger(false); }}
-                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-blue-900/30 hover:text-blue-300`}
-                      title={t('controls.navigateTo')}
-                    >
-                      <Target className="w-4 h-4" />
-                    </button>
-                  ))}
-                  {navigateTarget && (
-                    <button
-                      onClick={handleStopNavigation}
-                      className={`${railBtnBase} bg-red-900/60 text-red-300 hover:bg-red-800/60`}
-                      title={t('controls.stopNavigation')}
-                    >
-                      <XCircle className="w-4 h-4" />
-                    </button>
-                  )}
-                  {sn && (wallDrawMode ? (
-                    <button
-                      onClick={() => { setWallDrawMode(false); setWallFirstCorner(null); }}
-                      className={`${railBtnBase} bg-red-600 text-white animate-pulse`}
-                      title="No-go zone"
-                    >
-                      <Fence className="w-4 h-4" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => { setWallDrawMode(true); setNavigateMode(false); setPlacingCharger(false); setWallFirstCorner(null); }}
-                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-red-900/30 hover:text-red-300`}
-                      title="No-go zone"
-                    >
-                      <Fence className="w-4 h-4" />
-                    </button>
-                  ))}
-                  {polygonMaps.length > 0 && (
-                    <button
-                      onClick={startCalibrating}
-                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-amber-900/30 hover:text-amber-300`}
-                      title={t('map.calibrateOverlay')}
-                    >
-                      <SlidersHorizontal className="w-4 h-4" />
-                    </button>
+                  {railFlyout === 'edit' && (
+                    <div className={railPanel}>
+                      <button onClick={() => { startDrawMap(); setRailFlyout(null); }} className={railRow(false)}>
+                        <Pencil className="w-4 h-4 opacity-70" />{t('map.drawNew')}
+                      </button>
+                      {sn && (
+                        <button
+                          onClick={() => {
+                            if (navigateMode) { setNavigateMode(false); setWallDrawMode(false); }
+                            else { setNavigateMode(true); setWallDrawMode(false); setPlacingCharger(false); }
+                            setRailFlyout(null);
+                          }}
+                          className={railRow(navigateMode)}
+                        >
+                          <Target className="w-4 h-4 opacity-70" />{t('controls.navigateTo')}
+                        </button>
+                      )}
+                      {navigateTarget && (
+                        <button onClick={() => { handleStopNavigation(); setRailFlyout(null); }} className={railRow(false)}>
+                          <XCircle className="w-4 h-4 opacity-70 text-red-400" />{t('controls.stopNavigation')}
+                        </button>
+                      )}
+                      {sn && (
+                        <button
+                          onClick={() => {
+                            if (wallDrawMode) { setWallDrawMode(false); setWallFirstCorner(null); }
+                            else { setWallDrawMode(true); setNavigateMode(false); setPlacingCharger(false); setWallFirstCorner(null); }
+                            setRailFlyout(null);
+                          }}
+                          className={railRow(wallDrawMode)}
+                        >
+                          <Fence className="w-4 h-4 opacity-70" />{t('map.noGoZone', 'No-go zone')}
+                        </button>
+                      )}
+                      {polygonMaps.length > 0 && (
+                        <button onClick={() => { startCalibrating(); setRailFlyout(null); }} className={railRow(false)}>
+                          <SlidersHorizontal className="w-4 h-4 opacity-70" />{t('map.calibrateOverlay')}
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </>
             )}
 
-            {/* COVERAGE */}
+            {/* COVERAGE — show path / width / refresh */}
             {polygonMaps.length > 0 && editMode === 'none' && sn && (
               <>
                 <div className="w-px self-stretch bg-gray-700/50 my-0.5" />
-                <div className="flex flex-row items-center gap-1">
-                  {/* Coverage radius (flyout) */}
-                  <div className="relative">
-                    <button
-                      onClick={() => setRailFlyout(f => (f === 'radius' ? null : 'radius'))}
-                      className={`${railBtnBase} ${railFlyout === 'radius' ? 'bg-gray-700 text-white' : 'text-gray-300 bg-gray-800/50 hover:bg-emerald-900/30 hover:text-emerald-300'}`}
-                      title={t('map.edit.coverageRadiusTitle')}
-                    >
-                      <Crosshair className="w-4 h-4" />
-                    </button>
-                    {railFlyout === 'radius' && (
-                      <div className="absolute top-full left-0 mt-2 z-[950] bg-gray-900/95 backdrop-blur border border-gray-700 rounded-xl p-2 shadow-xl flex items-center gap-1.5">
-                        <span className="text-[10px] uppercase tracking-wide text-gray-500 whitespace-nowrap">{t('map.edit.coverageRadiusTitle')}</span>
+                <div className="relative">
+                  <button
+                    onClick={() => setRailFlyout(f => (f === 'coverage' ? null : 'coverage'))}
+                    className={railCat(railFlyout === 'coverage')}
+                    title={t('map.toolCoverage', 'Coverage')}
+                  >
+                    {coverageLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Spline className="w-4 h-4" />}
+                    <span className="hidden sm:inline">{t('map.toolCoverage', 'Coverage')}</span>
+                    <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${railFlyout === 'coverage' ? 'rotate-180' : ''}`} />
+                    {showCoverage && (
+                      <span className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-gray-900 ${coverageLive ? 'animate-pulse' : ''}`} />
+                    )}
+                  </button>
+                  {railFlyout === 'coverage' && (
+                    <div className={railPanel}>
+                      <button onClick={() => toggleCoverage()} disabled={coverageLoading} className={railRow(showCoverage)}>
+                        <Spline className="w-4 h-4 opacity-70" />{showCoverage ? t('map.edit.coverageHide', 'Maaipad verbergen') : t('map.edit.coverageShow')}
+                      </button>
+                      {showCoverage && (
+                        <button
+                          onClick={() => {
+                            if (liveSession) { void refreshCoverage(); return; }
+                            const lp = lastPreviewParamsRef.current;
+                            if (lp) void previewMaps(lp.canonicals, lp.covDirection);
+                            else void refreshCoverage();
+                          }}
+                          disabled={coverageLoading}
+                          className={railRow(false)}
+                        >
+                          <RefreshCw className={`w-4 h-4 opacity-70 ${coverageLoading ? 'animate-spin' : ''}`} />{t('map.edit.coverageRefresh')}
+                        </button>
+                      )}
+                      <div className={railHdr}>{t('map.edit.coverageRadiusTitle')}</div>
+                      <div className="flex items-center gap-1.5 px-2.5 pb-1.5">
+                        <Crosshair className="w-4 h-4 text-gray-400 shrink-0" />
                         <input
                           type="number"
                           min={MIN_COVERAGE_RADIUS}
@@ -3512,88 +3575,53 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
                         <button
                           onClick={saveCoverageRadius}
                           disabled={coverageRadiusSaving}
-                          className={`rounded p-1 text-gray-300 hover:text-emerald-300 ${coverageRadiusSaving ? 'cursor-wait opacity-60' : ''}`}
+                          className={`ml-auto rounded p-1.5 text-gray-300 hover:text-emerald-300 hover:bg-gray-700/60 ${coverageRadiusSaving ? 'cursor-wait opacity-60' : ''}`}
                           title={t('map.edit.coverageRadiusSave')}
                         >
                           {coverageRadiusSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                         </button>
                       </div>
-                    )}
-                  </div>
-                  {/* Coverage preview toggle */}
-                  <button
-                    onClick={toggleCoverage}
-                    disabled={coverageLoading}
-                    className={`${railBtnBase} ${showCoverage ? 'bg-zinc-700 text-zinc-100 border border-zinc-500' : 'text-gray-300 bg-gray-800/50 hover:bg-zinc-900/50 hover:text-zinc-100'}`}
-                    title={t('map.edit.coverageNativeTitle')}
-                  >
-                    {coverageLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Spline className="w-4 h-4" />}
-                    {coverageLive && !coverageLoading && (
-                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title={t('map.edit.coverageLive')} />
-                    )}
-                  </button>
-                  {/* Refresh coverage */}
-                  {showCoverage && (
-                    <button
-                      onClick={() => {
-                        if (liveSession) { void refreshCoverage(); return; }
-                        const lp = lastPreviewParamsRef.current;
-                        if (lp) void previewMaps(lp.canonicals, lp.covDirection);
-                        else void refreshCoverage();
-                      }}
-                      disabled={coverageLoading}
-                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-zinc-900/50 hover:text-zinc-100`}
-                      title={t('map.edit.coverageRefresh')}
-                    >
-                      <RefreshCw className={`w-4 h-4 ${coverageLoading ? 'animate-spin' : ''}`} />
-                    </button>
+                    </div>
                   )}
                 </div>
               </>
             )}
 
-            {/* DEVICES */}
-            {(editMode === 'none' || (cameraAvailable && sn)) && (
+            {/* DOCK — place / calibrate charger */}
+            {editMode === 'none' && (
               <>
                 <div className="w-px self-stretch bg-gray-700/50 my-0.5" />
-                <div className="flex flex-row items-center gap-1">
-                  {editMode === 'none' && (
-                    <button
-                      onClick={() => setPlacingCharger(!placingCharger)}
-                      className={`${railBtnBase} ${
-                        placingCharger
-                          ? 'bg-amber-600 text-white animate-pulse'
-                          : !chargerHasGps
-                            ? 'bg-amber-900/50 text-amber-300 border border-amber-700/50'
-                            : 'text-gray-300 bg-gray-800/50 hover:bg-amber-900/30 hover:text-amber-300'
-                      }`}
-                      title={placingCharger ? t('map.placeChargerClick') : !chargerHasGps ? t('map.chargerNotSet') : t('map.placeChargerTooltip')}
-                    >
-                      <MapPin className="w-4 h-4" />
-                    </button>
-                  )}
-                  {editMode === 'none' && chargerHasGps && sn && (
-                    <button
-                      onClick={() => setConfirmCalibrate(true)}
-                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-blue-900/30 hover:text-blue-300`}
-                      title={t('map.calibrateCharger')}
-                    >
-                      <Navigation className="w-4 h-4" />
-                    </button>
-                  )}
-                  {cameraAvailable && sn && (
-                    <button
-                      onClick={() => setShowCamera((v) => !v)}
-                      className={`${railBtnBase} ${showCamera ? 'bg-emerald-900/60 text-emerald-300 border border-emerald-700/50' : 'text-gray-300 bg-gray-800/50 hover:bg-emerald-900/30 hover:text-emerald-300'}`}
-                      title={t('camera.camera')}
-                    >
-                      <Camera className="w-4 h-4" />
-                    </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setRailFlyout(f => (f === 'dock' ? null : 'dock'))}
+                    className={`${railCat(railFlyout === 'dock')} ${!chargerHasGps ? 'text-amber-300' : ''}`}
+                    title={t('map.toolDock', 'Dock')}
+                  >
+                    <MapPin className="w-4 h-4" />
+                    <span className="hidden sm:inline">{t('map.toolDock', 'Dock')}</span>
+                    <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${railFlyout === 'dock' ? 'rotate-180' : ''}`} />
+                    {placingCharger && railDot}
+                  </button>
+                  {railFlyout === 'dock' && (
+                    <div className={railPanel}>
+                      <button onClick={() => { setPlacingCharger(!placingCharger); setRailFlyout(null); }} className={railRow(placingCharger)}>
+                        <MapPin className="w-4 h-4 opacity-70" />{!chargerHasGps ? t('map.chargerNotSet') : t('map.placeChargerTooltip')}
+                      </button>
+                      {chargerHasGps && sn && (
+                        <button onClick={() => { setConfirmCalibrate(true); setRailFlyout(null); }} className={railRow(false)}>
+                          <Navigation className="w-4 h-4 opacity-70" />{t('map.calibrateCharger')}
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </>
             )}
           </div>
+        )}
+        {/* Close any open tool-bar flyout when clicking elsewhere on the map. */}
+        {railFlyout && !calibrating && (
+          <div className="absolute inset-0 z-[890]" onClick={() => setRailFlyout(null)} />
         )}
 
         {/* Mowing stats — floating card op de kaart tijdens maaien (compact). */}
@@ -3602,6 +3630,47 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
             <MowingStatsCard sensors={mowingSensors} compact totalAreaM2={totalWorkAreaM2} />
           </div>
         )}
+
+        {/* Coverage legend — explains the path colors. During a live session it
+            shows the progress bar + the yellow/green/white legend; for a static
+            idle preview it just labels the planned path. Bottom-right (clear of
+            the stats card on the left and the camera top-right). */}
+        {showCoverage && !calibrating && (() => {
+          const rawPct = parseFloat(mowingSensors.mowing_progress ?? '');
+          const pct = Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) : null;
+          const showProgress = coverageLive && !progressIsStale && pct !== null;
+          return (
+            <div className="absolute bottom-3 right-3 z-[900] w-44 bg-gray-900/85 backdrop-blur border border-gray-700 rounded-2xl p-3 shadow-xl pointer-events-none">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                  {t('map.edit.coverageTitle', 'Coverage')}
+                </span>
+                {coverageLive && (
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-cyan-300">
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" style={{ boxShadow: '0 0 0 3px rgba(34,211,238,.22)' }} />
+                    LIVE
+                  </span>
+                )}
+              </div>
+              {showProgress && (
+                <div className="h-1.5 rounded-full bg-gray-700/60 overflow-hidden mb-2.5">
+                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#34d399,#a3e635)' }} />
+                </div>
+              )}
+              <div className="flex flex-col gap-1.5 text-[11px] text-gray-300">
+                {coverageLive ? (
+                  <>
+                    <span className="flex items-center gap-2"><span className="w-4 h-[3px] rounded-full" style={{ background: '#fbbf24' }} />{t('map.edit.legendActive', 'Huidige baan')}</span>
+                    <span className="flex items-center gap-2"><span className="w-4 h-[3px] rounded-full" style={{ background: 'rgba(34,197,94,0.9)' }} />{t('map.edit.legendDone', 'Gemaaid')}</span>
+                    <span className="flex items-center gap-2"><span className="w-4 h-[3px] rounded-full" style={{ background: 'rgba(255,255,255,0.45)' }} />{t('map.edit.legendPlanned', 'Gepland')}</span>
+                  </>
+                ) : (
+                  <span className="flex items-center gap-2"><span className="w-4 h-[3px] rounded-full" style={{ background: 'rgba(56,189,248,0.9)' }} />{t('map.edit.legendPreview', 'Maaipad (preview)')}</span>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Live camera tile — floating top-right, OpenNova custom firmware only. */}
         {showCamera && cameraAvailable && sn && (
@@ -4044,15 +4113,22 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
         {obstacleClipboard && !calibrating && editMode === 'none' && !brushMode && !paintMode && !moveMode && (() => {
           const hasWork = maps.some(m => m.mapType === 'work' && m.canonicalName);
           return (
-            <div className="absolute bottom-3 right-3 z-[1000]">
+            <div className="absolute bottom-3 right-3 z-[1000] inline-flex items-center gap-1 rounded-xl bg-gray-900/85 backdrop-blur border border-gray-700 p-1 shadow-xl">
               <button
                 onClick={(e) => { e.stopPropagation(); pasteObstacle(); }}
                 disabled={applying || !hasWork}
-                className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shadow disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 title={hasWork ? t('map.edit.paste') : t('map.edit.pasteNoWork')}
               >
                 <ClipboardPaste className="w-4 h-4" />
                 {t('map.edit.paste')}
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); setObstacleClipboard(null); }}
+                className="grid place-items-center w-7 h-7 rounded-lg text-gray-400 hover:text-red-300 hover:bg-red-900/30 transition-colors"
+                title={t('map.edit.pasteDismiss', 'Clear clipboard')}
+              >
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           );

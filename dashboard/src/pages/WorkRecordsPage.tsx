@@ -13,7 +13,9 @@ export function WorkRecordsPage({ mower }: Props) {
   }
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <WorkHistory sn={mower.sn} />
+      <div className="max-w-3xl mx-auto p-4">
+        <WorkHistory sn={mower.sn} />
+      </div>
     </div>
   );
 }

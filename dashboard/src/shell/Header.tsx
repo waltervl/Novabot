@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Server, ServerOff, Plus, Settings } from 'lucide-react';
+import { Server, ServerOff, Plus, Activity } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { BleScanner } from '../components/ble/BleScanner';
 import { RainBadge } from './RainBadge';
@@ -100,14 +100,15 @@ export function Header({ connected, rainState, onOpenDrawer }: Props) {
         {/* Rain badge */}
         <RainBadge rainState={rainState} />
 
-        {/* Diagnostics drawer */}
+        {/* Diagnostics drawer — Activity icon (not a gear, which reads as
+            "settings"); kept subtle so it doesn't compete with the tabs. */}
         <button
           onClick={onOpenDrawer}
-          title="Diagnostics"
-          className="grid place-items-center w-8 h-8 rounded-lg text-zinc-400 bg-zinc-800/50 border border-zinc-700/70 hover:text-zinc-100 hover:border-zinc-500 transition-colors"
+          title={t('header.diagnostics', 'Diagnostics & logs')}
+          className="grid place-items-center w-8 h-8 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors"
           aria-label="Open diagnostics drawer"
         >
-          <Settings className="w-4 h-4" />
+          <Activity className="w-4 h-4" />
         </button>
       </div>
 

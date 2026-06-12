@@ -27,7 +27,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
 ];
 
 function ShellInner() {
-  const { devices, loading, connected, logs, bleLogs, otaProgress, liveOutlines, coveredLanes } = useDevices();
+  const { devices, loading, connected, otaProgress, liveOutlines, coveredLanes } = useDevices();
   const { activeMower, activeMowerSn, setActiveMowerSn, knownMowers } = useActiveMower(devices);
   const [tab, setTab] = useState<Tab>('map');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -42,6 +42,9 @@ function ShellInner() {
   const [patternMode, setPatternMode] = useState(false);
   const [patternCenter, setPatternCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [patternPlacement, setPatternPlacement] = useState<PatternPlacement | null>(null);
+  // True while the map is actually fetching the mower coverage preview — drives
+  // the Preview button's disabled/spinner state so it waits for the real result.
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   // Rain state derived from active mower's sensors. The mower reports
   // `rain_paused: '1'` when a scheduled run is currently paused by rain
@@ -56,6 +59,22 @@ function ShellInner() {
       : 'dry'
     : null;
 
+  // Mower controls (start/pause/stop/…) are hosted inside the map's floating
+  // tool-bar (passed down as a slot) instead of the status row, so they live
+  // together with the map tools.
+  const mowerControls = activeMower ? (
+    <MowerControls
+      sn={activeMower.sn}
+      online={activeMower.online}
+      sensors={activeMower.sensors}
+      onPreview={(covDirection, canonicals) => { setTab('map'); setPreviewRequest({ nonce: Date.now(), covDirection, canonicals }); }}
+      patternCenter={patternCenter}
+      onPatternModeChange={(active) => { setPatternMode(active); if (active) setTab('map'); if (!active) setPatternCenter(null); }}
+      onPatternPlacementChange={setPatternPlacement}
+      previewLoading={previewLoading}
+    />
+  ) : null;
+
   if (loading) {
     return <div className="p-8 text-zinc-500">Loading…</div>;
   }
@@ -68,43 +87,45 @@ function ShellInner() {
         onOpenDrawer={() => setDrawerOpen(true)}
       />
 
+      {/* Single row: device identity + live telemetry (left) and the tab nav
+          (right), so the status and the tabs share one line. */}
       <div className="px-4 py-1.5 bg-zinc-900 border-b border-zinc-800 flex-shrink-0 flex items-center gap-3 flex-wrap">
+        {/* Mower selector (left) */}
         <DeviceChips
+          part="identity"
           mower={activeMower}
           knownMowers={knownMowers}
           onSelectMower={setActiveMowerSn}
         />
-        {activeMower && (
-          <div className="flex items-center gap-1.5 ml-auto">
-            <MowerControls
-              sn={activeMower.sn}
-              online={activeMower.online}
-              sensors={activeMower.sensors}
-              onPreview={(covDirection, canonicals) => { setTab('map'); setPreviewRequest({ nonce: Date.now(), covDirection, canonicals }); }}
-              patternCenter={patternCenter}
-              onPatternModeChange={(active) => { setPatternMode(active); if (active) setTab('map'); if (!active) setPatternCenter(null); }}
-              onPatternPlacementChange={setPatternPlacement}
-            />
-          </div>
-        )}
+        {/* Tabs (middle) */}
+        <nav className="flex items-center gap-1 p-0.5 rounded-xl bg-zinc-800/40 border border-zinc-700/60">
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-3.5 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                tab === t.id
+                  ? 'bg-zinc-700 text-zinc-100 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/40'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        {/* Live telemetry (far right) */}
+        <div className="ml-auto">
+          <DeviceChips
+            part="telemetry"
+            mower={activeMower}
+            knownMowers={knownMowers}
+            onSelectMower={setActiveMowerSn}
+          />
+        </div>
       </div>
 
       <MdnsConflictBanner />
       <LongPauseBanner mower={activeMower} />
-
-      <nav className="flex gap-1 px-4 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
-        {TABS.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === t.id ? 'border-emerald-500 text-zinc-100' : 'border-transparent text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
 
       <main className="flex-1 flex flex-col min-h-0 p-4">
         {tab === 'map' && (
@@ -117,6 +138,8 @@ function ShellInner() {
             previewRequest={previewRequest}
             patternPlacement={patternPlacement}
             onMapClickForPattern={patternMode ? setPatternCenter : undefined}
+            controlsSlot={mowerControls}
+            onPreviewLoading={setPreviewLoading}
           />
         )}
         {tab === 'schedule' && <SchedulePage mower={activeMower} />}
@@ -129,12 +152,6 @@ function ShellInner() {
         <LiveStatusCard sn={activeMowerSn} />
         <ServerLogTail />
       </Drawer>
-
-      {/* Bottom-of-page debug strip kept temporarily so existing log/BLE views remain reachable until Phase 4 lands their drawer cards. */}
-      <details className="mt-8 mx-4 mb-4 text-xs text-zinc-500">
-        <summary className="cursor-pointer">Legacy debug (temporary)</summary>
-        <pre className="overflow-auto max-h-64">{JSON.stringify({ logs: logs.slice(-5), bleLogs: bleLogs.slice(-5) }, null, 2)}</pre>
-      </details>
     </div>
   );
 }

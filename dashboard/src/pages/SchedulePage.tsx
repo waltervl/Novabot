@@ -13,12 +13,16 @@ export function SchedulePage({ mower }: Props) {
     return <div className="p-8 text-zinc-500">{t('pages.selectMower')}</div>;
   }
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto space-y-4 p-4">
-      <ScheduleTimeline sn={mower.sn} />
-      <Scheduler
-        sn={mower.sn}
-        online={mower.online}
-      />
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="max-w-3xl mx-auto p-4 space-y-4">
+        {/* Management first (the "New" + list is the primary action), the
+            week-timeline overview below it. */}
+        <Scheduler
+          sn={mower.sn}
+          online={mower.online}
+        />
+        <ScheduleTimeline sn={mower.sn} />
+      </div>
     </div>
   );
 }

@@ -7,11 +7,15 @@ import { useTranslation } from 'react-i18next';
 import { Drawer } from './Drawer';
 import type { DeviceState } from '../types';
 import { fetchLoraStatus, type LoraStatus } from '../api/client';
+import { workStatusLabel } from '../utils/workStatus';
 
 interface Props {
   mower: DeviceState | null;
   knownMowers: DeviceState[];
   onSelectMower: (sn: string) => void;
+  /** Which half to render. Lets the shell place the mower switcher and the live
+   *  telemetry capsule on opposite ends of the tab row. Omit to render both. */
+  part?: 'identity' | 'telemetry';
 }
 
 // ── Sensor grouping ──────────────────────────────────────────────────────────
@@ -219,7 +223,7 @@ function SummaryPanel({
 
 // ── Main DeviceChips component ───────────────────────────────────────────────
 
-export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React.JSX.Element | null {
+export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props): React.JSX.Element | null {
   const { t } = useTranslation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openedAt, setOpenedAt] = useState<number>(0);
@@ -261,6 +265,11 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
 
   // ── Offline chip ────────────────────────────────────────────────────────────
   if (!mower.online) {
+    const offlineBadge = (
+      <span className="text-[10px] bg-zinc-800 text-zinc-500 px-2 py-1 rounded-full">{t('chips.offline')}</span>
+    );
+    // Telemetry slot has nothing live when offline — just the offline badge.
+    if (part === 'telemetry') return offlineBadge;
     return (
       <>
         <div className="inline-flex items-center gap-1.5 h-7">
@@ -295,7 +304,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
               <span className="font-medium">{mower.nickname ?? mower.sn}</span>
             </span>
           )}
-          <span className="text-[10px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded-full">{t('chips.offline')}</span>
+          {!part && offlineBadge}
         </div>
       </>
     );
@@ -345,11 +354,8 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
     ? rtkFixQualityColor
     : (mowerRtk ? '#34d399' : '#6b7280');
 
-  return (
-    <>
-      <div className="inline-flex items-center gap-2">
-          {/* ── Mower identity / switcher (click zone 1: switch active mower) ── */}
-          {knownMowers.length > 1 ? (
+  // Mower identity / switcher (click zone 1: switch active mower)
+  const identityEl = knownMowers.length > 1 ? (
             <div className="relative">
               <button
                 onClick={(e) => { e.stopPropagation(); setSwitcherOpen(v => !v); }}
@@ -382,11 +388,12 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
               </span>
               {mower.nickname ?? mower.sn}
             </span>
-          )}
+          );
 
-          {/* ── Telemetry capsule (click zone 2: open sensor drawer) ── */}
-          <button
-            onClick={openDrawer}
+  // Telemetry capsule (click zone 2: open sensor drawer)
+  const telemetryEl = (
+    <button
+      onClick={openDrawer}
             className="group inline-flex items-stretch h-8 rounded-xl bg-zinc-900/60 border border-zinc-700/70 hover:border-zinc-600 overflow-hidden transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             aria-label={`${mower.nickname ?? mower.sn} sensor details`}
           >
@@ -455,7 +462,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
                 {hasWork && (
                   <TeleCell
                     icon={Activity}
-                    value={workStatus!}
+                    value={workStatusLabel(workStatus)}
                     color="text-emerald-300"
                     iconColor="text-emerald-400/80"
                     label={`Work status: ${workStatus}`}
@@ -470,10 +477,11 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
               <ChevronDown className="w-3 h-3" />
             </span>
           </button>
-      </div>
+  );
 
-      {/* Sensor detail drawer — separate instance from the gear-icon drawer */}
-      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title={t('drawer.title.sensors')}>
+  // Sensor detail drawer — separate instance from the gear-icon drawer
+  const drawerEl = (
+    <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title={t('drawer.title.sensors')}>
         {mode === 'summary' ? (
           <SummaryPanel mower={mower} lora={lora} setMode={setMode} />
         ) : (
@@ -487,7 +495,15 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
             <SensorDetailPanel mower={mower} openedAt={openedAt} />
           </div>
         )}
-      </Drawer>
+    </Drawer>
+  );
+
+  if (part === 'identity') return identityEl;
+  if (part === 'telemetry') return (<>{telemetryEl}{drawerEl}</>);
+  return (
+    <>
+      <div className="inline-flex items-center gap-2">{identityEl}{telemetryEl}</div>
+      {drawerEl}
     </>
   );
 }

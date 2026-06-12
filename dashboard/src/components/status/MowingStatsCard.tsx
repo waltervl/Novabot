@@ -65,11 +65,11 @@ interface ChipProps {
 
 function Chip({ icon, label, value }: ChipProps) {
   return (
-    <div className="flex items-center gap-2 bg-gray-900/40 rounded-lg px-3 py-2 border border-gray-700/60">
-      <span className="text-emerald-400 shrink-0">{icon}</span>
+    <div className="flex items-center gap-2.5 bg-gray-800/50 rounded-xl px-3 py-2 border border-gray-700/60">
+      <span className="grid place-items-center w-7 h-7 rounded-lg bg-emerald-950/40 border border-emerald-800/30 text-emerald-400 shrink-0">{icon}</span>
       <div className="flex flex-col leading-tight min-w-0">
-        <span className="text-[11px] text-gray-400 truncate">{label}</span>
-        <span className="text-sm font-medium text-white truncate">{value}</span>
+        <span className="text-[9px] font-semibold uppercase tracking-[0.1em] text-gray-500 truncate">{label}</span>
+        <span className="text-sm font-semibold text-white tabular-nums truncate">{value}</span>
       </div>
     </div>
   );
@@ -154,18 +154,20 @@ export function MowingStatsCard({ sensors, compact, totalAreaM2 }: Props) {
   }
 
   return (
-    <div className="bg-gray-900/95 backdrop-blur border border-gray-700 rounded-2xl p-4 shadow-xl">
-      <div className="flex items-center justify-between mb-2">
+    <div className="bg-gray-900/85 backdrop-blur border border-gray-700 rounded-2xl p-4 shadow-xl">
+      <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2">
           <Scissors className="w-4 h-4 text-emerald-400" />
-          <span className="text-sm text-gray-400">{t('status.mowingProgress')}</span>
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">{t('status.mowingProgress')}</span>
         </div>
-        <span className="text-sm font-medium text-white">{progress}%</span>
+        <span className="text-base font-bold text-white tabular-nums">
+          {progress}<span className="text-xs font-semibold text-gray-400">%</span>
+        </span>
       </div>
-      <div className="h-3 bg-gray-700 rounded-full overflow-hidden">
+      <div className="h-2 bg-gray-700/60 rounded-full overflow-hidden">
         <div
-          className="h-full bg-emerald-500 rounded-full transition-all duration-500"
-          style={{ width: `${progress}%` }}
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${progress}%`, background: 'linear-gradient(90deg,#34d399,#a3e635)' }}
         />
       </div>
 

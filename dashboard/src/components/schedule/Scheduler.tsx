@@ -181,13 +181,13 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+    <div className="rounded-2xl border border-gray-700/60 bg-gray-900/50 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700/60">
         <div className="flex items-center gap-2">
-          <Calendar className="w-4 h-4 text-blue-400" />
-          <span className="text-sm font-semibold text-white">{t('schedule.title')}</span>
-          <span className="text-xs text-gray-500">{schedules.length}</span>
+          <Calendar className="w-4 h-4 text-emerald-400" />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">{t('schedule.title')}</span>
+          <span className="text-[11px] font-mono text-gray-600">{schedules.length}</span>
         </div>
         <button
           onClick={() => {
@@ -196,16 +196,16 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
             setForm(defaultForm);
             onPathDirectionChange?.(next ? defaultForm.pathDirection : null);
           }}
-          className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-colors"
         >
-          <Plus className="w-3 h-3" />
+          <Plus className="w-3.5 h-3.5" />
           {t('schedule.new')}
         </button>
       </div>
 
       {/* New schedule form */}
       {showForm && (
-        <div className="p-4 border-b border-gray-700 bg-gray-850">
+        <div className="p-4 border-b border-gray-700/60 bg-gray-900/40">
           {/* Name */}
           <div className="mb-3">
             <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.name')}</label>
@@ -213,7 +213,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
               value={form.scheduleName}
               onChange={e => setForm(prev => ({ ...prev, scheduleName: e.target.value }))}
               placeholder={t('schedule.namePlaceholder')}
-              className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-blue-500"
+              className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-emerald-500"
             />
           </div>
 
@@ -225,7 +225,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                 type="time"
                 value={form.startTime}
                 onChange={e => setForm(prev => ({ ...prev, startTime: e.target.value }))}
-                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-blue-500"
+                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-emerald-500"
               />
             </div>
             <div>
@@ -234,7 +234,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                 type="time"
                 value={form.endTime}
                 onChange={e => setForm(prev => ({ ...prev, endTime: e.target.value }))}
-                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-blue-500"
+                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-emerald-500"
               />
             </div>
           </div>
@@ -249,7 +249,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                   onClick={() => toggleWeekday(idx)}
                   className={`flex-1 text-[11px] py-1.5 rounded transition-colors ${
                     form.weekdays.includes(idx)
-                      ? 'bg-blue-600 text-white font-medium'
+                      ? 'bg-emerald-600 text-white font-medium'
                       : 'bg-gray-900 text-gray-500 hover:text-gray-300 border border-gray-700'
                   }`}
                 >
@@ -269,7 +269,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                   const m = maps.find(x => x.mapId === e.target.value);
                   setForm(prev => ({ ...prev, mapId: e.target.value, mapName: m?.mapName ?? '' }));
                 }}
-                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-blue-500"
+                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-emerald-500"
               >
                 <option value="">{t('schedule.allWorkAreas')}</option>
                 {maps.map(m => (
@@ -316,7 +316,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                   onClick={() => { setForm(prev => ({ ...prev, pathDirection: deg })); onPathDirectionChange?.(deg); }}
                   className={`text-[9px] py-1 rounded transition-colors ${
                     form.pathDirection === deg
-                      ? 'bg-blue-600 text-white font-medium'
+                      ? 'bg-emerald-600 text-white font-medium'
                       : 'bg-gray-900 text-gray-500 hover:text-gray-300 border border-gray-700'
                   }`}
                 >
@@ -331,7 +331,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
               step={5}
               value={form.pathDirection}
               onChange={e => { const v = parseInt(e.target.value); setForm(prev => ({ ...prev, pathDirection: v })); onPathDirectionChange?.(v); }}
-              className="w-full h-1.5 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
+              className="w-full h-1.5 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
             />
           </div>
 
@@ -342,7 +342,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                 type="checkbox"
                 checked={form.alternateDirection}
                 onChange={e => setForm(prev => ({ ...prev, alternateDirection: e.target.checked }))}
-                className="w-3.5 h-3.5 rounded accent-blue-500 bg-gray-900 border-gray-700"
+                className="w-3.5 h-3.5 rounded accent-emerald-500 bg-gray-900 border-gray-700"
               />
               <span className="text-[11px] text-gray-300">{t('schedule.alternateDirection')}</span>
               <RefreshCw className="w-3 h-3 text-gray-500" />
@@ -356,7 +356,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                     onClick={() => setForm(prev => ({ ...prev, alternateStep: step }))}
                     className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
                       form.alternateStep === step
-                        ? 'bg-blue-600 text-white font-medium'
+                        ? 'bg-emerald-600 text-white font-medium'
                         : 'bg-gray-900 text-gray-500 hover:text-gray-300 border border-gray-700'
                     }`}
                   >
@@ -385,7 +385,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
               step={0.05}
               value={form.edgeOffset}
               onChange={e => setForm(prev => ({ ...prev, edgeOffset: parseFloat(e.target.value) }))}
-              className="w-full h-1.5 mt-1 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
+              className="w-full h-1.5 mt-1 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
             />
             <div className="flex justify-between text-[9px] text-gray-600 mt-0.5">
               <span>{t('schedule.edgeOffsetShrink')}</span>
@@ -400,7 +400,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                 type="checkbox"
                 checked={form.rainPause}
                 onChange={e => setForm(prev => ({ ...prev, rainPause: e.target.checked }))}
-                className="w-3.5 h-3.5 rounded accent-blue-500 bg-gray-900 border-gray-700"
+                className="w-3.5 h-3.5 rounded accent-emerald-500 bg-gray-900 border-gray-700"
               />
               <span className="text-[11px] text-gray-300">{t('schedule.rainPause')}</span>
               <CloudRain className="w-3 h-3 text-blue-400" />
@@ -420,7 +420,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                     step={0.1}
                     value={form.rainThresholdMm}
                     onChange={e => setForm(prev => ({ ...prev, rainThresholdMm: parseFloat(e.target.value) }))}
-                    className="w-full h-1 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
+                    className="w-full h-1 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
                 {/* Rain probability */}
@@ -436,7 +436,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                     step={5}
                     value={form.rainThresholdProbability}
                     onChange={e => setForm(prev => ({ ...prev, rainThresholdProbability: parseInt(e.target.value) }))}
-                    className="w-full h-1 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
+                    className="w-full h-1 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
                 {/* Check hours ahead */}
@@ -452,7 +452,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                     step={1}
                     value={form.rainCheckHours}
                     onChange={e => setForm(prev => ({ ...prev, rainCheckHours: parseInt(e.target.value) }))}
-                    className="w-full h-1 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
+                    className="w-full h-1 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
                 <div className="text-[9px] text-blue-400/60 italic">{t('schedule.serverManaged')}</div>
@@ -485,7 +485,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
             <button
               onClick={handleCreate}
               disabled={saving || !form.startTime || form.weekdays.length === 0}
-              className="flex-1 inline-flex items-center justify-center gap-1 text-xs px-2 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex-1 inline-flex items-center justify-center gap-1 text-xs px-2 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Plus className="w-3 h-3" />
               {saving ? t('schedule.saving') : t('schedule.create')}
@@ -526,7 +526,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                 <button
                   onClick={() => handleToggle(s.scheduleId, !s.enabled)}
                   className={`w-8 h-4 rounded-full transition-colors relative ${
-                    s.enabled ? 'bg-blue-600' : 'bg-gray-700'
+                    s.enabled ? 'bg-emerald-600' : 'bg-gray-700'
                   }`}
                   title={s.enabled ? t('schedule.disable') : t('schedule.enable')}
                 >
@@ -534,7 +534,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                     s.enabled ? 'translate-x-4' : 'translate-x-0.5'
                   }`} />
                 </button>
-                <Clock className="w-3.5 h-3.5 text-blue-400" />
+                <Clock className="w-3.5 h-3.5 text-emerald-400" />
                 <span className="text-sm font-semibold text-white font-mono">
                   {s.startTime}{s.endTime ? ` \u2013 ${s.endTime}` : ''}
                 </span>
@@ -548,7 +548,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                 {online && s.enabled && (
                   <button
                     onClick={() => handleSend(s.scheduleId)}
-                    className="text-blue-400 hover:text-blue-300 p-1 rounded hover:bg-blue-900/30 transition-colors"
+                    className="text-emerald-400 hover:text-emerald-300 p-1 rounded hover:bg-emerald-900/30 transition-colors"
                     title={t('schedule.sendToMower')}
                   >
                     <Send className="w-3.5 h-3.5" />
@@ -571,7 +571,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                     key={idx}
                     className={`w-5 h-5 flex items-center justify-center rounded-sm text-[9px] ${
                       s.weekdays.includes(idx)
-                        ? 'bg-blue-900/50 text-blue-400 font-medium'
+                        ? 'bg-emerald-900/40 text-emerald-300 font-medium'
                         : 'text-gray-600'
                     }`}
                   >
@@ -583,7 +583,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
               <span className="inline-flex items-center gap-0.5">
                 <Compass className="w-3 h-3" />
                 {s.pathDirection}&deg;
-                {s.alternateDirection && <RefreshCw className="w-2.5 h-2.5 text-blue-400" />}
+                {s.alternateDirection && <RefreshCw className="w-2.5 h-2.5 text-emerald-400" />}
               </span>
               <span>{(s.cuttingHeight / 10).toFixed(1)} cm</span>
               {s.edgeOffset !== 0 && (

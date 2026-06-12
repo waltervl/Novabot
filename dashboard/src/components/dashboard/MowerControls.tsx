@@ -15,6 +15,7 @@ import {
 } from '../../api/client';
 import { localToGps } from '../../utils/coords';
 import { mmToCutterhigh, workMapToArea, nextCmdNum } from '../../utils/mqtt';
+import { readMowDefaults } from '../../utils/mowDefaults';
 import {
   deriveMowerActivity,
   deriveHasError,
@@ -52,19 +53,23 @@ interface Props {
   /** Ask the map to render a fresh coverage preview at the chosen direction for
    *  the selected work-area canonical(s) (all work maps when "All work areas"). */
   onPreview?: (covDirection: number, canonicals: string[]) => void;
+  /** True while the map is actually fetching the mower preview — keeps the
+   *  Preview button disabled and spinning until the real path is back. */
+  previewLoading?: boolean;
 }
 
 export function MowerControls({
   sn, online, sensors, onPathDirectionChange, pendingPolygon, onStarted,
   onPatternPlacementChange, onPatternModeChange, onOffsetPreviewChange, patternCenter, onPreview,
+  previewLoading,
 }: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [mappingExpanded, setMappingExpanded] = useState(false);
   const [maps, setMaps] = useState<MapData[]>([]);
   const [chargerGps, setChargerGps] = useState<GpsPoint | null>(null);
-  const [cuttingHeight, setCuttingHeight] = useState(40);
-  const [pathDirection, setPathDirection] = useState(0);
+  const [cuttingHeight, setCuttingHeight] = useState(() => readMowDefaults().cuttingHeight);
+  const [pathDirection, setPathDirection] = useState(() => readMowDefaults().pathDirection);
   const [mapId, setMapId] = useState('');
   const [mapName, setMapName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -490,8 +495,6 @@ export function MowerControls({
   // executing a task, has an error, has no map, or is offline.
   const startDisabled = disabled || mowerBusy || hasError || noMap || frameUnvalidated || (!online && !demoActive);
   const btnBase = 'inline-flex items-center justify-center p-1 sm:p-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
-  // Hidden on mobile, shown on desktop — no inline-flex from btnBase to avoid Tailwind display conflict
-  const btnHidden = 'hidden md:inline-flex items-center justify-center p-1 sm:p-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
 
   // ── Activity-driven action handlers (mirror app HomeScreen) ─────────────
 
@@ -615,6 +618,11 @@ export function MowerControls({
   }, [send, t, sendGoHome]);
 
   const [previewing, setPreviewing] = useState(false);
+  // Once the map reports the mower-preview fetch is actually in-flight,
+  // `previewLoading` (from the shell) takes over driving the button; release the
+  // local optimistic flag so the button stays disabled via previewLoading until
+  // the real path is back from the mower.
+  useEffect(() => { if (previewLoading) setPreviewing(false); }, [previewLoading]);
 
   const handlePreview = useCallback(async () => {
     setPreviewing(true);
@@ -627,18 +635,18 @@ export function MowerControls({
         ? workMaps.filter(m => m.mapId === mapId)
         : workMaps
       ).map(m => m.canonicalName!).filter(Boolean);
-      const canUseNativePreview =
+      const canUseMowerPreview =
         !patternMode &&
         !pendingPolygon &&
         edgeOffset === 0 &&
         canonicals.length > 0;
-      if (canUseNativePreview) {
+      if (canUseMowerPreview) {
         // Hand off to the map: it owns the coverage overlay + projection and runs
-        // a FRESH native preview at this direction (no previous-progress coloring).
-        // Keeps the sheet open so the operator can tweak direction and re-preview.
+        // a fresh stock mower preview at this direction. Do NOT toast success or
+        // clear `previewing` here — the real fetch drives `previewLoading`, which
+        // keeps the button disabled (and only then shows ✓/✗) once the mower
+        // actually responds. Keeps the sheet open so the operator can re-preview.
         onPreview?.(pathDirection, canonicals);
-        toast(`✓ ${t('controls.previewPath')}`, 'success');
-        setPreviewing(false);
         return;
       }
 
@@ -714,19 +722,6 @@ export function MowerControls({
 
       {/* Action buttons row */}
       <div className="flex items-center gap-1">
-        <button
-          onClick={toggleDemo}
-          className={`inline-flex items-center gap-1 text-xs h-7 px-1.5 sm:px-2 rounded transition-colors ${
-            demoActive
-              ? 'bg-amber-600 text-white'
-              : 'bg-gray-700/60 text-gray-500 hover:text-amber-400 hover:bg-amber-700/30'
-          }`}
-          title={demoActive ? 'Demo mode ON — click to disable' : 'Enable demo mode (simulated commands)'}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          {demoActive && <span className="hidden sm:inline">Demo</span>}
-        </button>
-
         {/* ── Activity-driven primary controls (mirror app HomeScreen) ──────
             Shown/hidden/enabled per the mower's derived activity so the
             dashboard behaves exactly like the app: e.g. while mowing the
@@ -860,76 +855,12 @@ export function MowerControls({
           </button>
         )}
 
-        {/* Divider: transport/go controls (left) vs tools (right) */}
-        <div className="hidden md:block w-px h-5 bg-zinc-700/60 mx-0.5" />
+        {/* Divider: transport/go controls (left) vs the More menu (right) */}
+        <div className="w-px h-5 bg-zinc-700/60 mx-0.5" />
 
-        <button
-          onClick={async () => {
-            setBusy(true);
-            try {
-              if (patrolActive) {
-                await stopPatrol(sn);
-                setPatrolActive(false);
-                toast(`✓ ${t('controls.stopPatrol')}`, 'success');
-              } else {
-                await startPatrol(sn);
-                setPatrolActive(true);
-                toast(`✓ ${t('controls.patrol')}`, 'success');
-              }
-            } catch (err) {
-              const detail = err instanceof Error ? `: ${err.message}` : '';
-              toast(`✗ Patrol${detail}`, 'error');
-            }
-            setBusy(false);
-          }}
-          disabled={disabled}
-          className={`${btnHidden} ${
-            patrolActive
-              ? 'bg-cyan-600 text-white'
-              : 'bg-gray-700/60 text-cyan-400 hover:bg-cyan-700/40'
-          }`}
-          title={patrolActive ? t('controls.stopPatrol') : t('controls.patrol')}
-        >
-          <Navigation className="w-3.5 h-3.5" />
-        </button>
-
-        <button
-          onClick={() => { setMappingExpanded(!mappingExpanded); setExpanded(false); setSettingsExpanded(false); setMoreExpanded(false); }}
-          disabled={disabled}
-          className={`${btnHidden} ${
-            mappingExpanded || isMappingActive
-              ? 'bg-purple-600 text-white'
-              : 'bg-gray-700/60 text-purple-400 hover:bg-purple-700/40'
-          }`}
-          title={t('controls.mapping')}
-        >
-          <MapIcon className="w-3.5 h-3.5" />
-        </button>
-
-        <button
-          onClick={() => { setSettingsExpanded(!settingsExpanded); setExpanded(false); setMappingExpanded(false); setMoreExpanded(false); }}
-          disabled={disabled}
-          className={`${btnHidden} ${
-            settingsExpanded
-              ? 'bg-gray-600 text-white'
-              : 'bg-gray-700/60 text-gray-400 hover:text-white'
-          }`}
-          title={t('controls.extendedSettings')}
-        >
-          <Settings2 className="w-3.5 h-3.5" />
-        </button>
-
-        <button
-          onClick={() => { setShowManualControl(true); setExpanded(false); setSettingsExpanded(false); setMappingExpanded(false); setMoreExpanded(false); }}
-          disabled={disabled}
-          className={`${btnHidden} bg-gray-700/60 text-sky-400 hover:bg-sky-700/40`}
-          title={t('controls.manualControl', 'Handmatige besturing')}
-        >
-          <Gamepad2 className="w-3.5 h-3.5" />
-        </button>
-
-        {/* More button — mobile only */}
-        <div className="relative md:hidden">
+        {/* Secondary actions (mapping, settings, manual, patrol, demo, go-pile)
+            all live in the More (⋯) menu now, on every screen size. */}
+        <div className="relative">
           <button
             onClick={() => { setMoreExpanded(!moreExpanded); setExpanded(false); setMappingExpanded(false); setSettingsExpanded(false); }}
             disabled={disabled}
@@ -1023,6 +954,15 @@ export function MowerControls({
                 >
                   <Settings2 className="w-3.5 h-3.5" />
                   {t('controls.extendedSettings')}
+                </button>
+                <button
+                  onClick={() => { setMoreExpanded(false); toggleDemo(); }}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors ${
+                    demoActive ? 'text-amber-300 bg-amber-900/20' : 'text-gray-300 hover:bg-gray-700/50'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  {demoActive ? t('controls.demoOn', 'Demo aan') : t('controls.demo', 'Demo')}
                 </button>
               </div>
             </>
@@ -1250,12 +1190,14 @@ export function MowerControls({
               </button>
               <button
                 onClick={handlePreview}
-                disabled={previewing || busy}
-                className="inline-flex items-center justify-center gap-1 text-xs px-2 py-2 rounded text-blue-300 bg-blue-900/40 hover:bg-blue-800/50 transition-colors disabled:opacity-40"
+                disabled={previewing || previewLoading || busy}
+                className="inline-flex items-center justify-center gap-1 text-xs px-2 py-2 rounded text-blue-300 bg-blue-900/40 hover:bg-blue-800/50 transition-colors disabled:opacity-60 disabled:cursor-wait"
                 title={t('controls.previewPath')}
               >
-                <Eye className="w-3.5 h-3.5" />
-                {previewing ? '...' : t('controls.preview')}
+                {(previewing || previewLoading)
+                  ? <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                  : <Eye className="w-3.5 h-3.5" />}
+                {(previewing || previewLoading) ? t('controls.previewWaiting', 'Waiting…') : t('controls.preview')}
               </button>
               <button
                 onClick={edgeMode ? handleStartEdgeCut : handleStart}

@@ -132,6 +132,8 @@
     "edgeOffsetShrink": "Shrink",
     "edgeOffsetExpand": "Expand",
     "startEdgeCut": "Start edge cut",
+    "demo": "Demo",
+    "demoOn": "Demo on",
     "mapping": "Mapping",
     "startMapping": "Start Mapping",
     "startAutonomousMapping": "Start Autonomous Mapping",
@@ -182,6 +184,7 @@
     "navigateTo": "Navigate to point",
     "stopNavigation": "Stop navigation",
     "preview": "Preview",
+    "previewWaiting": "Waiting…",
     "previewPath": "Preview mowing path",
     "previewNoArea": "Select a work area first"
   },
@@ -221,6 +224,13 @@
     "charger": "Charger",
     "switchToStreet": "Switch to street map",
     "switchToSatellite": "Switch to satellite",
+    "toolView": "View",
+    "toolEdit": "Edit",
+    "toolCoverage": "Coverage",
+    "toolDock": "Dock",
+    "toolShow": "Show",
+    "clearTrail": "Clear trail",
+    "noGoZone": "No-go zone",
     "sat": "Sat",
     "streetMap": "Map",
     "maps_one": "{{count}} map",
@@ -315,12 +325,21 @@
       "paintHint": "Drag over the edge to add or remove area",
       "undo": "Undo",
       "redo": "Redo",
-      "coverageShow": "Server preview",
-      "coverageNativeTitle": "Server-side native coverage preview from the stored map",
-      "coverageLoading": "Computing path on server…",
+      "coverageShow": "Mower preview",
+      "coverageHide": "Hide mow path",
+      "previewBusy": "Mower busy, no fresh preview",
+      "previewStale": "Preview may not be up to date",
+      "previewUpdated": "Preview updated",
+      "coverageTitle": "Coverage",
+      "legendActive": "Current lane",
+      "legendDone": "Mowed",
+      "legendPlanned": "Planned",
+      "legendPreview": "Mow path (preview)",
+      "coverageNativeTitle": "Mower-generated coverage preview from the selected map",
+      "coverageLoading": "Requesting path from mower…",
       "coverageBusy": "Mower is busy — can't preview while mowing",
-      "coverageOffline": "Server preview works without an online mower",
-      "coverageHint": "Shows the server-generated native coverage path from the stored map",
+      "coverageOffline": "Mower preview requires an online mower",
+      "coverageHint": "Shows the mower-generated preview path from the selected map",
       "coverageLive": "Live mowing path",
       "coverageLiveHint": "Live path while the mower mows",
       "coverageNone": "Couldn't compute the path",
@@ -330,7 +349,7 @@
       "coverageRadiusSaveFailed": "Could not save coverage radius",
       "coverageRadiusInvalid": "Radius must be 0.20-1.20 m",
       "coverageStart": "Mower starts here",
-      "coverageRefresh": "Recompute on server"
+      "coverageRefresh": "Refresh from mower"
     }
   },
   "schedule": {
@@ -376,6 +395,7 @@
     "deleteFailed": "Could not delete",
     "timeline": {
       "title": "Week timeline",
+      "active": "{{count}} active",
       "empty": "No enabled schedules.",
       "loading": "Loading schedule timeline…",
       "error": "Failed to load schedule timeline"
@@ -503,6 +523,13 @@
       "save": "Save",
       "saving": "Saving…",
       "saved": "Saved."
+    },
+    "mowDefaults": {
+      "title": "Mowing defaults",
+      "help": "Pre-fills the Start sheet, so you do not reset these every mow.",
+      "cuttingHeight": "Cutting height",
+      "direction": "Default direction",
+      "saved": "Saved"
     },
     "notifications": {
       "title": "Notifications",

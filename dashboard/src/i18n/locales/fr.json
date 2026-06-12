@@ -126,6 +126,8 @@
     "edgeOffsetShrink": "Réduire",
     "edgeOffsetExpand": "Agrandir",
     "startEdgeCut": "Coupe de bordure",
+    "demo": "Démo",
+    "demoOn": "Démo activée",
     "mapping": "Cartographie",
     "startMapping": "Démarrer la cartographie",
     "startAutonomousMapping": "Cartographie autonome",
@@ -176,6 +178,7 @@
     "navigateTo": "Naviguer vers un point",
     "stopNavigation": "Arrêter la navigation",
     "preview": "Aperçu",
+    "previewWaiting": "Attente…",
     "previewPath": "Aperçu du chemin de tonte",
     "previewNoArea": "Sélectionnez d'abord une zone de travail"
   },
@@ -215,6 +218,13 @@
     "charger": "Station",
     "switchToStreet": "Basculer vers plan",
     "switchToSatellite": "Basculer vers satellite",
+    "toolView": "Affichage",
+    "toolEdit": "Modifier",
+    "toolCoverage": "Coverage",
+    "toolDock": "Dock",
+    "toolShow": "Afficher",
+    "clearTrail": "Effacer la trace",
+    "noGoZone": "Zone interdite",
     "sat": "Sat",
     "streetMap": "Plan",
     "maps_one": "{{count}} carte",
@@ -309,12 +319,21 @@
       "paintHint": "Glissez le long du bord pour ajouter ou retirer de la surface",
       "undo": "Annuler",
       "redo": "Rétablir",
-      "coverageShow": "Aperçu serveur",
-      "coverageNativeTitle": "Aperçu de coverage natif côté serveur à partir de la carte enregistrée",
-      "coverageLoading": "Calcul du parcours sur le serveur…",
+      "coverageShow": "Aperçu tondeuse",
+      "coverageHide": "Masquer le tracé",
+      "previewBusy": "Tondeuse occupée, aperçu non actualisé",
+      "previewStale": "Aperçu peut-être obsolète",
+      "previewUpdated": "Aperçu mis à jour",
+      "coverageTitle": "Coverage",
+      "legendActive": "Voie actuelle",
+      "legendDone": "Tondu",
+      "legendPlanned": "Prévu",
+      "legendPreview": "Tracé (aperçu)",
+      "coverageNativeTitle": "Aperçu de coverage généré par la tondeuse depuis la carte sélectionnée",
+      "coverageLoading": "Demande du parcours à la tondeuse…",
       "coverageBusy": "Tondeuse occupée — aperçu impossible pendant la tonte",
-      "coverageOffline": "L'aperçu serveur fonctionne sans tondeuse en ligne",
-      "coverageHint": "Affiche le parcours de coverage natif généré par le serveur depuis la carte enregistrée",
+      "coverageOffline": "L'aperçu tondeuse nécessite une tondeuse en ligne",
+      "coverageHint": "Affiche le parcours de prévisualisation généré par la tondeuse depuis la carte sélectionnée",
       "coverageLive": "Parcours en direct",
       "coverageLiveHint": "Parcours en direct pendant la tonte",
       "coverageNone": "Impossible de calculer le parcours",
@@ -324,7 +343,7 @@
       "coverageRadiusSaveFailed": "Impossible d'enregistrer le rayon",
       "coverageRadiusInvalid": "Le rayon doit etre entre 0.20 et 1.20 m",
       "coverageStart": "Le robot démarre ici",
-      "coverageRefresh": "Recalculer sur le serveur"
+      "coverageRefresh": "Actualiser depuis la tondeuse"
     }
   },
   "schedule": {
@@ -387,6 +406,7 @@
     "deleteFailed": "Échec de la suppression",
     "timeline": {
       "title": "Calendrier hebdomadaire",
+      "active": "{{count}} actifs",
       "empty": "Aucun planning actif.",
       "loading": "Chargement du calendrier…",
       "error": "Échec du chargement du calendrier"
@@ -514,6 +534,13 @@
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "saved": "Enregistré."
+    },
+    "mowDefaults": {
+      "title": "Réglages de tonte par défaut",
+      "help": "Pré-remplit la feuille de démarrage, pour ne pas les régler à chaque tonte.",
+      "cuttingHeight": "Hauteur de coupe",
+      "direction": "Direction par défaut",
+      "saved": "Enregistré"
     },
     "notifications": {
       "title": "Notifications",

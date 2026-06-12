@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DeviceState } from '../types';
 import { MowerMap } from '../components/map/MowerMap';
@@ -16,23 +17,26 @@ interface Props {
   /** Placed pattern overlay (controls→map) + map-click handler (map→controls). */
   patternPlacement?: PatternPlacement | null;
   onMapClickForPattern?: (center: { lat: number; lng: number }) => void;
+  /** Mower control buttons hosted in the map's floating tool-bar. */
+  controlsSlot?: ReactNode;
+  /** Reports when the map is actually fetching the mower coverage preview. */
+  onPreviewLoading?: (loading: boolean) => void;
 }
 
-export function MapTab({ mower, connected, liveOutlines, coveredLanes, previewRequest, patternPlacement, onMapClickForPattern }: Props) {
+export function MapTab({ mower, connected, liveOutlines, coveredLanes, previewRequest, patternPlacement, onMapClickForPattern, controlsSlot, onPreviewLoading }: Props) {
   const { t } = useTranslation();
   if (!mower) {
     return <div className="p-8 text-zinc-500">{t('pages.selectMowerForMap')}</div>;
   }
 
-  // Mirror the OpenNova app's isMowing test (MapScreen.tsx): the mower is
-  // actively mowing when its status msg reports RUNNING/NAVIGATING/COVERING/
-  // MOVING. While mowing the dashboard must show the LIVE plan path instead of
-  // refusing with a busy error.
+  // The mower is "actively mowing" across every work phase — kept in sync with
+  // MowerControls' own test so the live plan + progress + stats card stay
+  // visible the whole session. Critically this includes BOUNDARY_COVERING (the
+  // edge-cut finale) — note a substring `includes('Work:COVERING')` would NOT
+  // match `Work:BOUNDARY_COVERING`, which is why the progress used to vanish
+  // during edge cutting — and AVOIDING (obstacle stops between lanes).
   const msg = mower.sensors.msg ?? '';
-  const isMowing = mower.online && (
-    msg.includes('Work:RUNNING') || msg.includes('Work:NAVIGATING') ||
-    msg.includes('Work:COVERING') || msg.includes('Work:MOVING')
-  );
+  const isMowing = mower.online && /Work:(RUNNING|COVERING|NAVIGATING|BOUNDARY_COVERING|AVOIDING|MOVING)/.test(msg);
 
   return (
     <MowerMap
@@ -65,6 +69,8 @@ export function MapTab({ mower, connected, liveOutlines, coveredLanes, previewRe
       previewRequest={previewRequest}
       patternPlacement={patternPlacement}
       onMapClickForPattern={onMapClickForPattern}
+      controlsSlot={controlsSlot}
+      onPreviewLoading={onPreviewLoading}
     />
   );
 }

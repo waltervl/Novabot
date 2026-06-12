@@ -6,7 +6,10 @@ const BASE = '/api/dashboard';
 
 async function get(url: string): Promise<Response> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error || `${res.status} ${res.statusText}`);
+  }
   return res;
 }
 
@@ -16,7 +19,10 @@ async function post(url: string, body?: unknown): Promise<Response> {
     headers: body != null ? { 'Content-Type': 'application/json' } : undefined,
     body: body != null ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error || `${res.status} ${res.statusText}`);
+  }
   return res;
 }
 
@@ -386,20 +392,6 @@ export async function previewPath(sn: string, polygonArea: Array<{ latitude: num
   return (await post(`${BASE}/preview-path/${encodeURIComponent(sn)}`, { polygonArea, covDirection })).json();
 }
 
-export interface NativePreviewPathResult {
-  ok: boolean;
-  source: 'native';
-  paths: CoveragePathEntry[];
-  count: number;
-  canonical: string;
-  areaId: number;
-  pgmMd5: string;
-  cacheHit: boolean;
-  coverageRadius?: number;
-  coverageRadiusSource?: 'stored' | 'default' | 'request';
-  error?: string;
-}
-
 export interface CoveragePlannerRadiusResult {
   ok: boolean;
   radius: number;
@@ -409,36 +401,6 @@ export interface CoveragePlannerRadiusResult {
   max?: number;
   mowerCommand?: 'sent' | 'skipped';
   error?: string;
-}
-
-export async function nativePreviewPath(
-  sn: string,
-  opts: {
-    canonical?: string;
-    mapIds?: number | number[];
-    startLocal?: { x: number; y: number };
-    covDirection?: number;
-    coverageRadius?: number;
-    expectedPgmMd5?: string;
-  },
-): Promise<NativePreviewPathResult> {
-  const body: Record<string, unknown> = {};
-  if (opts.canonical) body.canonical = opts.canonical;
-  if (opts.mapIds !== undefined) body.map_ids = opts.mapIds;
-  if (opts.startLocal) body.startLocal = opts.startLocal;
-  if (opts.covDirection !== undefined) body.cov_direction = opts.covDirection;
-  if (opts.coverageRadius !== undefined) body.radius = opts.coverageRadius;
-  if (opts.expectedPgmMd5) body.expected_pgm_md5 = opts.expectedPgmMd5;
-  const res = await fetch(`${BASE}/native-preview-path/${encodeURIComponent(sn)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({})) as NativePreviewPathResult;
-  if (!res.ok || data.ok === false) {
-    throw new Error(data.error || `${res.status} ${res.statusText}`);
-  }
-  return data;
 }
 
 export async function fetchCoveragePlannerRadius(sn: string): Promise<CoveragePlannerRadiusResult> {
@@ -821,19 +783,31 @@ export async function getPreviewPath(sn: string): Promise<CoveragePathEntry[]> {
  *  flag set when the mower is mid-coverage (server replies 409 with cached
  *  paths). We never throw on 409 — we surface it via `busy` so the caller can
  *  keep showing the cached lines and tell the user why a refresh was skipped. */
-export interface RefreshPreviewResult { paths: CoveragePathEntry[]; busy: boolean }
+export interface RefreshPreviewResult {
+  paths: CoveragePathEntry[];
+  busy: boolean;
+  source: 'mower' | 'cache' | 'none';
+  cmdNum?: number;
+  ackTimeout?: boolean;
+  generateAckMs?: number;
+  fetchMs?: number;
+  durationMs?: number;
+  cachedAt?: number;
+  ageMs?: number;
+}
 
 /** POST refresh-preview-path. Triggers generate_preview_cover_path on the
  *  mower (server-side), waits ~3.5 s, fetches via the extended backchannel.
- *  Body params mirror the server contract exactly: `map_ids` (number|number[],
- *  server default 1) and `cov_direction` (number). The app passes mapIds:1. */
+ *  server default 1), `cov_direction` (0-180) and optional
+ *  `specify_direction`. Omit covDirection for mower-chosen auto direction. */
 export async function refreshPreviewPath(
   sn: string,
-  opts?: { mapIds?: number | number[]; covDirection?: number },
+  opts?: { mapIds?: number | number[]; covDirection?: number; specifyDirection?: boolean },
 ): Promise<RefreshPreviewResult> {
   const body: Record<string, unknown> = {};
   if (opts?.mapIds !== undefined) body.map_ids = opts.mapIds;
   if (opts?.covDirection !== undefined) body.cov_direction = opts.covDirection;
+  if (opts?.specifyDirection !== undefined) body.specify_direction = opts.specifyDirection;
   const res = await fetch(`${BASE}/refresh-preview-path/${encodeURIComponent(sn)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -841,13 +815,45 @@ export async function refreshPreviewPath(
   });
   // 409 = coverage task active: body still carries cached paths. Don't throw.
   if (res.status === 409) {
-    const data = await res.json().catch(() => ({})) as { paths?: CoveragePathEntry[] };
-    return { paths: data.paths ?? [], busy: true };
+    const data = await res.json().catch(() => ({})) as RefreshPreviewResult & { error?: string };
+    return {
+      paths: data.paths ?? [],
+      busy: true,
+      source: 'cache',
+      cachedAt: data.cachedAt,
+      ageMs: data.ageMs,
+    };
   }
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const data = await res.json() as { ok?: boolean; paths?: CoveragePathEntry[]; error?: string };
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error || `${res.status} ${res.statusText}`);
+  }
+  const data = await res.json() as {
+    ok?: boolean;
+    source?: RefreshPreviewResult['source'];
+    paths?: CoveragePathEntry[];
+    error?: string;
+    cmd_num?: number;
+    ackTimeout?: boolean;
+    generateAckMs?: number;
+    fetchMs?: number;
+    durationMs?: number;
+    cachedAt?: number;
+    ageMs?: number;
+  };
   if (data.ok === false) throw new Error(data.error || 'refresh-preview-path failed');
-  return { paths: data.paths ?? [], busy: false };
+  return {
+    paths: data.paths ?? [],
+    busy: false,
+    source: data.source ?? 'mower',
+    cmdNum: data.cmd_num,
+    ackTimeout: data.ackTimeout,
+    generateAckMs: data.generateAckMs,
+    fetchMs: data.fetchMs,
+    durationMs: data.durationMs,
+    cachedAt: data.cachedAt,
+    ageMs: data.ageMs,
+  };
 }
 
 // ── Live plan path (works DURING mowing) ────────────────────────

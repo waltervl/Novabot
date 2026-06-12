@@ -126,6 +126,8 @@
     "edgeOffsetShrink": "Verkleinern",
     "edgeOffsetExpand": "Vergrößern",
     "startEdgeCut": "Kantenmähen",
+    "demo": "Demo",
+    "demoOn": "Demo an",
     "mapping": "Kartierung",
     "startMapping": "Kartierung starten",
     "startAutonomousMapping": "Autonome Kartierung starten",
@@ -176,6 +178,7 @@
     "navigateTo": "Zum Punkt navigieren",
     "stopNavigation": "Navigation stoppen",
     "preview": "Vorschau",
+    "previewWaiting": "Warten…",
     "previewPath": "Mähweg-Vorschau",
     "previewNoArea": "Wählen Sie zuerst einen Arbeitsbereich"
   },
@@ -215,6 +218,13 @@
     "charger": "Ladestation",
     "switchToStreet": "Zur Straßenkarte wechseln",
     "switchToSatellite": "Zur Satellitenansicht wechseln",
+    "toolView": "Ansicht",
+    "toolEdit": "Bearbeiten",
+    "toolCoverage": "Coverage",
+    "toolDock": "Dock",
+    "toolShow": "Anzeigen",
+    "clearTrail": "Spur löschen",
+    "noGoZone": "Sperrzone",
     "sat": "Sat",
     "streetMap": "Karte",
     "maps_one": "{{count}} Karte",
@@ -309,12 +319,21 @@
       "paintHint": "Über den Rand ziehen, um Fläche hinzuzufügen oder zu entfernen",
       "undo": "Rückgängig",
       "redo": "Wiederholen",
-      "coverageShow": "Server-Vorschau",
-      "coverageNativeTitle": "Serverseitige native Coverage-Vorschau aus der gespeicherten Karte",
-      "coverageLoading": "Pfad wird auf dem Server berechnet…",
+      "coverageShow": "Mäher-Vorschau",
+      "coverageHide": "Mähpfad ausblenden",
+      "previewBusy": "Mäher beschäftigt, keine neue Vorschau",
+      "previewStale": "Vorschau evtl. nicht aktuell",
+      "previewUpdated": "Vorschau aktualisiert",
+      "coverageTitle": "Coverage",
+      "legendActive": "Aktuelle Bahn",
+      "legendDone": "Gemäht",
+      "legendPlanned": "Geplant",
+      "legendPreview": "Mähpfad (Vorschau)",
+      "coverageNativeTitle": "Vom Mäher erzeugte Coverage-Vorschau aus der ausgewählten Karte",
+      "coverageLoading": "Pfad wird vom Mäher angefragt…",
       "coverageBusy": "Mäher beschäftigt — keine Vorschau während des Mähens",
-      "coverageOffline": "Server-Vorschau funktioniert ohne Online-Mäher",
-      "coverageHint": "Zeigt den serverseitig generierten nativen Coverage-Pfad aus der gespeicherten Karte",
+      "coverageOffline": "Mäher-Vorschau benötigt einen Online-Mäher",
+      "coverageHint": "Zeigt den vom Mäher erzeugten Preview-Pfad aus der ausgewählten Karte",
       "coverageLive": "Live-Mähpfad",
       "coverageLiveHint": "Live-Pfad während der Mäher mäht",
       "coverageNone": "Pfad konnte nicht berechnet werden",
@@ -324,7 +343,7 @@
       "coverageRadiusSaveFailed": "Coverage-Radius konnte nicht gespeichert werden",
       "coverageRadiusInvalid": "Radius muss 0.20-1.20 m sein",
       "coverageStart": "Mäher startet hier",
-      "coverageRefresh": "Auf Server neu berechnen"
+      "coverageRefresh": "Vom Mäher aktualisieren"
     }
   },
   "schedule": {
@@ -387,6 +406,7 @@
     "deleteFailed": "Löschen fehlgeschlagen",
     "timeline": {
       "title": "Wochenübersicht",
+      "active": "{{count}} aktiv",
       "empty": "Keine aktiven Pläne.",
       "loading": "Lade Zeitplan…",
       "error": "Laden des Zeitplans fehlgeschlagen"
@@ -514,6 +534,13 @@
       "save": "Speichern",
       "saving": "Speichere…",
       "saved": "Gespeichert."
+    },
+    "mowDefaults": {
+      "title": "Mäh-Standardwerte",
+      "help": "Füllt das Start-Sheet vor, damit du das nicht jedes Mal neu einstellst.",
+      "cuttingHeight": "Schnitthöhe",
+      "direction": "Standardrichtung",
+      "saved": "Gespeichert"
     },
     "notifications": {
       "title": "Benachrichtigungen",

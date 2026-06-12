@@ -172,6 +172,8 @@
     "edgeOffsetShrink": "Inkrimpen",
     "edgeOffsetExpand": "Uitbreiden",
     "startEdgeCut": "Randmaaien",
+    "demo": "Demo",
+    "demoOn": "Demo aan",
     "mapping": "Karteren",
     "startMapping": "Start karteren",
     "startAutonomousMapping": "Start autonoom karteren",
@@ -222,6 +224,7 @@
     "navigateTo": "Navigeer naar punt",
     "stopNavigation": "Stop navigatie",
     "preview": "Preview",
+    "previewWaiting": "Wachten…",
     "previewPath": "Maaipad preview",
     "previewNoArea": "Selecteer eerst een werkgebied"
   },
@@ -261,6 +264,13 @@
     "charger": "Laadstation",
     "switchToStreet": "Wissel naar stratenkaart",
     "switchToSatellite": "Wissel naar satelliet",
+    "toolView": "Weergave",
+    "toolEdit": "Bewerken",
+    "toolCoverage": "Coverage",
+    "toolDock": "Dock",
+    "toolShow": "Tonen",
+    "clearTrail": "Trail wissen",
+    "noGoZone": "No-go zone",
     "sat": "Sat",
     "streetMap": "Kaart",
     "maps_one": "{{count}} kaart",
@@ -355,12 +365,21 @@
       "paintHint": "Sleep over de rand om oppervlak toe te voegen of weg te halen",
       "undo": "Ongedaan maken",
       "redo": "Opnieuw",
-      "coverageShow": "Server-preview",
-      "coverageNativeTitle": "Server-side native coverage preview uit de opgeslagen kaart",
-      "coverageLoading": "Pad op server berekenen…",
+      "coverageShow": "Maaier-preview",
+      "coverageHide": "Maaipad verbergen",
+      "previewBusy": "Maaier bezig, geen verse preview",
+      "previewStale": "Preview is mogelijk niet bijgewerkt",
+      "previewUpdated": "Preview bijgewerkt",
+      "coverageTitle": "Coverage",
+      "legendActive": "Huidige baan",
+      "legendDone": "Gemaaid",
+      "legendPlanned": "Gepland",
+      "legendPreview": "Maaipad (preview)",
+      "coverageNativeTitle": "Coverage-preview van de maaier uit de geselecteerde kaart",
+      "coverageLoading": "Pad bij maaier opvragen…",
       "coverageBusy": "Maaier is bezig — geen preview tijdens maaien",
-      "coverageOffline": "Server-preview werkt zonder online maaier",
-      "coverageHint": "Toont het server-gegenereerde native coveragepad uit de opgeslagen kaart",
+      "coverageOffline": "Maaier-preview vereist een online maaier",
+      "coverageHint": "Toont het door de maaier gegenereerde preview-pad uit de geselecteerde kaart",
       "coverageLive": "Live maaipad",
       "coverageLiveHint": "Live pad terwijl de maaier maait",
       "coverageNone": "Kon het pad niet berekenen",
@@ -370,7 +389,7 @@
       "coverageRadiusSaveFailed": "Coverage-radius opslaan mislukt",
       "coverageRadiusInvalid": "Radius moet 0.20-1.20 m zijn",
       "coverageStart": "Maaier start hier",
-      "coverageRefresh": "Herbereken op server"
+      "coverageRefresh": "Ververs vanaf maaier"
     }
   },
   "schedule": {
@@ -416,6 +435,7 @@
     "deleteFailed": "Verwijderen mislukt",
     "timeline": {
       "title": "Week tijdlijn",
+      "active": "{{count}} actief",
       "empty": "Geen actieve schema's.",
       "loading": "Tijdlijn laden…",
       "error": "Tijdlijn laden mislukt"
@@ -543,6 +563,13 @@
       "save": "Opslaan",
       "saving": "Opslaan…",
       "saved": "Opgeslagen."
+    },
+    "mowDefaults": {
+      "title": "Maai-standaarden",
+      "help": "Vult de Start-sheet voor, zodat je dit niet elke keer opnieuw instelt.",
+      "cuttingHeight": "Maaihoogte",
+      "direction": "Standaard richting",
+      "saved": "Opgeslagen"
     },
     "notifications": {
       "title": "Notificaties",
