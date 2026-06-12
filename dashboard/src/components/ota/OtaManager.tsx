@@ -6,6 +6,8 @@ import {
   fetchOtaVersions, fetchFirmwareFiles, updateOtaVersion, deleteOtaVersion, triggerOta,
   type OtaVersion, type FirmwareFile,
 } from '../../api/client';
+import { isOpenNovaFirmware } from '../../utils/firmwareCapability';
+import { BETA_FIRMWARE_WARNING_LINES } from '../../utils/betaFirmware';
 
 interface Props {
   devices: Map<string, DeviceState>;
@@ -34,7 +36,7 @@ interface ConfirmDialog {
   title: string;
   message: string;
   detail?: string;
-  variant: 'danger' | 'warning' | 'info';
+  variant: 'danger' | 'warning' | 'info' | 'beta';
   confirmLabel: string;
   onConfirm: () => void;
 }
@@ -44,6 +46,8 @@ export function OtaManager({ devices, otaProgress }: Props) {
   const [files, setFiles] = useState<FirmwareFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [triggerState, setTriggerState] = useState<Record<string, TriggerState>>({});
+  const [lastBackup, setLastBackup] = useState<Record<string, string>>({});
+  const [triggerError, setTriggerError] = useState<Record<string, string>>({});
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ version: '', device_type: '' });
@@ -103,6 +107,18 @@ export function OtaManager({ devices, otaProgress }: Props) {
       ? '\n\nDe download start pas als de maaier op het laadstation staat.'
       : '';
 
+    if (isMower && isOpenNovaFirmware(targetVersion)) {
+      setConfirmDialog({
+        title: '⚠️ BETA CUSTOM FIRMWARE',
+        message: BETA_FIRMWARE_WARNING_LINES.join('\n'),
+        detail: `${deviceVersion ?? 'onbekend'}  →  ${targetVersion}\n\nEr wordt automatisch een verse backup gemaakt voordat we flashen.${chargeNote}`,
+        variant: 'beta',
+        confirmLabel: 'Ik begrijp het, flash toch',
+        onConfirm: () => { setConfirmDialog(null); handleTrigger(sn, versionId); },
+      });
+      return;
+    }
+
     if (isDowngrade) {
       setConfirmDialog({
         title: 'Downgrade waarschuwing',
@@ -138,9 +154,19 @@ export function OtaManager({ devices, otaProgress }: Props) {
     const key = `${sn}-${versionId}`;
     setTriggerState(s => ({ ...s, [key]: 'sending' }));
     try {
-      await triggerOta(sn, versionId, true);
-      setTriggerState(s => ({ ...s, [key]: 'done' }));
-      setTimeout(() => setTriggerState(s => ({ ...s, [key]: 'idle' })), 5000);
+      const result = await triggerOta(sn, versionId, true);
+      if (result.ok) {
+        setTriggerState(s => ({ ...s, [key]: 'done' }));
+        if (result.backup) {
+          setLastBackup(s => ({ ...s, [key]: `Backup ✓ ${result.backup!.filename}` }));
+        }
+        setTimeout(() => setTriggerState(s => ({ ...s, [key]: 'idle' })), 5000);
+      } else {
+        setTriggerState(s => ({ ...s, [key]: 'error' }));
+        if (result.detail) {
+          setTriggerError(s => ({ ...s, [key]: result.detail! }));
+        }
+      }
     } catch {
       setTriggerState(s => ({ ...s, [key]: 'error' }));
     }
@@ -158,11 +184,14 @@ export function OtaManager({ devices, otaProgress }: Props) {
           <div className="bg-gray-800 border border-gray-700 rounded-lg shadow-2xl w-80 max-w-[90vw] overflow-hidden">
             {/* Header */}
             <div className={`flex items-center justify-between px-4 py-3 border-b border-gray-700 ${
+              confirmDialog.variant === 'beta' ? 'bg-red-950/60' :
               confirmDialog.variant === 'danger' ? 'bg-red-950/40' :
               confirmDialog.variant === 'warning' ? 'bg-amber-950/40' : 'bg-gray-800'
             }`}>
               <div className="flex items-center gap-2">
-                {confirmDialog.variant === 'danger' ? (
+                {confirmDialog.variant === 'beta' ? (
+                  <AlertTriangle className="w-4 h-4 text-red-400" />
+                ) : confirmDialog.variant === 'danger' ? (
                   <Trash2 className="w-4 h-4 text-red-400" />
                 ) : confirmDialog.variant === 'warning' ? (
                   <AlertTriangle className="w-4 h-4 text-amber-400" />
@@ -183,7 +212,9 @@ export function OtaManager({ devices, otaProgress }: Props) {
               <p className="text-sm text-gray-300">{confirmDialog.message}</p>
               {confirmDialog.detail && (
                 <div className={`mt-3 text-center text-sm font-mono px-3 py-2 rounded whitespace-pre-line ${
-                  confirmDialog.variant === 'warning'
+                  confirmDialog.variant === 'beta'
+                    ? 'bg-red-950/40 text-red-200 border border-red-800/60'
+                    : confirmDialog.variant === 'warning'
                     ? 'bg-amber-950/30 text-amber-300 border border-amber-800/50'
                     : confirmDialog.variant === 'danger'
                     ? 'bg-red-950/30 text-red-300 border border-red-800/50'
@@ -204,7 +235,9 @@ export function OtaManager({ devices, otaProgress }: Props) {
               <button
                 onClick={confirmDialog.onConfirm}
                 className={`flex-1 text-xs py-2 rounded font-medium transition-colors ${
-                  confirmDialog.variant === 'danger'
+                  confirmDialog.variant === 'beta'
+                    ? 'bg-red-700 text-white hover:bg-red-600'
+                    : confirmDialog.variant === 'danger'
                     ? 'bg-red-700 text-white hover:bg-red-600'
                     : confirmDialog.variant === 'warning'
                     ? 'bg-amber-700 text-white hover:bg-amber-600'
@@ -421,36 +454,43 @@ export function OtaManager({ devices, otaProgress }: Props) {
                         const isCurrent = deviceVersion === v.version;
                         const isDowngrade = deviceVersion ? compareVersions(v.version, deviceVersion) < 0 : false;
                         return (
-                          <button
-                            key={d.sn}
-                            onClick={() => handleTriggerClick(d.sn, v.id, v.version, deviceVersion, d.nickname ?? d.sn)}
-                            disabled={state === 'sending'}
-                            className={`w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded transition-colors ${
-                              state === 'done'
-                                ? 'bg-green-900/60 text-green-300'
-                                : state === 'error'
-                                ? 'bg-red-900/60 text-red-400'
-                                : d.online
-                                ? isDowngrade
-                                  ? 'bg-amber-800/60 text-amber-200 hover:bg-amber-700/60 disabled:opacity-40'
-                                  : 'bg-orange-700/80 text-white hover:bg-orange-600 disabled:opacity-40'
-                                : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'
-                            }`}
-                            title={!d.online ? 'Apparaat offline' : isCurrent ? 'Al actieve versie' : isDowngrade ? 'Downgrade!' : undefined}
-                          >
-                            {state === 'done' ? (
-                              <><Check className="w-3 h-3" />Commando verstuurd</>
-                            ) : state === 'error' ? (
-                              <><AlertCircle className="w-3 h-3" />Fout bij versturen</>
-                            ) : (
-                              <>
-                                {isDowngrade ? <AlertTriangle className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
-                                {state === 'sending' ? 'Bezig…' : `Flash → ${d.nickname ?? d.sn}`}
-                                {isCurrent && <span className="ml-1 opacity-60">(huidig)</span>}
-                                {isDowngrade && !isCurrent && <span className="ml-1 opacity-70">(downgrade)</span>}
-                              </>
+                          <div key={d.sn} className="space-y-0.5">
+                            <button
+                              onClick={() => handleTriggerClick(d.sn, v.id, v.version, deviceVersion, d.nickname ?? d.sn)}
+                              disabled={state === 'sending'}
+                              className={`w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded transition-colors ${
+                                state === 'done'
+                                  ? 'bg-green-900/60 text-green-300'
+                                  : state === 'error'
+                                  ? 'bg-red-900/60 text-red-400'
+                                  : d.online
+                                  ? isDowngrade
+                                    ? 'bg-amber-800/60 text-amber-200 hover:bg-amber-700/60 disabled:opacity-40'
+                                    : 'bg-orange-700/80 text-white hover:bg-orange-600 disabled:opacity-40'
+                                  : 'bg-gray-700/50 text-gray-500 cursor-not-allowed'
+                              }`}
+                              title={!d.online ? 'Apparaat offline' : isCurrent ? 'Al actieve versie' : isDowngrade ? 'Downgrade!' : undefined}
+                            >
+                              {state === 'done' ? (
+                                <><Check className="w-3 h-3" />Commando verstuurd</>
+                              ) : state === 'error' ? (
+                                <><AlertCircle className="w-3 h-3" />Fout bij versturen</>
+                              ) : (
+                                <>
+                                  {isDowngrade ? <AlertTriangle className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
+                                  {state === 'sending' ? 'Bezig…' : `Flash → ${d.nickname ?? d.sn}`}
+                                  {isCurrent && <span className="ml-1 opacity-60">(huidig)</span>}
+                                  {isDowngrade && !isCurrent && <span className="ml-1 opacity-70">(downgrade)</span>}
+                                </>
+                              )}
+                            </button>
+                            {lastBackup[key] && (
+                              <div className="text-[9px] text-emerald-400 font-mono px-1">{lastBackup[key]}</div>
                             )}
-                          </button>
+                            {state === 'error' && triggerError[key] && (
+                              <div className="text-[9px] text-red-400 font-mono px-1">{triggerError[key]}</div>
+                            )}
+                          </div>
                         );
                       })}
                     </div>
