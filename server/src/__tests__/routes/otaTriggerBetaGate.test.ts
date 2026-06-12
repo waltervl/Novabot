@@ -101,6 +101,7 @@ vi.mock('../../mqtt/sensorData.js', () => ({
 }));
 
 import { ensureBetaFlashSafe } from '../../services/firmwareSafety.js';
+import { publishToDevice } from '../../mqtt/mapSync.js';
 import { dashboardRouter } from '../../routes/dashboard.js';
 import { otaVersionRepo } from '../../db/repositories/index.js';
 
@@ -121,6 +122,7 @@ describe('POST /ota/trigger/:sn beta gate', () => {
     const res = await request(app).post('/api/dashboard/ota/trigger/LFIN2230700238').send({ version_id: 1 });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('BACKUP_FAILED');
+    expect(res.body.detail).toBe('no backup');
   });
 
   it('dispatches and returns backup info when allowed', async () => {
@@ -129,5 +131,6 @@ describe('POST /ota/trigger/:sn beta gate', () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.backup.filename).toBe('b.novabotmap');
+    expect(vi.mocked(publishToDevice)).toHaveBeenCalledOnce();
   });
 });

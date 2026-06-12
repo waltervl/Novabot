@@ -4317,7 +4317,13 @@ dashboardRouter.post('/ota/trigger/:sn', async (req: Request, res: Response) => 
     }
   } else {
     // ── BETA gate: custom/opennova firmware must have a fresh backup first ──
-    gate = await ensureBetaFlashSafe(sn, otaVersion.version);
+    try {
+      gate = await ensureBetaFlashSafe(sn, otaVersion.version);
+    } catch (err) {
+      console.error(`\x1b[31m[OTA] BETA gate error voor ${sn}:\x1b[0m`, err);
+      res.status(500).json({ error: 'BETA_GATE_ERROR', detail: 'Kon backup-gate niet uitvoeren' });
+      return;
+    }
     if (!gate.allowed) {
       console.warn(`\x1b[31m[OTA] BETA flash geblokkeerd voor ${sn}: ${gate.detail}\x1b[0m`);
       res.status(409).json({ error: gate.error, detail: gate.detail });
