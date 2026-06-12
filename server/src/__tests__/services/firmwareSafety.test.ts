@@ -14,8 +14,11 @@ describe('isBetaFirmware', () => {
     expect(isBetaFirmware(null)).toBe(false);
     expect(isBetaFirmware(undefined)).toBe(false);
   });
-  it('exposes a 24h recency window and a non-empty warning', () => {
+  it('exposes a 24h recency window and the canonical warning copy', () => {
     expect(BACKUP_MAX_AGE_MS).toBe(24 * 60 * 60 * 1000);
-    expect(BETA_FIRMWARE_WARNING.length).toBeGreaterThan(20);
+    expect(BETA_FIRMWARE_WARNING).toContain('BETA');
+    expect(BETA_FIRMWARE_WARNING).toContain('bricken');
+    expect(BETA_FIRMWARE_WARNING).toContain('kaarten');
+    expect(BETA_FIRMWARE_WARNING).toContain("risico's");
   });
 });
