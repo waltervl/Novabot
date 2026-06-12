@@ -18,9 +18,9 @@ import {
 } from 'react-native';
 import { appAlertCompat } from '../context/AppAlertContext';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Polygon, Line, G, Defs, ClipPath } from 'react-native-svg';
+import Svg, { Polygon, Polyline, Line, G, Defs, ClipPath } from 'react-native-svg';
 import { useStyles, useTheme, type Colors } from '../theme';
-import { ApiClient, type MapData } from '../services/api';
+import { ApiClient, type LocalPoint, type MapData } from '../services/api';
 import { getServerUrl } from '../services/auth';
 import { useNavigation } from '@react-navigation/native';
 import { PatternPicker } from './PatternPicker';
@@ -48,6 +48,22 @@ interface Props {
   isWorking?: boolean;
   currentCuttingHeight?: number;   // from sensor data (cm, 2-9)
   currentPathDirection?: number;   // from sensor data (degrees)
+  onPreviewPaths?: (paths: Array<{ id: string; points: LocalPoint[] }>) => void;
+}
+
+function previewMapIdsFromMaps(maps: MapData[]): number {
+  const weights = new Set<number>();
+  for (const map of maps) {
+    const source = map.canonicalName ?? map.mapId;
+    const match = source.match(/^map(\d+)$/);
+    if (!match) continue;
+    const idx = Number(match[1]);
+    if (idx === 0) weights.add(1);
+    else if (idx === 1) weights.add(10);
+    else if (idx === 2) weights.add(100);
+  }
+  const mask = Array.from(weights).reduce((sum, value) => sum + value, 0);
+  return mask || 1;
 }
 
 export function StartMowSheet({
@@ -61,6 +77,7 @@ export function StartMowSheet({
   isWorking,
   currentCuttingHeight,
   currentPathDirection,
+  onPreviewPaths,
 }: Props) {
   const navigation = useNavigation();
   const pattern = usePattern();
@@ -91,6 +108,7 @@ export function StartMowSheet({
   const [patternCenter, setPatternCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [edgeOffset, setEdgeOffset] = useState(0); // meters: negative=shrink, positive=expand
   const [previewing, setPreviewing] = useState(false);
+  const [stockPreviewPaths, setStockPreviewPaths] = useState<Array<{ id: string; points: LocalPoint[] }>>([]);
   // Rain confirmation modal — replaces the prior appAlertCompat.alert so we can host a
   // Switch ("Negeer regen deze sessie") inside the prompt itself.
   const [rainPrompt, setRainPrompt] = useState<{ mm: number; prob: number; atMs: number } | null>(null);
@@ -164,6 +182,10 @@ export function StartMowSheet({
   // Check if a unicom (channel) exists for the selected map
   const hasUnicom = allMaps.some(m => m.mapType === 'unicom' && m.mapArea?.length >= 2);
 
+  useEffect(() => {
+    setStockPreviewPaths([]);
+  }, [selectedMapIds, pathDirection, edgeOffset, patternId]);
+
   // Send set_para_info ONLY with path_direction — matching Novabot (verified via
   // mower mqtt_node log). Sending the full bundle (sound/headlight/sensitivity/
   // manual_controller_*) overrides user settings every time the compass moves:
@@ -177,6 +199,32 @@ export function StartMowSheet({
       await api.sendCommand(sn, { set_para_info: { path_direction: deg } });
       console.log(`[StartMow] set_para_info sent: path_direction=${deg}`);
     } catch { /* ignore */ }
+  };
+
+  const handlePreview = async () => {
+    if (!sn || selectedMapIds.size === 0) return;
+    const selectedMaps = maps.filter(m => selectedMapIds.has(m.mapId));
+    if (selectedMaps.length === 0) {
+      appAlertCompat.alert(t('noMap') || 'No Map', t('previewNoArea') || 'Select a work area to preview');
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const url = await getServerUrl();
+      if (!url) return;
+      const api = new ApiClient(url);
+      const paths = await api.refreshPreviewPath(sn, {
+        covDirection: pathDirection,
+        mapIds: previewMapIdsFromMaps(selectedMaps),
+      });
+      setStockPreviewPaths(paths);
+      onPreviewPaths?.(paths);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      appAlertCompat.alert(t('error') || 'Error', detail || 'Could not load preview path');
+    } finally {
+      setPreviewing(false);
+    }
   };
 
   const handleStart = async () => {
@@ -652,6 +700,12 @@ export function StartMowSheet({
               const offsetPolyStrings = offsetPolys
                 ? offsetPolys.map(p => p.map(toSvg).map(pt => `${pt.x},${pt.y}`).join(' '))
                 : null;
+              const previewPolylineStrings = stockPreviewPaths
+                .map(path => path.points
+                  .map(toSvg)
+                  .map(pt => `${pt.x},${pt.y}`)
+                  .join(' '))
+                .filter(points => points.split(' ').length >= 2);
               // Tap-to-place pattern still anchors on the first selected
               // polygon so the existing pattern flow keeps working.
               const poly = fallback[0];
@@ -731,13 +785,24 @@ export function StartMowSheet({
                       ))}
                       {/* Direction stripes — drawn once per polygon so each
                           selected zone shows its own clipped pattern. */}
-                      {origPolys.map((_pts, i) => (
+                      {previewPolylineStrings.length === 0 && origPolys.map((_pts, i) => (
                         <G key={`stripes-${i}`} clipPath={`url(#previewClip-${i})`}>
                           {stripes.map((s, j) => (
                             <Line key={j} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}
                               stroke="rgba(34,197,94,0.2)" strokeWidth={6} />
                           ))}
                         </G>
+                      ))}
+                      {previewPolylineStrings.map((pts, i) => (
+                        <Polyline
+                          key={`mower-preview-${i}`}
+                          points={pts}
+                          fill="none"
+                          stroke="#e5e7eb"
+                          strokeWidth={2.4}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
                       ))}
                       {/* Edge offset polygons. */}
                       {offsetPolyStrings && offsetPolyStrings.map((pts, i) => (
@@ -807,6 +872,24 @@ export function StartMowSheet({
             <View style={styles.actionRow}>
               <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={starting} activeOpacity={0.7}>
                 <Text style={styles.cancelText}>{t('cancel')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.previewBtn,
+                  (previewing || starting || workMaps.length === 0 || selectedMapIds.size === 0 || patternId !== null || edgeOffset !== 0) && { opacity: 0.5 },
+                ]}
+                onPress={handlePreview}
+                disabled={previewing || starting || workMaps.length === 0 || selectedMapIds.size === 0 || patternId !== null || edgeOffset !== 0}
+                activeOpacity={0.7}
+              >
+                {previewing ? (
+                  <ActivityIndicator size="small" color={colors.emerald} />
+                ) : (
+                  <>
+                    <Ionicons name="eye" size={18} color={colors.emerald} />
+                    <Text style={styles.previewText}>{t('preview')}</Text>
+                  </>
+                )}
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -980,16 +1063,18 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   },
   startText: { fontSize: 14, fontWeight: '700', color: c.white },
   previewBtn: {
+    flex: 1,
+    height: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: c.inputBg,
     borderWidth: 1,
     borderColor: c.cardBorder,
   },
+  previewText: { fontSize: 14, fontWeight: '700', color: c.emerald },
   placeOnMapBtn: {
     flexDirection: 'row',
     alignItems: 'center',

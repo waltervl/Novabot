@@ -31,7 +31,7 @@ import { isOpenNovaFirmware } from '../utils/firmwareCapability';
 import { fixQualityLabel } from '../utils/fixQuality';
 import { parseFinishedAreas, prefixedAreaId, parseCoveringPoints } from '../utils/coverPathProgress';
 import { MowerPickerChevron } from '../components/MowerPickerChevron';
-import { ApiClient, type Schedule } from '../services/api';
+import { ApiClient, type MapData, type Schedule } from '../services/api';
 import { getServerUrl, getToken } from '../services/auth';
 import { DemoBanner } from '../components/DemoBanner';
 import { HealthBanner } from '../components/HealthBanner';
@@ -91,6 +91,21 @@ interface MowerDerived {
   /** Forwarded from `DeviceState.firmwareVersion` so the capability gates
    *  (edge cut, joystick, camera) can read it without a second lookup. */
   firmwareVersion: string | null;
+}
+
+function previewMapIdsFromMaps(maps: MapData[]): number {
+  const weights = new Set<number>();
+  for (const map of maps) {
+    const source = map.canonicalName ?? map.mapId;
+    const match = source.match(/^map(\d+)$/);
+    if (!match) continue;
+    const idx = Number(match[1]);
+    if (idx === 0) weights.add(1);
+    else if (idx === 1) weights.add(10);
+    else if (idx === 2) weights.add(100);
+  }
+  const mask = Array.from(weights).reduce((sum, value) => sum + value, 0);
+  return mask || 1;
 }
 
 // ── Cover path helpers ──────────────────────────────────────────────
@@ -1241,9 +1256,14 @@ export default function HomeScreen() {
         if (!clearlyIdle) return;
 
         lastPreviewRefreshAt.current = now;
+        const mapsRes = await api.fetchMaps(mower.sn).catch(() => ({ maps: [] as MapData[] }));
+        const workMaps = (mapsRes.maps ?? []).filter((m: MapData) => m.mapType === 'work' && (m.mapArea?.length ?? 0) >= 3);
+        const preferredMaps = startedMapIds.length > 0
+          ? workMaps.filter((m: MapData) => startedMapIds.includes(m.mapId))
+          : workMaps;
         const fresh = await api.refreshPreviewPath(mower.sn, {
           covDirection: mowSettings?.pathDirection,
-          mapIds: 1,
+          mapIds: previewMapIdsFromMaps(preferredMaps.length > 0 ? preferredMaps : workMaps),
         }).catch(() => []);
         if (cancelled) return;
         if (Array.isArray(fresh) && fresh.length > 0) setPlannedPaths(fresh);
@@ -1251,7 +1271,7 @@ export default function HomeScreen() {
     })();
 
     return () => { cancelled = true; };
-  }, [mower?.activity, mower?.sn, mower?.online, mowSettings?.pathDirection, demo.enabled]);
+  }, [mower?.activity, mower?.sn, mower?.online, mowSettings?.pathDirection, startedMapIds, demo.enabled]);
 
   // Mower bounce animation (subtle bob when active)
   const bounceAnim = useRef(new Animated.Value(0)).current;
@@ -2867,6 +2887,7 @@ export default function HomeScreen() {
             if (freshSessionTimer.current) clearTimeout(freshSessionTimer.current);
             freshSessionTimer.current = setTimeout(() => setFreshSession(false), 180000);
           }}
+          onPreviewPaths={(paths) => setPlannedPaths(paths)}
           initialSelectedMapId={startMowInitialMapId}
           forceZonePicker={startMowForceZone}
           battery={mower.battery}
