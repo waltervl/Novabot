@@ -39,6 +39,10 @@ research/*
 !research/documents/
 !research/datasheets/
 !research/ros2_msg_definitions/
+!research/coverage-native/
+!research/coverage-native/**
+research/coverage-native/build*/
+research/coverage-native/eth/.git/
 !research/*.py
 !research/*.java
 !research/*.md
