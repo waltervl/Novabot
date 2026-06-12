@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import type { MapData, GpsPoint, LocalPoint } from '../../types';
 import {
   sendCommand, sendExtendedCommand, fetchMaps, startPatrol, stopPatrol, rebootMower,
-  setChargeThreshold, setMaxSpeed, previewPath, nativePreviewPath,
+  setChargeThreshold, setMaxSpeed, previewPath,
   setDemoMode as setDemoModeApi, getDemoMode,
   fetchRainForecast, findIncomingRain, setRainIgnoreSession,
 } from '../../api/client';
@@ -49,11 +49,14 @@ interface Props {
   onPatternModeChange?: (active: boolean) => void;
   onOffsetPreviewChange?: (preview: Array<{ lat: number; lng: number }> | null) => void;
   patternCenter?: { lat: number; lng: number } | null;
+  /** Ask the map to render a fresh coverage preview at the chosen direction for
+   *  the selected work-area canonical(s) (all work maps when "All work areas"). */
+  onPreview?: (covDirection: number, canonicals: string[]) => void;
 }
 
 export function MowerControls({
   sn, online, sensors, onPathDirectionChange, pendingPolygon, onStarted,
-  onPatternPlacementChange, onPatternModeChange, onOffsetPreviewChange, patternCenter,
+  onPatternPlacementChange, onPatternModeChange, onOffsetPreviewChange, patternCenter, onPreview,
 }: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -200,14 +203,19 @@ export function MowerControls({
   const locInitialized = sensors?.localization_state === 'INITIALIZED' || sensors?.localization_state === 'Initialized';
   const mappingReady = gpsEnabled && locInitialized;
 
+  // Refetch on EVERY sn change — gating on maps.length===0 left the previous
+  // mower's maps in place after switching mowers, so the work-area selector +
+  // preview canonicals were stale (wrong/empty for the new mower).
   useEffect(() => {
-    if (expanded && maps.length === 0) {
-      fetchMaps(sn).then(resp => {
-        setMaps(resp.maps.filter(x => x.mapType === 'work' && x.mapArea.length >= 3));
-        setChargerGps(resp.chargerGps);
-      }).catch(() => {});
-    }
-  }, [sn, expanded, maps.length]);
+    let cancelled = false;
+    setMaps([]);
+    fetchMaps(sn).then(resp => {
+      if (cancelled) return;
+      setMaps(resp.maps.filter(x => x.mapType === 'work' && x.mapArea.length >= 3));
+      setChargerGps(resp.chargerGps);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [sn]);
 
   // Auto-expand and select when a pending polygon arrives
   useEffect(() => {
@@ -611,25 +619,24 @@ export function MowerControls({
   const handlePreview = useCallback(async () => {
     setPreviewing(true);
     try {
-      const selectedStoredMap = mapId
-        ? maps.find(m => m.mapId === mapId)
-        : maps[0];
+      // Resolve the work-area selector to canonical(s): a specific map → just
+      // that one; "All work areas" (empty mapId) → every work map. The map then
+      // generates a preview per zone and merges them.
+      const workMaps = maps.filter(m => m.mapType === 'work' && m.canonicalName);
+      const canonicals = (mapId
+        ? workMaps.filter(m => m.mapId === mapId)
+        : workMaps
+      ).map(m => m.canonicalName!).filter(Boolean);
       const canUseNativePreview =
         !patternMode &&
         !pendingPolygon &&
         edgeOffset === 0 &&
-        !!selectedStoredMap?.canonicalName;
-      if (canUseNativePreview && selectedStoredMap?.canonicalName) {
-        const sx = Number(sensors?.map_position_x);
-        const sy = Number(sensors?.map_position_y);
-        const startLocal = Number.isFinite(sx) && Number.isFinite(sy)
-          ? { x: sx, y: sy }
-          : undefined;
-        await nativePreviewPath(sn, {
-          canonical: selectedStoredMap.canonicalName,
-          startLocal,
-          covDirection: pathDirection,
-        });
+        canonicals.length > 0;
+      if (canUseNativePreview) {
+        // Hand off to the map: it owns the coverage overlay + projection and runs
+        // a FRESH native preview at this direction (no previous-progress coloring).
+        // Keeps the sheet open so the operator can tweak direction and re-preview.
+        onPreview?.(pathDirection, canonicals);
         toast(`✓ ${t('controls.previewPath')}`, 'success');
         setPreviewing(false);
         return;
@@ -661,7 +668,7 @@ export function MowerControls({
     }
     setPreviewing(false);
   }, [sn, patternMode, patternContours, patternCenter, patternSize, patternRotation,
-    pendingPolygon, mapId, maps, edgeOffset, pathDirection, chargerGps, sensors, t, toast]);
+    pendingPolygon, mapId, maps, edgeOffset, pathDirection, chargerGps, sensors, onPreview, t, toast]);
 
   const patternReady = patternMode && patternId !== null && patternCenter !== null;
 

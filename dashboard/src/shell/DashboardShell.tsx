@@ -13,6 +13,7 @@ import { NetworkHealthCard } from '../components/drawer/NetworkHealthCard';
 import { LiveStatusCard } from '../components/drawer/LiveStatusCard';
 import { ServerLogTail } from '../components/drawer/ServerLogTail';
 import { MowerControls } from '../components/dashboard/MowerControls';
+import type { PatternPlacement } from '../components/patterns/PatternOverlay';
 import { LongPauseBanner } from './LongPauseBanner';
 import { MdnsConflictBanner } from './MdnsConflictBanner';
 
@@ -30,6 +31,17 @@ function ShellInner() {
   const { activeMower, activeMowerSn, setActiveMowerSn, knownMowers } = useActiveMower(devices);
   const [tab, setTab] = useState<Tab>('map');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Bridge: the Start-sheet Preview button (in the header MowerControls) signals
+  // the MowerMap (in MapTab) to show a fresh coverage preview at the chosen
+  // direction. Nonce makes repeated clicks re-fire even with the same direction.
+  const [previewRequest, setPreviewRequest] = useState<{ nonce: number; covDirection: number; canonicals: string[] } | null>(null);
+  // Pattern placement bridge: the Start-sheet Pattern tab (header MowerControls)
+  // and the MowerMap (MapTab) are far apart in the tree. patternMode tells the
+  // map to accept placement clicks (and stop polygons from swallowing them);
+  // patternCenter flows map→controls, patternPlacement flows controls→map.
+  const [patternMode, setPatternMode] = useState(false);
+  const [patternCenter, setPatternCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const [patternPlacement, setPatternPlacement] = useState<PatternPlacement | null>(null);
 
   // Rain state derived from active mower's sensors. The mower reports
   // `rain_paused: '1'` when a scheduled run is currently paused by rain
@@ -68,6 +80,10 @@ function ShellInner() {
               sn={activeMower.sn}
               online={activeMower.online}
               sensors={activeMower.sensors}
+              onPreview={(covDirection, canonicals) => { setTab('map'); setPreviewRequest({ nonce: Date.now(), covDirection, canonicals }); }}
+              patternCenter={patternCenter}
+              onPatternModeChange={(active) => { setPatternMode(active); if (active) setTab('map'); if (!active) setPatternCenter(null); }}
+              onPatternPlacementChange={setPatternPlacement}
             />
           </div>
         )}
@@ -98,6 +114,9 @@ function ShellInner() {
             liveOutlines={liveOutlines}
             coveredLanes={coveredLanes}
             otaProgress={otaProgress}
+            previewRequest={previewRequest}
+            patternPlacement={patternPlacement}
+            onMapClickForPattern={patternMode ? setPatternCenter : undefined}
           />
         )}
         {tab === 'schedule' && <SchedulePage mower={activeMower} />}
