@@ -26,3 +26,7 @@ debug_sh_home0_map1	s2	252	175	pixel>=250:bbox_q3
 lfin1231000211_backup_map0	s0	89	64	pixel>=250:free_centroid
 lfin1231000211_backup_map0	s1	54	40	pixel>=250:bbox_q1
 lfin1231000211_backup_map0	s2	125	83	pixel>=250:bbox_q3
+live_lfin2230700238_20260611_map0	s0	648	264	pixel>=250:free_centroid
+live_lfin2230700238_20260611_map0	s1	481	263	pixel>=250:bbox_q1
+live_lfin2230700238_20260611_map0	s2	721	325	pixel>=250:bbox_q3
+live_lfin2230700238_20260611_map0	live_start	510	407	planner_log:cov_direction=60

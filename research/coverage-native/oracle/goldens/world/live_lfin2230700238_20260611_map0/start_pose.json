@@ -1,0 +1,40 @@
+{
+  "case": "live_lfin2230700238_20260611_map0",
+  "mower_sn": "LFIN2230700238",
+  "mower_ip": "192.168.0.244",
+  "captured_at": "2026-06-12T03:35:00+02:00",
+  "source_root": "/userdata/lfi/maps/home0",
+  "map": {
+    "name": "map0",
+    "area_id": 1,
+    "pgm": "map0.pgm",
+    "yaml": "map0.yaml",
+    "width": 882,
+    "height": 447,
+    "resolution": 0.05,
+    "origin": [-25.55, -1.95, 0.0],
+    "pgm_md5": "05418406da4ec3987962537cf79f89ad"
+  },
+  "start": {
+    "local": { "x": 0.0, "y": 0.0 },
+    "grid": { "x": 510, "y": 407 },
+    "specify_direction": true,
+    "cov_direction": 60
+  },
+  "planned_path": {
+    "planned_path_json": "planned_path/planned_path.json",
+    "planned_path_md5": "b036a9a1e3ce8732267b1f1a307db7bb",
+    "current_planned_path_json": "planned_path/current_planned_path.json",
+    "current_planned_path_md5": "048c8978bfd63ad52d04f432825c7a77"
+  },
+  "planner_log": {
+    "path": "/root/novabot/data/ros2_log/coverage_planner_server_20260610_091612_3292.log",
+    "request_time": "2026-06-11T16:08:26+02:00",
+    "evidence": [
+      "Request for planning. Make plan by file: /userdata/lfi/maps/home0/map0.yaml  1  60",
+      "Start: 0.00  0.00  origin :-25.55  -2.00  resolution: 0.05",
+      "Start x,y: 510   407 specify_direction: 1 cov_direction: 60",
+      "Save path to json successfully: /userdata/lfi/maps/home0/planned_path/current_planned_path.json"
+    ]
+  }
+}

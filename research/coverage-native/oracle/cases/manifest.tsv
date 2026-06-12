@@ -8,3 +8,4 @@ debug_sh_map0	1133	1198	255	c32451b2a6a1a1501c79e19822f2ee780fad671d059427cd7c5c
 debug_sh_home0_map0	1133	1198	255	c32451b2a6a1a1501c79e19822f2ee780fad671d059427cd7c5c7484916de66a	research/firmware/mower_firmware_6.0.3/debug_sh/home0/map0.pgm	mower_firmware_6.0.3 debug_sh home0/map0
 debug_sh_home0_map1	351	254	255	f62e1901c323fae195b5b295a1f05808c3a0f81977eb5c298cbabaea5ebdeb22	research/firmware/mower_firmware_6.0.3/debug_sh/home0/map1.pgm	mower_firmware_6.0.3 debug_sh home0/map1
 lfin1231000211_backup_map0	181	124	255	afedf704763ce5797e7185861fe88db720a0b2e0b0ffaa092e3031bc42f250c6	research/maps/LFIN1231000211_backup_20260409_1118/mower_home0/map0.pgm	LFIN1231000211 backup 20260409 map0
+live_lfin2230700238_20260611_map0	882	447	255	eadcf383aa67a03e2516e39a56de8ea486114c08c8678ae8cd4f2ce2930f3a59	research/coverage-native/oracle/live/lfin2230700238_20260611_map0/map0.pgm	LFIN2230700238 live capture 2026-06-11 map0

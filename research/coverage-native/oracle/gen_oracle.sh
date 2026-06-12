@@ -66,6 +66,7 @@ python3 - "$ROOT" "$REPO_ROOT" <<'PY'
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -87,7 +88,12 @@ case_sources = [
     ("debug_sh_home0_map0", "research/firmware/mower_firmware_6.0.3/debug_sh/home0/map0.pgm", "mower_firmware_6.0.3 debug_sh home0/map0"),
     ("debug_sh_home0_map1", "research/firmware/mower_firmware_6.0.3/debug_sh/home0/map1.pgm", "mower_firmware_6.0.3 debug_sh home0/map1"),
     ("lfin1231000211_backup_map0", "research/maps/LFIN1231000211_backup_20260409_1118/mower_home0/map0.pgm", "LFIN1231000211 backup 20260409 map0"),
+    ("live_lfin2230700238_20260611_map0", "research/coverage-native/oracle/live/lfin2230700238_20260611_map0/map0.pgm", "LFIN2230700238 live capture 2026-06-11 map0"),
 ]
+
+manual_start_sources = {
+    "live_lfin2230700238_20260611_map0": "research/coverage-native/oracle/live/lfin2230700238_20260611_map0/start_pose.json",
+}
 
 adversarial_sources = [
     "self_intersection/house_map.pgm",
@@ -107,6 +113,7 @@ world_sources = [
     ("debug_sh_map0", "research/firmware/mower_firmware_6.0.3/debug_sh/planned_path"),
     ("debug_sh_home0_map0", "research/firmware/mower_firmware_6.0.3/debug_sh/home0/planned_path"),
     ("lfin1231000211_backup_map0", "research/maps/LFIN1231000211_backup_20260409_1118/mower_home0/planned_path"),
+    ("live_lfin2230700238_20260611_map0", "research/coverage-native/oracle/live/lfin2230700238_20260611_map0/planned_path"),
 ]
 
 
@@ -210,6 +217,17 @@ with (cases_dir / "starts.tsv").open("w", encoding="utf-8") as f:
     for name, dst, _rel, _width, _height, _max_value, _note in copied_cases:
         for label, x, y, method in starts_for(dst):
             f.write(f"{name}\t{label}\t{x}\t{y}\t{method}\n")
+        start_rel = manual_start_sources.get(name)
+        if start_rel:
+            start_path = repo / start_rel
+            if start_path.exists():
+                start = json.loads(start_path.read_text(encoding="utf-8"))["start"]
+                grid = start["grid"]
+                cov_direction = start.get("cov_direction", "auto")
+                f.write(
+                    f"{name}\tlive_start\t{grid['x']}\t{grid['y']}\t"
+                    f"planner_log:cov_direction={cov_direction}\n"
+                )
 
 with (root / "missing-adversarial-cases.tsv").open("w", encoding="utf-8") as f:
     f.write("fixture\tstatus\tlocal_path\tcase\n")
@@ -243,6 +261,9 @@ with (world_dir / "manifest.tsv").open("w", encoding="utf-8") as f:
             current_dst = dst_dir / "current_planned_path.json"
             shutil.copyfile(current, current_dst)
             current_out = current_dst.relative_to(root).as_posix()
+        metadata = src_dir.parent / "start_pose.json"
+        if metadata.exists():
+            shutil.copyfile(metadata, dst_dir / "start_pose.json")
         if planned_out or current_out:
             f.write(f"{case_name}\t{planned_out}\t{current_out}\t{rel_dir}\n")
 PY
