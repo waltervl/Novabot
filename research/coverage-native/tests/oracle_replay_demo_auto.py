@@ -23,6 +23,8 @@ def main():
         ("replay_demo_show", "s1", "52", "55", "auto", "auto"),
         ("replay_demo_show", "s1", "52", "55", "45", "dir45"),
         ("replay_demo_show", "s1", "52", "55", "90", "dir90"),
+        ("replay_test_low_efficiency", "s0", "61", "75", "0", "dir0"),
+        ("replay_test_low_efficiency", "s1", "37", "41", "0", "dir0"),
         ("debug_sh_home0_map1", "s0", "171", "120", "45", "dir45"),
         ("debug_sh_home0_map1", "s1", "97", "72", "45", "dir45"),
         ("lfin1231000211_backup_map0", "s0", "89", "64", "90", "dir90"),

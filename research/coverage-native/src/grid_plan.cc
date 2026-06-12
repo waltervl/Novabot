@@ -60,7 +60,7 @@ std::vector<GridContour> safeContourFamilyForTopLevel(
   return safe_family;
 }
 
-constexpr double kRepeatEndpointDistanceThreshold = 0.1;
+constexpr double kRepeatEndpointDistanceThreshold = 0.2;
 
 bool isTinyEndpointSegment(const Point_2& endpoint, const Point_2& neighbor) {
   return CGAL::to_double(CGAL::squared_distance(endpoint, neighbor)) <
