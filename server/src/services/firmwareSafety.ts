@@ -11,9 +11,9 @@ export const BACKUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** Canonical BETA warning copy. Clients mirror this text per-package. */
 export const BETA_FIRMWARE_WARNING =
-  '⚠️ BETA — Custom firmware. Dit is experimentele software. Het kan je maaier ' +
-  'onbruikbaar maken (bricken) en AL je kaarten wissen. Er wordt automatisch een ' +
-  'backup gemaakt, maar installeer alleen als je de risicos accepteert.';
+  "⚠️ BETA — Custom firmware. Dit is experimentele software. Het kan je maaier " +
+  "onbruikbaar maken (bricken) en AL je kaarten wissen. Er wordt automatisch een " +
+  "backup gemaakt, maar installeer alleen als je de risico's accepteert.";
 
 /** True for custom/opennova builds (the BETA firmware we gate). */
 export function isBetaFirmware(version: string | null | undefined): boolean {
