@@ -14,6 +14,7 @@
 #include "coverage_native/preprocess.h"
 #include "coverage_native/tsp.h"
 #include "coverage_native/world_convert.h"
+#include "coverage_native/world_plan.h"
 
 namespace {
 
@@ -125,6 +126,36 @@ void testWorldTransform() {
       coverage_native::mapToWorld(180, 123, map);
   requireNear(bottom_right.x, 7.775, 1e-9, "bottom-right x");
   requireNear(bottom_right.y, 2.525, 1e-9, "bottom-right y");
+}
+
+void testWorldPlanSerialization() {
+  const coverage_native::CellPathMap grid_plan = {
+      {2, {{0, 0}, {1, 1}}},
+  };
+  const coverage_native::MapMetadata map{
+      4,     // width
+      3,     // height
+      0.50,  // resolution
+      10.0,  // origin_x
+      20.0,  // origin_y
+  };
+
+  const coverage_native::WorldPathMap world_plan =
+      coverage_native::gridPlanToWorldPlan(grid_plan, map);
+
+  require(world_plan.size() == 1, "world plan keeps cell count");
+  require(world_plan.at(2).size() == 2, "world plan keeps point count");
+  requireNear(world_plan.at(2)[0].x, 10.25, 1e-9, "first world x");
+  requireNear(world_plan.at(2)[0].y, 21.25, 1e-9, "first world y");
+  requireNear(world_plan.at(2)[1].x, 10.75, 1e-9, "second world x");
+  requireNear(world_plan.at(2)[1].y, 20.75, 1e-9, "second world y");
+
+  require(coverage_native::formatWorldPath(world_plan.at(2)) ==
+              "10.25 21.25,10.75 20.75",
+          "world path format must match planned_path polyline strings");
+  require(coverage_native::plannedPathJson(world_plan, 7) ==
+              "{\"7\":{\"2\":\"10.25 21.25,10.75 20.75\"}}\n",
+          "planned_path JSON wraps cells by area id");
 }
 
 void testContourExtractionFiltersSmallAreas() {
@@ -300,6 +331,7 @@ int main() {
     testCoverageParametersFromPixels();
     testPreprocessMap();
     testWorldTransform();
+    testWorldPlanSerialization();
     testContourExtractionFiltersSmallAreas();
     testContoursConvertToPolygonWithHole();
     testDecompositionAndSweeps();

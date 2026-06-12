@@ -78,6 +78,7 @@ add_library(coverage_vendor_glue STATIC
   src/preprocess.cc
   src/tsp.cc
   src/world_convert.cc
+  src/world_plan.cc
 )
 target_include_directories(coverage_vendor_glue
   PUBLIC
