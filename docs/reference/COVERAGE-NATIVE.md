@@ -29,6 +29,61 @@ The image also contains third-party notices at:
 /opt/opennova/share/licenses/coverage-native/
 ```
 
+## Multi-Arch Build Verification
+
+The Dockerfile is the single OpenNova image build path for both architectures.
+Use the normal compose build for the default deployment image:
+
+```bash
+docker compose build opennova
+docker image inspect rvbcrs/opennova:latest --format '{{.Architecture}}/{{.Os}}'
+docker run --rm --entrypoint /opt/opennova/bin/coverage_grid_plan \
+  -v "$PWD/research/coverage-native/oracle:/oracle:ro" \
+  rvbcrs/opennova:latest \
+  /oracle/cases/replay_demo_show.pgm 92 103
+```
+
+On this development host `DOCKER_DEFAULT_PLATFORM=linux/amd64`, so
+`rvbcrs/opennova:latest` verifies the x86_64 build path (`amd64/linux`).
+
+Verify the arm64 path explicitly with buildx and a separate local tag:
+
+```bash
+docker buildx build --platform linux/arm64 --load \
+  -t rvbcrs/opennova:coverage-native-arm64 .
+docker image inspect rvbcrs/opennova:coverage-native-arm64 \
+  --format '{{.Architecture}}/{{.Os}}'
+docker run --rm --platform linux/arm64 --entrypoint uname \
+  rvbcrs/opennova:coverage-native-arm64 -m
+docker run --rm --platform linux/arm64 \
+  -v "$PWD/research/coverage-native/oracle:/oracle:ro" \
+  --entrypoint /opt/opennova/bin/coverage_grid_plan \
+  rvbcrs/opennova:coverage-native-arm64 \
+  /oracle/cases/replay_demo_show.pgm 92 103
+```
+
+The arm64 verification should report `arm64/linux` from image inspection and
+`aarch64` from `uname`. Run commands with `--platform linux/arm64` when
+`DOCKER_DEFAULT_PLATFORM` is set to another architecture, otherwise Docker may
+look for the wrong local manifest.
+
+The current verified local images are:
+
+| Tag | Architecture | Native planner status |
+|---|---|---|
+| `rvbcrs/opennova:latest` | `amd64/linux` | CTest `3/3`, runtime smoke OK |
+| `rvbcrs/opennova:coverage-native-arm64` | `arm64/linux` | CTest `3/3`, runtime smoke OK |
+
+Publishing a public multi-arch manifest is a release operation on top of these
+same platform builds:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t rvbcrs/opennova:latest --push .
+```
+
+Only run the `--push` command as an intentional release step.
+
 ## Version Pins
 
 The exactness-sensitive dependency stack is pinned in the Docker build:
