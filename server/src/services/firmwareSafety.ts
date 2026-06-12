@@ -3,7 +3,7 @@
  * (custom/opennova) mower firmware flash. See
  * docs/superpowers/specs/2026-06-12-beta-firmware-install-gate-design.md
  */
-import { listBackups, createBackup, type BackupEntry } from './portableBackup.js';
+import { listBackups, createBundleFromDb, type BackupEntry } from './portableBackup.js';
 import { mapRepo } from '../db/repositories/index.js';
 
 /** Reuse a backup younger than this; otherwise make a fresh one. */
@@ -72,7 +72,7 @@ export function allowBetaFlashOrSnapshot(sn: string, version: string | null | un
   if (!isBetaFirmware(version)) return true;
   if (!hasMapsToProtect(sn)) return true;   // nothing to lose
   if (hasRecentBackup(sn)) return true;     // already protected
-  void createBackup(sn, 'pre-beta-flash').catch((err) =>
+  void createBundleFromDb(sn, 'pre-beta-flash').catch((err) =>
     console.error(`[firmware-safety] background backup failed for ${sn}:`, err));
   return false;
 }
@@ -90,9 +90,9 @@ export async function ensureBetaFlashSafe(sn: string, version: string | null | u
 
   let created: BackupEntry | null = null;
   try {
-    created = await createBackup(sn, 'pre-beta-flash');
+    created = await createBundleFromDb(sn, 'pre-beta-flash');
   } catch (err) {
-    console.error(`[firmware-safety] createBackup threw for ${sn}:`, err);
+    console.error(`[firmware-safety] createBundleFromDb threw for ${sn}:`, err);
   }
   if (created) return { allowed: true, backup: created, reason: 'backup-created' };
 

@@ -60,14 +60,14 @@ describe('isBetaFirmware', () => {
 describe('ensureBetaFlashSafe', () => {
   beforeEach(() => {
     vi.mocked(backup.listBackups).mockReset().mockReturnValue([]);
-    vi.mocked(backup.createBackup).mockReset().mockResolvedValue(null);
+    vi.mocked(backup.createBundleFromDb).mockReset().mockResolvedValue(null);
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReset().mockReturnValue([]);
   });
 
   it('passes through stock firmware without touching backups', async () => {
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2');
     expect(r).toEqual({ allowed: true, backup: null, reason: 'not-beta' });
-    expect(backup.createBackup).not.toHaveBeenCalled();
+    expect(backup.createBundleFromDb).not.toHaveBeenCalled();
     expect(backup.listBackups).not.toHaveBeenCalled();
   });
 
@@ -79,7 +79,7 @@ describe('ensureBetaFlashSafe', () => {
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r.allowed).toBe(true);
     expect((r as any).reason).toBe('recent-backup');
-    expect(backup.createBackup).not.toHaveBeenCalled();
+    expect(backup.createBundleFromDb).not.toHaveBeenCalled();
   });
 
   it('creates a fresh backup when none is recent', async () => {
@@ -87,14 +87,14 @@ describe('ensureBetaFlashSafe', () => {
     const entry: import('../../services/portableBackup.js').BackupEntry = {
       filename: 'new.novabotmap', bytes: 20, createdAt: Date.now(), reason: 'pre-beta-flash',
     };
-    vi.mocked(backup.createBackup).mockResolvedValue(entry);
+    vi.mocked(backup.createBundleFromDb).mockResolvedValue(entry);
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r).toEqual({ allowed: true, backup: entry, reason: 'backup-created' });
   });
 
   it('blocks when maps exist but the backup fails', async () => {
     vi.mocked(backup.listBackups).mockReturnValue([]);
-    vi.mocked(backup.createBackup).mockResolvedValue(null);
+    vi.mocked(backup.createBundleFromDb).mockResolvedValue(null);
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r).toEqual({ allowed: false, error: 'BACKUP_FAILED', detail: expect.any(String) });
@@ -102,15 +102,15 @@ describe('ensureBetaFlashSafe', () => {
 
   it('allows beta flash when there are no maps to lose', async () => {
     vi.mocked(backup.listBackups).mockReturnValue([]);
-    vi.mocked(backup.createBackup).mockResolvedValue(null);
+    vi.mocked(backup.createBundleFromDb).mockResolvedValue(null);
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([]);
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r).toEqual({ allowed: true, backup: null, reason: 'no-maps' });
   });
 
-  it('blocks when createBackup throws and maps exist', async () => {
+  it('blocks when bundle build throws and maps exist', async () => {
     vi.mocked(backup.listBackups).mockReturnValue([]);
-    vi.mocked(backup.createBackup).mockRejectedValue(new Error('disk full'));
+    vi.mocked(backup.createBundleFromDb).mockRejectedValue(new Error('disk full'));
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r).toEqual({ allowed: false, error: 'BACKUP_FAILED', detail: expect.any(String) });
@@ -118,7 +118,7 @@ describe('ensureBetaFlashSafe', () => {
 
   it('blocks when the DB cannot confirm maps (fail closed)', async () => {
     vi.mocked(backup.listBackups).mockReturnValue([]);
-    vi.mocked(backup.createBackup).mockResolvedValue(null);
+    vi.mocked(backup.createBundleFromDb).mockResolvedValue(null);
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockImplementation(() => { throw new Error('db locked'); });
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r.allowed).toBe(false);
@@ -130,12 +130,13 @@ describe('ensureBetaFlashSafe', () => {
 describe('allowBetaFlashOrSnapshot', () => {
   beforeEach(() => {
     vi.mocked(backup.listBackups).mockReset().mockReturnValue([]);
-    vi.mocked(backup.createBackup).mockReset().mockResolvedValue(null);
+    vi.mocked(backup.createBundleFromDb).mockReset().mockResolvedValue(null);
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReset().mockReturnValue([]);
   });
 
   it('allows stock firmware', () => {
     expect(allowBetaFlashOrSnapshot('LFIN2230700238', 'v6.0.2')).toBe(true);
+    expect(vi.mocked(backup.createBundleFromDb)).not.toHaveBeenCalled();
   });
 
   it('allows beta when there are no maps', () => {
@@ -152,8 +153,8 @@ describe('allowBetaFlashOrSnapshot', () => {
   it('denies + snapshots beta when maps exist and no recent backup', () => {
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
     vi.mocked(backup.listBackups).mockReturnValue([]);
-    vi.mocked(backup.createBackup).mockResolvedValue(null);
+    vi.mocked(backup.createBundleFromDb).mockResolvedValue(null);
     expect(allowBetaFlashOrSnapshot('LFIN2230700238', 'v6.0.2-custom-36')).toBe(false);
-    expect(vi.mocked(backup.createBackup)).toHaveBeenCalledWith('LFIN2230700238', 'pre-beta-flash');
+    expect(vi.mocked(backup.createBundleFromDb)).toHaveBeenCalledWith('LFIN2230700238', 'pre-beta-flash');
   });
 });
