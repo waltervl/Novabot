@@ -128,3 +128,11 @@ add_test(
     "$<TARGET_FILE:coverage_grid_plan>"
     "${CMAKE_CURRENT_SOURCE_DIR}/oracle"
 )
+add_test(
+  NAME coverage_oracle_full_corpus
+  COMMAND
+    ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/oracle_full_corpus.py"
+    "$<TARGET_FILE:coverage_grid_plan>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/oracle"
+)
