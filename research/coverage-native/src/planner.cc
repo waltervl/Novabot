@@ -19,6 +19,7 @@ namespace {
 constexpr double kDirectionScale = 100.0;
 constexpr double kVendorDegreesToRadians = 0.01745;
 constexpr double kVendorQuarterTurnRadians = 1.5707;
+constexpr double kAltitudeTieEpsilon = 1e-9;
 
 Direction_2 scaledDirectionFromRadians(double radians) {
   const int dx = static_cast<int>(std::cos(radians) * kDirectionScale);
@@ -202,7 +203,7 @@ DecompositionResult decomposeCoveragePolygonWithDirection(
       }
 
       const double candidate_altitude_sum = altitudeSum(cells);
-      if (candidate_altitude_sum < best_altitude_sum) {
+      if (candidate_altitude_sum + kAltitudeTieEpsilon < best_altitude_sum) {
         best_altitude_sum = candidate_altitude_sum;
         result.decomposition_direction = direction;
         result.cells = std::move(cells);

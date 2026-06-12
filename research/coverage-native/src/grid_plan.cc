@@ -5,8 +5,8 @@
 #include <stdexcept>
 #include <vector>
 
-#include <CGAL/squared_distance_2.h>
 #include <CGAL/number_utils.h>
+#include <CGAL/squared_distance_2.h>
 
 #include "coverage_native/contour_bridge.h"
 #include "coverage_native/preprocess.h"
@@ -60,7 +60,9 @@ std::vector<GridContour> safeContourFamilyForTopLevel(
   return safe_family;
 }
 
-constexpr double kRepeatEndpointDistanceThreshold = 0.2;
+constexpr double kRepeatEndpointDistanceThreshold = 1.0;
+constexpr double kRepeatEndpointMaxTrimSquaredLength = 60.0 * 60.0;
+constexpr double kRepeatOppositeEndpointMaxTrimSquaredLength = 6.0;
 
 bool isTinyEndpointSegment(const Point_2& endpoint, const Point_2& neighbor) {
   return CGAL::to_double(CGAL::squared_distance(endpoint, neighbor)) <
@@ -101,6 +103,27 @@ bool segmentContainsSegment(const Point_2& container_a,
                             const Point_2& candidate_b) {
   return pointOnCollinearSegment(candidate_a, container_a, container_b) &&
          pointOnCollinearSegment(candidate_b, container_a, container_b);
+}
+
+bool isShortRepeatEndpointSegment(const Point_2& endpoint,
+                                  const Point_2& neighbor) {
+  return CGAL::to_double(CGAL::squared_distance(endpoint, neighbor)) <=
+         kRepeatEndpointMaxTrimSquaredLength;
+}
+
+bool eraseOppositeTinyTailAfterLongHeadRepeat(std::vector<Point_2>& sweep) {
+  if (sweep.size() < 2) {
+    return false;
+  }
+  // The vendor keeps long collinear head connectors, but drops the tiny spur
+  // left on the opposite tail in those cases.
+  if (CGAL::to_double(CGAL::squared_distance(sweep.back(),
+                                             sweep[sweep.size() - 2])) >
+      kRepeatOppositeEndpointMaxTrimSquaredLength) {
+    return false;
+  }
+  sweep.pop_back();
+  return true;
 }
 
 bool eraseCurrentRepeatPoint(std::vector<Point_2>& sweep, bool head) {
@@ -144,8 +167,14 @@ bool trimRepeatEndpointPair(std::vector<Point_2>& current, bool current_head,
     return false;
   }
 
-  if (segmentContainsSegment(other_endpoint, other_neighbor, current_endpoint,
-                             current_neighbor)) {
+  const bool erase_current =
+      segmentContainsSegment(other_endpoint, other_neighbor, current_endpoint,
+                             current_neighbor);
+  if (erase_current) {
+    if (current_head &&
+        !isShortRepeatEndpointSegment(current_endpoint, current_neighbor)) {
+      return eraseOppositeTinyTailAfterLongHeadRepeat(current);
+    }
     return eraseCurrentRepeatPoint(current, current_head);
   }
   return eraseOtherRepeatPoint(other, other_head);
