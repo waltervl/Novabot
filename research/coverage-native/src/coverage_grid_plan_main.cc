@@ -14,6 +14,7 @@ namespace {
 void printUsage(const char* argv0) {
   std::cerr << "usage: " << argv0
             << " <pgm> <startX> <startY> [covDir]"
+            << " [--inflation meters]"
             << " [--world width height resolution originX originY [areaId]]\n";
 }
 
@@ -54,6 +55,7 @@ struct CliOptions {
   int start_y;
   coverage_native::GridPlanOptions plan_options;
   std::optional<coverage_native::MapMetadata> metadata;
+  std::optional<double> inflation_radius_m;
   int area_id = 1;
 };
 
@@ -68,11 +70,12 @@ CliOptions parseArgs(int argc, char** argv) {
       std::stoi(argv[3]),
       coverage_native::GridPlanOptions{},
       std::nullopt,
+      std::nullopt,
       1,
   };
 
   int index = 4;
-  if (index < argc && std::string(argv[index]) != "--world") {
+  if (index < argc && std::string(argv[index]).rfind("--", 0) != 0) {
     options.plan_options.decomposition.specify_direction = true;
     options.plan_options.decomposition.coverage_direction_degrees =
         static_cast<unsigned char>(std::stoi(argv[index]));
@@ -80,24 +83,44 @@ CliOptions parseArgs(int argc, char** argv) {
   }
 
   if (index < argc) {
-    if (std::string(argv[index]) != "--world") {
+    while (index < argc) {
+      const std::string flag(argv[index]);
+      if (flag == "--inflation") {
+        if (index + 1 >= argc) {
+          throw std::invalid_argument("--inflation expects meters");
+        }
+        options.inflation_radius_m = std::stod(argv[index + 1]);
+        index += 2;
+        continue;
+      }
+      if (flag == "--world") {
+        if (argc - index != 6 && argc - index != 7) {
+          throw std::invalid_argument(
+              "--world expects width height resolution originX originY [areaId]");
+        }
+        options.metadata = coverage_native::MapMetadata{
+            static_cast<unsigned int>(std::stoul(argv[index + 1])),
+            static_cast<unsigned int>(std::stoul(argv[index + 2])),
+            std::stod(argv[index + 3]),
+            std::stod(argv[index + 4]),
+            std::stod(argv[index + 5]),
+        };
+        if (argc - index == 7) {
+          options.area_id = std::stoi(argv[index + 6]);
+        }
+        index = argc;
+        continue;
+      }
       throw std::invalid_argument("unexpected argument: " +
-                                  std::string(argv[index]));
+                                  flag);
     }
-    if (argc - index != 6 && argc - index != 7) {
-      throw std::invalid_argument(
-          "--world expects width height resolution originX originY [areaId]");
-    }
-    options.metadata = coverage_native::MapMetadata{
-        static_cast<unsigned int>(std::stoul(argv[index + 1])),
-        static_cast<unsigned int>(std::stoul(argv[index + 2])),
-        std::stod(argv[index + 3]),
-        std::stod(argv[index + 4]),
-        std::stod(argv[index + 5]),
-    };
-    if (argc - index == 7) {
-      options.area_id = std::stoi(argv[index + 6]);
-    }
+  }
+
+  if (options.inflation_radius_m.has_value()) {
+    const double resolution =
+        options.metadata.has_value() ? options.metadata->resolution : 0.05;
+    options.plan_options.parameters = coverage_native::makeCoverageParametersFromMeters(
+        resolution, *options.inflation_radius_m);
   }
 
   return options;
@@ -140,6 +163,8 @@ int main(int argc, char** argv) {
               << " covDir="
               << static_cast<int>(
                      cli.plan_options.decomposition.coverage_direction_degrees)
+              << " inflationPx="
+              << cli.plan_options.parameters.obstacle_inflation_px
               << "\n";
   } catch (const std::exception& e) {
     std::cerr << "coverage_grid_plan: " << e.what() << "\n";

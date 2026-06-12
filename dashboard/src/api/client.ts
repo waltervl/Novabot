@@ -395,6 +395,19 @@ export interface NativePreviewPathResult {
   areaId: number;
   pgmMd5: string;
   cacheHit: boolean;
+  coverageRadius?: number;
+  coverageRadiusSource?: 'stored' | 'default' | 'request';
+  error?: string;
+}
+
+export interface CoveragePlannerRadiusResult {
+  ok: boolean;
+  radius: number;
+  source?: 'stored' | 'default';
+  defaultRadius?: number;
+  min?: number;
+  max?: number;
+  mowerCommand?: 'sent' | 'skipped';
   error?: string;
 }
 
@@ -405,6 +418,7 @@ export async function nativePreviewPath(
     mapIds?: number | number[];
     startLocal?: { x: number; y: number };
     covDirection?: number;
+    coverageRadius?: number;
     expectedPgmMd5?: string;
   },
 ): Promise<NativePreviewPathResult> {
@@ -413,6 +427,7 @@ export async function nativePreviewPath(
   if (opts.mapIds !== undefined) body.map_ids = opts.mapIds;
   if (opts.startLocal) body.startLocal = opts.startLocal;
   if (opts.covDirection !== undefined) body.cov_direction = opts.covDirection;
+  if (opts.coverageRadius !== undefined) body.radius = opts.coverageRadius;
   if (opts.expectedPgmMd5) body.expected_pgm_md5 = opts.expectedPgmMd5;
   const res = await fetch(`${BASE}/native-preview-path/${encodeURIComponent(sn)}`, {
     method: 'POST',
@@ -420,6 +435,32 @@ export async function nativePreviewPath(
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({})) as NativePreviewPathResult;
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `${res.status} ${res.statusText}`);
+  }
+  return data;
+}
+
+export async function fetchCoveragePlannerRadius(sn: string): Promise<CoveragePlannerRadiusResult> {
+  const data = await (await get(`${BASE}/coverage-planner-radius/${encodeURIComponent(sn)}`)).json();
+  return data;
+}
+
+export async function updateCoveragePlannerRadius(
+  sn: string,
+  radius: number,
+  opts: { force?: boolean; applyToMower?: boolean } = {},
+): Promise<CoveragePlannerRadiusResult> {
+  const res = await fetch(`${BASE}/coverage-planner-radius/${encodeURIComponent(sn)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      radius,
+      force: opts.force === true,
+      applyToMower: opts.applyToMower !== false,
+    }),
+  });
+  const data = await res.json().catch(() => ({})) as CoveragePlannerRadiusResult;
   if (!res.ok || data.ok === false) {
     throw new Error(data.error || `${res.status} ${res.statusText}`);
   }

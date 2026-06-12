@@ -19,6 +19,10 @@ type AedesPublishPacket = { topic: string; payload: Buffer | string; qos: 0 | 1 
 import { v4 as uuidv4 } from 'uuid';
 import { mapRepo, equipmentRepo, userRepo, deviceRepo, deviceSettingsRepo } from '../db/repositories/index.js';
 import { selectParaRepush } from './paraRepush.js';
+import {
+  COVERAGE_PLANNER_RADIUS_KEY,
+  selectCoveragePlannerRadius,
+} from '../services/coveragePlannerRadius.js';
 import { emitDeviceBound, emitDevicePaired } from '../dashboard/socketHandler.js';
 import { gpsToLocal, type GpsPoint, type LocalPoint } from './mapConverter.js';
 import { tryDecrypt } from './decrypt.js';
@@ -563,6 +567,19 @@ function republishParaSettings(sn: string): void {
   publishToDevice(sn, { set_para_info: para });
 }
 
+function republishCoveragePlannerRadius(sn: string): void {
+  const rows = deviceSettingsRepo.findBySn(sn);
+  if (!rows.some((r) => r.key === COVERAGE_PLANNER_RADIUS_KEY)) return;
+  const selected = selectCoveragePlannerRadius(rows);
+  console.log(`${TAG} Her-push coverage planner radius naar ${sn}: ${selected.radius}m`);
+  publishToExtended(sn, {
+    set_coverage_planner_radius: {
+      radius: selected.radius,
+      force: false,
+    },
+  });
+}
+
 /**
  * Push een bundel's mower-files VERBATIM naar de maaier via `write_map_files`
  * — exact de push-mechaniek van de admin "Import bundle" → apply-verbatim route
@@ -727,6 +744,7 @@ export function onMowerConnected(sn: string): void {
       // Door de gebruiker gekozen para-settings (o.a. obstacle_avoidance_sensitivity)
       // opnieuw toepassen — de firmware persisteert ze niet over een reboot heen.
       republishParaSettings(sn);
+      republishCoveragePlannerRadius(sn);
 
       // BETA SAFETY (Option A): GEEN automatische map-push naar de maaier. Een
       // cloud-import/factory-reset herstelt alleen de server/app-kopie; de

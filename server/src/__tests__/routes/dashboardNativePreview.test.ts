@@ -50,6 +50,10 @@ vi.mock('../../mqtt/mapSync.js', () => ({
   onMowerConnected: vi.fn(),
 }));
 
+vi.mock('../../mqtt/extendedCommands.js', () => ({
+  publishExtendedCommand: vi.fn(),
+}));
+
 vi.mock('../../mqtt/mapConverter.js', () => ({
   generateMapZipFromDb: vi.fn(),
   gpsToLocal: vi.fn(),
@@ -88,9 +92,14 @@ vi.mock('../../services/coveragePlanService.js', () => ({
 }));
 
 import { mapRepo } from '../../db/repositories/index.js';
+import { deviceSettingsRepo } from '../../db/repositories/index.js';
 import { deviceCache } from '../../mqtt/sensorData.js';
 import { dashboardRouter } from '../../routes/dashboard.js';
+import {
+  COVERAGE_PLANNER_RADIUS_KEY,
+} from '../../services/coveragePlannerRadius.js';
 import * as coveragePlanService from '../../services/coveragePlanService.js';
+import * as extendedCommands from '../../mqtt/extendedCommands.js';
 import * as mapSync from '../../mqtt/mapSync.js';
 
 const app = express();
@@ -152,6 +161,7 @@ beforeEach(() => {
 describe('POST /api/dashboard/native-preview-path/:sn', () => {
   it('generates a native preview from stored map rows without publishing to the mower', async () => {
     seedMapRows();
+    deviceSettingsRepo.upsert(SN, COVERAGE_PLANNER_RADIUS_KEY, '0.25');
 
     const res = await request(app)
       .post(`/api/dashboard/native-preview-path/${SN}`)
@@ -170,6 +180,7 @@ describe('POST /api/dashboard/native-preview-path/:sn', () => {
       areaId: 2,
       pgmMd5: 'pgm-md5',
       cacheHit: false,
+      coverageRadius: 0.25,
       startGrid: { x: 240, y: 59 },
       paths: [{ id: '2_0', points: [{ x: 10, y: 1 }, { x: 11, y: 1 }] }],
     });
@@ -180,6 +191,7 @@ describe('POST /api/dashboard/native-preview-path/:sn', () => {
         canonical: 'map1',
         startLocal: { x: 11, y: 2 },
         covDirection: 90,
+        coverageRadius: 0.25,
         expectedPgmMd5: 'expected-md5',
         chargingPose: { x: 0, y: 0, orientation: 1.5 },
       }),
@@ -219,5 +231,35 @@ describe('POST /api/dashboard/native-preview-path/:sn', () => {
     });
     expect(mapSync.publishToDevice).not.toHaveBeenCalled();
     expect(mapSync.publishToExtended).not.toHaveBeenCalled();
+  });
+
+  it('persists a coverage planner radius and dispatches the mower extended command', async () => {
+    const res = await request(app)
+      .put(`/api/dashboard/coverage-planner-radius/${SN}`)
+      .send({ radius: 0.35, force: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      radius: 0.35,
+      mowerCommand: 'sent',
+    });
+    expect(deviceCache.get(SN)?.get(COVERAGE_PLANNER_RADIUS_KEY)).toBe('0.35');
+    expect(deviceSettingsRepo.findBySn(SN)).toEqual([
+      expect.objectContaining({ key: COVERAGE_PLANNER_RADIUS_KEY, value: '0.35' }),
+    ]);
+    expect(extendedCommands.publishExtendedCommand).toHaveBeenCalledWith(SN, {
+      set_coverage_planner_radius: { radius: 0.35, force: true },
+    });
+  });
+
+  it('rejects unsafe coverage planner radii', async () => {
+    const res = await request(app)
+      .put(`/api/dashboard/coverage-planner-radius/${SN}`)
+      .send({ radius: 0.05 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ ok: false, error: expect.stringContaining('radius') });
+    expect(extendedCommands.publishExtendedCommand).not.toHaveBeenCalled();
   });
 });

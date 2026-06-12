@@ -60,6 +60,7 @@ describe('coverage plan service', () => {
       canonical: 'map1',
       startLocal: { x: 11, y: 2 },
       covDirection: 90,
+      coverageRadius: 0.25,
       chargingPose: { x: 0, y: 0, orientation: 0 },
       execFile,
     });
@@ -69,6 +70,8 @@ describe('coverage plan service', () => {
       '240',
       '59',
       '90',
+      '--inflation',
+      '0.25',
       '--world',
       '320',
       '120',
@@ -95,7 +98,7 @@ describe('coverage plan service', () => {
     expect(result.cacheKey).toContain(result.pgmMd5);
   });
 
-  it('caches by pgm md5, start, direction, and map', async () => {
+  it('caches by pgm md5, start, direction, map, and coverage radius', async () => {
     let spawnCount = 0;
     const cache = new Map();
     const execFile: CoverageNativeExecFile = (_file, _args, _opts, cb) => {
@@ -116,12 +119,18 @@ describe('coverage plan service', () => {
 
     const first = await generateNativeCoveragePlanFromRows(request);
     const second = await generateNativeCoveragePlanFromRows(request);
+    const differentRadius = await generateNativeCoveragePlanFromRows({
+      ...request,
+      coverageRadius: 0.25,
+    });
 
-    expect(spawnCount).toBe(1);
+    expect(spawnCount).toBe(2);
     expect(first.cacheHit).toBe(false);
     expect(second.cacheHit).toBe(true);
+    expect(differentRadius.cacheHit).toBe(false);
     expect(second.plannedPath).toEqual(first.plannedPath);
     expect(second.cacheKey).toBe(first.cacheKey);
+    expect(differentRadius.cacheKey).not.toBe(first.cacheKey);
   });
 
   it('rejects when the synthesized PGM md5 does not match the gate', async () => {

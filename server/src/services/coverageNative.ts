@@ -21,6 +21,7 @@ export interface CoverageNativeRequest {
   pgmPath: string;
   start: CoverageNativePoint;
   covDir?: number;
+  inflationRadius?: number;
   world?: CoverageNativeWorld;
 }
 
@@ -66,6 +67,10 @@ export function buildCoverageNativeArgs(req: CoverageNativeRequest): string[] {
 
   if (req.covDir !== undefined) {
     args.push(String(req.covDir));
+  }
+
+  if (req.inflationRadius !== undefined) {
+    args.push('--inflation', String(req.inflationRadius));
   }
 
   if (req.world) {

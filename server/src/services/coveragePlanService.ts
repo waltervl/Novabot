@@ -40,6 +40,7 @@ export interface CoveragePlanResult {
   pgmMd5: string;
   cacheKey: string;
   cacheHit: boolean;
+  coverageRadius?: number;
   metadata: CoverageMapMetadata;
   startGrid: { x: number; y: number };
   plannedPath: CoverageNativeJson;
@@ -53,6 +54,7 @@ export interface GenerateNativeCoveragePlanFromRowsOptions {
   startLocal: XY;
   chargingPose: MapInput['chargingPose'];
   covDirection?: number;
+  coverageRadius?: number;
   expectedPgmMd5?: string;
   binaryPath?: string;
   timeoutMs?: number;
@@ -200,6 +202,7 @@ function coveragePlanCacheKey(opts: {
   pgmMd5: string;
   startGrid: { x: number; y: number };
   covDirection?: number;
+  coverageRadius?: number;
 }): string {
   return [
     opts.mowerSn,
@@ -208,6 +211,7 @@ function coveragePlanCacheKey(opts: {
     opts.pgmMd5,
     `${opts.startGrid.x},${opts.startGrid.y}`,
     opts.covDirection === undefined ? 'auto' : String(opts.covDirection),
+    opts.coverageRadius === undefined ? 'stock-radius' : `radius=${opts.coverageRadius}`,
   ].join('|');
 }
 
@@ -268,6 +272,7 @@ export async function generateNativeCoveragePlanFromRows(
     pgmMd5,
     startGrid,
     covDirection: opts.covDirection,
+    coverageRadius: opts.coverageRadius,
   });
 
   const cache = opts.cache ?? defaultCache;
@@ -284,6 +289,7 @@ export async function generateNativeCoveragePlanFromRows(
       pgmPath,
       start: startGrid,
       covDir: opts.covDirection,
+      inflationRadius: opts.coverageRadius,
       world: { ...metadata, areaId },
       binaryPath: opts.binaryPath,
       timeoutMs: opts.timeoutMs,
@@ -294,6 +300,7 @@ export async function generateNativeCoveragePlanFromRows(
       areaId,
       pgmMd5,
       cacheKey,
+      coverageRadius: opts.coverageRadius,
       metadata,
       startGrid,
       plannedPath,

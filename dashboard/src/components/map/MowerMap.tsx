@@ -18,6 +18,7 @@ import {
   calibrateCharger,
   fetchEditGeometry, saveEditDraft, discardEditDrafts, applyEdits, revertEdits,
   getPreviewPath, nativePreviewPath, getPlanPath, refreshPlanPath,
+  fetchCoveragePlannerRadius, updateCoveragePlannerRadius,
   type VirtualWall, type EditGeometryDto, type CoveragePathEntry,
 } from '../../api/client';
 import { localToGps, gpsToLocal, isUsableChargerGps } from '../../utils/coords';
@@ -46,6 +47,9 @@ L.Icon.Default.mergeOptions({
 
 // Standaard positie (Nederland)
 const DEFAULT_CENTER: [number, number] = [52.1409, 6.231];
+const DEFAULT_COVERAGE_RADIUS = 0.61;
+const MIN_COVERAGE_RADIUS = 0.2;
+const MAX_COVERAGE_RADIUS = 1.2;
 
 // ── Obstacle copy/paste (R6) ──────────────────────────────────────
 // Clipboard for copying an obstacle and pasting it as a new obstacle draft —
@@ -996,6 +1000,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   const [coveragePath, setCoveragePath] = useState<CoveragePathEntry[] | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
+  const [coverageRadiusDraft, setCoverageRadiusDraft] = useState(() => {
+    const fromSensors = Number(sensors?.coverage_planner_radius);
+    return Number.isFinite(fromSensors) ? fromSensors.toString() : DEFAULT_COVERAGE_RADIUS.toString();
+  });
+  const [coverageRadiusSaving, setCoverageRadiusSaving] = useState(false);
   // Live camera tile — only available on OpenNova custom firmware (the
   // `camera_stream.py` daemon ships only there; the proxy 404s otherwise).
   const [showCamera, setShowCamera] = useState(false);
@@ -1015,6 +1024,26 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // re-created on every toggle.
   const showCoverageRef = useRef(false);
   useEffect(() => { showCoverageRef.current = showCoverage; }, [showCoverage]);
+
+  useEffect(() => {
+    if (!sn) return;
+    let cancelled = false;
+    const fromSensors = Number(sensors?.coverage_planner_radius);
+    if (Number.isFinite(fromSensors)) {
+      setCoverageRadiusDraft(fromSensors.toString());
+      return;
+    }
+    fetchCoveragePlannerRadius(sn)
+      .then((result) => {
+        if (!cancelled && Number.isFinite(result.radius)) {
+          setCoverageRadiusDraft(result.radius.toString());
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCoverageRadiusDraft(DEFAULT_COVERAGE_RADIUS.toString());
+      });
+    return () => { cancelled = true; };
+  }, [sn, sensors?.coverage_planner_radius]);
 
   // ── Push/pull brush (R3) ────────────────────────────────────────
   // The brush operates on the currently selected WORK or OBSTACLE polygon
@@ -1578,6 +1607,26 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     }
   }, [sn, t, fetchPlanOnce, startCoveragePoll]);
 
+  const saveCoverageRadius = useCallback(async () => {
+    if (!sn) return;
+    const radius = Number(coverageRadiusDraft);
+    if (!Number.isFinite(radius) || radius < MIN_COVERAGE_RADIUS || radius > MAX_COVERAGE_RADIUS) {
+      toast(t('map.edit.coverageRadiusInvalid'), 'error');
+      return;
+    }
+    setCoverageRadiusSaving(true);
+    try {
+      const result = await updateCoveragePlannerRadius(sn, Number(radius.toFixed(3)));
+      setCoverageRadiusDraft(result.radius.toString());
+      toast(t('map.edit.coverageRadiusSaved'), 'success');
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      toast(detail || t('map.edit.coverageRadiusSaveFailed'), 'error');
+    } finally {
+      setCoverageRadiusSaving(false);
+    }
+  }, [sn, coverageRadiusDraft, toast, t]);
+
   // Server-side native coverage preview. This deliberately does not require an
   // online mower and does not send generate_preview_cover_path. When the mower is
   // mowing this routes to showLiveCoverage instead because get_map_plan_path is
@@ -1596,10 +1645,12 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
       const sx = Number(mapX);
       const sy = Number(mapY);
       const dir = Number(mowing?.covDirection);
+      const radius = Number(coverageRadiusDraft);
       const result = await nativePreviewPath(sn, {
         canonical: selectedStoredMap?.canonicalName ?? undefined,
         startLocal: Number.isFinite(sx) && Number.isFinite(sy) ? { x: sx, y: sy } : undefined,
         covDirection: Number.isFinite(dir) ? dir : 0,
+        coverageRadius: Number.isFinite(radius) ? radius : undefined,
       });
       setCoveragePath(result.paths);
       setCoverageStatus(result.paths.length > 0 ? null : t('map.edit.coverageNone'));
@@ -1609,7 +1660,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     } finally {
       setCoverageLoading(false);
     }
-  }, [sn, mowingActive, maps, selectedMapId, mapX, mapY, mowing?.covDirection, t, showLiveCoverage, stopCoveragePoll]);
+  }, [sn, mowingActive, maps, selectedMapId, mapX, mapY, mowing?.covDirection, coverageRadiusDraft, t, showLiveCoverage, stopCoveragePoll]);
 
   // Toggle handler: on first enable, show cached path instantly if present,
   // otherwise kick off the right fetch (live plan if mowing, else idle preview).
@@ -2749,6 +2800,32 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
               <Flame className="w-3 h-3" />
               <span className="hidden md:inline">{t('map.heat')}</span>
             </button>
+          )}
+          {polygonMaps.length > 0 && editMode === 'none' && !calibrating && sn && (
+            <div className="inline-flex items-center gap-1 rounded bg-gray-700/50 px-1.5 py-0.5 text-xs text-gray-300">
+              <Target className="w-3 h-3 text-emerald-300" />
+              <input
+                type="number"
+                min={MIN_COVERAGE_RADIUS}
+                max={MAX_COVERAGE_RADIUS}
+                step="0.01"
+                value={coverageRadiusDraft}
+                onChange={(e) => setCoverageRadiusDraft(e.target.value)}
+                className="w-14 bg-transparent text-right text-xs text-gray-100 outline-none"
+                title={t('map.edit.coverageRadiusTitle')}
+              />
+              <span className="text-[10px] text-gray-500">m</span>
+              <button
+                onClick={saveCoverageRadius}
+                disabled={coverageRadiusSaving}
+                className={`rounded p-0.5 text-gray-400 hover:text-emerald-300 ${coverageRadiusSaving ? 'cursor-wait opacity-60' : ''}`}
+                title={t('map.edit.coverageRadiusSave')}
+              >
+                {coverageRadiusSaving
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <Save className="w-3 h-3" />}
+              </button>
+            </div>
           )}
           {/* Server-side native coverage preview — the real "black lines" the
               mower will cut, without requiring the mower to be online. */}

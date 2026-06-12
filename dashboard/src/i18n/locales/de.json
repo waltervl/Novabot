@@ -317,6 +317,11 @@
       "coverageLive": "Live-Mähpfad",
       "coverageLiveHint": "Live-Pfad während der Mäher mäht",
       "coverageNone": "Pfad konnte nicht berechnet werden",
+      "coverageRadiusTitle": "Coverage-Planner-Radius in Metern",
+      "coverageRadiusSave": "Radius speichern",
+      "coverageRadiusSaved": "Coverage-Radius gespeichert",
+      "coverageRadiusSaveFailed": "Coverage-Radius konnte nicht gespeichert werden",
+      "coverageRadiusInvalid": "Radius muss 0.20-1.20 m sein",
       "coverageRefresh": "Auf Server neu berechnen"
     }
   },

@@ -12,6 +12,7 @@ describe('coverage native service', () => {
       pgmPath: '/maps/map0.pgm',
       start: { x: 12, y: 34 },
       covDir: 45,
+      inflationRadius: 0.25,
       world: {
         width: 181,
         height: 124,
@@ -25,6 +26,8 @@ describe('coverage native service', () => {
       '12',
       '34',
       '45',
+      '--inflation',
+      '0.25',
       '--world',
       '181',
       '124',

@@ -625,10 +625,12 @@ export function MowerControls({
         const startLocal = Number.isFinite(sx) && Number.isFinite(sy)
           ? { x: sx, y: sy }
           : undefined;
+        const coverageRadius = Number(sensors?.coverage_planner_radius);
         await nativePreviewPath(sn, {
           canonical: selectedStoredMap.canonicalName,
           startLocal,
           covDirection: pathDirection,
+          coverageRadius: Number.isFinite(coverageRadius) ? coverageRadius : undefined,
         });
         toast(`✓ ${t('controls.previewPath')}`, 'success');
         setPreviewing(false);

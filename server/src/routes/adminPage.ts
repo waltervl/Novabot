@@ -645,11 +645,13 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
            (Portable Map Bundle, legacy Map Recovery, Debug) lives
            below the map so the canvas is the visual focal point. -->
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <select id="mapMowerSelect" onchange="resetMaskLayer();clearNativeCoveragePreview(false);loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value);portableCheckActive(this.value);loadPortableBackups()" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+        <select id="mapMowerSelect" onchange="resetMaskLayer();clearNativeCoveragePreview(false);loadCoveragePlannerRadius(this.value);loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value);portableCheckActive(this.value);loadPortableBackups()" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
         </select>
         <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
         <button id="nativeCoverageBtn" onclick="runNativeCoveragePreview()" title="Server-side native coverage preview from stored DB maps. Does not require an online mower." style="padding:8px 16px;background:rgba(16,185,129,.16);color:#6ee7b7;border:1px solid rgba(16,185,129,.42);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Native coverage preview</button>
+        <input id="nativeCoverageRadius" type="number" min="0.2" max="1.2" step="0.01" value="0.61" title="Coverage planner radius in meters" style="width:72px;padding:8px 8px;background:#0d0d20;border:1px solid rgba(16,185,129,.35);border-radius:8px;color:#d1fae5;font-size:12px;text-align:right">
+        <button id="nativeCoverageRadiusSaveBtn" onclick="saveCoveragePlannerRadius()" title="Save coverage planner radius to server and mower" style="padding:8px 10px;background:rgba(16,185,129,.12);color:#a7f3d0;border:1px solid rgba(16,185,129,.35);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Save radius</button>
         <button id="nativeCoverageClearBtn" onclick="clearNativeCoveragePreview()" title="Hide native coverage preview lines" style="padding:8px 12px;background:rgba(255,255,255,.05);color:#cbd5e1;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Hide preview</button>
       </div>
       <div id="mapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
@@ -6321,6 +6323,64 @@ function clearNativeCoveragePreview(showStatus) {
   if (showStatus !== false) setNativeCoverageStatus('Native coverage preview hidden', '#9ca3af');
 }
 
+function nativeCoverageRadiusValue() {
+  var el = document.getElementById('nativeCoverageRadius');
+  if (!el) return null;
+  var radius = Number(el.value);
+  return Number.isFinite(radius) ? radius : null;
+}
+
+async function loadCoveragePlannerRadius(sn) {
+  var el = document.getElementById('nativeCoverageRadius');
+  if (!el) return;
+  if (!sn) {
+    el.value = '0.61';
+    return;
+  }
+  try {
+    var r = await fetch('/api/dashboard/coverage-planner-radius/' + encodeURIComponent(sn), {
+      headers: { 'Authorization': token },
+    });
+    var data = await r.json().catch(function() { return {}; });
+    if (r.ok && Number.isFinite(Number(data.radius))) {
+      el.value = String(data.radius);
+    }
+  } catch (e) {
+    // Keep the current field value; preview can still run with the default.
+  }
+}
+
+async function saveCoveragePlannerRadius() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var btn = document.getElementById('nativeCoverageRadiusSaveBtn');
+  var radius = nativeCoverageRadiusValue();
+  if (!sn) {
+    setNativeCoverageStatus('Select a mower first', '#fca5a5');
+    return;
+  }
+  if (!Number.isFinite(radius) || radius < 0.2 || radius > 1.2) {
+    setNativeCoverageStatus('Radius must be 0.20-1.20 m', '#fca5a5');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    var r = await fetch('/api/dashboard/coverage-planner-radius/' + encodeURIComponent(sn), {
+      method: 'PUT',
+      headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ radius: radius, force: false }),
+    });
+    var data = await r.json().catch(function() { return {}; });
+    if (!r.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + r.status));
+    var el = document.getElementById('nativeCoverageRadius');
+    if (el && Number.isFinite(Number(data.radius))) el.value = String(data.radius);
+    setNativeCoverageStatus('Coverage planner radius saved: ' + data.radius + 'm', '#86efac');
+  } catch (e) {
+    setNativeCoverageStatus('Coverage planner radius failed: ' + (e && e.message ? e.message : e), '#fca5a5');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function runNativeCoveragePreview() {
   var sn = document.getElementById('mapMowerSelect').value;
   var btn = document.getElementById('nativeCoverageBtn');
@@ -6344,6 +6404,8 @@ async function runNativeCoveragePreview() {
     if (state.livePose && Number.isFinite(Number(state.livePose.x)) && Number.isFinite(Number(state.livePose.y))) {
       body.startLocal = { x: Number(state.livePose.x), y: Number(state.livePose.y) };
     }
+    var radius = nativeCoverageRadiusValue();
+    if (Number.isFinite(radius)) body.radius = radius;
 
     var r = await fetch('/api/dashboard/native-preview-path/' + encodeURIComponent(sn), {
       method: 'POST',
@@ -6360,8 +6422,9 @@ async function runNativeCoveragePreview() {
     if (c.__mapState.maps) renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
 
     var suffix = data.canonical ? (' on ' + data.canonical) : '';
+    var radiusText = Number.isFinite(Number(data.coverageRadius)) ? (' radius ' + data.coverageRadius + 'm') : '';
     var md5 = data.pgmMd5 ? (' pgm ' + String(data.pgmMd5).slice(0, 8)) : '';
-    setNativeCoverageStatus('Native coverage preview: ' + paths.length + ' path(s)' + suffix + md5, '#86efac');
+    setNativeCoverageStatus('Native coverage preview: ' + paths.length + ' path(s)' + suffix + radiusText + md5, '#86efac');
   } catch (e) {
     setNativeCoverageStatus('Native coverage preview failed: ' + (e && e.message ? e.message : e), '#fca5a5');
   } finally {

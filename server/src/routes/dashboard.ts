@@ -19,6 +19,7 @@ import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGp
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
+import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
 import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
 import { compareMapRowsByCanonical } from '../utils/mapOrder.js';
@@ -41,6 +42,16 @@ import { getDeviceHealth } from '../services/deviceHealth.js';
 import { getEditGeometry, saveDraft, discardDrafts, applyEdits, revertEdits } from '../services/mapEdit.js';
 import { getPolygonAnchor } from '../services/anchor.js';
 import { generateNativeCoveragePlanFromRows } from '../services/coveragePlanService.js';
+import {
+  COVERAGE_PLANNER_RADIUS_KEY,
+  DEFAULT_COVERAGE_PLANNER_RADIUS,
+  MAX_COVERAGE_PLANNER_RADIUS,
+  MIN_COVERAGE_PLANNER_RADIUS,
+  coveragePlannerRadiusError,
+  formatCoveragePlannerRadius,
+  parseCoveragePlannerRadius,
+  selectCoveragePlannerRadius,
+} from '../services/coveragePlannerRadius.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -740,6 +751,9 @@ type NativePreviewBody = {
   start_local?: unknown;
   cov_direction?: unknown;
   covDirection?: unknown;
+  radius?: unknown;
+  coverageRadius?: unknown;
+  coverage_radius?: unknown;
   expected_pgm_md5?: unknown;
   expectedPgmMd5?: unknown;
 };
@@ -755,6 +769,19 @@ function localPointFromUnknown(v: unknown): { x: number; y: number } | null {
   const x = finiteNumber(point.x);
   const y = finiteNumber(point.y);
   return x === null || y === null ? null : { x, y };
+}
+
+function storedCoveragePlannerRadius(sn: string) {
+  return selectCoveragePlannerRadius(deviceSettingsRepo.findBySn(sn));
+}
+
+function requestedCoveragePlannerRadius(
+  body: NativePreviewBody,
+  fallback: number,
+): number | null {
+  const raw = body.coverage_radius ?? body.coverageRadius ?? body.radius;
+  if (raw === undefined) return fallback;
+  return parseCoveragePlannerRadius(raw);
 }
 
 function canonicalFromOneBasedMapId(v: unknown): string | null {
@@ -798,6 +825,57 @@ function nativePreviewStartLocal(
   return null;
 }
 
+// GET /api/dashboard/coverage-planner-radius/:sn - persisted planner radius
+// used by native preview and, when pushed, by the mower's coverage planner.
+dashboardRouter.get('/coverage-planner-radius/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const selected = storedCoveragePlannerRadius(sn);
+  res.json({
+    ok: true,
+    radius: selected.radius,
+    source: selected.source,
+    defaultRadius: DEFAULT_COVERAGE_PLANNER_RADIUS,
+    min: MIN_COVERAGE_PLANNER_RADIUS,
+    max: MAX_COVERAGE_PLANNER_RADIUS,
+  });
+});
+
+// PUT /api/dashboard/coverage-planner-radius/:sn - store the radius for server
+// previews and dispatch an extended command so OpenNova firmware writes
+// coverage_planner_params.yaml on the mower.
+dashboardRouter.put('/coverage-planner-radius/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const body = (req.body ?? {}) as { radius?: unknown; force?: unknown; applyToMower?: unknown; apply_to_mower?: unknown };
+  const radius = parseCoveragePlannerRadius(body.radius);
+  if (radius === null) {
+    res.status(400).json({ ok: false, error: coveragePlannerRadiusError() });
+    return;
+  }
+
+  const formatted = formatCoveragePlannerRadius(radius);
+  if (!deviceCache.has(sn)) deviceCache.set(sn, new Map());
+  deviceCache.get(sn)!.set(COVERAGE_PLANNER_RADIUS_KEY, formatted);
+  deviceSettingsRepo.upsert(sn, COVERAGE_PLANNER_RADIUS_KEY, formatted);
+  forwardToDashboard(sn, new Map([[COVERAGE_PLANNER_RADIUS_KEY, formatted]]));
+
+  const shouldApplyToMower = (body.applyToMower ?? body.apply_to_mower) !== false;
+  if (shouldApplyToMower) {
+    publishExtendedCommand(sn, {
+      set_coverage_planner_radius: {
+        radius,
+        force: body.force === true,
+      },
+    });
+  }
+
+  res.json({
+    ok: true,
+    radius,
+    key: COVERAGE_PLANNER_RADIUS_KEY,
+    mowerCommand: shouldApplyToMower ? 'sent' : 'skipped',
+  });
+});
+
 // POST /api/dashboard/native-preview-path/:sn — compute a preview path locally
 // with the packaged native coverage planner. This intentionally does not send
 // generate_preview_cover_path to the mower, so it is safe while offline and does
@@ -834,6 +912,14 @@ dashboardRouter.post('/native-preview-path/:sn', async (req: Request, res: Respo
     res.status(400).json({ ok: false, error: 'invalid cov_direction' });
     return;
   }
+  const storedRadius = storedCoveragePlannerRadius(sn);
+  const radiusRaw = body.coverage_radius ?? body.coverageRadius ?? body.radius;
+  const coverageRadius = requestedCoveragePlannerRadius(body, storedRadius.radius);
+  if (coverageRadius === null) {
+    res.status(400).json({ ok: false, error: coveragePlannerRadiusError() });
+    return;
+  }
+  const coverageRadiusSource = radiusRaw === undefined ? storedRadius.source : 'request';
   const expectedRaw = body.expected_pgm_md5 ?? body.expectedPgmMd5;
   const expectedPgmMd5 = typeof expectedRaw === 'string' && expectedRaw.trim()
     ? expectedRaw.trim()
@@ -847,6 +933,7 @@ dashboardRouter.post('/native-preview-path/:sn', async (req: Request, res: Respo
       startLocal,
       chargingPose,
       covDirection: covDirection ?? undefined,
+      coverageRadius,
       expectedPgmMd5,
     });
     previewPathCache.set(sn, result.paths);
@@ -858,6 +945,8 @@ dashboardRouter.post('/native-preview-path/:sn', async (req: Request, res: Respo
       pgmMd5: result.pgmMd5,
       cacheHit: result.cacheHit,
       cacheKey: result.cacheKey,
+      coverageRadius,
+      coverageRadiusSource,
       metadata: result.metadata,
       startGrid: result.startGrid,
       paths: result.paths,
@@ -3320,8 +3409,6 @@ dashboardRouter.get('/rain-forecast/:sn', async (req: Request, res: Response) =>
 });
 
 // ── Extended Mower Commands (bestaande firmware + extended node) ─────────
-
-import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
 
 // POST /api/dashboard/navigate-to/:sn — stuur maaier naar GPS positie
 dashboardRouter.post('/navigate-to/:sn', (req: Request, res: Response) => {

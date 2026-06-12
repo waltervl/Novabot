@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +36,46 @@ class ExtendedCommandsTuningTest(unittest.TestCase):
         }, clear=True):
             self.assertEqual(ext.blade_idle_hold_seconds(), 2.0)
             self.assertEqual(ext.charging_station_guard_interval_seconds(), 30.0)
+
+    def test_set_coverage_planner_radius_updates_yaml_and_restarts_planner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            yaml_path = Path(tmp) / "coverage_planner_params.yaml"
+            yaml_path.write_text(
+                "coverage_planner_server:\n"
+                "  ros__parameters:\n"
+                "    inflation_radius: 0.61\n"
+                "    planner_coverage_len: 0.16\n",
+                encoding="utf-8",
+            )
+            responses = []
+
+            with patch.dict(os.environ, {
+                "OPENNOVA_COVERAGE_PLANNER_PARAMS_YAML": str(yaml_path),
+            }, clear=False), \
+                patch.object(ext, "_coverage_is_active", return_value=False), \
+                patch.object(ext, "_restart_novabot_mapping", return_value=True):
+                ext.handle_set_coverage_planner_radius(
+                    {"radius": 0.25},
+                    lambda name, data: responses.append((name, data)),
+                )
+
+            self.assertIn("inflation_radius: 0.25\n", yaml_path.read_text(encoding="utf-8"))
+            self.assertEqual(responses[0][0], "set_coverage_planner_radius_respond")
+            self.assertEqual(responses[0][1]["result"], 0)
+            self.assertEqual(responses[0][1]["radius"], 0.25)
+            self.assertTrue(responses[0][1]["restarted"])
+
+    def test_set_coverage_planner_radius_refuses_active_coverage_without_force(self):
+        responses = []
+        with patch.object(ext, "_coverage_is_active", return_value=True):
+            ext.handle_set_coverage_planner_radius(
+                {"radius": 0.25},
+                lambda name, data: responses.append((name, data)),
+            )
+
+        self.assertEqual(responses[0][0], "set_coverage_planner_radius_respond")
+        self.assertEqual(responses[0][1]["result"], 2)
+        self.assertIn("coverage active", responses[0][1]["error"])
 
 
 if __name__ == "__main__":

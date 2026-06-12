@@ -317,6 +317,11 @@
       "coverageLive": "Parcours en direct",
       "coverageLiveHint": "Parcours en direct pendant la tonte",
       "coverageNone": "Impossible de calculer le parcours",
+      "coverageRadiusTitle": "Rayon du coverage planner en metres",
+      "coverageRadiusSave": "Enregistrer le rayon",
+      "coverageRadiusSaved": "Rayon de couverture enregistre",
+      "coverageRadiusSaveFailed": "Impossible d'enregistrer le rayon",
+      "coverageRadiusInvalid": "Le rayon doit etre entre 0.20 et 1.20 m",
       "coverageRefresh": "Recalculer sur le serveur"
     }
   },

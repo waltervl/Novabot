@@ -58,6 +58,13 @@ void testCoverageParametersFromMeters() {
           "coverage open iterations must match vendor call");
   require(params.boundary_open_iterations == 2,
           "boundary open iterations must match vendor constant");
+
+  const coverage_native::CoverageParameters tight_params =
+      coverage_native::makeCoverageParametersFromMeters(0.05, 0.25);
+  require(tight_params.obstacle_inflation_px == 5,
+          "custom obstacle inflation must truncate 0.25m / 0.05m");
+  require(tight_params.obstacle_erode_value == 11,
+          "custom obstacle erode kernel must be 2 * inflation + 1");
 }
 
 void testCoverageParametersFromPixels() {

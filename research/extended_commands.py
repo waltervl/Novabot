@@ -31,6 +31,14 @@ import time
 MQTT_RECONNECT_INTERVAL = 5
 MQTT_KEEPALIVE = 60
 LOG_PREFIX = "[EXT-CMD]"
+COVERAGE_PLANNER_RADIUS_MIN_M = 0.20
+COVERAGE_PLANNER_RADIUS_MAX_M = 1.20
+COVERAGE_PLANNER_PARAMS_YAML_CANDIDATES = [
+    "/root/novabot/install/coverage_planner/share/coverage_planner/params/coverage_planner_params.yaml",
+    "/userdata/novabot_slam/install/coverage_planner/share/coverage_planner/params/coverage_planner_params.yaml",
+    "/userdata/novabot/install/coverage_planner/share/coverage_planner/params/coverage_planner_params.yaml",
+    "/opt/novabot/install/coverage_planner/share/coverage_planner/params/coverage_planner_params.yaml",
+]
 
 def log(msg):
     print(f"{LOG_PREFIX} {msg}", flush=True)
@@ -3121,6 +3129,119 @@ def handle_reanchor_pos(params, respond):
         respond("reanchor_pos_respond", {"result": 1, "error": f"load failed: {e}"})
 
 
+def _coverage_planner_params_yaml_path():
+    env_path = os.environ.get("OPENNOVA_COVERAGE_PLANNER_PARAMS_YAML")
+    candidates = ([env_path] if env_path else []) + COVERAGE_PLANNER_PARAMS_YAML_CANDIDATES
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return env_path if env_path else None
+
+
+def _parse_coverage_radius(params):
+    raw = None
+    for key in ("radius", "radius_m", "coverage_radius", "inflation_radius"):
+        if key in params:
+            raw = params.get(key)
+            break
+    try:
+        radius = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if radius < COVERAGE_PLANNER_RADIUS_MIN_M or radius > COVERAGE_PLANNER_RADIUS_MAX_M:
+        return None
+    return round(radius, 3)
+
+
+def _format_coverage_radius(radius):
+    return f"{radius:.3f}".rstrip("0").rstrip(".")
+
+
+def _write_coverage_planner_radius_yaml(path, radius):
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    pattern = re.compile(
+        r"^(\s*inflation_radius\s*:\s*)([-+]?\d+(?:\.\d+)?)(\s*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    match = pattern.search(text)
+    if not match:
+        raise ValueError("inflation_radius not found")
+
+    previous = float(match.group(2))
+    radius_text = _format_coverage_radius(radius)
+    if abs(previous - radius) < 0.0005:
+        return {"changed": False, "previous_radius": previous, "backup": None}
+
+    new_text = pattern.sub(
+        lambda m: f"{m.group(1)}{radius_text}{m.group(3)}",
+        text,
+        count=1,
+    )
+    backup_path = f"{path}.bak.{int(time.time())}"
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    with open(backup_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(new_text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+    return {"changed": True, "previous_radius": previous, "backup": backup_path}
+
+
+def handle_set_coverage_planner_radius(params, respond):
+    radius = _parse_coverage_radius(params)
+    if radius is None:
+        respond("set_coverage_planner_radius_respond", {
+            "result": 1,
+            "error": f"radius must be {COVERAGE_PLANNER_RADIUS_MIN_M:.2f}-{COVERAGE_PLANNER_RADIUS_MAX_M:.2f}m",
+        })
+        return
+
+    force = bool(params.get("force"))
+    if not force and _coverage_is_active():
+        respond("set_coverage_planner_radius_respond", {
+            "result": 2,
+            "error": "coverage active, try again on dock",
+            "radius": radius,
+        })
+        return
+
+    path = _coverage_planner_params_yaml_path()
+    if not path:
+        respond("set_coverage_planner_radius_respond", {
+            "result": 1,
+            "error": "coverage_planner_params.yaml not found",
+            "radius": radius,
+        })
+        return
+
+    try:
+        write_result = _write_coverage_planner_radius_yaml(path, radius)
+        restarted = False
+        if write_result["changed"]:
+            restarted = _restart_novabot_mapping()
+        respond("set_coverage_planner_radius_respond", {
+            "result": 0,
+            "radius": radius,
+            "previous_radius": write_result["previous_radius"],
+            "changed": write_result["changed"],
+            "restarted": restarted,
+            "path": path,
+            "backup": write_result["backup"],
+        })
+    except Exception as e:
+        log(f"coverage planner radius update failed: {e}")
+        respond("set_coverage_planner_radius_respond", {
+            "result": 1,
+            "error": str(e),
+            "radius": radius,
+            "path": path,
+        })
+
+
 COMMANDS = {
     "is_opennova": handle_is_opennova,
     "reanchor_pos": handle_reanchor_pos,
@@ -3146,6 +3267,7 @@ COMMANDS = {
     "stop_boundary_follow": handle_stop_boundary_follow,
     "get_lora_info": handle_get_lora_info,
     "set_lora_info": handle_set_lora_info,
+    "set_coverage_planner_radius": handle_set_coverage_planner_radius,
     "get_preview_cover_path": handle_get_preview_cover_path,
     "get_map_plan_path": handle_get_map_plan_path,
     "get_mqtt_log": handle_get_mqtt_log,

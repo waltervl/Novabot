@@ -323,6 +323,11 @@
       "coverageLive": "Live mowing path",
       "coverageLiveHint": "Live path while the mower mows",
       "coverageNone": "Couldn't compute the path",
+      "coverageRadiusTitle": "Coverage planner radius in meters",
+      "coverageRadiusSave": "Save radius",
+      "coverageRadiusSaved": "Coverage radius saved",
+      "coverageRadiusSaveFailed": "Could not save coverage radius",
+      "coverageRadiusInvalid": "Radius must be 0.20-1.20 m",
       "coverageRefresh": "Recompute on server"
     }
   },

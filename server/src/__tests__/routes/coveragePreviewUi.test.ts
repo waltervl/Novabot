@@ -7,6 +7,9 @@ describe('native coverage preview UI', () => {
     const html = adminPageHtml();
 
     expect(html).toContain('id="nativeCoverageBtn"');
+    expect(html).toContain('id="nativeCoverageRadius"');
+    expect(html).toContain('async function saveCoveragePlannerRadius()');
+    expect(html).toContain("'/api/dashboard/coverage-planner-radius/' + encodeURIComponent(sn)");
     expect(html).toContain('async function runNativeCoveragePreview()');
     expect(html).toContain("'/api/dashboard/native-preview-path/' + encodeURIComponent(sn)");
     expect(html).toContain('Native coverage preview');
