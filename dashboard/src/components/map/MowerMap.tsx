@@ -1060,6 +1060,12 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // Live camera tile — only available on OpenNova custom firmware (the
   // `camera_stream.py` daemon ships only there; the proxy 404s otherwise).
   const [showCamera, setShowCamera] = useState(false);
+  // Tool-rail flyout: which floating-rail button has its popover open (the
+  // coverage-radius stepper or the tile-layer picker). null = none open.
+  const [railFlyout, setRailFlyout] = useState<null | 'radius' | 'tiles'>(null);
+  // Shared base style for the floating tool-rail icon buttons.
+  const railBtnBase = 'relative grid place-items-center w-9 h-9 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-wait';
+  const railIdle = 'text-gray-300 bg-gray-800/50 hover:bg-gray-700/70';
   const cameraAvailable = isOpenNovaFirmware(
     (sensors?.sw_version ?? sensors?.version) ?? undefined,
   );
@@ -2831,237 +2837,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
               <span className="hidden md:inline">Gemaaid</span>
             </span>
           )}
-          {trail.length > 0 && (
-            <button
-              onClick={() => setShowTrail(!showTrail)}
-              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
-                showTrail ? 'bg-cyan-900/50 text-cyan-400' : 'bg-gray-700/50 text-gray-500'
-              }`}
-              title={showTrail ? t('map.hideTrail') : t('map.showTrail')}
-            >
-              <Route className="w-3 h-3" />
-              <span className="hidden md:inline">{trail.length} pts</span>
-            </button>
-          )}
-          {trail.length > 0 && (
-            <button
-              onClick={handleClearTrail}
-              className="hidden md:inline-flex text-gray-500 hover:text-red-400 transition-colors"
-              title="Clear GPS trail"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {/* Draw new polygon */}
-          {editMode === 'none' && !calibrating && (
-            <button
-              onClick={startDrawMap}
-              className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-gray-700/50 text-gray-400 hover:text-emerald-400 hover:bg-emerald-900/30"
-              title={t('map.drawNew')}
-            >
-              <Pencil className="w-3 h-3" />
-              <span className="hidden md:inline">{t('map.draw')}</span>
-            </button>
-          )}
-          {/* Navigate-to toggle */}
-          {editMode === 'none' && !calibrating && sn && (
-            navigateMode ? (
-              <button
-                onClick={() => { setNavigateMode(false); setWallDrawMode(false); }}
-                className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-blue-600 text-white animate-pulse"
-                title={t('controls.navigateTo')}
-              >
-                <Target className="w-3 h-3" />
-                <span className="hidden md:inline">{t('controls.navigateTo')}</span>
-              </button>
-            ) : (
-              <button
-                onClick={() => { setNavigateMode(true); setWallDrawMode(false); setPlacingCharger(false); }}
-                className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-gray-700/50 text-gray-400 hover:text-blue-400 hover:bg-blue-900/30"
-                title={t('controls.navigateTo')}
-              >
-                <Target className="w-3 h-3" />
-              </button>
-            )
-          )}
-          {/* Navigate target cancel */}
-          {navigateTarget && (
-            <button
-              onClick={handleStopNavigation}
-              className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-red-900/50 text-red-400 hover:bg-red-800/50"
-              title={t('controls.stopNavigation')}
-            >
-              <XCircle className="w-3 h-3" />
-            </button>
-          )}
-          {/* Virtual wall draw toggle */}
-          {editMode === 'none' && !calibrating && sn && (
-            wallDrawMode ? (
-              <button
-                onClick={() => { setWallDrawMode(false); setWallFirstCorner(null); }}
-                className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-red-600 text-white animate-pulse"
-                title="No-go zone"
-              >
-                <Fence className="w-3 h-3" />
-                <span className="hidden md:inline">No-go</span>
-              </button>
-            ) : (
-              <button
-                onClick={() => { setWallDrawMode(true); setNavigateMode(false); setPlacingCharger(false); setWallFirstCorner(null); }}
-                className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-gray-700/50 text-gray-400 hover:text-red-400 hover:bg-red-900/30"
-                title="No-go zone"
-              >
-                <Fence className="w-3 h-3" />
-              </button>
-            )
-          )}
-          {/* Calibrate toggle */}
-          {polygonMaps.length > 0 && !calibrating && editMode === 'none' && (
-            <button
-              onClick={startCalibrating}
-              className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-gray-700/50 text-gray-400 hover:text-amber-400 hover:bg-amber-900/30"
-              title={t('map.calibrateOverlay')}
-            >
-              <SlidersHorizontal className="w-3 h-3" />
-              <span className="hidden md:inline">{t('map.calibrate')}</span>
-            </button>
-          )}
-          {/* Heatmap toggle */}
-          {trail.length > 10 && (
-            <button
-              onClick={() => setShowHeatmap(!showHeatmap)}
-              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
-                showHeatmap ? 'bg-orange-900/50 text-orange-400' : 'bg-gray-700/50 text-gray-500'
-              }`}
-              title={showHeatmap ? t('map.hideHeatmap') : t('map.showHeatmap')}
-            >
-              <Flame className="w-3 h-3" />
-              <span className="hidden md:inline">{t('map.heat')}</span>
-            </button>
-          )}
-          {polygonMaps.length > 0 && editMode === 'none' && !calibrating && sn && (
-            <div className="inline-flex items-center gap-1 rounded bg-gray-700/50 px-1.5 py-0.5 text-xs text-gray-300">
-              <Target className="w-3 h-3 text-emerald-300" />
-              <input
-                type="number"
-                min={MIN_COVERAGE_RADIUS}
-                max={MAX_COVERAGE_RADIUS}
-                step="0.01"
-                value={coverageRadiusDraft}
-                onChange={(e) => setCoverageRadiusDraft(e.target.value)}
-                className="w-14 bg-transparent text-right text-xs text-gray-100 outline-none"
-                title={t('map.edit.coverageRadiusTitle')}
-              />
-              <span className="text-[10px] text-gray-500">m</span>
-              <button
-                onClick={saveCoverageRadius}
-                disabled={coverageRadiusSaving}
-                className={`rounded p-0.5 text-gray-400 hover:text-emerald-300 ${coverageRadiusSaving ? 'cursor-wait opacity-60' : ''}`}
-                title={t('map.edit.coverageRadiusSave')}
-              >
-                {coverageRadiusSaving
-                  ? <Loader2 className="w-3 h-3 animate-spin" />
-                  : <Save className="w-3 h-3" />}
-              </button>
-            </div>
-          )}
-          {/* Server-side native coverage preview — the real "black lines" the
-              mower will cut, without requiring the mower to be online. */}
-          {polygonMaps.length > 0 && editMode === 'none' && !calibrating && sn && (
-            <button
-              onClick={toggleCoverage}
-              disabled={coverageLoading}
-              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
-                showCoverage ? 'bg-zinc-900/70 text-zinc-200 border border-zinc-600' : 'bg-gray-700/50 text-gray-400 hover:text-zinc-200 hover:bg-zinc-900/40'
-              } ${coverageLoading ? 'opacity-60 cursor-wait' : ''}`}
-              title={t('map.edit.coverageNativeTitle')}
-            >
-              {coverageLoading
-                ? <Loader2 className="w-3 h-3 animate-spin" />
-                : <Spline className="w-3 h-3" />}
-              <span className="hidden md:inline">{t('map.edit.coverageShow')}</span>
-              {coverageLive && !coverageLoading && (
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title={t('map.edit.coverageLive')} />
-              )}
-            </button>
-          )}
-          {/* Refresh coverage path — re-trigger after an Apply to mower */}
-          {showCoverage && editMode === 'none' && !calibrating && sn && (
-            <button
-              onClick={() => {
-                if (liveSession) { void refreshCoverage(); return; }
-                const lp = lastPreviewParamsRef.current;
-                if (lp) void previewMaps(lp.canonicals, lp.covDirection);
-                else void refreshCoverage();
-              }}
-              disabled={coverageLoading}
-              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors bg-gray-700/50 text-gray-400 hover:text-zinc-200 hover:bg-zinc-900/40 ${coverageLoading ? 'opacity-60 cursor-wait' : ''}`}
-              title={t('map.edit.coverageRefresh')}
-            >
-              <RefreshCw className={`w-3 h-3 ${coverageLoading ? 'animate-spin' : ''}`} />
-            </button>
-          )}
-          {/* Place/reposition charger button — highlighted when no charger position set */}
-          {editMode === 'none' && !calibrating && (
-            <button
-              onClick={() => setPlacingCharger(!placingCharger)}
-              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
-                placingCharger
-                  ? 'bg-amber-600 text-white animate-pulse'
-                  : !chargerHasGps
-                    ? 'bg-amber-900/50 text-amber-400 border border-amber-700/50 hover:bg-amber-800/50'
-                    : 'bg-gray-700/50 text-gray-400 hover:text-amber-400 hover:bg-amber-900/30'
-              }`}
-              title={placingCharger ? t('map.placeChargerClick') : !chargerHasGps ? t('map.chargerNotSet') : t('map.placeChargerTooltip')}
-            >
-              <MapPin className="w-3 h-3" />
-              <span className="hidden md:inline">{placingCharger ? t('map.placeChargerActive') : t('map.charger')}</span>
-            </button>
-          )}
-          {/* Calibrate charger — drive mower out and back for ArUco scan */}
-          {editMode === 'none' && !calibrating && chargerHasGps && sn && (
-            <button
-              onClick={() => setConfirmCalibrate(true)}
-              className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded bg-gray-700/50 text-gray-400 hover:text-blue-400 hover:bg-blue-900/30 transition-colors"
-              title={t('map.calibrateCharger')}
-            >
-              <Navigation className="w-3 h-3" />
-              <span className="hidden md:inline">{t('map.calibrateCharger')}</span>
-            </button>
-          )}
-          {/* Live camera toggle — OpenNova custom firmware only. */}
-          {cameraAvailable && sn && (
-            <button
-              onClick={() => setShowCamera((v) => !v)}
-              className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
-                showCamera ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-700/50' : 'bg-gray-700/50 text-gray-400 hover:text-emerald-400 hover:bg-emerald-900/30'
-              }`}
-              title={t('camera.camera')}
-            >
-              <Camera className="w-3 h-3" />
-              <span className="hidden md:inline">{t('camera.camera')}</span>
-            </button>
-          )}
-          <span className="inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded bg-gray-700/50 text-gray-300" title={t('map.switchToSatellite')}>
-            <Layers className="w-3 h-3 shrink-0" />
-            <select
-              value={tileLayer}
-              onChange={(e) => changeTileLayer(e.target.value as TileLayerKey)}
-              className="bg-transparent text-gray-200 text-[11px] focus:outline-none cursor-pointer max-w-[8rem] md:max-w-none"
-            >
-              {(Object.keys(TILE_LAYERS) as TileLayerKey[])
-                .filter((key) => key === tileLayer || tileLayerInBounds(
-                  TILE_LAYERS[key],
-                  chargerGps?.lat ?? (lat ? parseFloat(lat) : null),
-                  chargerGps?.lng ?? (lng ? parseFloat(lng) : null),
-                ))
-                .map((key) => (
-                  <option key={key} value={key} className="bg-gray-800 text-gray-200">
-                    {TILE_LAYERS[key].label}
-                  </option>
-                ))}
-            </select>
-          </span>
+          {/* View/edit tools moved to the floating tool-rail (over the map). */}
           {polygonMaps.length > 0 && (() => {
             const counts = { work: 0, obstacle: 0, unicom: 0, other: 0 };
             // Channel filename pattern: only inter-map unicoms are user-
@@ -3571,6 +3347,254 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
           {editMode === 'none' && !brushMode && !paintMode && !moveMode && <MapClickDeselect onDeselect={() => setSelectedMapId(null)} />}
           <ResizeHandler />
         </MapContainer>
+
+        {/* ── Floating tool-bar — grouped map tools as a horizontal pill at the
+            top of the map (replaces the old cramped top toolbar). Centered so it
+            clears the Leaflet zoom control (left) and the camera tile (right).
+            Hidden while calibrating (that panel owns top-left). */}
+        {!calibrating && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[900] flex flex-row items-center gap-1 max-w-[calc(100%-1.5rem)] overflow-x-auto bg-gray-900/85 backdrop-blur border border-gray-700 rounded-2xl p-1.5 shadow-xl">
+            {/* VIEW */}
+            <div className="flex flex-row items-center gap-1">
+              {trail.length > 0 && (
+                <button
+                  onClick={() => setShowTrail(!showTrail)}
+                  className={`${railBtnBase} ${showTrail ? 'bg-cyan-900/60 text-cyan-300' : railIdle}`}
+                  title={showTrail ? t('map.hideTrail') : t('map.showTrail')}
+                >
+                  <Route className="w-4 h-4" />
+                </button>
+              )}
+              {trail.length > 0 && (
+                <button
+                  onClick={handleClearTrail}
+                  className={`${railBtnBase} text-gray-400 hover:bg-red-900/30 hover:text-red-300`}
+                  title="Clear GPS trail"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+              {trail.length > 10 && (
+                <button
+                  onClick={() => setShowHeatmap(!showHeatmap)}
+                  className={`${railBtnBase} ${showHeatmap ? 'bg-orange-900/60 text-orange-300' : railIdle}`}
+                  title={showHeatmap ? t('map.hideHeatmap') : t('map.showHeatmap')}
+                >
+                  <Flame className="w-4 h-4" />
+                </button>
+              )}
+              {/* Tile-layer picker (flyout) */}
+              <div className="relative">
+                <button
+                  onClick={() => setRailFlyout(f => (f === 'tiles' ? null : 'tiles'))}
+                  className={`${railBtnBase} ${railFlyout === 'tiles' ? 'bg-gray-700 text-white' : railIdle}`}
+                  title={t('map.switchToSatellite')}
+                >
+                  <Layers className="w-4 h-4" />
+                </button>
+                {railFlyout === 'tiles' && (
+                  <div className="absolute top-full left-0 mt-2 z-[950] bg-gray-900/95 backdrop-blur border border-gray-700 rounded-xl p-1 shadow-xl min-w-[190px]">
+                    {(Object.keys(TILE_LAYERS) as TileLayerKey[])
+                      .filter((key) => key === tileLayer || tileLayerInBounds(
+                        TILE_LAYERS[key],
+                        chargerGps?.lat ?? (lat ? parseFloat(lat) : null),
+                        chargerGps?.lng ?? (lng ? parseFloat(lng) : null),
+                      ))
+                      .map((key) => (
+                        <button
+                          key={key}
+                          onClick={() => { changeTileLayer(key); setRailFlyout(null); }}
+                          className={`w-full text-left px-3 py-1.5 rounded-lg text-xs ${key === tileLayer ? 'bg-emerald-600/20 text-emerald-300' : 'text-gray-300 hover:bg-gray-700/60'}`}
+                        >
+                          {TILE_LAYERS[key].label}
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* EDIT */}
+            {editMode === 'none' && (
+              <>
+                <div className="w-px self-stretch bg-gray-700/50 my-0.5" />
+                <div className="flex flex-row items-center gap-1">
+                  <button
+                    onClick={startDrawMap}
+                    className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-emerald-900/30 hover:text-emerald-300`}
+                    title={t('map.drawNew')}
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  {sn && (navigateMode ? (
+                    <button
+                      onClick={() => { setNavigateMode(false); setWallDrawMode(false); }}
+                      className={`${railBtnBase} bg-blue-600 text-white animate-pulse`}
+                      title={t('controls.navigateTo')}
+                    >
+                      <Target className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { setNavigateMode(true); setWallDrawMode(false); setPlacingCharger(false); }}
+                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-blue-900/30 hover:text-blue-300`}
+                      title={t('controls.navigateTo')}
+                    >
+                      <Target className="w-4 h-4" />
+                    </button>
+                  ))}
+                  {navigateTarget && (
+                    <button
+                      onClick={handleStopNavigation}
+                      className={`${railBtnBase} bg-red-900/60 text-red-300 hover:bg-red-800/60`}
+                      title={t('controls.stopNavigation')}
+                    >
+                      <XCircle className="w-4 h-4" />
+                    </button>
+                  )}
+                  {sn && (wallDrawMode ? (
+                    <button
+                      onClick={() => { setWallDrawMode(false); setWallFirstCorner(null); }}
+                      className={`${railBtnBase} bg-red-600 text-white animate-pulse`}
+                      title="No-go zone"
+                    >
+                      <Fence className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { setWallDrawMode(true); setNavigateMode(false); setPlacingCharger(false); setWallFirstCorner(null); }}
+                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-red-900/30 hover:text-red-300`}
+                      title="No-go zone"
+                    >
+                      <Fence className="w-4 h-4" />
+                    </button>
+                  ))}
+                  {polygonMaps.length > 0 && (
+                    <button
+                      onClick={startCalibrating}
+                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-amber-900/30 hover:text-amber-300`}
+                      title={t('map.calibrateOverlay')}
+                    >
+                      <SlidersHorizontal className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* COVERAGE */}
+            {polygonMaps.length > 0 && editMode === 'none' && sn && (
+              <>
+                <div className="w-px self-stretch bg-gray-700/50 my-0.5" />
+                <div className="flex flex-row items-center gap-1">
+                  {/* Coverage radius (flyout) */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setRailFlyout(f => (f === 'radius' ? null : 'radius'))}
+                      className={`${railBtnBase} ${railFlyout === 'radius' ? 'bg-gray-700 text-white' : 'text-gray-300 bg-gray-800/50 hover:bg-emerald-900/30 hover:text-emerald-300'}`}
+                      title={t('map.edit.coverageRadiusTitle')}
+                    >
+                      <Crosshair className="w-4 h-4" />
+                    </button>
+                    {railFlyout === 'radius' && (
+                      <div className="absolute top-full left-0 mt-2 z-[950] bg-gray-900/95 backdrop-blur border border-gray-700 rounded-xl p-2 shadow-xl flex items-center gap-1.5">
+                        <span className="text-[10px] uppercase tracking-wide text-gray-500 whitespace-nowrap">{t('map.edit.coverageRadiusTitle')}</span>
+                        <input
+                          type="number"
+                          min={MIN_COVERAGE_RADIUS}
+                          max={MAX_COVERAGE_RADIUS}
+                          step="0.01"
+                          value={coverageRadiusDraft}
+                          onChange={(e) => setCoverageRadiusDraft(e.target.value)}
+                          className="w-16 bg-gray-800 rounded px-2 py-1 text-right text-xs text-gray-100 outline-none"
+                        />
+                        <span className="text-[10px] text-gray-500">m</span>
+                        <button
+                          onClick={saveCoverageRadius}
+                          disabled={coverageRadiusSaving}
+                          className={`rounded p-1 text-gray-300 hover:text-emerald-300 ${coverageRadiusSaving ? 'cursor-wait opacity-60' : ''}`}
+                          title={t('map.edit.coverageRadiusSave')}
+                        >
+                          {coverageRadiusSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {/* Coverage preview toggle */}
+                  <button
+                    onClick={toggleCoverage}
+                    disabled={coverageLoading}
+                    className={`${railBtnBase} ${showCoverage ? 'bg-zinc-700 text-zinc-100 border border-zinc-500' : 'text-gray-300 bg-gray-800/50 hover:bg-zinc-900/50 hover:text-zinc-100'}`}
+                    title={t('map.edit.coverageNativeTitle')}
+                  >
+                    {coverageLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Spline className="w-4 h-4" />}
+                    {coverageLive && !coverageLoading && (
+                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title={t('map.edit.coverageLive')} />
+                    )}
+                  </button>
+                  {/* Refresh coverage */}
+                  {showCoverage && (
+                    <button
+                      onClick={() => {
+                        if (liveSession) { void refreshCoverage(); return; }
+                        const lp = lastPreviewParamsRef.current;
+                        if (lp) void previewMaps(lp.canonicals, lp.covDirection);
+                        else void refreshCoverage();
+                      }}
+                      disabled={coverageLoading}
+                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-zinc-900/50 hover:text-zinc-100`}
+                      title={t('map.edit.coverageRefresh')}
+                    >
+                      <RefreshCw className={`w-4 h-4 ${coverageLoading ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* DEVICES */}
+            {(editMode === 'none' || (cameraAvailable && sn)) && (
+              <>
+                <div className="w-px self-stretch bg-gray-700/50 my-0.5" />
+                <div className="flex flex-row items-center gap-1">
+                  {editMode === 'none' && (
+                    <button
+                      onClick={() => setPlacingCharger(!placingCharger)}
+                      className={`${railBtnBase} ${
+                        placingCharger
+                          ? 'bg-amber-600 text-white animate-pulse'
+                          : !chargerHasGps
+                            ? 'bg-amber-900/50 text-amber-300 border border-amber-700/50'
+                            : 'text-gray-300 bg-gray-800/50 hover:bg-amber-900/30 hover:text-amber-300'
+                      }`}
+                      title={placingCharger ? t('map.placeChargerClick') : !chargerHasGps ? t('map.chargerNotSet') : t('map.placeChargerTooltip')}
+                    >
+                      <MapPin className="w-4 h-4" />
+                    </button>
+                  )}
+                  {editMode === 'none' && chargerHasGps && sn && (
+                    <button
+                      onClick={() => setConfirmCalibrate(true)}
+                      className={`${railBtnBase} text-gray-300 bg-gray-800/50 hover:bg-blue-900/30 hover:text-blue-300`}
+                      title={t('map.calibrateCharger')}
+                    >
+                      <Navigation className="w-4 h-4" />
+                    </button>
+                  )}
+                  {cameraAvailable && sn && (
+                    <button
+                      onClick={() => setShowCamera((v) => !v)}
+                      className={`${railBtnBase} ${showCamera ? 'bg-emerald-900/60 text-emerald-300 border border-emerald-700/50' : 'text-gray-300 bg-gray-800/50 hover:bg-emerald-900/30 hover:text-emerald-300'}`}
+                      title={t('camera.camera')}
+                    >
+                      <Camera className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Mowing stats — floating card op de kaart tijdens maaien (compact). */}
         {mowingActive && (
