@@ -39,6 +39,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { getActiveAdvertisement, getCompetingServers } from '../services/mdnsAdvertiser.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
 import { getEditGeometry, saveDraft, discardDrafts, applyEdits, revertEdits } from '../services/mapEdit.js';
+import { getPolygonAnchor } from '../services/anchor.js';
+import { generateNativeCoveragePlanFromRows } from '../services/coveragePlanService.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -729,6 +731,144 @@ export function handlePreviewPathRespond(sn: string, data: Record<string, unknow
     console.error(`[PREVIEW-PATH] Parse error:`, err);
   }
 }
+
+type NativePreviewBody = {
+  canonical?: unknown;
+  map_id?: unknown;
+  map_ids?: unknown;
+  startLocal?: unknown;
+  start_local?: unknown;
+  cov_direction?: unknown;
+  covDirection?: unknown;
+  expected_pgm_md5?: unknown;
+  expectedPgmMd5?: unknown;
+};
+
+function finiteNumber(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function localPointFromUnknown(v: unknown): { x: number; y: number } | null {
+  if (v === null || typeof v !== 'object') return null;
+  const point = v as { x?: unknown; y?: unknown };
+  const x = finiteNumber(point.x);
+  const y = finiteNumber(point.y);
+  return x === null || y === null ? null : { x, y };
+}
+
+function canonicalFromOneBasedMapId(v: unknown): string | null {
+  const n = finiteNumber(Array.isArray(v) ? v[0] : v);
+  if (n === null || !Number.isInteger(n) || n < 1) return null;
+  return `map${n - 1}`;
+}
+
+function nativePreviewCanonical(
+  body: NativePreviewBody,
+  sensors: Map<string, string> | undefined,
+  rows: Array<{ canonical_name: string | null; map_type: string }>,
+): string | null {
+  if (typeof body.canonical === 'string' && body.canonical.trim()) {
+    return body.canonical.trim();
+  }
+  const fromBodyMapId = canonicalFromOneBasedMapId(body.map_ids ?? body.map_id);
+  if (fromBodyMapId) return fromBodyMapId;
+  const fromSensors = canonicalFromOneBasedMapId(
+    sensors?.get('current_map_ids') ?? sensors?.get('current_map_id') ?? sensors?.get('cover_map_id'),
+  );
+  if (fromSensors) return fromSensors;
+  return rows.find((r) => r.map_type === 'work' && r.canonical_name)?.canonical_name ?? null;
+}
+
+function nativePreviewStartLocal(
+  body: NativePreviewBody,
+  sensors: Map<string, string> | undefined,
+  chargingPose: { x: number; y: number; orientation: number },
+): { x: number; y: number } | null {
+  const fromBody = localPointFromUnknown(body.startLocal ?? body.start_local);
+  if (fromBody) return fromBody;
+
+  const x = finiteNumber(sensors?.get('map_position_x'));
+  const y = finiteNumber(sensors?.get('map_position_y'));
+  if (x !== null && y !== null) return { x, y };
+
+  if (Number.isFinite(chargingPose.x) && Number.isFinite(chargingPose.y)) {
+    return { x: chargingPose.x, y: chargingPose.y };
+  }
+  return null;
+}
+
+// POST /api/dashboard/native-preview-path/:sn — compute a preview path locally
+// with the packaged native coverage planner. This intentionally does not send
+// generate_preview_cover_path to the mower, so it is safe while offline and does
+// not disturb mapping or active coverage state.
+dashboardRouter.post('/native-preview-path/:sn', async (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const body = (req.body ?? {}) as NativePreviewBody;
+  const rows = mapRepo.findWithAreaOrderByMapId(sn);
+  if (rows.length === 0) {
+    res.status(404).json({ ok: false, error: 'no stored map rows for mower' });
+    return;
+  }
+
+  const sensors = deviceCache.get(sn);
+  const canonical = nativePreviewCanonical(body, sensors, rows);
+  if (!canonical) {
+    res.status(400).json({ ok: false, error: 'no map canonical selected' });
+    return;
+  }
+
+  const anchor = getPolygonAnchor(sn, sensors);
+  const chargingPose = anchor
+    ? { x: anchor.x, y: anchor.y, orientation: anchor.orientation }
+    : { x: 0, y: 0, orientation: 0 };
+  const startLocal = nativePreviewStartLocal(body, sensors, chargingPose);
+  if (!startLocal) {
+    res.status(400).json({ ok: false, error: 'no local start pose available' });
+    return;
+  }
+
+  const covDirectionRaw = body.cov_direction ?? body.covDirection;
+  const covDirection = covDirectionRaw === undefined ? undefined : finiteNumber(covDirectionRaw);
+  if (covDirectionRaw !== undefined && covDirection === null) {
+    res.status(400).json({ ok: false, error: 'invalid cov_direction' });
+    return;
+  }
+  const expectedRaw = body.expected_pgm_md5 ?? body.expectedPgmMd5;
+  const expectedPgmMd5 = typeof expectedRaw === 'string' && expectedRaw.trim()
+    ? expectedRaw.trim()
+    : undefined;
+
+  try {
+    const result = await generateNativeCoveragePlanFromRows({
+      mowerSn: sn,
+      rows,
+      canonical,
+      startLocal,
+      chargingPose,
+      covDirection: covDirection ?? undefined,
+      expectedPgmMd5,
+    });
+    previewPathCache.set(sn, result.paths);
+    res.json({
+      ok: true,
+      source: 'native',
+      canonical: result.canonical,
+      areaId: result.areaId,
+      pgmMd5: result.pgmMd5,
+      cacheHit: result.cacheHit,
+      cacheKey: result.cacheKey,
+      metadata: result.metadata,
+      startGrid: result.startGrid,
+      paths: result.paths,
+      count: result.paths.length,
+    });
+  } catch (err) {
+    const message = (err as Error).message;
+    const status = message.includes('md5 mismatch') ? 409 : 400;
+    res.status(status).json({ ok: false, error: message });
+  }
+});
 
 // ── SAFETY: never trigger generate_preview_cover_path while a coverage
 // task is active. De maaier antwoordt dan met error 128 ("Cannot preview
