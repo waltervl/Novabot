@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   BatteryMedium, BatteryCharging, Satellite, Wifi, Thermometer,
-  Activity, ChevronDown, Circle, TreePine,
+  Activity, ChevronDown, TreePine,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Drawer } from './Drawer';
@@ -49,23 +49,30 @@ const GROUPS: Array<{ label: string; test: (key: string) => boolean }> = [
   },
 ];
 
-// ── Small stat pill ──────────────────────────────────────────────────────────
+// ── Telemetry capsule cell ───────────────────────────────────────────────────
+// One readout inside the status capsule: a muted icon + a mono value, with a
+// hairline divider on the right (the capsule strips the last divider).
 
-function Pill({
+function TeleCell({
   icon: Icon,
   value,
-  color = 'text-zinc-400',
+  color = 'text-zinc-200',
+  iconColor = 'text-zinc-500',
   label,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   value: string | number;
   color?: string;
+  iconColor?: string;
   label?: string;
 }) {
   return (
-    <span className="inline-flex items-center gap-0.5" title={label}>
-      <Icon className={`w-3 h-3 ${color}`} />
-      <span className={`tabular-nums text-[11px] ${color}`}>{value}</span>
+    <span
+      className="inline-flex items-center gap-1.5 px-2.5 border-r border-zinc-700/40 last:border-r-0"
+      title={label}
+    >
+      <Icon className={`w-3.5 h-3.5 ${iconColor}`} />
+      <span className={`tabular-nums text-xs font-semibold ${color}`}>{value}</span>
     </span>
   );
 }
@@ -331,27 +338,36 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
   const hasSensorData = Object.keys(s).length > 0;
 
   // ── Online chip ─────────────────────────────────────────────────────────────
+  const rtkLabel = hasRtkFixQuality
+    ? rtkFixQuality!
+    : mowerRtkKnown ? (mowerRtk ? 'RTK' : 'No RTK') : null;
+  const rtkColor = hasRtkFixQuality
+    ? rtkFixQualityColor
+    : (mowerRtk ? '#34d399' : '#6b7280');
+
   return (
     <>
-      <div className="inline-flex items-center gap-1">
-          {/* ── Mower name / switcher (click zone 1: switch active mower) ── */}
+      <div className="inline-flex items-center gap-2">
+          {/* ── Mower identity / switcher (click zone 1: switch active mower) ── */}
           {knownMowers.length > 1 ? (
             <div className="relative">
               <button
                 onClick={(e) => { e.stopPropagation(); setSwitcherOpen(v => !v); }}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-800 text-sm font-medium text-zinc-100"
+                className="inline-flex items-center gap-2 h-8 pl-1.5 pr-2.5 rounded-xl bg-zinc-800/50 border border-zinc-700/70 hover:bg-zinc-800 hover:border-zinc-600 transition-colors text-sm font-semibold text-zinc-100"
               >
-                <TreePine className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                <span className="grid place-items-center w-6 h-6 rounded-lg bg-emerald-950/50 border border-emerald-800/40">
+                  <TreePine className="w-3.5 h-3.5 text-emerald-400" />
+                </span>
                 {mower.nickname ?? mower.sn}
-                <ChevronDown className={`w-3 h-3 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
               </button>
               {switcherOpen && (
-                <div className="absolute top-full left-0 mt-1 z-[100] bg-zinc-900 border border-zinc-700 rounded shadow-xl min-w-[160px]">
+                <div className="absolute top-full left-0 mt-1.5 z-[100] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[170px] p-1">
                   {knownMowers.map(m => (
                     <button
                       key={m.sn}
                       onClick={(e) => { e.stopPropagation(); setSwitcherOpen(false); onSelectMower(m.sn); }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-800 ${m.sn === mower.sn ? 'text-emerald-400' : 'text-zinc-200'}`}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-zinc-800 ${m.sn === mower.sn ? 'text-emerald-400' : 'text-zinc-200'}`}
                     >
                       {m.nickname ?? m.sn}
                     </button>
@@ -360,119 +376,99 @@ export function DeviceChips({ mower, knownMowers, onSelectMower }: Props): React
               )}
             </div>
           ) : (
-            <span className="inline-flex items-center gap-1 px-2 text-sm font-medium text-zinc-100">
-              <TreePine className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+            <span className="inline-flex items-center gap-2 h-8 pl-1.5 pr-2.5 rounded-xl bg-zinc-800/40 border border-zinc-700/50 text-sm font-semibold text-zinc-100">
+              <span className="grid place-items-center w-6 h-6 rounded-lg bg-emerald-950/50 border border-emerald-800/40">
+                <TreePine className="w-3.5 h-3.5 text-emerald-400" />
+              </span>
               {mower.nickname ?? mower.sn}
             </span>
           )}
 
-          {/* ── Stats chip + chevron (click zone 2: open sensor drawer) ── */}
+          {/* ── Telemetry capsule (click zone 2: open sensor drawer) ── */}
           <button
             onClick={openDrawer}
-            className="inline-flex items-center gap-1 md:gap-1.5 h-7 px-2.5 rounded-md border border-transparent hover:bg-zinc-800 hover:border-zinc-700 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            className="group inline-flex items-stretch h-8 rounded-xl bg-zinc-900/60 border border-zinc-700/70 hover:border-zinc-600 overflow-hidden transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             aria-label={`${mower.nickname ?? mower.sn} sensor details`}
           >
             {/* Online dot */}
-            <Circle className="w-2.5 h-2.5 fill-current text-emerald-500" />
+            <span className="inline-flex items-center px-2.5 border-r border-zinc-700/40">
+              <span
+                className="w-2 h-2 rounded-full bg-emerald-400"
+                style={{ boxShadow: '0 0 0 3px rgba(52,211,153,.18)' }}
+                title={t('drawer.summary.online')}
+              />
+            </span>
 
-            {hasSensorData && (
+            {hasSensorData ? (
               <>
-                <span className="text-zinc-700 select-none">|</span>
-
-                {/* Battery */}
                 {hasBattery && (
-                  <Pill
+                  <TeleCell
                     icon={isCharging ? BatteryCharging : BatteryMedium}
                     value={`${battery}%`}
-                    color={battery >= 20 ? 'text-emerald-400' : 'text-red-400'}
+                    color={battery >= 20 ? 'text-emerald-300' : 'text-red-400'}
+                    iconColor={battery >= 20 ? 'text-emerald-400/80' : 'text-red-400'}
                     label={`Battery: ${battery}%${isCharging ? ' (charging)' : ''}`}
                   />
                 )}
 
-                {/* RTK sat count */}
                 {hasSats && (
-                  <Pill
+                  <TeleCell
                     icon={Satellite}
                     value={mowerSats}
-                    color={
-                      mowerSats >= 15 ? 'text-sky-400' :
-                      mowerSats >= 8  ? 'text-yellow-400' :
-                                        'text-red-400'
-                    }
+                    color={mowerSats >= 15 ? 'text-sky-300' : mowerSats >= 8 ? 'text-yellow-300' : 'text-red-400'}
+                    iconColor={mowerSats >= 15 ? 'text-sky-400/80' : mowerSats >= 8 ? 'text-yellow-400/80' : 'text-red-400'}
                     label={`RTK satellites: ${mowerSats}`}
                   />
                 )}
 
-                {/* RTK fix status */}
-                {mowerRtkKnown && (
+                {/* RTK fix — quality when known, else a bare yes/no */}
+                {rtkLabel && (
                   <span
-                    className={`text-[10px] font-medium ${mowerRtk ? 'text-emerald-400' : 'text-zinc-600'}`}
-                    title={`RTK fix: ${mowerRtk ? 'yes' : 'no'}`}
+                    className="inline-flex items-center gap-1.5 px-2.5 border-r border-zinc-700/40"
+                    title={`RTK fix quality: ${rtkLabel}`}
                   >
-                    RTK{mowerRtk ? '✓' : '—'}
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: rtkColor }} />
+                    <span className="text-xs font-semibold" style={{ color: rtkColor }}>{rtkLabel}</span>
                   </span>
                 )}
 
-                {/* RTK fix quality badge */}
-                {hasRtkFixQuality && (
-                  <span
-                    className="inline-flex items-center gap-0.5 text-[10px] font-medium"
-                    style={{ color: rtkFixQualityColor }}
-                    title={`RTK fix quality: ${rtkFixQuality}`}
-                  >
-                    <span
-                      className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: rtkFixQualityColor }}
-                    />
-                    {rtkFixQuality}
-                  </span>
-                )}
-
-                {/* WiFi RSSI */}
                 {hasWifi && (
-                  <Pill
+                  <TeleCell
                     icon={Wifi}
-                    value={`${wifiRssi}dB`}
-                    color={
-                      Math.abs(wifiRssi) < 60 ? 'text-emerald-400' :
-                      Math.abs(wifiRssi) < 75 ? 'text-yellow-400' :
-                                                 'text-red-400'
-                    }
+                    value={`${wifiRssi}`}
+                    color={Math.abs(wifiRssi) < 60 ? 'text-emerald-300' : Math.abs(wifiRssi) < 75 ? 'text-yellow-300' : 'text-red-400'}
+                    iconColor={Math.abs(wifiRssi) < 60 ? 'text-emerald-400/80' : Math.abs(wifiRssi) < 75 ? 'text-yellow-400/80' : 'text-red-400'}
                     label={`WiFi RSSI: ${wifiRssi} dBm`}
                   />
                 )}
 
-                {/* CPU temperature */}
                 {hasCpu && (
-                  <Pill
+                  <TeleCell
                     icon={Thermometer}
                     value={`${cpuTemp}°`}
-                    color={
-                      cpuTemp < 50 ? 'text-zinc-400' :
-                      cpuTemp < 65 ? 'text-yellow-400' :
-                                     'text-red-400'
-                    }
+                    color={cpuTemp < 50 ? 'text-zinc-200' : cpuTemp < 65 ? 'text-yellow-300' : 'text-red-400'}
+                    iconColor={cpuTemp < 50 ? 'text-zinc-500' : cpuTemp < 65 ? 'text-yellow-400/80' : 'text-red-400'}
                     label={`CPU temp: ${cpuTemp}°C`}
                   />
                 )}
 
-                {/* Work status when active */}
                 {hasWork && (
-                  <Pill
+                  <TeleCell
                     icon={Activity}
                     value={workStatus!}
-                    color="text-emerald-400"
+                    color="text-emerald-300"
+                    iconColor="text-emerald-400/80"
                     label={`Work status: ${workStatus}`}
                   />
                 )}
               </>
+            ) : (
+              <span className="inline-flex items-center px-2.5 text-zinc-600 text-[10px] italic">waiting…</span>
             )}
 
-            {!hasSensorData && (
-              <span className="text-zinc-600 text-[10px] italic">waiting…</span>
-            )}
-
-            <ChevronDown className="w-3 h-3 text-zinc-500 ml-0.5" />
+            <span className="inline-flex items-center px-1.5 text-zinc-500 group-hover:text-zinc-300">
+              <ChevronDown className="w-3 h-3" />
+            </span>
           </button>
       </div>
 

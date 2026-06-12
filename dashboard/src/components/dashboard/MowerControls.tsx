@@ -489,9 +489,9 @@ export function MowerControls({
   // The Start button is additionally blocked while the mower is already
   // executing a task, has an error, has no map, or is offline.
   const startDisabled = disabled || mowerBusy || hasError || noMap || frameUnvalidated || (!online && !demoActive);
-  const btnBase = 'inline-flex items-center justify-center p-1 sm:p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
+  const btnBase = 'inline-flex items-center justify-center p-1 sm:p-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
   // Hidden on mobile, shown on desktop — no inline-flex from btnBase to avoid Tailwind display conflict
-  const btnHidden = 'hidden md:inline-flex items-center justify-center p-1 sm:p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
+  const btnHidden = 'hidden md:inline-flex items-center justify-center p-1 sm:p-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed';
 
   // ── Activity-driven action handlers (mirror app HomeScreen) ─────────────
 
@@ -859,6 +859,9 @@ export function MowerControls({
             <Home className="w-3.5 h-3.5" />
           </button>
         )}
+
+        {/* Divider: transport/go controls (left) vs tools (right) */}
+        <div className="hidden md:block w-px h-5 bg-zinc-700/60 mx-0.5" />
 
         <button
           onClick={async () => {
