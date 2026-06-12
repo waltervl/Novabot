@@ -7,6 +7,7 @@ FROM ubuntu:20.04 AS coverage-native
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG CGAL_VERSION=5.0.3
+ARG COVERAGE_NATIVE_BUILD_JOBS=1
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -40,7 +41,7 @@ WORKDIR /coverage-native
 COPY research/coverage-native/ ./
 
 RUN cmake -S /coverage-native -B /coverage-native/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  && cmake --build /coverage-native/build --parallel \
+  && cmake --build /coverage-native/build --parallel "${COVERAGE_NATIVE_BUILD_JOBS}" \
   && cd /coverage-native/build \
   && ctest --output-on-failure \
   && ./coverage_smoke
