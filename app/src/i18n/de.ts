@@ -124,6 +124,8 @@ export default {
   endTaskReturn: 'Beenden + zurück zur Station',
   pauseTaskReturn: 'Pause + zurück zur Station',
   stopMowing: 'Mähen stoppen?',
+  endSession: 'Sitzung beenden?',
+  endSessionDesc: 'Die pausierte Mähsitzung wird beendet. Der Mäher bleibt an der Station; du kannst danach eine neue Sitzung starten.',
   stopMowingDesc: 'Der Mäher hält an Ort und Stelle an, die Messer stoppen und die aktuelle Sitzung wird beendet. Der Mäher kehrt nicht zur Ladestation zurück. Du kannst danach eine neue Sitzung starten.',
   settings: 'Einstellungen', experimentalFeatures: 'Experimentelle Funktionen',
   experimentalSub: 'Beta-Funktionen wie automatische Kartierung aktivieren',

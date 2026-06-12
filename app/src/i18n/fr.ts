@@ -124,6 +124,8 @@ export default {
   endTaskReturn: 'Terminer + retour station',
   pauseTaskReturn: 'Pause + retour station',
   stopMowing: 'Arrêter la tonte ?',
+  endSession: 'Terminer la session ?',
+  endSessionDesc: 'La session de tonte en pause sera terminée. Le robot reste sur la station ; vous pourrez démarrer une nouvelle session ensuite.',
   stopMowingDesc: 'La tondeuse s’arrête sur place, les lames coupent et la session en cours est terminée. La tondeuse ne retourne pas à la station. Tu peux démarrer une nouvelle session ensuite.',
   settings: 'Réglages', experimentalFeatures: 'Fonctions expérimentales',
   experimentalSub: 'Activer les fonctions bêta comme la cartographie automatique',

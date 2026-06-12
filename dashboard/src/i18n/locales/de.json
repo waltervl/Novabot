@@ -97,6 +97,7 @@
     "resume": "Fortsetzen",
     "stop": "Stopp",
     "goToCharge": "Zur Ladestation",
+    "endSession": "Sitzung beenden",
     "returnHome": "Zur Ladestation",
     "returnHomeDesc": "Wie soll der Mäher zurückkehren?",
     "endTaskReturn": "Aufgabe beenden & zurück",

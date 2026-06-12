@@ -152,6 +152,7 @@
     "resume": "Hervat",
     "stop": "Stop",
     "goToCharge": "Naar laadstation",
+    "endSession": "Sessie beëindigen",
     "returnHome": "Naar het laadstation",
     "returnHomeDesc": "Hoe moet de maaier terugkeren?",
     "endTaskReturn": "Taak beëindigen & terug",

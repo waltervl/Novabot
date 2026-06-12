@@ -97,6 +97,7 @@
     "resume": "Reprendre",
     "stop": "Arrêter",
     "goToCharge": "Retour au chargeur",
+    "endSession": "Terminer la session",
     "returnHome": "Retour au chargeur",
     "returnHomeDesc": "Comment le robot doit-il revenir ?",
     "endTaskReturn": "Terminer & revenir",

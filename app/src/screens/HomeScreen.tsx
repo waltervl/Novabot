@@ -2304,6 +2304,7 @@ export default function HomeScreen() {
                 const canShowChevron = (displayActivity === 'idle' || displayActivity === 'charging')
                   && mower.online && !mower.hasError && !noMap && !mowerBusy;
                 return (
+                  <>
                   <View style={[styles.splitButtonWrap, startDisabled && { opacity: 1 }]}>
                     <TouchableOpacity
                       style={[
@@ -2371,6 +2372,40 @@ export default function HomeScreen() {
                       </>
                     )}
                   </View>
+                  {/* END SESSION — next to the interrupted-coverage "Resume":
+                      end the paused session entirely instead of resuming it. */}
+                  {isInterruptedCoverage && (
+                    <TouchableOpacity
+                      style={[styles.actionButton, styles.actionButtonRed]}
+                      onPress={() => {
+                        appAlertCompat.alert(
+                          t('endSession') || 'End session?',
+                          t('endSessionDesc') || 'The paused mowing session will be ended. The mower stays on the dock; you can start a new session afterwards.',
+                          [
+                            { text: t('cancel') || 'Cancel', style: 'cancel' },
+                            {
+                              text: t('endSession') || 'End session',
+                              style: 'destructive',
+                              onPress: () => {
+                                clearMowQueue();
+                                sendCommand(mower.sn, { stop_navigation: { cmd_num: ++cmdNumRef.current } }, 'stop');
+                                setOptimisticActivity('idle');
+                              },
+                            },
+                          ],
+                        );
+                      }}
+                      disabled={commandLoading !== null}
+                      activeOpacity={0.7}
+                    >
+                      {commandLoading === 'stop' ? (
+                        <ActivityIndicator size="small" color={colors.white} />
+                      ) : (
+                        <Ionicons name="stop" size={20} color={colors.white} />
+                      )}
+                    </TouchableOpacity>
+                  )}
+                  </>
                 );
               })()}
               {/* Go Home button — when idle or error, but NOT on charger */}

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef, Fragment } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polygon, Polyline, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polygon, Polyline, Tooltip, CircleMarker, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import {
   MapPin, Map as MapIcon, Trash2, Route, Crosshair, Layers,
@@ -23,7 +23,7 @@ import {
 } from '../../api/client';
 import { localToGps, gpsToLocal, isUsableChargerGps } from '../../utils/coords';
 import { applyBrush, densifyPolygon, hitTestEdge, offsetPolygon, pointInPolygon as pointInPolygonXY, polygonArea, simplifyPolygon, type XY } from '../../utils/editGeometry';
-import { paintCircle, eraseCircle } from '../../utils/brushPaint';
+import { paintCircle, eraseCircle, makeValidPolygon } from '../../utils/brushPaint';
 import { useToast } from '../common/Toast';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { PolygonEditor } from './PolygonEditor';
@@ -50,6 +50,11 @@ const DEFAULT_CENTER: [number, number] = [52.1409, 6.231];
 const DEFAULT_COVERAGE_RADIUS = 0.61;
 const MIN_COVERAGE_RADIUS = 0.2;
 const MAX_COVERAGE_RADIUS = 1.2;
+// Grace window before a mowing session is considered ended. The msg-based
+// `mowingActive` flag briefly drops to false on every between-lane turn, blade
+// pause, or obstacle stop; keeping the live plan + progress sticky for this long
+// stops those flickers from ending the session (or jumping to the preview).
+const LIVE_SESSION_GRACE_MS = 45000;
 
 // ── Obstacle copy/paste (R6) ──────────────────────────────────────
 // Clipboard for copying an obstacle and pasting it as a new obstacle draft —
@@ -965,6 +970,49 @@ function CelebrationOverlay({ area, onDismiss }: { area: number; onDismiss: () =
 export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sensors, signals, mowing, pathDirectionPreview, previewRequest, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
   const { t } = useTranslation();
   const mowingSensors = sensors ?? {};
+  // ── Sticky live-session flag (hysteresis) ───────────────────────────
+  // `mowingActive` (derived from the mower's status msg) briefly drops to false
+  // on every between-lane turn, blade pause, or obstacle stop. Those flickers
+  // must NOT end the on-screen live plan + progress, and must never let the
+  // display fall back to the generated preview. `liveSession` rises instantly
+  // with mowingActive but only falls after a sustained pause, so brief
+  // blade-stops keep the live coverage exactly as the OpenNova app does.
+  const [liveSession, setLiveSession] = useState(false);
+  const liveSessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (mowingActive) {
+      if (liveSessionTimerRef.current) { clearTimeout(liveSessionTimerRef.current); liveSessionTimerRef.current = null; }
+      setLiveSession(true);
+    } else if (!liveSessionTimerRef.current) {
+      liveSessionTimerRef.current = setTimeout(() => {
+        liveSessionTimerRef.current = null;
+        setLiveSession(false);
+      }, LIVE_SESSION_GRACE_MS);
+    }
+  }, [mowingActive]);
+  useEffect(() => () => { if (liveSessionTimerRef.current) clearTimeout(liveSessionTimerRef.current); }, []);
+
+  // Suppress the PREVIOUS session's progress at a fresh start. Capture
+  // finished_area at the idle->mowing transition; while the live value still
+  // equals that captured (stale) value, treat the progress as stale and hide the
+  // "already mowed" overlays. The moment the mower reports a different
+  // finished_area (the new session's progress, or a reset) it's no longer stale.
+  // Keyed on liveSession (not raw mowingActive) so a brief flicker doesn't
+  // re-capture mid-session progress as the stale baseline. Deliberately NOT keyed
+  // on mowing_progress — that stays 0% for a long time on a large lawn while the
+  // mower is genuinely covering area.
+  const staleFinishedRef = useRef<string | null>(null);
+  const prevLiveSessionRef = useRef(liveSession);
+  useEffect(() => {
+    if (liveSession && !prevLiveSessionRef.current) {
+      staleFinishedRef.current = mowingSensors.finished_area ?? '';
+    } else if (!liveSession) {
+      staleFinishedRef.current = null;
+    }
+    prevLiveSessionRef.current = liveSession;
+  }, [liveSession, mowingSensors.finished_area]);
+  const progressIsStale = staleFinishedRef.current !== null
+    && (mowingSensors.finished_area ?? '') === staleFinishedRef.current;
   const { toast } = useToast();
   const [maps, setMaps] = useState<MapData[]>([]);
   // Trail in LOKALE meters (map_position frame), net als de maaier-icoon en de
@@ -1081,6 +1129,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // ORIGINAL base by the accumulated distance — offsetting the previous result
   // each time compounds miter rounding error (corners drift). Key = canonical.
   const obstacleOffsetBase = useRef<Map<string, { base: XY[]; accum: number }>>(new Map());
+  // Dimension annotation for the active obstacle expand/shrink: a leader line in
+  // LOCAL metres from the original boundary to the offset boundary + the cm delta.
+  const [offsetAnnotation, setOffsetAnnotation] = useState<
+    { canonical: string; from: XY; to: XY; cm: number } | null
+  >(null);
 
   // Live Leaflet map instance (captured via <MapInstanceCapture/>) so paste can
   // read the current view CENTER for placement without living inside MapContainer.
@@ -1196,7 +1249,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     }
     // Replaying changes the committed/draft geometry → the cumulative obstacle
     // offset base is no longer valid; clear it so the next expand/shrink re-seeds.
-    obstacleOffsetBase.current.clear();
+    obstacleOffsetBase.current.clear(); setOffsetAnnotation(null);
     await refreshEditGeometry();
     await reloadMaps();
   }, [sn, refreshEditGeometry, reloadMaps]);
@@ -1598,13 +1651,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
       const cached = await getPlanPath(sn).catch(() => [] as CoveragePathEntry[]);
       if (cached.length > 0) setCoveragePath(cached);
       const ok = await fetchPlanOnce(true);
-      if (!ok && cached.length === 0) {
-        // No live plan came back and nothing cached — last resort: any cached
-        // preview, else a short "couldn't compute" note (no scary busy error).
-        const prev = await getPreviewPath(sn).catch(() => [] as CoveragePathEntry[]);
-        if (prev.length > 0) setCoveragePath(prev);
-        else setCoverageStatus(t('map.edit.coverageNone'));
-      }
+      // During a session we NEVER fall back to the generated preview: a transient
+      // empty plan (the mower briefly stops between lanes / pauses its blades)
+      // must keep the last live plan on screen, not jump to the native preview.
+      // Only when there is genuinely nothing yet do we show a soft "none" note.
+      if (!ok && cached.length === 0) setCoverageStatus(t('map.edit.coverageNone'));
     } finally {
       setCoverageLoading(false);
       startCoveragePoll();
@@ -1637,7 +1688,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // the right source for the active task.
   const refreshCoverage = useCallback(async (dirOverride?: number) => {
     if (!sn) return;
-    if (mowingActive) { stopCoveragePoll(); await showLiveCoverage(); return; }
+    if (liveSession) { stopCoveragePoll(); await showLiveCoverage(); return; }
     setCoverageLive(false);
     stopCoveragePoll();
     setCoverageLoading(true);
@@ -1666,7 +1717,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     } finally {
       setCoverageLoading(false);
     }
-  }, [sn, mowingActive, maps, selectedMapId, mapX, mapY, mowing?.covDirection, coverageRadiusDraft, t, showLiveCoverage, stopCoveragePoll]);
+  }, [sn, liveSession, maps, selectedMapId, mapX, mapY, mowing?.covDirection, coverageRadiusDraft, t, showLiveCoverage, stopCoveragePoll]);
 
   // Toggle handler: on first enable, show cached path instantly if present,
   // otherwise kick off the right fetch (live plan if mowing, else idle preview).
@@ -1683,7 +1734,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     setShowCoverage(true);
     setCoverageStatus(null);
     if (!sn) return;
-    if (mowingActive) { await showLiveCoverage(); return; }
+    if (liveSession) { await showLiveCoverage(); return; }
     setCoverageLive(false);
     if (coveragePath && coveragePath.length > 0) return;
     // Nothing in memory — reveal the last CACHED server preview (cheap GET, NO
@@ -1695,32 +1746,33 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     } catch {
       setCoverageStatus(t('map.edit.coverageNone'));
     }
-  }, [showCoverage, coveragePath, sn, mowingActive, showLiveCoverage, stopCoveragePoll, t]);
+  }, [showCoverage, coveragePath, sn, liveSession, showLiveCoverage, stopCoveragePoll, t]);
 
   // Auto-switch: when the mower transitions into/out of mowing WHILE the panel
   // is open, switch to/from the live plan path automatically. Also stops the
   // poll when the panel closes or the component unmounts.
   useEffect(() => {
     if (!showCoverage) { stopCoveragePoll(); return; }
-    if (mowingActive) {
+    if (liveSession) {
       if (!coveragePollRef.current) void showLiveCoverage();
     } else {
-      // Stopped mowing: stop polling, drop the live indicator. Keep the last
-      // path on screen (no auto preview-refresh — that needs a user action /
-      // could 128 a just-finished task that hasn't cleared yet).
+      // Session truly ended (sustained pause past the grace window): stop
+      // polling, drop the live indicator. Keep the last path on screen (no auto
+      // preview-refresh — that needs a user action / could 128 a just-finished
+      // task that hasn't cleared yet).
       stopCoveragePoll();
       setCoverageLive(false);
       setCoverageStatus((s) => (s === t('map.edit.coverageLive') ? null : s));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mowingActive, showCoverage]);
+  }, [liveSession, showCoverage]);
 
   // Auto-toon het maaipad zodra de maaier gaat maaien — geen knop-druk nodig.
-  // Vuurt alleen op de overgang naar mowing (mowingActive in deps); sluit de
-  // gebruiker de overlay handmatig, dan blijft die dicht tot de volgende sessie.
+  // Vuurt op de start van een live sessie; sluit de gebruiker de overlay
+  // handmatig, dan blijft die dicht tot de volgende sessie.
   useEffect(() => {
-    if (mowingActive) setShowCoverage(true);
-  }, [mowingActive]);
+    if (liveSession) setShowCoverage(true);
+  }, [liveSession]);
 
   // Generate a fresh coverage preview for one OR MANY work maps (honors the
   // Start-sheet work-area selector: "All work areas" → every work map, a single
@@ -1907,7 +1959,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
       setEditStatus([t('map.edit.applied'), warnText].filter(Boolean).join('\n'));
       setEditStatusKind(warnings.length ? 'warn' : 'ok');
       // Drafts are committed → the obstacle base in maps is now the new origin.
-      obstacleOffsetBase.current.clear();
+      obstacleOffsetBase.current.clear(); setOffsetAnnotation(null);
       await reloadMaps();
       await refreshEditGeometry();
       resetHistory(); // drafts cleared after apply → fresh empty history
@@ -1960,7 +2012,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
       setEditStatus(r?.reason === 'no_changes' ? t('map.edit.nothingToRevert') : t('map.edit.pushFailed'));
       setEditStatusKind(r?.reason === 'no_changes' ? 'info' : 'error');
     }
-    obstacleOffsetBase.current.clear();
+    obstacleOffsetBase.current.clear(); setOffsetAnnotation(null);
     await reloadMaps();
     await refreshEditGeometry();
     resetHistory(); // server-side revert cleared drafts → fresh history
@@ -1974,7 +2026,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     setApplying(false);
     setEditStatus('');
     setEditStatusKind('info');
-    obstacleOffsetBase.current.clear();
+    obstacleOffsetBase.current.clear(); setOffsetAnnotation(null);
     await reloadMaps();
     await refreshEditGeometry();
     resetHistory(); // drafts discarded → fresh empty history
@@ -2014,13 +2066,21 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     // The cache is cleared on apply/revert/discard so the next session re-seeds.
     let entry = obstacleOffsetBase.current.get(canonical);
     if (!entry) {
-      const seed = latestLocalPoints(canonical) ?? target.mapArea.map(p => ({ x: p.x, y: p.y }));
-      entry = { base: seed, accum: 0 };
+      const raw = latestLocalPoints(canonical) ?? target.mapArea.map(p => ({ x: p.x, y: p.y }));
+      // De-noise the base FIRST. The per-vertex miter offset explodes on a
+      // densely-sampled, jagged obstacle boundary (tiny concave noise notches →
+      // huge inward miter spikes — the "weird polygon" bug). RDP at ~5 cm removes
+      // that noise while keeping the overall shape, so the offset stays smooth.
+      const simplified = simplifyPolygon(raw, 0.05);
+      entry = { base: simplified.length >= 3 ? simplified : raw, accum: 0 };
       obstacleOffsetBase.current.set(canonical, entry);
     }
 
     const nextAccum = entry.accum + dir * OBSTACLE_OFFSET_STEP;
-    const next = offsetPolygon(entry.base, nextAccum);
+    // Offset, then clean any residual self-intersection the inset/outset created.
+    let next = offsetPolygon(entry.base, nextAccum);
+    const cleaned = makeValidPolygon(next);
+    if (cleaned.length >= 3) next = simplifyPolygon(cleaned, 0.02);
 
     if (dir < 0 && polygonArea(next) < MIN_OBSTACLE_OFFSET_AREA) {
       setEditStatus(t('map.edit.tooSmall'));
@@ -2035,6 +2095,23 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
       return;
     }
     entry.accum = nextAccum;
+    // Dimension annotation: a leader from the ORIGINAL boundary to the offset one
+    // at a representative (rightmost) vertex, labelled with the cumulative cm.
+    const base = entry.base;
+    let cx = 0, cy = 0;
+    for (const p of base) { cx += p.x; cy += p.y; }
+    cx /= base.length; cy /= base.length;
+    let anchor = base[0];
+    for (const p of base) if (p.x > anchor.x) anchor = p;
+    const ax = anchor.x - cx, ay = anchor.y - cy;
+    const al = Math.hypot(ax, ay) || 1;
+    const cmVal = Math.round(nextAccum * 100);
+    setOffsetAnnotation(cmVal === 0 ? null : {
+      canonical,
+      from: { x: anchor.x, y: anchor.y },
+      to: { x: anchor.x + (ax / al) * nextAccum, y: anchor.y + (ay / al) * nextAccum },
+      cm: cmVal,
+    });
     setEditStatus('');
     setEditStatusKind('info');
     await refreshEditGeometry();
@@ -2912,7 +2989,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
           {showCoverage && editMode === 'none' && !calibrating && sn && (
             <button
               onClick={() => {
-                if (mowingActive) { void refreshCoverage(); return; }
+                if (liveSession) { void refreshCoverage(); return; }
                 const lp = lastPreviewParamsRef.current;
                 if (lp) void previewMaps(lp.canonicals, lp.covDirection);
                 else void refreshCoverage();
@@ -3110,8 +3187,8 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
             // static preview must NOT inherit the previous session's progress —
             // finished_area lingers in the sensors after a mow, which would paint
             // the fresh preview as "already done". Preview => uniform planned path.
-            const isFinished = coverageLive && coverProgress.finished.has(cp.id);
-            const isActive = coverageLive && cp.id === coverProgress.activeId;
+            const isFinished = coverageLive && !progressIsStale && coverProgress.finished.has(cp.id);
+            const isActive = coverageLive && !progressIsStale && cp.id === coverProgress.activeId;
             const full = calibratePoints(cp.gps, activeCal, polyCenter);
             // Finished sub-area → dik groen ("gemaaid"), zoals de app.
             if (isFinished) {
@@ -3120,26 +3197,34 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
                   pathOptions={{ color: 'rgba(34,197,94,0.9)', weight: 3.5, opacity: 1, lineCap: 'round', lineJoin: 'round' }} />
               );
             }
-            // Resterend → dunne hint-lijn; voor het actieve sub-path tekenen we
-            // de al-gedekte portie (0..covering_area_points) dik-groen eroverheen.
-            const done = isActive && coverProgress.activePoints >= 2
-              ? calibratePoints(cp.gps.slice(0, coverProgress.activePoints), activeCal, polyCenter)
-              : null;
-            // Static preview → thicker, clearly visible lines. Live "remaining"
-            // (behind the green done-portion) stays a thin faint hint so the
-            // mowed part keeps standing out.
+            // Active lane → the lane the mower is working on RIGHT NOW. Draw it
+            // YELLOW (thick) so it stands out, then overlay the already-covered
+            // start portion (0..covering_area_points) in green so progress within
+            // the lane is visible. When the lane completes it joins `finished`
+            // and renders fully green — exactly like the OpenNova app.
+            if (isActive) {
+              const done = coverProgress.activePoints >= 2
+                ? calibratePoints(cp.gps.slice(0, coverProgress.activePoints), activeCal, polyCenter)
+                : null;
+              return (
+                <Fragment key={`cov-${cp.id}`}>
+                  <Polyline positions={full}
+                    pathOptions={{ color: '#fbbf24', weight: 3, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }} />
+                  {done && done.length >= 2 && (
+                    <Polyline positions={done}
+                      pathOptions={{ color: 'rgba(34,197,94,0.95)', weight: 3.5, opacity: 1, lineCap: 'round', lineJoin: 'round' }} />
+                  )}
+                </Fragment>
+              );
+            }
+            // Not-yet-started lane → thin faint hint while live; thicker cyan in
+            // the static idle preview so the planned path stays clearly visible.
             const baseStyle = coverageLive
               ? { color: 'rgba(255,255,255,0.35)', weight: 1, opacity: 0.8 }
               : { color: 'rgba(56,189,248,0.9)', weight: 1.5, opacity: 0.9 };
             return (
-              <Fragment key={`cov-${cp.id}`}>
-                <Polyline positions={full}
-                  pathOptions={{ ...baseStyle, lineCap: 'round', lineJoin: 'round' }} />
-                {done && done.length >= 2 && (
-                  <Polyline positions={done}
-                    pathOptions={{ color: 'rgba(34,197,94,0.95)', weight: 3.5, opacity: 1, lineCap: 'round', lineJoin: 'round' }} />
-                )}
-              </Fragment>
+              <Polyline key={`cov-${cp.id}`} positions={full}
+                pathOptions={{ ...baseStyle, lineCap: 'round', lineJoin: 'round' }} />
             );
           })}
           {/* Push/pull brush (R3): live in-progress stroke + pointer handler. */}
@@ -3209,8 +3294,34 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
               pathOptions={{ color: '#22d3ee', weight: 2, dashArray: '6 4', fillOpacity: 0.05, fillColor: '#22d3ee' }}
             />
           )}
+          {/* Obstacle expand/shrink dimension annotation: leader line from the
+              original boundary to the offset one + a cm badge. */}
+          {offsetAnnotation && isUsableChargerGps(chargerGps) && (() => {
+            const offX = chargingPose?.x ?? 0, offY = chargingPose?.y ?? 0;
+            const fromG = localToGps({ x: offsetAnnotation.from.x - offX, y: offsetAnnotation.from.y - offY }, chargerGps);
+            const toG = localToGps({ x: offsetAnnotation.to.x - offX, y: offsetAnnotation.to.y - offY }, chargerGps);
+            const pts = calibratePoints([fromG, toG], activeCal, polyCenter);
+            if (pts.length < 2) return null;
+            const cm = offsetAnnotation.cm;
+            const color = cm >= 0 ? '#38bdf8' : '#f59e0b';
+            const label = `${cm > 0 ? '+' : ''}${cm} cm`;
+            const labelIcon = L.divIcon({
+              className: '',
+              html: `<div style="transform:translate(-50%,-130%);white-space:nowrap;background:${color};color:#0b1220;font:600 11px/1.2 system-ui,sans-serif;padding:2px 6px;border-radius:6px;box-shadow:0 0 4px rgba(0,0,0,0.55)">${label}</div>`,
+              iconSize: [0, 0],
+              iconAnchor: [0, 0],
+            });
+            return (
+              <>
+                <Polyline positions={pts} pathOptions={{ color, weight: 2, opacity: 0.95 }} />
+                <CircleMarker center={pts[0]} radius={3} pathOptions={{ color, fillColor: color, fillOpacity: 1, weight: 0 }} />
+                <CircleMarker center={pts[1]} radius={3} pathOptions={{ color, fillColor: color, fillOpacity: 1, weight: 0 }} />
+                <Marker position={pts[1]} icon={labelIcon} interactive={false} />
+              </>
+            );
+          })()}
           {/* Afgelegde maai-banen (dunne lijntjes geclipt aan polygon) */}
-          {coveredLanes && coveredLanes.length > 0 && (() => {
+          {coveredLanes && coveredLanes.length > 0 && !progressIsStale && (() => {
             const wPolys = polygonMaps
               .filter(m => getAreaStyle(m.mapType, m.mapId, m.mapName) === AREA_STYLES.work)
               .map(m => {

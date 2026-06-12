@@ -112,6 +112,7 @@
     "resume": "Resume",
     "stop": "Stop",
     "goToCharge": "Go to charger",
+    "endSession": "End session",
     "returnHome": "Return home",
     "returnHomeDesc": "How should the mower return to the charging station?",
     "endTaskReturn": "End task & return",

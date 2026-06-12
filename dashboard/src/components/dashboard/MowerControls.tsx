@@ -774,6 +774,19 @@ export function MowerControls({
           </button>
         )}
 
+        {/* END SESSION — next to the interrupted-coverage "Resume": stop the
+            parked session entirely instead of resuming it. */}
+        {interruptedCoverage && (activity === 'idle' || activity === 'charging' || activity === 'error' || activity === 'offline') && (
+          <button
+            onClick={() => { clearQueue(); void send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop')); }}
+            disabled={disabled}
+            className={`${btnBase} bg-gray-700/60 text-red-400 hover:bg-red-700/40`}
+            title={t('controls.endSession', 'Sessie beëindigen')}
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
+        )}
+
         {/* PAUSE — only while actively mowing or edge-cutting. */}
         {(activity === 'mowing' || activity === 'edge_cutting') && (
           <button
