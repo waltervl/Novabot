@@ -103,7 +103,7 @@ bool segmentContainsSegment(const Point_2& container_a,
          pointOnCollinearSegment(candidate_b, container_a, container_b);
 }
 
-bool eraseEndpoint(std::vector<Point_2>& sweep, bool head) {
+bool eraseCurrentRepeatPoint(std::vector<Point_2>& sweep, bool head) {
   if (sweep.empty()) {
     return false;
   }
@@ -111,6 +111,18 @@ bool eraseEndpoint(std::vector<Point_2>& sweep, bool head) {
     sweep.erase(sweep.begin());
   } else {
     sweep.pop_back();
+  }
+  return true;
+}
+
+bool eraseOtherRepeatPoint(std::vector<Point_2>& sweep, bool head) {
+  if (sweep.empty()) {
+    return false;
+  }
+  if (head || sweep.size() < 2) {
+    sweep.erase(sweep.begin());
+  } else {
+    sweep.erase(std::prev(sweep.end(), 2));
   }
   return true;
 }
@@ -134,9 +146,9 @@ bool trimRepeatEndpointPair(std::vector<Point_2>& current, bool current_head,
 
   if (segmentContainsSegment(other_endpoint, other_neighbor, current_endpoint,
                              current_neighbor)) {
-    return eraseEndpoint(current, current_head);
+    return eraseCurrentRepeatPoint(current, current_head);
   }
-  return eraseEndpoint(other, other_head);
+  return eraseOtherRepeatPoint(other, other_head);
 }
 
 void normalizeRepeatSweepEndpoints(std::vector<std::vector<Point_2>>& sweeps) {
@@ -173,11 +185,12 @@ void normalizeRepeatSweepEndpoints(std::vector<std::vector<Point_2>>& sweeps) {
 
 void appendDecompositionPlan(const DecompositionResult& decomposition,
                              const std::vector<std::vector<Point_2>>& sweeps,
-                             GridPoint& current, int& output_cell_index,
+                             Point_2& current, int& output_cell_index,
                              CellPathMap& plan) {
   std::vector<CellNode> nodes =
       calculateDecompositionAdjacency(decomposition.cells);
-  int start_cell = getCellIndexOfPoint(decomposition.cells, current);
+  int start_cell =
+      getCellIndexOfPoint(decomposition.cells, pointToGridPoint(current));
   if (start_cell < 0) {
     start_cell = 0;
   }
@@ -198,14 +211,14 @@ void appendDecompositionPlan(const DecompositionResult& decomposition,
     emitted[position] = true;
 
     std::vector<Point_2> sweep = sweeps[position];
-    if (shouldReverseNextSweep(Point_2(current.x, current.y), sweep)) {
+    if (shouldReverseNextSweep(current, sweep)) {
       std::reverse(sweep.begin(), sweep.end());
     }
 
-    GridPath path = pointsToGridPath(sweep);
-    if (!path.empty()) {
-      current = path.back();
+    if (!sweep.empty()) {
+      current = sweep.back();
     }
+    GridPath path = pointsToGridPath(sweep);
     plan.emplace(output_cell_index++, std::move(path));
   }
 }
@@ -223,7 +236,7 @@ CellPathMap generateCoverageGridPlan(const cv::Mat& map,
   }
 
   CellPathMap plan;
-  GridPoint current = start;
+  Point_2 current(start.x, start.y);
   int output_cell_index = 0;
   for (const std::size_t top_level_position :
        topLevelContourPositionsByDescendingArea(contours)) {
