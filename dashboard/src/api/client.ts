@@ -386,6 +386,46 @@ export async function previewPath(sn: string, polygonArea: Array<{ latitude: num
   return (await post(`${BASE}/preview-path/${encodeURIComponent(sn)}`, { polygonArea, covDirection })).json();
 }
 
+export interface NativePreviewPathResult {
+  ok: boolean;
+  source: 'native';
+  paths: CoveragePathEntry[];
+  count: number;
+  canonical: string;
+  areaId: number;
+  pgmMd5: string;
+  cacheHit: boolean;
+  error?: string;
+}
+
+export async function nativePreviewPath(
+  sn: string,
+  opts: {
+    canonical?: string;
+    mapIds?: number | number[];
+    startLocal?: { x: number; y: number };
+    covDirection?: number;
+    expectedPgmMd5?: string;
+  },
+): Promise<NativePreviewPathResult> {
+  const body: Record<string, unknown> = {};
+  if (opts.canonical) body.canonical = opts.canonical;
+  if (opts.mapIds !== undefined) body.map_ids = opts.mapIds;
+  if (opts.startLocal) body.startLocal = opts.startLocal;
+  if (opts.covDirection !== undefined) body.cov_direction = opts.covDirection;
+  if (opts.expectedPgmMd5) body.expected_pgm_md5 = opts.expectedPgmMd5;
+  const res = await fetch(`${BASE}/native-preview-path/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({})) as NativePreviewPathResult;
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `${res.status} ${res.statusText}`);
+  }
+  return data;
+}
+
 // ── Virtual Walls ──────────────────────────────────────────────
 
 export interface VirtualWall {

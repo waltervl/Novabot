@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import type { MapData, GpsPoint, LocalPoint } from '../../types';
 import {
   sendCommand, sendExtendedCommand, fetchMaps, startPatrol, stopPatrol, rebootMower,
-  setChargeThreshold, setMaxSpeed, previewPath,
+  setChargeThreshold, setMaxSpeed, previewPath, nativePreviewPath,
   setDemoMode as setDemoModeApi, getDemoMode,
   fetchRainForecast, findIncomingRain, setRainIgnoreSession,
 } from '../../api/client';
@@ -611,6 +611,30 @@ export function MowerControls({
   const handlePreview = useCallback(async () => {
     setPreviewing(true);
     try {
+      const selectedStoredMap = mapId
+        ? maps.find(m => m.mapId === mapId)
+        : maps[0];
+      const canUseNativePreview =
+        !patternMode &&
+        !pendingPolygon &&
+        edgeOffset === 0 &&
+        !!selectedStoredMap?.canonicalName;
+      if (canUseNativePreview && selectedStoredMap?.canonicalName) {
+        const sx = Number(sensors?.map_position_x);
+        const sy = Number(sensors?.map_position_y);
+        const startLocal = Number.isFinite(sx) && Number.isFinite(sy)
+          ? { x: sx, y: sy }
+          : undefined;
+        await nativePreviewPath(sn, {
+          canonical: selectedStoredMap.canonicalName,
+          startLocal,
+          covDirection: pathDirection,
+        });
+        toast(`✓ ${t('controls.previewPath')}`, 'success');
+        setPreviewing(false);
+        return;
+      }
+
       let polySource: Array<{ lat: number; lng: number }> | undefined;
       if (patternMode && patternContours.length > 0 && patternCenter) {
         polySource = transformToGps(patternContours[0], patternCenter, patternSize, patternRotation);
@@ -637,7 +661,7 @@ export function MowerControls({
     }
     setPreviewing(false);
   }, [sn, patternMode, patternContours, patternCenter, patternSize, patternRotation,
-    pendingPolygon, mapId, maps, edgeOffset, pathDirection, chargerGps, t, toast]);
+    pendingPolygon, mapId, maps, edgeOffset, pathDirection, chargerGps, sensors, t, toast]);
 
   const patternReady = patternMode && patternId !== null && patternCenter !== null;
 
