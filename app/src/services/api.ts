@@ -895,10 +895,33 @@ export class ApiClient {
     sn: string,
     versionId: number,
     force = true,
-  ): Promise<{ ok: boolean; command?: string; version?: string }> {
-    return this.request('POST', `/api/dashboard/ota/trigger/${enc(sn)}`, {
-      body: { version_id: versionId, force },
-    });
+  ): Promise<{ ok: boolean; command?: string; version?: string; backup?: { filename: string; bytes: number; createdAt: number; reason: string } | null; error?: string; detail?: string }> {
+    try {
+      return await this.request('POST', `/api/dashboard/ota/trigger/${enc(sn)}`, {
+        body: { version_id: versionId, force },
+      });
+    } catch (e: unknown) {
+      // request() throws `new Error("HTTP <status>: <body-text>")` on non-2xx.
+      // Try to parse the JSON body from the message to surface server block reason
+      // (409 BACKUP_FAILED / 500 BETA_GATE_ERROR) so the UI can display it.
+      if (e instanceof Error) {
+        const jsonMatch = e.message.match(/^HTTP \d+: ([\s\S]*)$/);
+        if (jsonMatch) {
+          try {
+            const parsed = JSON.parse(jsonMatch[1]) as Record<string, unknown>;
+            return {
+              ok: false,
+              error: typeof parsed.error === 'string' ? parsed.error : 'OTA_FAILED',
+              detail: typeof parsed.detail === 'string' ? parsed.detail : e.message,
+            };
+          } catch {
+            // body was not JSON
+          }
+        }
+        return { ok: false, error: 'OTA_FAILED', detail: e.message };
+      }
+      return { ok: false, error: 'OTA_FAILED', detail: String(e) };
+    }
   }
 
   // ── Messages (robot alerts) ──────────────────────────────────────────

@@ -24,6 +24,8 @@ import { ApiClient, type OtaVersion } from '../services/api';
 import { getServerUrl } from '../services/auth';
 import { getSocket } from '../services/socket';
 import { formatDate } from '../lib/format';
+import { isOpenNovaFirmware } from '../utils/firmwareCapability';
+import { BETA_FIRMWARE_WARNING_LINES } from '../utils/betaFirmware';
 
 interface OtaProgressEntry {
   status: string;       // 'upgrade' | 'success' | 'failed' | 'error' | ...
@@ -43,6 +45,7 @@ export default function OtaScreen() {
   const [loading, setLoading] = useState(true);
   const [triggeringSn, setTriggeringSn] = useState<string | null>(null);
   const [triggerResult, setTriggerResult] = useState<Record<string, string>>({});
+  const [betaModal, setBetaModal] = useState<null | { sn: string; version: { id: number; version: string }; deviceLabel: string }>(null);
   // OTA progress, keyed by SN. Populated via 'ota:event' socket broadcasts
   // from the server (broker.ts forwards raw mower ota_upgrade_state into
   // this event). Modal opens when there's an active status <2 min old.
@@ -130,6 +133,53 @@ export default function OtaScreen() {
     });
   }, []);
 
+  const doFlash = async (sn: string, version: { id: number; version: string }, deviceLabel: string) => {
+    setTriggeringSn(sn);
+    setTriggerResult((prev) => ({ ...prev, [sn]: 'sending' }));
+    // Remember target version + device label so the progress modal
+    // can show "Updating mower to v6.0.2-custom-24" instead of a
+    // naked SN. Cleared when modal dismisses.
+    targetVersionRef.current[sn] = { version: version.version, label: deviceLabel };
+    // Seed an immediate "pending" entry so the modal opens right away
+    // even before the mower's first ota_upgrade_state arrives — this
+    // mirrors the dashboard's UX where clicking Update instantly shows
+    // a progress bar at 0%.
+    setOtaProgress(prev => {
+      const next = new Map(prev);
+      next.set(sn, {
+        status: 'starting',
+        percentage: null,
+        timestamp: Date.now(),
+        targetVersion: version.version,
+        deviceLabel,
+      });
+      return next;
+    });
+    try {
+      const url = await getServerUrl();
+      if (!url) return;
+      const api = new ApiClient(url);
+      const res = await api.triggerOta(sn, version.id);
+      if (res.ok) {
+        const backupNote = res.backup ? ` · Backup ✓ ${res.backup.filename}` : '';
+        setTriggerResult((prev) => ({
+          ...prev,
+          [sn]: `Command sent${backupNote}`,
+        }));
+      } else {
+        const reason = res.detail ?? res.error ?? 'Failed';
+        setTriggerResult((prev) => ({ ...prev, [sn]: reason }));
+      }
+    } catch (e) {
+      setTriggerResult((prev) => ({
+        ...prev,
+        [sn]: e instanceof Error ? e.message : 'Error',
+      }));
+    } finally {
+      setTriggeringSn(null);
+    }
+  };
+
   const handleTrigger = (version: OtaVersion, sn: string, deviceLabel: string) => {
     const currentVersion = sn === mower?.sn
       ? mower?.sensors.sw_version ?? mower?.sensors.mower_version ?? '?'
@@ -149,6 +199,12 @@ export default function OtaScreen() {
     const nick = (targetDevice?.nickname ?? '').trim();
     const target = nick ? `${nick} (${sn})` : sn;
 
+    if (isOpenNovaFirmware(version.version)) {
+      // Beta/custom firmware: show loud consent modal instead of the standard Alert.
+      setBetaModal({ sn, version: { id: version.id, version: version.version }, deviceLabel });
+      return;
+    }
+
     appAlertCompat.alert(
       'Firmware Update',
       `Update ${deviceLabel} ${target} from ${fromLabel} to ${toLabel}?\n\nThis will restart the device.`,
@@ -156,46 +212,7 @@ export default function OtaScreen() {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Update',
-          onPress: async () => {
-            setTriggeringSn(sn);
-            setTriggerResult((prev) => ({ ...prev, [sn]: 'sending' }));
-            // Remember target version + device label so the progress modal
-            // can show "Updating mower to v6.0.2-custom-24" instead of a
-            // naked SN. Cleared when modal dismisses.
-            targetVersionRef.current[sn] = { version: version.version, label: deviceLabel };
-            // Seed an immediate "pending" entry so the modal opens right away
-            // even before the mower's first ota_upgrade_state arrives — this
-            // mirrors the dashboard's UX where clicking Update instantly shows
-            // a progress bar at 0%.
-            setOtaProgress(prev => {
-              const next = new Map(prev);
-              next.set(sn, {
-                status: 'starting',
-                percentage: null,
-                timestamp: Date.now(),
-                targetVersion: version.version,
-                deviceLabel,
-              });
-              return next;
-            });
-            try {
-              const url = await getServerUrl();
-              if (!url) return;
-              const api = new ApiClient(url);
-              const res = await api.triggerOta(sn, version.id);
-              setTriggerResult((prev) => ({
-                ...prev,
-                [sn]: res.ok ? 'Command sent' : 'Failed',
-              }));
-            } catch (e) {
-              setTriggerResult((prev) => ({
-                ...prev,
-                [sn]: e instanceof Error ? e.message : 'Error',
-              }));
-            } finally {
-              setTriggeringSn(null);
-            }
-          },
+          onPress: () => { void doFlash(sn, version, deviceLabel); },
         },
       ],
     );
@@ -370,6 +387,52 @@ export default function OtaScreen() {
           </View>
         )}
       </ScrollView>
+
+      {/* BETA firmware consent modal — shown when the user taps flash for a
+          custom/OpenNova version. Single "Ik begrijp het, flash toch" confirm.
+          Backup is guaranteed server-side; this is loud informed consent only. */}
+      <Modal
+        visible={!!betaModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBetaModal(null)}
+      >
+        {betaModal && (() => {
+          const data = betaModal;
+          return (
+            <View style={styles.betaModalBackdrop}>
+              <View style={styles.betaModalCard}>
+                <Text style={styles.betaModalTitle}>⚠️ BETA CUSTOM FIRMWARE</Text>
+                {BETA_FIRMWARE_WARNING_LINES.map((line, i) => (
+                  <Text key={i} style={styles.betaModalWarningLine}>{'• '}{line}</Text>
+                ))}
+                <Text style={styles.betaModalNote}>
+                  Er wordt automatisch een verse backup gemaakt voordat we flashen.
+                </Text>
+                <View style={styles.betaModalButtons}>
+                  <TouchableOpacity
+                    style={styles.betaModalCancelBtn}
+                    onPress={() => setBetaModal(null)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.betaModalCancelText}>Annuleren</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.betaModalConfirmBtn}
+                    onPress={() => {
+                      setBetaModal(null);
+                      void doFlash(data.sn, data.version, data.deviceLabel);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.betaModalConfirmText}>Ik begrijp het, flash toch</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          );
+        })()}
+      </Modal>
 
       {/* OTA progress modal — matcht dashboard's OtaManager visual. Opent
           zodra we een ota:event ontvangen (of meteen na een triggerOta call
@@ -690,6 +753,74 @@ const makeStyles = (c: Colors) => StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     color: c.text,
+  },
+  // Beta consent modal
+  betaModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  betaModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#1a0505',
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: '#7f1d1d',
+    padding: 24,
+  },
+  betaModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#fca5a5',
+    marginBottom: 16,
+    textAlign: 'center',
+    letterSpacing: 0.5,
+  },
+  betaModalWarningLine: {
+    fontSize: 14,
+    color: '#fecaca',
+    marginBottom: 8,
+    lineHeight: 20,
+  },
+  betaModalNote: {
+    fontSize: 13,
+    color: '#86efac',
+    marginTop: 12,
+    marginBottom: 20,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
+  betaModalButtons: {
+    gap: 10,
+  },
+  betaModalCancelBtn: {
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  betaModalCancelText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: c.textDim,
+  },
+  betaModalConfirmBtn: {
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: '#991b1b',
+    borderWidth: 1,
+    borderColor: '#7f1d1d',
+  },
+  betaModalConfirmText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
   },
 });
 
