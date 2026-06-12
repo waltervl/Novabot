@@ -1,7 +1,8 @@
-FROM ubuntu:20.04
+FROM ubuntu:20.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG CGAL_VERSION=5.0.3
+ARG COVERAGE_NATIVE_BUILD_JOBS=1
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -35,7 +36,15 @@ WORKDIR /src
 COPY . /src
 
 RUN cmake -S /src -B /src/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  && cmake --build /src/build --parallel \
+  && cmake --build /src/build --parallel "${COVERAGE_NATIVE_BUILD_JOBS}" \
   && cd /src/build \
   && ctest --output-on-failure \
   && /src/build/coverage_smoke
+
+RUN install -D -m 0755 /src/build/coverage_grid_plan /opt/opennova/bin/coverage_grid_plan \
+  && install -D -m 0644 /src/eth/LICENSE /opt/opennova/share/licenses/coverage-native/GPL-3.0.txt \
+  && install -D -m 0644 /src/THIRD_PARTY_NOTICES.md /opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md
+
+FROM scratch AS artifact
+
+COPY --from=builder /opt/opennova /opt/opennova

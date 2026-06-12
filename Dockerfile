@@ -1,50 +1,12 @@
-# ── Stage 0: Node runtime copied into Ubuntu 20.04 stages ────────────────────
+# ── Stage 0: Prebuilt native coverage planner artifact ───────────────────────
+# This image is built explicitly via scripts/build-coverage-native-image.sh.
+# The normal OpenNova image build must never compile the native planner.
+ARG COVERAGE_NATIVE_IMAGE=rvbcrs/opennova-coverage-native:latest
+FROM ${COVERAGE_NATIVE_IMAGE} AS coverage-native
+
+
+# ── Stage 1: Node runtime copied into Ubuntu 20.04 stages ────────────────────
 FROM node:20-bullseye-slim AS node-runtime
-
-
-# ── Stage 1: Native coverage planner (CGAL 5.0.3 + OpenCV 4.2) ───────────────
-FROM ubuntu:20.04 AS coverage-native
-
-ARG DEBIAN_FRONTEND=noninteractive
-ARG CGAL_VERSION=5.0.3
-ARG COVERAGE_NATIVE_BUILD_JOBS=1
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    cmake \
-    libboost-all-dev \
-    libgmp-dev \
-    libmpfr-dev \
-    libopencv-core-dev \
-    libopencv-imgcodecs-dev \
-    libopencv-imgproc-dev \
-    ninja-build \
-    pkg-config \
-    wget \
-    xz-utils \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN wget -q -O "cgal-${CGAL_VERSION}.tar.gz" "https://github.com/CGAL/cgal/archive/refs/tags/v${CGAL_VERSION}.tar.gz" \
-  && tar -xf "cgal-${CGAL_VERSION}.tar.gz" \
-  && cmake -S "cgal-${CGAL_VERSION}" -B cgal-build \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="/opt/cgal-${CGAL_VERSION}" \
-    -DWITH_CGAL_Qt5=OFF \
-  && cmake --build cgal-build --target install --parallel \
-  && rm -rf "cgal-${CGAL_VERSION}" "cgal-${CGAL_VERSION}.tar.gz" cgal-build
-
-ENV CMAKE_PREFIX_PATH="/opt/cgal-${CGAL_VERSION}"
-
-WORKDIR /coverage-native
-COPY research/coverage-native/ ./
-
-RUN cmake -S /coverage-native -B /coverage-native/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  && cmake --build /coverage-native/build --parallel "${COVERAGE_NATIVE_BUILD_JOBS}" \
-  && cd /coverage-native/build \
-  && ctest --output-on-failure \
-  && ./coverage_smoke
 
 
 # ── Stage 2: Build (TypeScript compilatie) ───────────────────────────────────
@@ -174,12 +136,12 @@ COPY server/public server/public
 # Copy factory device database (SN → MAC lookup for BLE provisioning)
 COPY server/cloud_devices_anonymous.json server/cloud_devices_anonymous.json
 
-# Copy native coverage planner built from open-source CGAL/ETH + vendor glue.
-COPY --from=coverage-native /coverage-native/build/coverage_grid_plan /opt/opennova/bin/coverage_grid_plan
+# Copy native coverage planner from the prebuilt artifact image.
+COPY --from=coverage-native /opt/opennova/bin/coverage_grid_plan /opt/opennova/bin/coverage_grid_plan
 RUN chmod +x /opt/opennova/bin/coverage_grid_plan \
   && mkdir -p /opt/opennova/share/licenses/coverage-native
-COPY research/coverage-native/eth/LICENSE /opt/opennova/share/licenses/coverage-native/GPL-3.0.txt
-COPY research/coverage-native/THIRD_PARTY_NOTICES.md /opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md
+COPY --from=coverage-native /opt/opennova/share/licenses/coverage-native/GPL-3.0.txt /opt/opennova/share/licenses/coverage-native/GPL-3.0.txt
+COPY --from=coverage-native /opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md /opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md
 ENV COVERAGE_NATIVE_BIN=/opt/opennova/bin/coverage_grid_plan
 
 # Copy entrypoint

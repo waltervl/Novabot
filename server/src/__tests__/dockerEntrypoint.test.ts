@@ -43,6 +43,17 @@ describe('Docker entrypoint', () => {
 
     expect(missingSources).toEqual([]);
   });
+
+  it('uses a prebuilt native coverage image instead of compiling CGAL in the default image', () => {
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+
+    expect(dockerfile).toContain('ARG COVERAGE_NATIVE_IMAGE=');
+    expect(dockerfile).toMatch(/FROM\s+\$\{COVERAGE_NATIVE_IMAGE\}\s+AS\s+coverage-native/);
+    expect(dockerfile).not.toContain('CGAL_VERSION');
+    expect(dockerfile).not.toContain('build-essential');
+    expect(dockerfile).not.toContain('cmake -S /coverage-native');
+    expect(dockerfile).not.toContain('COPY research/coverage-native/');
+  });
 });
 
 function sourceExistsInBuildContext(source: string): boolean {

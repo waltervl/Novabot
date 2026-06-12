@@ -14,12 +14,9 @@ novabot-server/storage/
 
 # Research and temp files
 research/*
-!research/coverage-native/
-!research/coverage-native/**
-research/coverage-native/build*/
-research/coverage-native/eth/.git/
 /tmp
 AUTONOMOUS-MAPPING.md
+/storage
 
 # IDE / OS
 .vscode
