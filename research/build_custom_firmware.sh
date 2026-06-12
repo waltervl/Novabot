@@ -52,6 +52,12 @@ BUNDLE_NODE_IP=""
 SERVER_PORT="3000"
 VERSION_SUFFIX="custom-1"
 
+echo -e "\033[1;31m=============================================================\033[0m"
+echo -e "\033[1;31m  ⚠  BETA CUSTOM FIRMWARE — experimenteel. Kan de maaier\033[0m"
+echo -e "\033[1;31m     bricken en ALLE kaarten wissen. Maak eerst een backup.\033[0m"
+echo -e "\033[1;31m     Gebruik op eigen risico.\033[0m"
+echo -e "\033[1;31m=============================================================\033[0m"
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in

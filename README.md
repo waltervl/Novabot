@@ -330,6 +330,15 @@ Common issues: port 1883 already in use (another MQTT broker), missing TARGET_IP
 | Novabot N2000 Mower | Fully supported |
 | Novabot Charging Station | Fully supported |
 
+## ⚠️ Custom firmware (BETA)
+
+> **⚠️ BETA — Custom firmware is experimentele software.**
+> Het kan je maaier onbruikbaar maken (**bricken**) en **AL je kaarten wissen**.
+> OpenNova maakt automatisch een verse backup vóór elke beta-flash (server-side, max. 24u oud),
+> maar installeer alleen als je de risico's accepteert.
+
+Custom firmware builds (`*-custom-*` / `*-opennova-*`) add features such as SSH access, local server autodiscovery, and remote ROS 2 access — but they are **not stable releases**. Build with `research/build_custom_firmware.sh`. OTA delivery goes via the OpenNova dashboard or the Novabot app.
+
 ## What's Next
 
 We're working on additional tools (not yet ready for public release):
