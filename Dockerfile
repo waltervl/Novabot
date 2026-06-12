@@ -175,7 +175,10 @@ COPY server/cloud_devices_anonymous.json server/cloud_devices_anonymous.json
 
 # Copy native coverage planner built from open-source CGAL/ETH + vendor glue.
 COPY --from=coverage-native /coverage-native/build/coverage_grid_plan /opt/opennova/bin/coverage_grid_plan
-RUN chmod +x /opt/opennova/bin/coverage_grid_plan
+RUN chmod +x /opt/opennova/bin/coverage_grid_plan \
+  && mkdir -p /opt/opennova/share/licenses/coverage-native
+COPY research/coverage-native/eth/LICENSE /opt/opennova/share/licenses/coverage-native/GPL-3.0.txt
+COPY research/coverage-native/THIRD_PARTY_NOTICES.md /opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md
 ENV COVERAGE_NATIVE_BIN=/opt/opennova/bin/coverage_grid_plan
 
 # Copy entrypoint
