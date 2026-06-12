@@ -308,15 +308,16 @@
       "paintHint": "Über den Rand ziehen, um Fläche hinzuzufügen oder zu entfernen",
       "undo": "Rückgängig",
       "redo": "Wiederholen",
-      "coverageShow": "Mähpfad anzeigen",
-      "coverageLoading": "Pfad wird berechnet…",
+      "coverageShow": "Server-Vorschau",
+      "coverageNativeTitle": "Serverseitige native Coverage-Vorschau aus der gespeicherten Karte",
+      "coverageLoading": "Pfad wird auf dem Server berechnet…",
       "coverageBusy": "Mäher beschäftigt — keine Vorschau während des Mähens",
-      "coverageOffline": "Mäher offline — Vorschau erfordert einen inaktiven Mäher",
-      "coverageHint": "Zeigt den aktuellen Pfad auf dem Mäher — erst Anwenden, dann aktualisieren",
+      "coverageOffline": "Server-Vorschau funktioniert ohne Online-Mäher",
+      "coverageHint": "Zeigt den serverseitig generierten nativen Coverage-Pfad aus der gespeicherten Karte",
       "coverageLive": "Live-Mähpfad",
       "coverageLiveHint": "Live-Pfad während der Mäher mäht",
       "coverageNone": "Pfad konnte nicht berechnet werden",
-      "coverageRefresh": "Pfad aktualisieren"
+      "coverageRefresh": "Auf Server neu berechnen"
     }
   },
   "schedule": {

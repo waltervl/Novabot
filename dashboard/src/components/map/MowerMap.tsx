@@ -17,7 +17,7 @@ import {
   fetchVirtualWalls, createVirtualWall, deleteVirtualWall,
   calibrateCharger,
   fetchEditGeometry, saveEditDraft, discardEditDrafts, applyEdits, revertEdits,
-  getPreviewPath, refreshPreviewPath, getPlanPath, refreshPlanPath,
+  getPreviewPath, nativePreviewPath, getPlanPath, refreshPlanPath,
   type VirtualWall, type EditGeometryDto, type CoveragePathEntry,
 } from '../../api/client';
 import { localToGps, gpsToLocal, isUsableChargerGps } from '../../utils/coords';
@@ -110,8 +110,8 @@ interface Props {
   mapX?: string;
   mapY?: string;
   heading?: string;
-  /** Mower reachable (online + dashboard socket connected). Gates the
-   *  coverage-path preview refresh — generate_preview needs an online mower. */
+  /** Mower reachable (online + dashboard socket connected). Kept for callers
+   *  that pass live state; idle preview is native/server-side and does not use it. */
   online?: boolean;
   /** True while the mower is actively mowing (Work:RUNNING/NAVIGATING/COVERING/
    *  MOVING — computed in MapTab, mirrors the OpenNova app). Drives the coverage
@@ -954,7 +954,7 @@ function CelebrationOverlay({ area, onDismiss }: { area: number; onDismiss: () =
   );
 }
 
-export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActive, sensors, signals, mowing, pathDirectionPreview, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
+export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sensors, signals, mowing, pathDirectionPreview, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes }: Props) {
   const { t } = useTranslation();
   const mowingSensors = sensors ?? {};
   const { toast } = useToast();
@@ -991,9 +991,8 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
   const [showHeatmap, setShowHeatmap] = useState(false);
 
   // ── Coverage-path preview ("show mowing path"): the real boustrophedon
-  //    path the mower will cut, fetched from the mower's coverage planner.
-  //    Reflects what's CURRENTLY on the mower — after editing, Apply first,
-  //    then Refresh path.
+  //    path the mower will cut. Idle preview is computed server-side with the
+  //    packaged native planner; live mowing still polls the mower's plan path.
   const [coveragePath, setCoveragePath] = useState<CoveragePathEntry[] | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
@@ -1579,45 +1578,38 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
     }
   }, [sn, t, fetchPlanOnce, startCoveragePoll]);
 
-  // Trigger a fresh coverage-path generation on the mower, then fetch + cache.
-  // IDLE path: mirrors the app (mapIds 1, cov_direction 0). When the mower is
-  // mowing this routes to showLiveCoverage instead. On the idle "busy" (409)
-  // edge we DON'T show a scary error — we fall back to the live plan path.
+  // Server-side native coverage preview. This deliberately does not require an
+  // online mower and does not send generate_preview_cover_path. When the mower is
+  // mowing this routes to showLiveCoverage instead because get_map_plan_path is
+  // the right source for the active task.
   const refreshCoverage = useCallback(async () => {
     if (!sn) return;
     if (mowingActive) { stopCoveragePoll(); await showLiveCoverage(); return; }
     setCoverageLive(false);
     stopCoveragePoll();
-    if (online === false) {
-      setCoverageStatus(t('map.edit.coverageOffline'));
-      return;
-    }
     setCoverageLoading(true);
     setCoverageStatus(t('map.edit.coverageLoading'));
     try {
-      const { paths, busy } = await refreshPreviewPath(sn, { mapIds: 1, covDirection: 0 });
-      if (busy) {
-        // Genuine busy on a (reportedly) idle mower — fall back to the live plan
-        // path instead of refusing. Only if BOTH yield nothing show "none".
-        if (paths.length > 0) setCoveragePath(paths);
-        const ok = await fetchPlanOnce(true) || await fetchPlanOnce(false);
-        if (ok) { setCoverageLive(true); setCoverageStatus(t('map.edit.coverageLive')); startCoveragePoll(); }
-        else if (paths.length === 0) setCoverageStatus(t('map.edit.coverageNone'));
-        else setCoverageStatus(null);
-      } else {
-        setCoveragePath(paths);
-        setCoverageStatus(paths.length > 0 ? null : t('map.edit.coverageNone'));
-      }
-    } catch {
-      // Thrown means the mower didn't return a preview in time. Try the live
-      // plan path as a fallback before giving up.
-      const ok = await fetchPlanOnce(true) || await fetchPlanOnce(false);
-      if (ok) { setCoverageLive(true); setCoverageStatus(t('map.edit.coverageLive')); startCoveragePoll(); }
-      else setCoverageStatus(t('map.edit.coverageNone'));
+      const selectedStoredMap = selectedMapId
+        ? maps.find(m => m.mapId === selectedMapId && m.mapType === 'work')
+        : maps.find(m => m.mapType === 'work');
+      const sx = Number(mapX);
+      const sy = Number(mapY);
+      const dir = Number(mowing?.covDirection);
+      const result = await nativePreviewPath(sn, {
+        canonical: selectedStoredMap?.canonicalName ?? undefined,
+        startLocal: Number.isFinite(sx) && Number.isFinite(sy) ? { x: sx, y: sy } : undefined,
+        covDirection: Number.isFinite(dir) ? dir : 0,
+      });
+      setCoveragePath(result.paths);
+      setCoverageStatus(result.paths.length > 0 ? null : t('map.edit.coverageNone'));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setCoverageStatus(detail || t('map.edit.coverageNone'));
     } finally {
       setCoverageLoading(false);
     }
-  }, [sn, mowingActive, online, t, showLiveCoverage, fetchPlanOnce, stopCoveragePoll, startCoveragePoll]);
+  }, [sn, mowingActive, maps, selectedMapId, mapX, mapY, mowing?.covDirection, t, showLiveCoverage, stopCoveragePoll]);
 
   // Toggle handler: on first enable, show cached path instantly if present,
   // otherwise kick off the right fetch (live plan if mowing, else idle preview).
@@ -2758,8 +2750,8 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
               <span className="hidden md:inline">{t('map.heat')}</span>
             </button>
           )}
-          {/* Coverage-path preview toggle — the real "black lines" the mower
-              will cut, so the user can verify edits cut closer. */}
+          {/* Server-side native coverage preview — the real "black lines" the
+              mower will cut, without requiring the mower to be online. */}
           {polygonMaps.length > 0 && editMode === 'none' && !calibrating && sn && (
             <button
               onClick={toggleCoverage}
@@ -2767,7 +2759,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, online, mowingActi
               className={`inline-flex items-center gap-1 text-xs px-1.5 md:px-2 py-0.5 rounded transition-colors ${
                 showCoverage ? 'bg-zinc-900/70 text-zinc-200 border border-zinc-600' : 'bg-gray-700/50 text-gray-400 hover:text-zinc-200 hover:bg-zinc-900/40'
               } ${coverageLoading ? 'opacity-60 cursor-wait' : ''}`}
-              title={t('map.edit.coverageShow')}
+              title={t('map.edit.coverageNativeTitle')}
             >
               {coverageLoading
                 ? <Loader2 className="w-3 h-3 animate-spin" />

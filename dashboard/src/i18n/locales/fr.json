@@ -308,15 +308,16 @@
       "paintHint": "Glissez le long du bord pour ajouter ou retirer de la surface",
       "undo": "Annuler",
       "redo": "Rétablir",
-      "coverageShow": "Afficher le parcours",
-      "coverageLoading": "Calcul du parcours…",
+      "coverageShow": "Aperçu serveur",
+      "coverageNativeTitle": "Aperçu de coverage natif côté serveur à partir de la carte enregistrée",
+      "coverageLoading": "Calcul du parcours sur le serveur…",
       "coverageBusy": "Tondeuse occupée — aperçu impossible pendant la tonte",
-      "coverageOffline": "Tondeuse hors ligne — aperçu nécessite une tondeuse au repos",
-      "coverageHint": "Affiche le parcours actuel de la tondeuse — appliquez d'abord vos modifications, puis actualisez",
+      "coverageOffline": "L'aperçu serveur fonctionne sans tondeuse en ligne",
+      "coverageHint": "Affiche le parcours de coverage natif généré par le serveur depuis la carte enregistrée",
       "coverageLive": "Parcours en direct",
       "coverageLiveHint": "Parcours en direct pendant la tonte",
       "coverageNone": "Impossible de calculer le parcours",
-      "coverageRefresh": "Actualiser le parcours"
+      "coverageRefresh": "Recalculer sur le serveur"
     }
   },
   "schedule": {

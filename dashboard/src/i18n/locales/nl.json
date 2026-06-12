@@ -354,15 +354,16 @@
       "paintHint": "Sleep over de rand om oppervlak toe te voegen of weg te halen",
       "undo": "Ongedaan maken",
       "redo": "Opnieuw",
-      "coverageShow": "Toon maaipad",
-      "coverageLoading": "Pad berekenen…",
+      "coverageShow": "Server-preview",
+      "coverageNativeTitle": "Server-side native coverage preview uit de opgeslagen kaart",
+      "coverageLoading": "Pad op server berekenen…",
       "coverageBusy": "Maaier is bezig — geen preview tijdens maaien",
-      "coverageOffline": "Maaier offline — preview vereist een idle maaier",
-      "coverageHint": "Toont het pad zoals nu op de maaier — pas eerst Toe, ververs daarna",
+      "coverageOffline": "Server-preview werkt zonder online maaier",
+      "coverageHint": "Toont het server-gegenereerde native coveragepad uit de opgeslagen kaart",
       "coverageLive": "Live maaipad",
       "coverageLiveHint": "Live pad terwijl de maaier maait",
       "coverageNone": "Kon het pad niet berekenen",
-      "coverageRefresh": "Ververs pad"
+      "coverageRefresh": "Herbereken op server"
     }
   },
   "schedule": {

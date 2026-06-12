@@ -314,15 +314,16 @@
       "paintHint": "Drag over the edge to add or remove area",
       "undo": "Undo",
       "redo": "Redo",
-      "coverageShow": "Show mowing path",
-      "coverageLoading": "Computing path…",
+      "coverageShow": "Server preview",
+      "coverageNativeTitle": "Server-side native coverage preview from the stored map",
+      "coverageLoading": "Computing path on server…",
       "coverageBusy": "Mower is busy — can't preview while mowing",
-      "coverageOffline": "Mower offline — preview needs an idle mower",
-      "coverageHint": "Shows the path on the mower now — Apply your edits first, then refresh",
+      "coverageOffline": "Server preview works without an online mower",
+      "coverageHint": "Shows the server-generated native coverage path from the stored map",
       "coverageLive": "Live mowing path",
       "coverageLiveHint": "Live path while the mower mows",
       "coverageNone": "Couldn't compute the path",
-      "coverageRefresh": "Refresh path"
+      "coverageRefresh": "Recompute on server"
     }
   },
   "schedule": {
