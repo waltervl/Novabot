@@ -2724,16 +2724,31 @@ async function checkDnsmasqStatus() {
 
 async function toggleDnsmasq() {
   var btn = document.getElementById('dnsmasqBtn');
+  var status = document.getElementById('dnsmasqStatus');
+  var wasRunning = dnsmasqRunning;
   btn.textContent = '...';
   try {
-    await fetch('/api/admin-status/dnsmasq', {
+    var r = await fetch('/api/admin-status/dnsmasq', {
       method: 'POST',
       headers: { 'Authorization': token, 'Content-Type': 'application/json' },
       body: JSON.stringify({ enable: !dnsmasqRunning })
     });
+    var d = await r.json();
+    // Surface the REAL backend error instead of silently flipping back to
+    // "Start" (which made a failed enable look like nothing happened).
+    if (d && d.ok === false) {
+      status.textContent = d.error || 'Failed to start dnsmasq';
+      status.style.color = '#f87171';
+      btn.textContent = wasRunning ? 'Stop' : 'Start';
+      return;
+    }
     await checkDnsmasqStatus();
     checkDns();
-  } catch(e) { btn.textContent = 'Error'; }
+  } catch(e) {
+    status.textContent = 'Connection error';
+    status.style.color = '#f87171';
+    btn.textContent = wasRunning ? 'Stop' : 'Start';
+  }
 }
 
 async function restartMdns() {

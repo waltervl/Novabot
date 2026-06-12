@@ -108,7 +108,12 @@ export function App() {
               onFlashed={() => patchCtx({ flashed: true })}
             />
           )}
-          {step === 'finish' && <FinishStep hostname={ctx.config?.hostname} />}
+          {step === 'finish' && (
+            <FinishStep
+              hostname={ctx.config?.hostname}
+              sshUser={ctx.config?.ssh?.enabled ? ctx.config.ssh.username : undefined}
+            />
+          )}
         </div>
 
         {/* ---- Navigation ---------------------------------------------- */}

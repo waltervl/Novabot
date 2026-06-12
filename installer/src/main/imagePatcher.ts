@@ -133,10 +133,13 @@ export async function patchImageBootPartition(
     await writeFile(firstrunPath, gen.firstrunSh);
     await mtools('mcopy', ['-o', '-i', image, firstrunPath, '::/firstrun.sh']);
 
-    // empty `ssh` sentinel — enables sshd on first boot.
-    const sshPath = join(dir, 'ssh');
-    await writeFile(sshPath, '');
-    await mtools('mcopy', ['-o', '-i', image, sshPath, '::/ssh']);
+    // empty `ssh` sentinel — enables sshd on first boot. Skipped only when SSH
+    // is explicitly disabled (default is enabled, so legacy callers are unchanged).
+    if (config.ssh?.enabled ?? true) {
+      const sshPath = join(dir, 'ssh');
+      await writeFile(sshPath, '');
+      await mtools('mcopy', ['-o', '-i', image, sshPath, '::/ssh']);
+    }
 
     // cmdline.txt: read current, append the hook idempotently, write back.
     const current = await mtools('mtype', ['-i', image, '::/cmdline.txt']);

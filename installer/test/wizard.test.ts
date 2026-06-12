@@ -74,6 +74,29 @@ describe('canAdvance', () => {
     expect(canAdvance('config', { config: validConfig, hostnameTaken: true })).toBe(false);
   });
 
+  // ── SSH advance-guard ──────────────────────────────────────────────────────
+  const withSsh = (ssh: InstallerConfig['ssh']): WizardContext => ({
+    config: { ...validConfig, ssh },
+  });
+  it('SSH on with a valid username + 8+ char password advances', () => {
+    expect(canAdvance('config', withSsh({ enabled: true, username: 'opennova', password: 'hunter2pass' }))).toBe(true);
+  });
+  it('SSH on with a key and no password advances (key-only)', () => {
+    expect(canAdvance('config', withSsh({ enabled: true, username: 'opennova', password: '', publicKey: 'ssh-ed25519 AAAA me@host' }))).toBe(true);
+  });
+  it('SSH on with neither password nor key is blocked', () => {
+    expect(canAdvance('config', withSsh({ enabled: true, username: 'opennova', password: '' }))).toBe(false);
+  });
+  it('SSH on with a too-short password is blocked even if a key is present', () => {
+    expect(canAdvance('config', withSsh({ enabled: true, username: 'opennova', password: 'abc', publicKey: 'ssh-ed25519 AAAA me@host' }))).toBe(false);
+  });
+  it('SSH on with an invalid username is blocked', () => {
+    expect(canAdvance('config', withSsh({ enabled: true, username: 'Bad User', password: 'hunter2pass' }))).toBe(false);
+  });
+  it('SSH disabled does not gate on credentials', () => {
+    expect(canAdvance('config', withSsh({ enabled: false, username: '', password: '' }))).toBe(true);
+  });
+
   it('build blocked until the image is built', () => {
     expect(canAdvance('build', {})).toBe(false);
     expect(canAdvance('build', { built: true })).toBe(true);

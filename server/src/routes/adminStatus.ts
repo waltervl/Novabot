@@ -628,14 +628,35 @@ adminStatusRouter.post('/dnsmasq', (req: AuthRequest, res: Response) => {
       const config = `no-resolv\nserver=${upstreamDns}\naddress=/lfibot.com/${serverIp}\nlisten-address=0.0.0.0\nbind-interfaces\nno-hosts\n`;
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       require('fs').writeFileSync('/etc/dnsmasq.conf', config);
-      // Kill existing if running, then start
+      // Kill any dnsmasq we previously started (e.g. the entrypoint's), then give
+      // the kernel a moment to release port 53 before we rebind it.
       try { execSync('pkill -x dnsmasq', { stdio: 'ignore' }); } catch { /* not running */ }
-      execSync('dnsmasq', { stdio: 'ignore' });
+      try { execSync('sleep 0.5', { stdio: 'ignore' }); } catch { /* best effort */ }
+      // CAPTURE stderr: dnsmasq daemonizes (exits 0) on success; on failure it
+      // prints the REAL reason to stderr and exits non-zero. The old code used
+      // stdio:'ignore' and then guessed "is it installed?" — which was almost
+      // always wrong (the usual cause is port 53 already bound on the host).
+      execSync('dnsmasq', { stdio: ['ignore', 'pipe', 'pipe'] });
       console.log(`[DNS] dnsmasq started: *.lfibot.com → ${serverIp}`);
       res.json({ ok: true, running: true, serverIp });
     } catch (err) {
-      console.error(`[DNS] Failed to start dnsmasq:`, err);
-      res.json({ ok: false, error: 'Failed to start dnsmasq. Is it installed?' });
+      const e = err as { stderr?: Buffer; stdout?: Buffer; message?: string };
+      const detail = (e.stderr?.toString() || e.stdout?.toString() || e.message || '').trim();
+      let error = detail || 'Failed to start dnsmasq.';
+      if (/in use|EADDRINUSE|failed to create listening socket/i.test(detail)) {
+        let holder = '';
+        try {
+          holder = execSync("ss -lntupH 'sport = :53' 2>/dev/null | head -n 3 || true")
+            .toString().trim();
+        } catch { /* ss may be unavailable */ }
+        error = `Port 53 is already in use${holder ? ` by: ${holder}` : ''}. ` +
+          'Another DNS service (e.g. systemd-resolved, or the host router) holds port 53. ' +
+          'Free port 53 on the host, then try again.';
+      } else if (/not found|No such file|command not found/i.test(detail)) {
+        error = 'dnsmasq is not installed in this image.';
+      }
+      console.error(`[DNS] Failed to start dnsmasq: ${detail}`);
+      res.json({ ok: false, error, detail });
     }
   } else {
     try {

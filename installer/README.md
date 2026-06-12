@@ -19,7 +19,7 @@ machinery itself) do the actual card write.
 
 ## How it works
 
-1. Collect the user's settings (hostname, network, timezone, connection path).
+1. Collect the user's settings (hostname, network, timezone, connection path, SSH).
 2. Download the **latest** Raspberry Pi OS Lite 64-bit (the `_latest` endpoint)
    and verify it against the published `.sha256` sidecar. Download is atomic
    (verify-then-rename) and cached.
@@ -28,7 +28,11 @@ machinery itself) do the actual card write.
 4. Patch the image's FAT boot partition with `firstrun.sh`, an empty `ssh`
    sentinel, and an idempotent `cmdline.txt` append — the documented Raspberry Pi
    first-boot mechanism. On first boot the Pi runs `firstrun.sh` once, installs
-   Docker, and brings up the OpenNova container.
+   Docker, and brings up the OpenNova container. When SSH is enabled (default),
+   `firstrun.sh` also creates the login account (username + password and/or an
+   authorized public key) — modern Pi OS ships no default `pi` user, so without
+   this `sshd` would run with no way in. The `ssh` sentinel is omitted when SSH is
+   turned off.
 5. Save the finished image to the user's Downloads folder and show flashing
    instructions (Raspberry Pi Imager → Use custom → this file).
 6. Optionally "Find my Pi" once it has booted and deep-link to
