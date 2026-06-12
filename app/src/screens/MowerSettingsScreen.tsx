@@ -491,6 +491,42 @@ export default function MowerSettingsScreen() {
     );
   }, [mowerSn]);
 
+  const handleSoftRestart = useCallback(async () => {
+    if (!mowerSn) return;
+    appAlertCompat.alert(
+      'Restart mower?',
+      'Restarts the mower software (not a full reboot). It clears stuck states such as Error 140 and comes back online in about a minute. Only allowed when the mower is idle or charging, not while mowing.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Restart',
+          style: 'destructive',
+          onPress: async () => {
+            const url = await getServerUrl();
+            if (!url) return;
+            try {
+              const res = await fetch(`${url}/api/dashboard/soft-restart/${encodeURIComponent(mowerSn)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+              });
+              const body = await res.json().catch(() => ({} as { ok?: boolean; error?: string }));
+              if (res.ok && body.ok) {
+                appAlertCompat.alert('Restarting', 'The mower is restarting and will be back online in about a minute.');
+              } else if (res.status === 409) {
+                appAlertCompat.alert('Cannot restart now', body.error ?? 'The mower is busy. Try again when it is idle or charging.');
+              } else {
+                appAlertCompat.alert('Restart failed', body.error ?? `HTTP ${res.status}`);
+              }
+            } catch (e) {
+              appAlertCompat.alert('Restart failed', e instanceof Error ? e.message : String(e));
+            }
+          },
+        },
+      ],
+    );
+  }, [mowerSn]);
+
   if (!mowerSn) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -865,6 +901,20 @@ export default function MowerSettingsScreen() {
                 <Text style={styles.optionLabel}>Recalibrate Charging Pose</Text>
                 <Text style={styles.optionSub}>
                   Overwrites map_info.json with current pose. Put mower on dock first — mower must be CHARGING.
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.optionRow}
+              onPress={() => handleSoftRestart()}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="refresh-outline" size={20} color={colors.purple} />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.optionLabel}>Restart Mower</Text>
+                <Text style={styles.optionSub}>
+                  Restarts the mower software (not a reboot). Clears stuck states like Error 140. Only when idle or charging.
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />

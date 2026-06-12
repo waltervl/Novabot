@@ -19,6 +19,7 @@ import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGp
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
+import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
 import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
 import { compareMapRowsByCanonical } from '../utils/mapOrder.js';
@@ -38,6 +39,19 @@ const __dirname = dirname(__filename);
 import { v4 as uuidv4 } from 'uuid';
 import { getActiveAdvertisement, getCompetingServers } from '../services/mdnsAdvertiser.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
+import { getEditGeometry, saveDraft, discardDrafts, applyEdits, revertEdits } from '../services/mapEdit.js';
+import { getPolygonAnchor } from '../services/anchor.js';
+import { generateNativeCoveragePlanFromRows } from '../services/coveragePlanService.js';
+import {
+  COVERAGE_PLANNER_RADIUS_KEY,
+  DEFAULT_COVERAGE_PLANNER_RADIUS,
+  MAX_COVERAGE_PLANNER_RADIUS,
+  MIN_COVERAGE_PLANNER_RADIUS,
+  coveragePlannerRadiusError,
+  formatCoveragePlannerRadius,
+  parseCoveragePlannerRadius,
+  selectCoveragePlannerRadius,
+} from '../services/coveragePlannerRadius.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -564,7 +578,11 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
       const rechargeNum = parseInt(rechargeRaw, 10);
       const atDock = Number.isFinite(rechargeNum) && rechargeNum > 0;
 
-      if (atDock && Number.isFinite(lat) && Number.isFinite(lng)) {
+      // Never persist (0,0): a docked mower without an RTK fix reports null
+      // island, and a stored (0,0) used to freeze the anchor (getChargerGps
+      // now treats it as unset, but skipping the write avoids the churn).
+      const isNullIsland = Math.abs(lat) < 1e-3 && Math.abs(lng) < 1e-3;
+      if (atDock && Number.isFinite(lat) && Number.isFinite(lng) && !isNullIsland) {
         mapRepo.setChargerGps(sn, lat, lng);
         chargerGps = { lat, lng };
         console.log(`[MAP] Auto-detected charger GPS for ${sn} from mower-at-dock: ${lat}, ${lng}`);
@@ -725,6 +743,222 @@ export function handlePreviewPathRespond(sn: string, data: Record<string, unknow
   }
 }
 
+type NativePreviewBody = {
+  canonical?: unknown;
+  map_id?: unknown;
+  map_ids?: unknown;
+  startLocal?: unknown;
+  start_local?: unknown;
+  cov_direction?: unknown;
+  covDirection?: unknown;
+  radius?: unknown;
+  coverageRadius?: unknown;
+  coverage_radius?: unknown;
+  expected_pgm_md5?: unknown;
+  expectedPgmMd5?: unknown;
+};
+
+function finiteNumber(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function localPointFromUnknown(v: unknown): { x: number; y: number } | null {
+  if (v === null || typeof v !== 'object') return null;
+  const point = v as { x?: unknown; y?: unknown };
+  const x = finiteNumber(point.x);
+  const y = finiteNumber(point.y);
+  return x === null || y === null ? null : { x, y };
+}
+
+function storedCoveragePlannerRadius(sn: string) {
+  return selectCoveragePlannerRadius(deviceSettingsRepo.findBySn(sn));
+}
+
+function requestedCoveragePlannerRadius(
+  body: NativePreviewBody,
+  fallback: number,
+): number | null {
+  const raw = body.coverage_radius ?? body.coverageRadius ?? body.radius;
+  if (raw === undefined) return fallback;
+  return parseCoveragePlannerRadius(raw);
+}
+
+function canonicalFromOneBasedMapId(v: unknown): string | null {
+  const n = finiteNumber(Array.isArray(v) ? v[0] : v);
+  if (n === null || !Number.isInteger(n) || n < 1) return null;
+  return `map${n - 1}`;
+}
+
+function nativePreviewCanonical(
+  body: NativePreviewBody,
+  sensors: Map<string, string> | undefined,
+  rows: Array<{ canonical_name: string | null; map_type: string }>,
+): string | null {
+  if (typeof body.canonical === 'string' && body.canonical.trim()) {
+    return body.canonical.trim();
+  }
+  const fromBodyMapId = canonicalFromOneBasedMapId(body.map_ids ?? body.map_id);
+  if (fromBodyMapId) return fromBodyMapId;
+  const fromSensors = canonicalFromOneBasedMapId(
+    sensors?.get('current_map_ids') ?? sensors?.get('current_map_id') ?? sensors?.get('cover_map_id'),
+  );
+  if (fromSensors) return fromSensors;
+  return rows.find((r) => r.map_type === 'work' && r.canonical_name)?.canonical_name ?? null;
+}
+
+function nativePreviewStartLocal(
+  body: NativePreviewBody,
+  sensors: Map<string, string> | undefined,
+  chargingPose: { x: number; y: number; orientation: number },
+): { x: number; y: number } | null {
+  const fromBody = localPointFromUnknown(body.startLocal ?? body.start_local);
+  if (fromBody) return fromBody;
+
+  const x = finiteNumber(sensors?.get('map_position_x'));
+  const y = finiteNumber(sensors?.get('map_position_y'));
+  if (x !== null && y !== null) return { x, y };
+
+  if (Number.isFinite(chargingPose.x) && Number.isFinite(chargingPose.y)) {
+    return { x: chargingPose.x, y: chargingPose.y };
+  }
+  return null;
+}
+
+// GET /api/dashboard/coverage-planner-radius/:sn - persisted planner radius
+// used by native preview and, when pushed, by the mower's coverage planner.
+dashboardRouter.get('/coverage-planner-radius/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const selected = storedCoveragePlannerRadius(sn);
+  res.json({
+    ok: true,
+    radius: selected.radius,
+    source: selected.source,
+    defaultRadius: DEFAULT_COVERAGE_PLANNER_RADIUS,
+    min: MIN_COVERAGE_PLANNER_RADIUS,
+    max: MAX_COVERAGE_PLANNER_RADIUS,
+  });
+});
+
+// PUT /api/dashboard/coverage-planner-radius/:sn - store the radius for server
+// previews and dispatch an extended command so OpenNova firmware writes
+// coverage_planner_params.yaml on the mower.
+dashboardRouter.put('/coverage-planner-radius/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const body = (req.body ?? {}) as { radius?: unknown; force?: unknown; applyToMower?: unknown; apply_to_mower?: unknown };
+  const radius = parseCoveragePlannerRadius(body.radius);
+  if (radius === null) {
+    res.status(400).json({ ok: false, error: coveragePlannerRadiusError() });
+    return;
+  }
+
+  const formatted = formatCoveragePlannerRadius(radius);
+  if (!deviceCache.has(sn)) deviceCache.set(sn, new Map());
+  deviceCache.get(sn)!.set(COVERAGE_PLANNER_RADIUS_KEY, formatted);
+  deviceSettingsRepo.upsert(sn, COVERAGE_PLANNER_RADIUS_KEY, formatted);
+  forwardToDashboard(sn, new Map([[COVERAGE_PLANNER_RADIUS_KEY, formatted]]));
+
+  const shouldApplyToMower = (body.applyToMower ?? body.apply_to_mower) !== false;
+  if (shouldApplyToMower) {
+    publishExtendedCommand(sn, {
+      set_coverage_planner_radius: {
+        radius,
+        force: body.force === true,
+      },
+    });
+  }
+
+  res.json({
+    ok: true,
+    radius,
+    key: COVERAGE_PLANNER_RADIUS_KEY,
+    mowerCommand: shouldApplyToMower ? 'sent' : 'skipped',
+  });
+});
+
+// POST /api/dashboard/native-preview-path/:sn — compute a preview path locally
+// with the packaged native coverage planner. This intentionally does not send
+// generate_preview_cover_path to the mower, so it is safe while offline and does
+// not disturb mapping or active coverage state.
+dashboardRouter.post('/native-preview-path/:sn', async (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const body = (req.body ?? {}) as NativePreviewBody;
+  const rows = mapRepo.findWithAreaOrderByMapId(sn);
+  if (rows.length === 0) {
+    res.status(404).json({ ok: false, error: 'no stored map rows for mower' });
+    return;
+  }
+
+  const sensors = deviceCache.get(sn);
+  const canonical = nativePreviewCanonical(body, sensors, rows);
+  if (!canonical) {
+    res.status(400).json({ ok: false, error: 'no map canonical selected' });
+    return;
+  }
+
+  const anchor = getPolygonAnchor(sn, sensors);
+  const chargingPose = anchor
+    ? { x: anchor.x, y: anchor.y, orientation: anchor.orientation }
+    : { x: 0, y: 0, orientation: 0 };
+  const startLocal = nativePreviewStartLocal(body, sensors, chargingPose);
+  if (!startLocal) {
+    res.status(400).json({ ok: false, error: 'no local start pose available' });
+    return;
+  }
+
+  const covDirectionRaw = body.cov_direction ?? body.covDirection;
+  const covDirection = covDirectionRaw === undefined ? undefined : finiteNumber(covDirectionRaw);
+  if (covDirectionRaw !== undefined && covDirection === null) {
+    res.status(400).json({ ok: false, error: 'invalid cov_direction' });
+    return;
+  }
+  const storedRadius = storedCoveragePlannerRadius(sn);
+  const radiusRaw = body.coverage_radius ?? body.coverageRadius ?? body.radius;
+  const coverageRadius = requestedCoveragePlannerRadius(body, storedRadius.radius);
+  if (coverageRadius === null) {
+    res.status(400).json({ ok: false, error: coveragePlannerRadiusError() });
+    return;
+  }
+  const coverageRadiusSource = radiusRaw === undefined ? storedRadius.source : 'request';
+  const expectedRaw = body.expected_pgm_md5 ?? body.expectedPgmMd5;
+  const expectedPgmMd5 = typeof expectedRaw === 'string' && expectedRaw.trim()
+    ? expectedRaw.trim()
+    : undefined;
+
+  try {
+    const result = await generateNativeCoveragePlanFromRows({
+      mowerSn: sn,
+      rows,
+      canonical,
+      startLocal,
+      chargingPose,
+      covDirection: covDirection ?? undefined,
+      coverageRadius,
+      expectedPgmMd5,
+    });
+    previewPathCache.set(sn, result.paths);
+    res.json({
+      ok: true,
+      source: 'native',
+      canonical: result.canonical,
+      areaId: result.areaId,
+      pgmMd5: result.pgmMd5,
+      cacheHit: result.cacheHit,
+      cacheKey: result.cacheKey,
+      coverageRadius,
+      coverageRadiusSource,
+      metadata: result.metadata,
+      startGrid: result.startGrid,
+      paths: result.paths,
+      count: result.paths.length,
+    });
+  } catch (err) {
+    const message = (err as Error).message;
+    const status = message.includes('md5 mismatch') ? 409 : 400;
+    res.status(status).json({ ok: false, error: message });
+  }
+});
+
 // ── SAFETY: never trigger generate_preview_cover_path while a coverage
 // task is active. De maaier antwoordt dan met error 128 ("Cannot preview
 // when cover task working!!!") en breekt de huidige maai-sessie af. Dit
@@ -746,8 +980,11 @@ function isCoverageActive(sn: string): boolean {
   // planner is still "busy" from its point of view, and generate_preview
   // will still 128-error. Block until task_mode drops to 0.
   if (workStatus === '9' && taskMode === 1) return true;
-  // Safe fallback: COVERAGE mode with any non-idle state
-  if (msg.includes('Mode:COVERAGE') && !msg.includes('Work:STANDBY') && !msg.includes('Work:IDLE')) {
+  // Fallback: COVERAGE mode with an ACTIVE task. Gated on task_mode===1 — an
+  // idle mower keeps "Mode:COVERAGE" as its last-selected mode label even when
+  // it isn't running, which previously false-flagged it as busy and blocked the
+  // preview generation. Only an active cover task (task_mode 1) actually 128s.
+  if (taskMode === 1 && msg.includes('Mode:COVERAGE') && !msg.includes('Work:STANDBY') && !msg.includes('Work:IDLE')) {
     return true;
   }
   return false;
@@ -1161,6 +1398,74 @@ dashboardRouter.delete('/maps/:sn/:mapId', (req: Request, res: Response) => {
 
   // Auto-push naar maaier (bijgewerkte kaarten zonder de verwijderde)
   autoPushMapsInBackground(sn);
+});
+
+// ── Map editing (spec: 2026-06-10-map-obstacle-editing-design.md) ──────────
+dashboardRouter.get('/maps/:sn/edit/geometry', (req: Request, res: Response) => {
+  try {
+    res.json(getEditGeometry(req.params.sn));
+  } catch (err) {
+    console.error('[MAP-EDIT] geometry', req.params.sn, err);
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+dashboardRouter.put('/maps/:sn/edit/draft', (req: Request, res: Response) => {
+  try {
+    const { canonical, mapType, parentMap, points, deleted } = req.body as {
+      canonical?: string; mapType?: 'work' | 'obstacle'; parentMap?: string;
+      points?: { x: number; y: number }[]; deleted?: boolean;
+    };
+    const result = saveDraft(req.params.sn, { canonical, mapType, parentMap, points, deleted });
+    if (!result.ok) { res.status(400).json({ ok: false, error: result.error }); return; }
+    res.json({ ok: true, canonical: result.canonical });
+  } catch (err) {
+    console.error('[MAP-EDIT] draft', req.params.sn, err);
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+dashboardRouter.delete('/maps/:sn/edit/drafts', (req: Request, res: Response) => {
+  try {
+    discardDrafts(req.params.sn);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[MAP-EDIT] drafts', req.params.sn, err);
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+dashboardRouter.post('/maps/:sn/edit/apply', async (req: Request, res: Response) => {
+  try {
+    const result = await applyEdits(req.params.sn);
+    if (!result.ok) {
+      const status = result.reason === 'validation' ? 422
+        : result.reason === 'no_changes' ? 400
+        : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'locked' ? 409 : 502;
+      res.status(status).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    console.error(`[MAP-EDIT] apply ${req.params.sn}:`, err);
+    res.status(500).json({ ok: false, reason: 'bundle_failed', error: (err as Error).message });
+  }
+});
+
+dashboardRouter.post('/maps/:sn/edit/revert', async (req: Request, res: Response) => {
+  try {
+    const result = await revertEdits(req.params.sn);
+    if (!result.ok) {
+      const status = result.reason === 'no_version' ? 404
+        : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'locked' ? 409 : 502;
+      res.status(status).json(result);
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    console.error(`[MAP-EDIT] revert ${req.params.sn}:`, err);
+    res.status(500).json({ ok: false, reason: 'bundle_failed', error: (err as Error).message });
+  }
 });
 
 // ── Map converter endpoints ──────────────────────────────────────
@@ -3104,8 +3409,6 @@ dashboardRouter.get('/rain-forecast/:sn', async (req: Request, res: Response) =>
 });
 
 // ── Extended Mower Commands (bestaande firmware + extended node) ─────────
-
-import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
 
 // POST /api/dashboard/navigate-to/:sn — stuur maaier naar GPS positie
 dashboardRouter.post('/navigate-to/:sn', (req: Request, res: Response) => {

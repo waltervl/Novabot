@@ -1,7 +1,8 @@
 import type { DeviceState } from '../../types';
-import { WorkProgress } from './WorkProgress';
+import { MowingStatsCard } from './MowingStatsCard';
 import { ErrorDisplay } from './ErrorDisplay';
 import { SensorGrid } from '../sensors/SensorGrid';
+import { deriveMowerActivity } from '../../utils/mowerActivity';
 
 interface Props {
   device: DeviceState;
@@ -10,10 +11,14 @@ interface Props {
 
 export function MowerStatus({ device, overlay }: Props) {
   const s = device.sensors;
-  const progress = parseInt(s.mowing_progress ?? '0', 10);
-  const isMowing = s.work_status === '1';
 
-  // In overlay mode: only show work progress (errors go via toast)
+  // Use the shared activity derivation (same one that drives the control
+  // buttons) so "is mowing" is consistent everywhere — covers coverage mowing
+  // AND edge-cutting, not just the narrow work_status === '1'.
+  const activity = deriveMowerActivity(s, { online: device.online });
+  const isMowing = activity === 'mowing' || activity === 'edge_cutting';
+
+  // In overlay mode: only show the (compact) mowing card; errors go via toast.
   if (overlay) {
     return (
       <>
@@ -23,7 +28,7 @@ export function MowerStatus({ device, overlay }: Props) {
           errorStatus={s.error_status}
           workStatus={s.work_status}
         />
-        {isMowing && progress > 0 && <WorkProgress progress={progress} />}
+        {isMowing && <MowingStatsCard sensors={s} compact />}
       </>
     );
   }
@@ -36,7 +41,7 @@ export function MowerStatus({ device, overlay }: Props) {
         errorStatus={s.error_status}
         workStatus={s.work_status}
       />
-      {isMowing && progress > 0 && <WorkProgress progress={progress} />}
+      {isMowing && <MowingStatsCard sensors={s} />}
       <SensorGrid device={device} />
     </div>
   );

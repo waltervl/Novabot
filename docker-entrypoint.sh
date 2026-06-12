@@ -43,7 +43,8 @@ SSLEOF
       -extensions v3_ca
   fi
 
-  cat > /etc/nginx/http.d/novabot.conf << NGINXEOF
+  mkdir -p /etc/nginx/conf.d
+  cat > /etc/nginx/conf.d/novabot.conf << NGINXEOF
 server {
     listen 443 ssl;
     ssl_certificate     ${CERT_DIR}/server.crt;
@@ -60,7 +61,7 @@ server {
     }
 }
 NGINXEOF
-  rm -f /etc/nginx/http.d/default.conf
+  rm -f /etc/nginx/conf.d/default.conf /etc/nginx/sites-enabled/default
   nginx
   echo "  TLS:   port 443 (nginx → ${PORT})"
 fi
@@ -78,7 +79,7 @@ no-hosts
 EOF
   dnsmasq --no-daemon &
   DNSMASQ_PID=$!
-  trap "kill $DNSMASQ_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" SIGTERM SIGINT
+  trap "kill $DNSMASQ_PID 2>/dev/null; nginx -s quit 2>/dev/null; exit 0" TERM INT
   echo "  DNS:   *.lfibot.com → ${TARGET_IP}"
 fi
 

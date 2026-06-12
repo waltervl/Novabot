@@ -1,0 +1,209 @@
+# Coverage Native Planner
+
+This document tracks the OpenNova native coverage planner port. The intent is to
+generate Novabot coverage paths off-device without shipping or invoking the
+proprietary mower firmware binary.
+
+## Runtime Packaging
+
+The normal OpenNova Docker image builds the planner in `Dockerfile` stage
+`coverage-native` and copies the resulting executable into the runtime image:
+
+```text
+/opt/opennova/bin/coverage_grid_plan
+```
+
+The server discovers it through:
+
+```text
+COVERAGE_NATIVE_BIN=/opt/opennova/bin/coverage_grid_plan
+```
+
+This is a native binary inside the OpenNova container. It is not a sidecar
+container, it does not call the firmware binary, and it does not require qemu at
+runtime.
+
+## Runtime Map Sources
+
+Native coverage generation is server-side and does not require a mower. There are
+two supported inputs:
+
+- Existing PGM/YAML map files can be passed directly to `coverage_grid_plan`.
+- Stored OpenNova map rows are rasterized by `server/src/maps/occupancyGrid.ts`
+  into a temporary per-map PGM, then passed to the same native binary.
+
+The dashboard route `POST /api/dashboard/native-preview-path/:sn` uses the
+second path. It reads the map from SQLite, generates the occupancy grid inside
+the OpenNova server process, runs `/opt/opennova/bin/coverage_grid_plan`, and
+returns dashboard path JSON. It does not send `save_map`, it does not publish
+`generate_preview_cover_path`, and it does not need the mower to be online.
+
+Any `save_map type:1` capture mentioned in this document is a validation fixture
+only. It is useful for proving that the DB-polygon-to-PGM rasterizer is
+byte-identical to firmware output, but it is not part of runtime coverage
+generation.
+
+The image also contains third-party notices at:
+
+```text
+/opt/opennova/share/licenses/coverage-native/
+```
+
+## Multi-Arch Build Verification
+
+The Dockerfile is the single OpenNova image build path for both architectures.
+Use the normal compose build for the default deployment image:
+
+```bash
+docker compose build opennova
+docker image inspect rvbcrs/opennova:latest --format '{{.Architecture}}/{{.Os}}'
+docker run --rm --entrypoint /opt/opennova/bin/coverage_grid_plan \
+  -v "$PWD/research/coverage-native/oracle:/oracle:ro" \
+  rvbcrs/opennova:latest \
+  /oracle/cases/replay_demo_show.pgm 92 103
+```
+
+On this development host `DOCKER_DEFAULT_PLATFORM=linux/amd64`, so
+`rvbcrs/opennova:latest` verifies the x86_64 build path (`amd64/linux`).
+
+Verify the arm64 path explicitly with buildx and a separate local tag:
+
+```bash
+docker buildx build --platform linux/arm64 --load \
+  -t rvbcrs/opennova:coverage-native-arm64 .
+docker image inspect rvbcrs/opennova:coverage-native-arm64 \
+  --format '{{.Architecture}}/{{.Os}}'
+docker run --rm --platform linux/arm64 --entrypoint uname \
+  rvbcrs/opennova:coverage-native-arm64 -m
+docker run --rm --platform linux/arm64 \
+  -v "$PWD/research/coverage-native/oracle:/oracle:ro" \
+  --entrypoint /opt/opennova/bin/coverage_grid_plan \
+  rvbcrs/opennova:coverage-native-arm64 \
+  /oracle/cases/replay_demo_show.pgm 92 103
+```
+
+The arm64 verification should report `arm64/linux` from image inspection and
+`aarch64` from `uname`. Run commands with `--platform linux/arm64` when
+`DOCKER_DEFAULT_PLATFORM` is set to another architecture, otherwise Docker may
+look for the wrong local manifest.
+
+The current verified local images are:
+
+| Tag | Architecture | Native planner status |
+|---|---|---|
+| `rvbcrs/opennova:latest` | `amd64/linux` | CTest `3/3`, runtime smoke OK |
+| `rvbcrs/opennova:coverage-native-arm64` | `arm64/linux` | CTest `3/3`, runtime smoke OK |
+
+Publishing a public multi-arch manifest is a release operation on top of these
+same platform builds:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t rvbcrs/opennova:latest --push .
+```
+
+Only run the `--push` command as an intentional release step.
+
+## Version Pins
+
+The exactness-sensitive dependency stack is pinned in the Docker build:
+
+| Component | Version | Source |
+|---|---:|---|
+| Ubuntu | 20.04 | Docker base image |
+| CGAL | 5.0.3 | downloaded from upstream tag `v5.0.3` |
+| OpenCV | 4.2 | Ubuntu 20.04 component packages |
+| C++ | C++17 | plain CMake/Ninja build |
+
+CGAL is installed from source into `/opt/cgal-5.0.3`. OpenCV is linked from the
+Ubuntu 20.04 component packages (`core`, `imgproc`, `imgcodecs`) so the native
+planner uses the same OpenCV 4.2 family as the firmware analysis expects.
+
+## What Is Reused
+
+The exact CGAL geometry is not reimplemented. The native binary links the
+de-ROSed ETH `polygon_coverage_planning` geometry core:
+
+- BCD/TCD decomposition
+- boustrophedon sweep
+- sweep direction selection
+- visibility graph routing
+- CGAL boolean, offset, triangulation, visibility helpers
+
+This preserves the Epeck/CGAL behavior where vertex-level drift would be hardest
+to reproduce.
+
+## What Is Reimplemented
+
+The vendor glue recovered from firmware reverse engineering is implemented in
+`research/coverage-native/src/`:
+
+- coverage params to pixel params
+- OpenCV preprocessing
+- `findContours` bridge plus self-intersection removal
+- `BsdTspPlanner` orchestration
+- TSP/path assessment weights
+- grid to world transform
+
+The server integration is in `server/src/services/coveragePlanService.ts` and
+the dashboard preview route is:
+
+```text
+POST /api/dashboard/native-preview-path/:sn
+```
+
+## Oracle Status
+
+The oracle corpus lives in `research/coverage-native/oracle/` and is verified by:
+
+```bash
+research/coverage-native/oracle/verify_oracle.sh
+```
+
+The native CMake test suite runs:
+
+```bash
+ctest --output-on-failure
+```
+
+The OpenNova Docker build also runs the native CTest suite and `coverage_smoke`
+before copying `coverage_grid_plan` into the runtime image.
+
+## Licensing
+
+The native coverage planner is GPL-covered because it links ETH
+`polygon_coverage_planning` and CGAL components that are GPL-licensed.
+OpenNova therefore treats the bundled native planner as GPL-3.0-covered source.
+
+The complete ETH GPL license text is stored in:
+
+```text
+research/coverage-native/eth/LICENSE
+```
+
+Runtime image copies are stored under:
+
+```text
+/opt/opennova/share/licenses/coverage-native/GPL-3.0.txt
+/opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md
+```
+
+The current native build links the ETH geometry plus the small solver files
+listed in `research/coverage-native/CMakeLists.txt`. It does not link the ETH
+memetic GTSP solver.
+
+## Remaining Exactness Gates
+
+Two exactness-validation gates remain intentionally blocked rather than guessed
+around. They do not block offline server-side coverage generation from a stored
+map.
+
+| Beads issue | Status | Gate |
+|---|---|---|
+| `Novabot-828` | blocked | adversarial PGM fixtures referenced by the firmware binary are not present locally |
+| `Novabot-efu` | blocked | byte-identical proof for the DB-polygon rasterizer needs a matched post-`expandPolygon` polygon plus `map.pgm`/`map.yaml` fixture |
+
+Do not replace these with approximations. Unblock `Novabot-828` only when the
+missing fixtures are recovered. Unblock `Novabot-efu` only with a non-mutating
+fixture source, or with explicit approval for a live capture window. That capture
+is for oracle validation only and must never become a runtime dependency.

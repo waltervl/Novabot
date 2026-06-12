@@ -66,6 +66,7 @@ export type MainTabParams = {
 export type MapStackParams = {
   MapMain: undefined;
   Mapping: { mode?: string } | undefined;
+  MapEdit: { sn: string };
 };
 
 // ── Settings Stack (nested in Settings tab) ─────────────────────────

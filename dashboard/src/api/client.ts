@@ -1,4 +1,6 @@
 import type { DeviceState, SensorDef, MapData, MapsResponse, TrailPoint, MapCalibration, Schedule, WorkRecord, SignalHistoryPoint, LocalPoint } from '../types';
+import { selfIntersects } from '../utils/editGeometry';
+import { makeValidPolygon } from '../utils/brushPaint';
 
 const BASE = '/api/dashboard';
 
@@ -274,6 +276,86 @@ export async function fetchRainForecast(sn: string): Promise<RainForecast> {
   return data;
 }
 
+/** Set the per-session "ignore rain" flag (mirrors app StartMowSheet confirmRainStart). */
+export async function setRainIgnoreSession(sn: string, active: boolean): Promise<void> {
+  await post(`${BASE}/rain-ignore-session/${encodeURIComponent(sn)}`, { active });
+}
+
+// ── Rain auto-pause settings (per mower) ───────────────────────
+export interface RainSettings {
+  enabled: boolean;
+  thresholdMm: number;
+  thresholdProbability: number;
+  lookaheadHours: number;
+}
+
+export async function fetchRainSettings(sn: string): Promise<RainSettings> {
+  return (await get(`${BASE}/rain-settings/${encodeURIComponent(sn)}`)).json();
+}
+
+export async function updateRainSettings(sn: string, body: Partial<RainSettings>): Promise<RainSettings> {
+  const res = await fetch(`${BASE}/rain-settings/${encodeURIComponent(sn)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+// ── Re-anchor (post-restore frame re-anchoring) ────────────────
+export type ReanchorPhase =
+  | 'idle' | 'check' | 'anchor' | 'relock' | 'wait'
+  | 'needs_drive' | 'needs_position' | 'dock' | 'verify' | 'done' | 'error';
+export interface ReanchorStatus {
+  phase: ReanchorPhase;
+  message: string;
+  msgKey?: string;
+  ok?: boolean;
+  error?: string;
+  pose?: { x: number; y: number };
+  dist?: number;
+  ts: number;
+  onDock: boolean;
+  rtkFixed: boolean;
+  relocked: boolean;
+}
+
+export async function reanchorAction(
+  sn: string,
+  action: 'auto' | 'continue_dock' | 'verify',
+): Promise<{ ok: boolean; error?: string; message?: string }> {
+  const res = await fetch(`${BASE}/reanchor/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  return res.json();
+}
+
+export async function fetchReanchorStatus(sn: string): Promise<ReanchorStatus> {
+  const data = await (await get(`${BASE}/reanchor/${encodeURIComponent(sn)}/status`)).json();
+  return data.status;
+}
+
+/**
+ * First upcoming hour within the lookahead horizon where rain is likely, else null.
+ * Mirrors the app's fetchIncomingRain (StartMowSheet.tsx): mm >= 0.1 OR prob >= 50,
+ * within the next ~3h. Pure — operates on an already-fetched forecast.
+ */
+export function findIncomingRain(
+  forecast: RainForecast,
+  nowMs: number = Date.now(),
+  horizonMs: number = 3 * 60 * 60 * 1000,
+): { atMs: number; mm: number; prob: number } | null {
+  if (!forecast.available || !forecast.upcoming?.length) return null;
+  for (const h of forecast.upcoming) {
+    const at = new Date(h.time).getTime();
+    if (at < nowMs || at - nowMs > horizonMs) continue;
+    if (h.mm >= 0.1 || h.prob >= 50) return { atMs: at, mm: h.mm, prob: h.prob };
+  }
+  return null;
+}
+
 // ── Extended Mower Commands ────────────────────────────────────
 
 export async function navigateToPosition(sn: string, latitude: number, longitude: number, angle = 0): Promise<CommandResult> {
@@ -302,6 +384,87 @@ export async function setMaxSpeed(sn: string, speed: number): Promise<CommandRes
 
 export async function previewPath(sn: string, polygonArea: Array<{ latitude: number; longitude: number }>, covDirection = 0): Promise<CommandResult> {
   return (await post(`${BASE}/preview-path/${encodeURIComponent(sn)}`, { polygonArea, covDirection })).json();
+}
+
+export interface NativePreviewPathResult {
+  ok: boolean;
+  source: 'native';
+  paths: CoveragePathEntry[];
+  count: number;
+  canonical: string;
+  areaId: number;
+  pgmMd5: string;
+  cacheHit: boolean;
+  coverageRadius?: number;
+  coverageRadiusSource?: 'stored' | 'default' | 'request';
+  error?: string;
+}
+
+export interface CoveragePlannerRadiusResult {
+  ok: boolean;
+  radius: number;
+  source?: 'stored' | 'default';
+  defaultRadius?: number;
+  min?: number;
+  max?: number;
+  mowerCommand?: 'sent' | 'skipped';
+  error?: string;
+}
+
+export async function nativePreviewPath(
+  sn: string,
+  opts: {
+    canonical?: string;
+    mapIds?: number | number[];
+    startLocal?: { x: number; y: number };
+    covDirection?: number;
+    coverageRadius?: number;
+    expectedPgmMd5?: string;
+  },
+): Promise<NativePreviewPathResult> {
+  const body: Record<string, unknown> = {};
+  if (opts.canonical) body.canonical = opts.canonical;
+  if (opts.mapIds !== undefined) body.map_ids = opts.mapIds;
+  if (opts.startLocal) body.startLocal = opts.startLocal;
+  if (opts.covDirection !== undefined) body.cov_direction = opts.covDirection;
+  if (opts.coverageRadius !== undefined) body.radius = opts.coverageRadius;
+  if (opts.expectedPgmMd5) body.expected_pgm_md5 = opts.expectedPgmMd5;
+  const res = await fetch(`${BASE}/native-preview-path/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({})) as NativePreviewPathResult;
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `${res.status} ${res.statusText}`);
+  }
+  return data;
+}
+
+export async function fetchCoveragePlannerRadius(sn: string): Promise<CoveragePlannerRadiusResult> {
+  const data = await (await get(`${BASE}/coverage-planner-radius/${encodeURIComponent(sn)}`)).json();
+  return data;
+}
+
+export async function updateCoveragePlannerRadius(
+  sn: string,
+  radius: number,
+  opts: { force?: boolean; applyToMower?: boolean } = {},
+): Promise<CoveragePlannerRadiusResult> {
+  const res = await fetch(`${BASE}/coverage-planner-radius/${encodeURIComponent(sn)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      radius,
+      force: opts.force === true,
+      applyToMower: opts.applyToMower !== false,
+    }),
+  });
+  const data = await res.json().catch(() => ({})) as CoveragePlannerRadiusResult;
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `${res.status} ${res.statusText}`);
+  }
+  return data;
 }
 
 // ── Virtual Walls ──────────────────────────────────────────────
@@ -572,4 +735,127 @@ export async function fetchSystemLogs(opts?: { tail?: number; type?: string; sn?
   const res = await get(`${BASE}/system/logs${qs.toString() ? '?' + qs.toString() : ''}`);
   const data = await res.json() as { logs: SystemLogEntry[] };
   return data.logs;
+}
+
+// ── Map Edit API ────────────────────────────────────────────────
+
+export interface EditDraftDto { points: { x: number; y: number }[]; deleted: boolean; isNew: boolean }
+export interface EditMapEntry {
+  mapId: string; canonical: string; mapType: 'work' | 'obstacle' | 'unicom';
+  alias: string | null; parentMap: string | null;
+  points: { x: number; y: number }[]; draft: EditDraftDto | null;
+}
+export interface EditGeometryDto { maps: EditMapEntry[]; pendingSync: boolean; hasVersions: boolean }
+export interface EditValidationIssue { canonical: string; code: string; message: string }
+export interface EditApplyDto {
+  ok: boolean; reason?: string;
+  validation?: { ok: boolean; errors: EditValidationIssue[]; warnings: EditValidationIssue[] };
+  applied?: { canonical: string; action: string }[];
+}
+
+export async function fetchEditGeometry(sn: string): Promise<EditGeometryDto> {
+  return (await get(`${BASE}/maps/${encodeURIComponent(sn)}/edit/geometry`)).json();
+}
+export async function saveEditDraft(sn: string, body: {
+  canonical?: string; mapType?: 'work' | 'obstacle'; parentMap?: string;
+  points?: { x: number; y: number }[]; deleted?: boolean;
+}): Promise<{ ok: boolean; canonical?: string; error?: string }> {
+  // Schoon zelf-kruisende polygonen op vóór opslaan (polygon-clipping union met
+  // zichzelf → geldige buitenrand). Voorkomt dat een edit op "lijn kruist
+  // zichzelf" blokkeert; alleen toegepast als de vorm écht kruist (anders
+  // ongemoeid). De firmware (ClipperLib) zou 't ook oplossen, maar zo blijft de
+  // opgeslagen geometrie + de weergave netjes.
+  let out = body;
+  if (body.points && body.points.length >= 3 && selfIntersects(body.points)) {
+    const fixed = makeValidPolygon(body.points);
+    if (fixed.length >= 3) out = { ...body, points: fixed };
+  }
+  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/draft`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out),
+  });
+  return res.json();
+}
+export async function discardEditDrafts(sn: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/drafts`, { method: 'DELETE' });
+  return res.json();
+}
+async function postEdit(sn: string, action: 'apply' | 'revert'): Promise<EditApplyDto> {
+  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/${action}`, { method: 'POST' });
+  try { return await res.json(); } catch { return { ok: false, reason: `http_${res.status}` }; }
+}
+export async function applyEdits(sn: string): Promise<EditApplyDto> { return postEdit(sn, 'apply'); }
+export async function revertEdits(sn: string): Promise<EditApplyDto> { return postEdit(sn, 'revert'); }
+
+// ── Coverage Path Preview ───────────────────────────────────────
+// Mirrors the OpenNova app (api.ts getPreviewPath / refreshPreviewPath).
+// Each entry is one polyline sub-path in LOCAL meters (charger = 0,0) —
+// "{map_id}_{sub_id}" id format, same shape the mower's coverage planner
+// returns. Project local→GPS the same way the map polygons are projected.
+
+export interface CoveragePathEntry { id: string; points: { x: number; y: number }[] }
+
+/** GET cached preview path. Returns [] if nothing cached. */
+export async function getPreviewPath(sn: string): Promise<CoveragePathEntry[]> {
+  const res = await get(`${BASE}/preview-path/${encodeURIComponent(sn)}`);
+  const data = await res.json() as { paths?: CoveragePathEntry[] };
+  return data.paths ?? [];
+}
+
+/** Result of a refresh: the (possibly freshly generated) paths plus a `busy`
+ *  flag set when the mower is mid-coverage (server replies 409 with cached
+ *  paths). We never throw on 409 — we surface it via `busy` so the caller can
+ *  keep showing the cached lines and tell the user why a refresh was skipped. */
+export interface RefreshPreviewResult { paths: CoveragePathEntry[]; busy: boolean }
+
+/** POST refresh-preview-path. Triggers generate_preview_cover_path on the
+ *  mower (server-side), waits ~3.5 s, fetches via the extended backchannel.
+ *  Body params mirror the server contract exactly: `map_ids` (number|number[],
+ *  server default 1) and `cov_direction` (number). The app passes mapIds:1. */
+export async function refreshPreviewPath(
+  sn: string,
+  opts?: { mapIds?: number | number[]; covDirection?: number },
+): Promise<RefreshPreviewResult> {
+  const body: Record<string, unknown> = {};
+  if (opts?.mapIds !== undefined) body.map_ids = opts.mapIds;
+  if (opts?.covDirection !== undefined) body.cov_direction = opts.covDirection;
+  const res = await fetch(`${BASE}/refresh-preview-path/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  // 409 = coverage task active: body still carries cached paths. Don't throw.
+  if (res.status === 409) {
+    const data = await res.json().catch(() => ({})) as { paths?: CoveragePathEntry[] };
+    return { paths: data.paths ?? [], busy: true };
+  }
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const data = await res.json() as { ok?: boolean; paths?: CoveragePathEntry[]; error?: string };
+  if (data.ok === false) throw new Error(data.error || 'refresh-preview-path failed');
+  return { paths: data.paths ?? [], busy: false };
+}
+
+// ── Live plan path (works DURING mowing) ────────────────────────
+// Mirrors the preview methods but uses the mower's get_map_plan_path, which is
+// safe while a coverage task is active (no Error-128 risk). The OpenNova app
+// prefers this "planned path" over the idle preview while the mower mows.
+// Server routes: GET /planned-path/:sn and POST /refresh-plan-path/:sn — both
+// reply with `{ paths }` (POST also `{ ok, count }`). Same CoveragePathEntry
+// shape (local meters) as the preview path.
+
+/** GET cached live plan path. Returns [] if nothing cached. */
+export async function getPlanPath(sn: string): Promise<CoveragePathEntry[]> {
+  const res = await get(`${BASE}/planned-path/${encodeURIComponent(sn)}`);
+  const data = await res.json() as { paths?: CoveragePathEntry[] };
+  return data.paths ?? [];
+}
+
+/** POST refresh-plan-path. Triggers get_map_plan_path via the extended
+ *  backchannel (8s timeout), caches + returns the parsed paths. 503 if offline,
+ *  504 if the mower didn't respond in time. */
+export async function refreshPlanPath(sn: string): Promise<CoveragePathEntry[]> {
+  const res = await fetch(`${BASE}/refresh-plan-path/${encodeURIComponent(sn)}`, { method: 'POST' });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const data = await res.json() as { ok?: boolean; paths?: CoveragePathEntry[]; error?: string };
+  if (data.ok === false) throw new Error(data.error || 'refresh-plan-path failed');
+  return data.paths ?? [];
 }

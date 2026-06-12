@@ -430,6 +430,8 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
           <div class="help-item"><b>Calibrate Polygon Offset</b> — paneel om de hele kaart-polygoon in cm te verschuiven met live preview. Gebruik als de vorm klopt maar systematisch een paar cm verschoven ligt.</div>
           <div class="help-item">↳ <b>pijlen / Reset / Cancel</b> — verschuiven de preview (Shift = 10 cm) of resetten/sluiten zonder opslaan.</div>
           <div class="help-item warn">↳ <b>Apply</b> — slaat de verschuiving op en synct de héle kaart opnieuw naar de maaier (niet ongedaan te maken zonder opnieuw Apply).</div>
+          <div class="help-item"><b>Native coverage preview</b> — berekent het coverage-pad op de server uit de opgeslagen kaart en tekent de banen over de map. Werkt zonder online maaier.</div>
+          <div class="help-item"><b>Hide preview</b> — verbergt de server-previewlijnen.</div>
           <div class="help-item"><b>Delete (per kaart)</b> — verwijdert die specifieke kaart van deze maaier.</div>
         </div></details>
 
@@ -643,12 +645,17 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
            (Portable Map Bundle, legacy Map Recovery, Debug) lives
            below the map so the canvas is the visual focal point. -->
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <select id="mapMowerSelect" onchange="resetMaskLayer();loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value);portableCheckActive(this.value);loadPortableBackups()" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+        <select id="mapMowerSelect" onchange="resetMaskLayer();clearNativeCoveragePreview(false);loadCoveragePlannerRadius(this.value);loadMaps();loadMapBackups(this.value);startLocalizationPoll(this.value);portableCheckActive(this.value);loadPortableBackups()" style="flex:1;min-width:200px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select a mower...</option>
         </select>
         <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
+        <button id="nativeCoverageBtn" onclick="runNativeCoveragePreview()" title="Server-side native coverage preview from stored DB maps. Does not require an online mower." style="padding:8px 16px;background:rgba(16,185,129,.16);color:#6ee7b7;border:1px solid rgba(16,185,129,.42);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Native coverage preview</button>
+        <input id="nativeCoverageRadius" type="number" min="0.2" max="1.2" step="0.01" value="0.61" title="Coverage planner radius in meters" style="width:72px;padding:8px 8px;background:#0d0d20;border:1px solid rgba(16,185,129,.35);border-radius:8px;color:#d1fae5;font-size:12px;text-align:right">
+        <button id="nativeCoverageRadiusSaveBtn" onclick="saveCoveragePlannerRadius()" title="Save coverage planner radius to server and mower" style="padding:8px 10px;background:rgba(16,185,129,.12);color:#a7f3d0;border:1px solid rgba(16,185,129,.35);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Save radius</button>
+        <button id="nativeCoverageClearBtn" onclick="clearNativeCoveragePreview()" title="Hide native coverage preview lines" style="padding:8px 12px;background:rgba(255,255,255,.05);color:#cbd5e1;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Hide preview</button>
       </div>
       <div id="mapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
+      <div id="nativeCoverageStatus" style="font-size:11px;color:#9ca3af;margin:-3px 0 8px;min-height:14px"></div>
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#cbd5e1">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Toon de occupancy-grid die de maaier gebruikt: groen = bereikbaar vanaf de dock, blauw = afgesneden, rood = bezet">
           <input type="checkbox" id="maskToggle" onchange="onMaskToggle()" style="width:15px;height:15px;cursor:pointer">
@@ -666,6 +673,23 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
           <span style="color:#d22d2d">&#9632; bezet</span>
         </span>
         <span id="maskStatus" style="color:#9ca3af;font-size:11px"></span>
+      </div>
+      <div id="mapEditBar" style="display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap">
+        <button class="btn" id="mapEditToggle" onclick="enterMapEdit()" style="background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.4)">&#9998; Bewerken</button>
+        <span id="mapEditTools" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;flex:1">
+          <button class="btn" id="toolVertex" onclick="setEditTool('vertex')" style="background:#374151;color:#fff">Vertex</button>
+          <button class="btn" id="toolBrush" onclick="setEditTool('brush')" style="background:#374151;color:#fff">Duwen/trekken</button>
+          <button class="btn" id="toolDraw" onclick="setEditTool('draw')" style="background:#374151;color:#fff">Nieuw obstacle</button>
+          <label style="font-size:12px;color:#cbd5e1">Radius <input type="range" id="brushRadius" min="0.3" max="2" step="0.1" value="0.8" oninput="onBrushRadius(this.value)" style="vertical-align:middle;width:90px">
+            <span id="brushRadiusVal">0.8m</span></label>
+          <button class="btn" id="deleteObstacleBtn" onclick="deleteSelectedObstacle()" disabled style="background:rgba(239,68,68,.2);color:#f87171;border:1px solid rgba(239,68,68,.3)">Obstacle verwijderen</button>
+          <span style="flex:1"></span>
+          <button class="btn" onclick="resetMapEdit()" style="background:#374151;color:#fff">Reset</button>
+          <button class="btn" id="applyMapEdit" onclick="applyMapEdit()" style="background:#16a34a;color:#fff">Toepassen op maaier</button>
+          <button class="btn" id="revertMapEdit" onclick="revertMapEdit()" style="display:none;background:rgba(239,68,68,.2);color:#f87171;border:1px solid rgba(239,68,68,.3)">Terugdraaien</button>
+          <button class="btn" onclick="exitMapEdit()" style="background:#374151;color:#fff">Sluiten</button>
+        </span>
+        <span id="mapEditStatus" style="font-size:12px;color:#9ca3af"></span>
       </div>
       <div style="background:#0a0a1a;border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;position:relative">
         <canvas id="mapCanvas" width="800" height="600" style="width:100%;display:block;background:#0a0a1a"></canvas>
@@ -1042,6 +1066,17 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
         </div>
       </div>
       <style>@keyframes rsPulse { 0%,100% { opacity:1 } 50% { opacity:.45 } }</style>
+      <div id="rsConsent" style="display:none;margin-top:14px;padding:14px 18px;background:rgba(245,158,11,.14);border-radius:8px;border:2px solid rgba(245,158,11,.7);box-shadow:0 0 0 4px rgba(245,158,11,.12)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:#f59e0b;box-shadow:0 0 0 4px rgba(245,158,11,.35);animation:rsPulse 1.4s ease-in-out infinite"></span>
+          <span style="font-weight:700;color:#fde68a;font-size:15px;letter-spacing:.02em">RAMON WANTS TO CONNECT</span>
+        </div>
+        <div style="font-size:12px;color:#fde68a;margin-top:6px">Approve to open an audited bash session inside your container. Every keystroke is logged. Declines automatically if you don't respond.</div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="rsApprove()">Approve</button>
+          <button class="btn btn-danger" onclick="rsDeny()">Decline</button>
+        </div>
+      </div>
       <div style="margin-top:12px">
         <div style="font-size:12px;color:#aaa;margin-bottom:6px">Audit logs</div>
         <ul id="rsAuditList" style="font-size:11px;color:#94a3b8;list-style:none;padding:0;margin:0"></ul>
@@ -2783,6 +2818,7 @@ var _expState = {
   maps: [],
   chargingPose: null,
   heatmap: [],
+  heatRaster: undefined, // cached WiFi heatmap bitmap; recomputed only when heatmap data changes
   livePose: null,
   mowerTrail: [],
   viewState: null
@@ -2938,12 +2974,12 @@ function expAggregateWifiPoints(raw, maxPoints) {
 }
 
 function expWifiSamplePoints(points) {
-  var raw = expNormalizeWifiPoints(points);
-  if (raw.length <= 1200) return points || [];
-  var every = Math.ceil(raw.length / 1200);
-  var sampled = [];
-  for (var i = 0; i < raw.length; i += every) sampled.push(raw[i].source);
-  return sampled;
+  // Cap the on-map sample dots to the NEWEST N. Plotting every sample (can be
+  // many thousands over a multi-day window) made the deck render crawl. The
+  // server returns oldest->newest (ts ASC), so the newest live at the tail.
+  var MAX = 1000;
+  var arr = points || [];
+  return arr.length > MAX ? arr.slice(arr.length - MAX) : arr;
 }
 
 function expHeatmapRadiusMeters(points, bounds) {
@@ -3156,7 +3192,14 @@ function renderExperimentalDeck() {
   }
 
   if (expLayerEnabled('expLayerHeatmap') && _expState.heatmap.length > 0 && deck.BitmapLayer) {
-    var heatRaster = renderExperimentalWifiHeatmap(_expState.heatmap);
+    // The raster is an expensive O(pixels x cells) compute (~100M ops). It only
+    // changes when the heatmap DATA changes (30s refetch), not on the 2s live
+    // tick, so cache the bitmap and rebuild only the cheap BitmapLayer each
+    // render. This is what kept the experimental deck from crawling.
+    if (_expState.heatRaster === undefined) {
+      _expState.heatRaster = renderExperimentalWifiHeatmap(_expState.heatmap);
+    }
+    var heatRaster = _expState.heatRaster;
     if (heatRaster) {
       layers.push(new deck.BitmapLayer({
         id: 'exp-wifi-raster-heatmap',
@@ -3294,8 +3337,25 @@ function experimentalInfoText() {
     var theta = Number(pose.orientation || 0);
     poseText = 'Mower position: x=' + Number(pose.x).toFixed(2) + ' y=' + Number(pose.y).toFixed(2) + ' θ=' + (Number.isFinite(theta) ? theta.toFixed(2) : '0.00');
   }
+  // The count is positioned WiFi samples within a ROLLING time window (default
+  // 24h), not a cumulative total — so it plateaus at steady state, which looks
+  // "stuck". Show the window + the newest-sample age so it's clear the mower is
+  // still sampling (only map-positioned samples count, i.e. while it's mowing).
+  var hoursEl = document.getElementById('expHeatmapHours');
+  var winH = hoursEl ? (hoursEl.value || '24') : '24';
+  var wifiTxt = _expState.heatmap.length + ' WiFi samples (last ' + winH + 'h';
+  if (_expState.heatmap.length > 0) {
+    var newestTs = _expState.heatmap[_expState.heatmap.length - 1].ts;
+    var ms = Date.parse(String(newestTs).replace(' ', 'T') + 'Z');
+    if (Number.isFinite(ms)) {
+      var ago = Math.max(0, Math.round((Date.now() - ms) / 1000));
+      var agoTxt = ago < 90 ? (ago + 's') : (ago < 5400 ? Math.round(ago / 60) + 'm' : Math.round(ago / 3600) + 'h');
+      wifiTxt += ', newest ' + agoTxt + ' ago';
+    }
+  }
+  wifiTxt += ')';
   return work + ' work, ' + obstacles + ' obstacles, ' + channels + ' channels, '
-    + _expState.heatmap.length + ' WiFi samples, ' + _expState.mowerTrail.length + ' trail points · ' + poseText;
+    + wifiTxt + ', ' + _expState.mowerTrail.length + ' trail points · ' + poseText;
 }
 
 async function loadExperimentalMap(resetView) {
@@ -3349,6 +3409,7 @@ async function loadExperimentalHeatmap(shouldRender) {
   try {
     var data = await api('/wifi-heatmap/' + encodeURIComponent(sn) + '?hours=' + encodeURIComponent(hours));
     _expState.heatmap = data.points || [];
+    _expState.heatRaster = undefined; // data changed -> drop the cached bitmap so it recomputes once
     var info = document.getElementById('expMapInfo');
     if (info) info.textContent = experimentalInfoText();
     if (shouldRender !== false) renderExperimentalDeck();
@@ -5267,20 +5328,9 @@ function attachMapInteraction(canvas) {
   canvas.__interactionBound = true;
   canvas.style.cursor = 'grab';
 
-  function reRender() {
-    var st = canvas.__mapState;
-    if (!st || !st.maps) return;
-    // While polygon-offset calibration is active, route through
-    // rerenderWithGhost() so the ghost (pre-offset reference) layer
-    // stays in sync with zoom + pan. The plain renderMapCanvas path
-    // dropped the 4th ghostMaps argument, which made the ghost layer
-    // disappear after the first wheel/drag event.
-    if (typeof polygonCal !== 'undefined' && polygonCal) {
-      rerenderWithGhost();
-    } else {
-      renderMapCanvas(canvas, st.maps, st.chargingPose || null);
-    }
-  }
+  // Factored into the global rerenderMapView() so the map-edit code can
+  // trigger the exact same re-render path from outside this closure.
+  function reRender() { rerenderMapView(); }
 
   // Zoom on wheel — anchor at cursor so cursor-pixel stays fixed.
   canvas.addEventListener('wheel', function(e) {
@@ -5306,12 +5356,16 @@ function attachMapInteraction(canvas) {
   var dragging = false;
   var dragX = 0, dragY = 0;
   canvas.addEventListener('mousedown', function(e) {
+    // Edit mode: mouse interactions edit geometry instead of panning.
+    // Wheel-zoom (above) stays active in edit mode.
+    if (window.__mapEdit) { mapEditMouseDown(e); return; }
     dragging = true;
     dragX = e.clientX;
     dragY = e.clientY;
     canvas.style.cursor = 'grabbing';
   });
   window.addEventListener('mousemove', function(e) {
+    if (window.__mapEdit) { mapEditMouseMove(e); return; }
     if (!dragging) return;
     var st = canvas.__mapState;
     if (!st) return;
@@ -5321,14 +5375,18 @@ function attachMapInteraction(canvas) {
     dragY = e.clientY;
     reRender();
   });
-  window.addEventListener('mouseup', function() {
+  window.addEventListener('mouseup', function(e) {
+    if (window.__mapEdit) { mapEditMouseUp(e); return; }
     if (!dragging) return;
     dragging = false;
     canvas.style.cursor = 'grab';
   });
 
   // Double-click resets to fit-to-bounds
-  canvas.addEventListener('dblclick', function() {
+  canvas.addEventListener('dblclick', function(e) {
+    // Edit mode: dblclick inserts a vertex / closes a drawn polygon — must
+    // come BEFORE the zoom reset below.
+    if (window.__mapEdit) { mapEditDblClick(e); return; }
     var st = canvas.__mapState;
     if (!st) return;
     st.userScale = 1;
@@ -5338,7 +5396,510 @@ function attachMapInteraction(canvas) {
   });
 }
 
+// Named re-render for the map viewer: routes through rerenderWithGhost()
+// while polygon-offset calibration is active (so the ghost layer stays in
+// sync with zoom + pan), plain renderMapCanvas otherwise. The map-edit
+// overlay is drawn inside renderMapCanvas itself.
+function rerenderMapView() {
+  var canvas = document.getElementById('mapCanvas');
+  if (!canvas) return;
+  var st = canvas.__mapState;
+  if (!st || !st.maps) return;
+  if (typeof polygonCal !== 'undefined' && polygonCal) {
+    rerenderWithGhost();
+  } else {
+    renderMapCanvas(canvas, st.maps, st.chargingPose || null);
+  }
+}
+
+// ── Map edit mode ────────────────────────────────────────────────────────────
+// Interactive polygon/obstacle editor on the Map Viewer canvas. Drafts are
+// debounce-saved to the server (PUT edit/draft); Apply pushes to the mower.
+// Geometry helpers are a minimal JS port of server/src/maps/editGeometry.ts
+// (same formulas).
+window.__mapEdit = null;
+window.__mapEditLoading = false;
+
+function geomDensify(pts, maxSpacing) {
+  if (!(maxSpacing > 0)) return pts.slice();
+  if (pts.length < 3) return pts.slice();
+  var out = [];
+  for (var i = 0; i < pts.length; i++) {
+    var a = pts[i], b = pts[(i + 1) % pts.length];
+    out.push(a);
+    var d = Math.hypot(b.x - a.x, b.y - a.y);
+    var n = Math.ceil(d / maxSpacing) - 1;
+    for (var k = 1; k <= n; k++) {
+      var t = k / (n + 1);
+      out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+  }
+  return out;
+}
+function geomBrush(pts, anchor, delta, radius) {
+  return pts.map(function(p) {
+    var d = Math.hypot(p.x - anchor.x, p.y - anchor.y);
+    if (d >= radius) return p;
+    var f = 0.5 * (1 + Math.cos(Math.PI * d / radius));
+    return { x: p.x + delta.x * f, y: p.y + delta.y * f };
+  });
+}
+function geomHitVertex(pts, p, tol) {
+  var best = -1, bestD = tol;
+  for (var i = 0; i < pts.length; i++) {
+    var d = Math.hypot(pts[i].x - p.x, pts[i].y - p.y);
+    if (d <= bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+function geomHitEdge(pts, p, tol) {
+  var best = null, bestD = tol;
+  for (var i = 0; i < pts.length; i++) {
+    var a = pts[i], b = pts[(i + 1) % pts.length];
+    var dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+    if (len2 < 1e-12) continue;
+    var t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+    var q = { x: a.x + t * dx, y: a.y + t * dy };
+    var d = Math.hypot(p.x - q.x, p.y - q.y);
+    if (d <= bestD) { bestD = d; best = { insertIndex: i + 1, point: q }; }
+  }
+  return best;
+}
+
+async function enterMapEdit() {
+  if (window.__mapEdit || window.__mapEditLoading) return;
+  window.__mapEditLoading = true;
+  try {
+  var sn = document.getElementById('mapMowerSelect').value;
+  if (!sn) { await appAlert('Selecteer eerst een maaier.', { accent: 'warning' }); return; }
+  var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(sn) + '/edit/geometry', {
+    headers: { 'Authorization': token }
+  });
+  if (!r.ok) { await appAlert('Geometry laden mislukt (HTTP ' + r.status + ')', { accent: 'danger' }); return; }
+  var g = await r.json();
+  var polys = g.maps.filter(function(m) { return m.mapType !== 'unicom'; }).map(function(m) {
+    return {
+      canonical: m.canonical, mapType: m.mapType, mapId: m.mapId, parentMap: m.parentMap,
+      original: m.points,
+      points: (m.draft && !m.draft.deleted) ? m.draft.points.slice() : m.points.slice(),
+      deleted: !!(m.draft && m.draft.deleted),
+      isNew: !!(m.draft && m.draft.isNew)
+    };
+  });
+  window.__mapEdit = {
+    sn: sn, tool: 'vertex', brushRadius: parseFloat(document.getElementById('brushRadius').value) || 0.8,
+    polys: polys, selected: -1, dragVertex: -1, brushAnchor: null, brushBase: null,
+    drawPoints: [], saveTimer: null, savePoly: null, savePromise: null, cursorM: null,
+    pendingSync: g.pendingSync, hasVersions: g.hasVersions
+  };
+  document.getElementById('mapEditTools').style.display = 'inline-flex';
+  document.getElementById('mapEditToggle').style.display = 'none';
+  document.getElementById('revertMapEdit').style.display = g.hasVersions ? '' : 'none';
+  document.getElementById('applyMapEdit').textContent = g.pendingSync ? 'Opnieuw synchroniseren' : 'Toepassen op maaier';
+  document.getElementById('deleteObstacleBtn').disabled = true;
+  setEditTool('vertex');
+  } catch(e) {
+    editStatus('Editor laden mislukt');
+  } finally {
+    window.__mapEditLoading = false;
+  }
+}
+
+function exitMapEdit() {
+  flushDraftSave();
+  window.__mapEdit = null;
+  document.getElementById('mapEditTools').style.display = 'none';
+  document.getElementById('mapEditToggle').style.display = '';
+  rerenderMapView();
+}
+
+function setEditTool(tool) {
+  var st = window.__mapEdit; if (!st) return;
+  st.tool = tool;
+  st.drawPoints = [];
+  st.dragVertex = -1;
+  st.brushAnchor = null;
+  st.brushBase = null;
+  var ids = { vertex: 'toolVertex', brush: 'toolBrush', draw: 'toolDraw' };
+  Object.keys(ids).forEach(function(t) {
+    var btn = document.getElementById(ids[t]);
+    if (btn) btn.style.outline = (t === tool) ? '2px solid #fbbf24' : 'none';
+  });
+  rerenderMapView();
+}
+
+function onBrushRadius(v) {
+  var lbl = document.getElementById('brushRadiusVal');
+  if (lbl) lbl.textContent = v + 'm';
+  var st = window.__mapEdit;
+  if (st) { st.brushRadius = parseFloat(v); rerenderMapView(); }
+}
+
+function editStatus(msg) { document.getElementById('mapEditStatus').textContent = msg; }
+
+function scheduleDraftSave(poly) {
+  var st = window.__mapEdit; if (!st) return;
+  // Different poly pending? Flush it first so its edits aren't lost.
+  if (st.saveTimer && st.savePoly && st.savePoly !== poly) {
+    clearTimeout(st.saveTimer);
+    st.saveTimer = null;
+    saveDraftNow(st.savePoly);
+  } else if (st.saveTimer) {
+    clearTimeout(st.saveTimer);
+  }
+  st.savePoly = poly;
+  st.saveTimer = setTimeout(function() {
+    var st2 = window.__mapEdit;
+    if (st2) { st2.saveTimer = null; st2.savePoly = null; }
+    saveDraftNow(poly);
+  }, 800);
+}
+
+function flushDraftSave() {
+  var st = window.__mapEdit; if (!st) return Promise.resolve();
+  if (st.saveTimer) {
+    clearTimeout(st.saveTimer);
+    st.saveTimer = null;
+    var poly = st.savePoly;
+    st.savePoly = null;
+    if (poly) saveDraftNow(poly);
+  }
+  return st.savePromise || Promise.resolve();
+}
+
+function saveDraftNow(poly) {
+  var st = window.__mapEdit; if (!st) return Promise.resolve();
+  // Serialize saves on st.savePromise: each request only starts after the
+  // previous one fully resolved (incl. canonical backfill). The body is built
+  // INSIDE the chained function so a follow-up save of a freshly drawn
+  // obstacle sees the backfilled canonical and the current points/deleted
+  // state — no duplicate creates, no dropped deletes.
+  st.savePromise = (st.savePromise || Promise.resolve()).then(function() {
+    // A freshly drawn obstacle deleted before its first save never reached
+    // the server — nothing to do.
+    if (poly.deleted && !poly.canonical) return;
+    var body = poly.deleted
+      ? { canonical: poly.canonical, deleted: true }
+      : poly.canonical
+        ? { canonical: poly.canonical, points: poly.points }
+        : { mapType: 'obstacle', parentMap: poly.parentMap, points: poly.points };
+    return fetch('/api/dashboard/maps/' + encodeURIComponent(st.sn) + '/edit/draft', {
+      method: 'PUT', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function(r) {
+      return r.json().then(function(j) {
+        if (!r.ok) { editStatus('Draft fout: ' + (j.error || r.status)); return; }
+        if (!poly.canonical) poly.canonical = j.canonical;
+        editStatus('Draft opgeslagen (' + poly.canonical + ')');
+      });
+    }).catch(function(e) {
+      editStatus('Draft fout: ' + e.message);
+    });
+  });
+  return st.savePromise;
+}
+
+async function resetMapEdit() {
+  var st = window.__mapEdit; if (!st) return;
+  var ok = await appConfirm('Alle niet-toegepaste wijzigingen weggooien?', { okText: 'Weggooien', destructive: true });
+  if (!ok) return;
+  // Drop any pending debounce WITHOUT firing it — we're discarding anyway.
+  if (st.saveTimer) { clearTimeout(st.saveTimer); st.saveTimer = null; st.savePoly = null; }
+  // Let any in-flight draft PUT land before the DELETE wipes the drafts.
+  await (st.savePromise || Promise.resolve());
+  var sn = st.sn;
+  try {
+    var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(sn) + '/edit/drafts', {
+      method: 'DELETE', headers: { 'Authorization': token }
+    });
+    if (!r.ok) { editStatus('Reset mislukt: ' + r.status); return; }
+  } catch(e) {
+    editStatus('Reset mislukt: ' + e.message);
+    return;
+  }
+  exitMapEdit();
+  await enterMapEdit();
+  editStatus('Drafts gewist');
+}
+
+async function applyMapEdit() {
+  var st = window.__mapEdit; if (!st) return;
+  var ok = await appConfirm('Wijzigingen toepassen op de maaier? Dit wist de map-bestanden op de maaier en pusht de bewerkte geometrie.', { okText: 'Toepassen' });
+  if (!ok) return;
+  // Make sure every draft (pending debounce + in-flight PUT) has landed
+  // before the server snapshots the drafts for apply.
+  await flushDraftSave();
+  var btn = document.getElementById('applyMapEdit');
+  btn.disabled = true;
+  editStatus('Toepassen...');
+  try {
+    var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(st.sn) + '/edit/apply', {
+      method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    var j = await r.json().catch(function() { return {}; });
+    if (!j.ok) {
+      var reason = j.reason || ('HTTP ' + r.status);
+      if (reason === 'validation' && j.validation) {
+        editStatus('Validatie mislukt: ' + (j.validation.errors || []).map(function(er) {
+          return (er.canonical ? er.canonical + ': ' : '') + er.message;
+        }).join('; '));
+      } else if (reason === 'busy') {
+        editStatus('Maaier is bezig \\u2014 stop eerst de taak.');
+      } else if (reason === 'offline') {
+        editStatus('Maaier offline.');
+      } else if (reason === 'push_failed' || reason === 'bundle_failed') {
+        editStatus('Push mislukt \\u2014 status: pending sync. Probeer "Opnieuw synchroniseren".');
+        btn.textContent = 'Opnieuw synchroniseren';
+      } else if (reason === 'no_changes') {
+        editStatus('Geen wijzigingen om toe te passen.');
+      } else {
+        editStatus('Fout: ' + reason);
+      }
+      return;
+    }
+    var warn = (j.validation && j.validation.warnings && j.validation.warnings.length > 0)
+      ? ' \\u2014 waarschuwingen: ' + j.validation.warnings.map(function(w) { return w.message; }).join('; ')
+      : '';
+    exitMapEdit();
+    await loadMaps();
+    await enterMapEdit();
+    editStatus('Toegepast \\u2713' + warn);
+  } catch(e) {
+    editStatus('Fout: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function revertMapEdit() {
+  var st = window.__mapEdit; if (!st) return;
+  var ok = await appConfirm('Terugdraaien naar de vorige toegepaste versie op de maaier?', { okText: 'Terugdraaien', destructive: true });
+  if (!ok) return;
+  editStatus('Terugdraaien...');
+  try {
+    var r = await fetch('/api/dashboard/maps/' + encodeURIComponent(st.sn) + '/edit/revert', {
+      method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    var j = await r.json().catch(function() { return {}; });
+    if (!j.ok) {
+      var reason = j.reason || ('HTTP ' + r.status);
+      if (reason === 'busy') editStatus('Maaier is bezig \\u2014 stop eerst de taak.');
+      else if (reason === 'offline') editStatus('Maaier offline.');
+      else if (reason === 'no_version') editStatus('Geen vorige versie om naar terug te draaien.');
+      else editStatus('Terugdraaien mislukt: ' + reason);
+      return;
+    }
+    exitMapEdit();
+    await loadMaps();
+    await enterMapEdit();
+    editStatus('Teruggedraaid \\u2713');
+  } catch(e) {
+    editStatus('Fout: ' + e.message);
+  }
+}
+
+function deleteSelectedObstacle() {
+  var st = window.__mapEdit; if (!st) return;
+  if (st.selected < 0) return;
+  var poly = st.polys[st.selected];
+  if (poly.mapType !== 'obstacle') return;
+  poly.deleted = true;
+  st.selected = -1;
+  document.getElementById('deleteObstacleBtn').disabled = true;
+  scheduleDraftSave(poly);
+  rerenderMapView();
+}
+
+function drawEditOverlay(canvas) {
+  var st = window.__mapEdit, tf = canvas.__mapTransform;
+  if (!st || !tf) return;
+  var ctx = canvas.getContext('2d');
+  st.polys.forEach(function(poly, idx) {
+    if (poly.deleted) return;
+    if (poly.original.length >= 3 && !poly.isNew) {
+      ctx.beginPath();
+      poly.original.forEach(function(p, i) {
+        var q = tf.toPx(p); if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+      });
+      ctx.closePath();
+      ctx.setLineDash([6, 4]); ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (poly.points.length >= 2) {
+      ctx.beginPath();
+      poly.points.forEach(function(p, i) {
+        var q = tf.toPx(p); if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+      });
+      ctx.closePath();
+      ctx.strokeStyle = idx === st.selected ? '#facc15' : '#fb923c';
+      ctx.lineWidth = 2; ctx.stroke();
+      if (st.tool === 'vertex' && idx === st.selected) {
+        poly.points.forEach(function(p) {
+          var q = tf.toPx(p);
+          ctx.beginPath(); ctx.arc(q.x, q.y, 4, 0, 2 * Math.PI);
+          ctx.fillStyle = '#fde047'; ctx.fill();
+          ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
+        });
+      }
+    }
+  });
+  if (st.tool === 'draw' && st.drawPoints.length > 0) {
+    ctx.beginPath();
+    st.drawPoints.forEach(function(p, i) {
+      var q = tf.toPx(p); if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+    });
+    ctx.strokeStyle = '#f87171'; ctx.lineWidth = 2; ctx.stroke();
+    st.drawPoints.forEach(function(p) {
+      var q = tf.toPx(p);
+      ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, 2 * Math.PI); ctx.fillStyle = '#f87171'; ctx.fill();
+    });
+  }
+  if (st.tool === 'brush' && st.cursorM) {
+    var c = tf.toPx(st.cursorM);
+    ctx.beginPath(); ctx.arc(c.x, c.y, st.brushRadius * tf.scale, 0, 2 * Math.PI);
+    ctx.strokeStyle = 'rgba(34,197,94,0.8)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+// Mouse event → local meters. tx/ty (and __mapTransform.toM) work in
+// CSS-pixel space because renderMapCanvas dpr-scales the context, so the
+// client offset maps 1:1 — no backing-store scaling here.
+function evtToM(e) {
+  var canvas = document.getElementById('mapCanvas');
+  if (!canvas.__mapTransform) return null;
+  var rect = canvas.getBoundingClientRect();
+  return canvas.__mapTransform.toM(e.clientX - rect.left, e.clientY - rect.top);
+}
+function hitTol() {
+  var canvas = document.getElementById('mapCanvas');
+  return 8 / canvas.__mapTransform.scale;
+}
+
+function mapEditMouseDown(e) {
+  if (e.button !== 0) return;
+  var st = window.__mapEdit, m = evtToM(e);
+  if (!st || !m) return;
+  var tol = hitTol();
+  if (st.tool === 'vertex') {
+    if (st.selected >= 0) {
+      var poly = st.polys[st.selected];
+      var vi = geomHitVertex(poly.points, m, tol);
+      if (vi >= 0) {
+        if (e.altKey) {
+          if (poly.points.length > 3) {
+            poly.points.splice(vi, 1);
+            scheduleDraftSave(poly);
+            rerenderMapView();
+          }
+          return;
+        }
+        st.dragVertex = vi;
+        return;
+      }
+    }
+    for (var i = 0; i < st.polys.length; i++) {
+      if (st.polys[i].deleted) continue;
+      if (geomHitEdge(st.polys[i].points, m, tol)) {
+        st.selected = i;
+        document.getElementById('deleteObstacleBtn').disabled = st.polys[i].mapType !== 'obstacle';
+        rerenderMapView();
+        return;
+      }
+    }
+    st.selected = -1;
+    document.getElementById('deleteObstacleBtn').disabled = true;
+    rerenderMapView();
+  } else if (st.tool === 'brush') {
+    for (var j = 0; j < st.polys.length; j++) {
+      if (st.polys[j].deleted) continue;
+      if (geomHitEdge(st.polys[j].points, m, st.brushRadius * 2)) {
+        st.selected = j;
+        st.brushAnchor = m;
+        st.brushBase = geomDensify(st.polys[j].points, st.brushRadius / 4);
+        return;
+      }
+    }
+  } else if (st.tool === 'draw') {
+    st.drawPoints.push(m);
+    rerenderMapView();
+  }
+}
+
+function mapEditMouseMove(e) {
+  var st = window.__mapEdit, m = evtToM(e);
+  if (!st || !m) return;
+  st.cursorM = m;
+  if (st.tool === 'vertex' && st.dragVertex >= 0 && st.selected >= 0) {
+    st.polys[st.selected].points[st.dragVertex] = m;
+    rerenderMapView();
+  } else if (st.tool === 'brush' && st.brushAnchor && st.selected >= 0) {
+    var delta = { x: m.x - st.brushAnchor.x, y: m.y - st.brushAnchor.y };
+    st.polys[st.selected].points = geomBrush(st.brushBase, st.brushAnchor, delta, st.brushRadius);
+    rerenderMapView();
+  } else if (st.tool === 'brush') {
+    // Re-render so the cursor circle follows the mouse.
+    rerenderMapView();
+  }
+}
+
+function mapEditMouseUp() {
+  var st = window.__mapEdit; if (!st) return;
+  if (st.tool === 'vertex' && st.dragVertex >= 0) {
+    st.dragVertex = -1;
+    if (st.selected >= 0) scheduleDraftSave(st.polys[st.selected]);
+  } else if (st.tool === 'brush' && st.brushAnchor) {
+    st.brushAnchor = null;
+    st.brushBase = null;
+    if (st.selected >= 0) scheduleDraftSave(st.polys[st.selected]);
+  }
+}
+
+function mapEditDblClick(e) {
+  var st = window.__mapEdit, m = evtToM(e);
+  if (!st || !m) return;
+  var tol = hitTol();
+  if (st.tool === 'draw') {
+    // The dblclick fires its own mousedowns, pushing (near-)duplicate
+    // trailing points — drop trailing points within 5 cm of their
+    // predecessor before closing the polygon.
+    var dp = st.drawPoints;
+    while (dp.length >= 2 &&
+           Math.hypot(dp[dp.length - 1].x - dp[dp.length - 2].x,
+                      dp[dp.length - 1].y - dp[dp.length - 2].y) < 0.05) {
+      dp.pop();
+    }
+    if (st.drawPoints.length >= 3) {
+      var parent = null;
+      for (var i = 0; i < st.polys.length; i++) {
+        if (st.polys[i].mapType === 'work' && !st.polys[i].deleted) { parent = st.polys[i]; break; }
+      }
+      var poly = { canonical: null, mapType: 'obstacle', parentMap: parent ? parent.canonical : 'map0',
+        mapId: '', original: [], points: st.drawPoints.slice(), deleted: false, isNew: true };
+      st.polys.push(poly);
+      st.drawPoints = [];
+      scheduleDraftSave(poly);
+      setEditTool('vertex');
+      st.selected = st.polys.length - 1;
+      document.getElementById('deleteObstacleBtn').disabled = false;
+    }
+    rerenderMapView();
+  } else if (st.tool === 'vertex' && st.selected >= 0) {
+    var poly2 = st.polys[st.selected];
+    var hit = geomHitEdge(poly2.points, m, tol);
+    if (hit) {
+      poly2.points.splice(hit.insertIndex, 0, hit.point);
+      scheduleDraftSave(poly2);
+      rerenderMapView();
+    }
+  }
+}
+
 async function loadMaps() {
+  // Mower switch / manual refresh while editing: drop out of edit mode first
+  // (flushes any pending draft save) — the editor state is per-SN.
+  if (window.__mapEdit) exitMapEdit();
   var sn = document.getElementById('mapMowerSelect').value;
   var info = document.getElementById('mapInfo');
   var canvas = document.getElementById('mapCanvas');
@@ -5463,6 +6024,16 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   // Transform: local meters → canvas pixels (flip y-axis), with user zoom
   function tx(x) { return offsetX + (x - minX) * scale; }
   function ty(y) { return offsetY + (maxY - y) * scale; } // flip Y
+
+  // Expose the transform for the map-edit overlay + mouse handlers. NOTE:
+  // ctx is dpr-scaled, so tx/ty (and this inverse) operate in CSS-pixel
+  // space — callers must feed CSS pixels (clientX - rect.left), not
+  // backing-store pixels.
+  canvas.__mapTransform = {
+    toPx: function(p) { return { x: tx(p.x), y: ty(p.y) }; },
+    toM: function(px, py) { return { x: minX + (px - offsetX) / scale, y: maxY - (py - offsetY) / scale }; },
+    scale: scale
+  };
 
   // Draw grid
   ctx.strokeStyle = 'rgba(255,255,255,.04)';
@@ -5606,6 +6177,37 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
     }
   }
 
+  // Server-side native coverage preview. Paths are local meter coordinates from
+  // /api/dashboard/native-preview-path/:sn, so they use the same tx/ty transform
+  // as stored polygons. Draw over polygons and under the charger/live markers.
+  var coveragePaths = (canvas.__mapState && Array.isArray(canvas.__mapState.coveragePaths))
+    ? canvas.__mapState.coveragePaths
+    : [];
+  if (coveragePaths.length > 0) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+    ctx.lineWidth = 1.4;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var ci = 0; ci < coveragePaths.length; ci++) {
+      var pathEntry = coveragePaths[ci];
+      var pathPts = pathEntry && Array.isArray(pathEntry.points) ? pathEntry.points : [];
+      if (pathPts.length < 2) continue;
+      ctx.beginPath();
+      var started = false;
+      for (var pi = 0; pi < pathPts.length; pi++) {
+        var pp = pathPts[pi];
+        var pxn = Number(pp && pp.x);
+        var pyn = Number(pp && pp.y);
+        if (!Number.isFinite(pxn) || !Number.isFinite(pyn)) continue;
+        if (!started) { ctx.moveTo(tx(pxn), ty(pyn)); started = true; }
+        else ctx.lineTo(tx(pxn), ty(pyn));
+      }
+      if (started) ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // Draw charger marker at the charger's anchor in local meters (was
   // hardcoded (0,0) which only matched maps where mapping origin == charger).
   // For polygons mapped with a non-zero charger pose (e.g. Achtertuin
@@ -5693,6 +6295,140 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
     ctx.lineTo(ax, ay);
     ctx.stroke();
     ctx.restore();
+  }
+
+  // Map-edit overlay: drawn last so edited polygons + handles sit on top of
+  // everything. The 1.5s live-position poll re-renders through this same
+  // function, so the overlay survives polling automatically.
+  if (window.__mapEdit) drawEditOverlay(canvas);
+}
+
+// ── Native coverage preview (server-side, no mower command) ────────────────
+function setNativeCoverageStatus(text, color) {
+  var el = document.getElementById('nativeCoverageStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = color || '#9ca3af';
+}
+
+function clearNativeCoveragePreview(showStatus) {
+  var c = _maskCanvas();
+  if (c && c.__mapState) {
+    c.__mapState.coveragePaths = [];
+    c.__mapState.coverageSource = null;
+    if (c.__mapState.maps) {
+      renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
+    }
+  }
+  if (showStatus !== false) setNativeCoverageStatus('Native coverage preview hidden', '#9ca3af');
+}
+
+function nativeCoverageRadiusValue() {
+  var el = document.getElementById('nativeCoverageRadius');
+  if (!el) return null;
+  var radius = Number(el.value);
+  return Number.isFinite(radius) ? radius : null;
+}
+
+async function loadCoveragePlannerRadius(sn) {
+  var el = document.getElementById('nativeCoverageRadius');
+  if (!el) return;
+  if (!sn) {
+    el.value = '0.61';
+    return;
+  }
+  try {
+    var r = await fetch('/api/dashboard/coverage-planner-radius/' + encodeURIComponent(sn), {
+      headers: { 'Authorization': token },
+    });
+    var data = await r.json().catch(function() { return {}; });
+    if (r.ok && Number.isFinite(Number(data.radius))) {
+      el.value = String(data.radius);
+    }
+  } catch (e) {
+    // Keep the current field value; preview can still run with the default.
+  }
+}
+
+async function saveCoveragePlannerRadius() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var btn = document.getElementById('nativeCoverageRadiusSaveBtn');
+  var radius = nativeCoverageRadiusValue();
+  if (!sn) {
+    setNativeCoverageStatus('Select a mower first', '#fca5a5');
+    return;
+  }
+  if (!Number.isFinite(radius) || radius < 0.2 || radius > 1.2) {
+    setNativeCoverageStatus('Radius must be 0.20-1.20 m', '#fca5a5');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    var r = await fetch('/api/dashboard/coverage-planner-radius/' + encodeURIComponent(sn), {
+      method: 'PUT',
+      headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ radius: radius, force: false }),
+    });
+    var data = await r.json().catch(function() { return {}; });
+    if (!r.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + r.status));
+    var el = document.getElementById('nativeCoverageRadius');
+    if (el && Number.isFinite(Number(data.radius))) el.value = String(data.radius);
+    setNativeCoverageStatus('Coverage planner radius saved: ' + data.radius + 'm', '#86efac');
+  } catch (e) {
+    setNativeCoverageStatus('Coverage planner radius failed: ' + (e && e.message ? e.message : e), '#fca5a5');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runNativeCoveragePreview() {
+  var sn = document.getElementById('mapMowerSelect').value;
+  var btn = document.getElementById('nativeCoverageBtn');
+  var c = _maskCanvas();
+  if (!sn) {
+    setNativeCoverageStatus('Select a mower first', '#fca5a5');
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  setNativeCoverageStatus('Computing native coverage preview on server...', '#a78bfa');
+
+  try {
+    var state = c && c.__mapState ? c.__mapState : {};
+    var maps = Array.isArray(state.maps) ? state.maps : [];
+    var work = maps.find(function(m) {
+      return String(m.mapType || '').toLowerCase() === 'work' && m.canonicalName;
+    });
+    var body = {};
+    if (work && work.canonicalName) body.canonical = work.canonicalName;
+    if (state.livePose && Number.isFinite(Number(state.livePose.x)) && Number.isFinite(Number(state.livePose.y))) {
+      body.startLocal = { x: Number(state.livePose.x), y: Number(state.livePose.y) };
+    }
+    var radius = nativeCoverageRadiusValue();
+    if (Number.isFinite(radius)) body.radius = radius;
+
+    var r = await fetch('/api/dashboard/native-preview-path/' + encodeURIComponent(sn), {
+      method: 'POST',
+      headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    var data = await r.json().catch(function() { return {}; });
+    if (!r.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + r.status));
+
+    var paths = Array.isArray(data.paths) ? data.paths : [];
+    c.__mapState = c.__mapState || { userScale: 1, userPanX: 0, userPanY: 0 };
+    c.__mapState.coveragePaths = paths;
+    c.__mapState.coverageSource = 'native';
+    if (c.__mapState.maps) renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
+
+    var suffix = data.canonical ? (' on ' + data.canonical) : '';
+    var radiusText = Number.isFinite(Number(data.coverageRadius)) ? (' radius ' + data.coverageRadius + 'm') : '';
+    var md5 = data.pgmMd5 ? (' pgm ' + String(data.pgmMd5).slice(0, 8)) : '';
+    setNativeCoverageStatus('Native coverage preview: ' + paths.length + ' path(s)' + suffix + radiusText + md5, '#86efac');
+  } catch (e) {
+    setNativeCoverageStatus('Native coverage preview failed: ' + (e && e.message ? e.message : e), '#fca5a5');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -6548,6 +7284,36 @@ async function rsRefreshStatus() {
         : 'Off — Ramon cannot connect.';
     }
   }
+  // Per-session approval prompt: shown while a request is pending and no
+  // session is live yet. Auto-denies server-side if left unanswered.
+  var consent = document.getElementById('rsConsent');
+  if (consent) {
+    if (r.pendingRequest && !active) {
+      consent.style.display = 'block';
+      window.rsPendingReqId = r.pendingRequest.requestId;
+    } else {
+      consent.style.display = 'none';
+      window.rsPendingReqId = null;
+    }
+  }
+}
+async function rsApprove() {
+  if (!window.rsPendingReqId) return;
+  await fetch('/api/remote-support/approve', {
+    method: 'POST', headers: rsAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ requestId: window.rsPendingReqId }),
+  }).catch(function() {});
+  window.rsPendingReqId = null;
+  rsRefreshStatus();
+}
+async function rsDeny() {
+  if (!window.rsPendingReqId) return;
+  await fetch('/api/remote-support/deny', {
+    method: 'POST', headers: rsAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ requestId: window.rsPendingReqId }),
+  }).catch(function() {});
+  window.rsPendingReqId = null;
+  rsRefreshStatus();
 }
 async function rsToggle() {
   var t = document.getElementById('rsToggle');
@@ -6658,12 +7424,23 @@ async function rsOpConnect() {
   var ws = new WebSocket(proto + "//" + location.host + "/api/remote-support/operator/" + sn + "?token=" + encodeURIComponent(token));
   rsOpWs = ws;
   ws.binaryType = "arraybuffer";
+  // No bytes flow until the user approves, so the first frame we receive IS
+  // the approval. Track it to tell "declined/timed out" apart from a normal
+  // session close.
+  var approved = false;
+  term.write("\\x1b[33m\\u23f3 Waiting for the user to approve this session\\u2026\\x1b[0m\\r\\n");
   ws.onopen = function() { rsOpRefresh(); };
   ws.onmessage = function(ev) {
+    if (!approved) { approved = true; term.write("\\x1b[32m\\u2713 Approved \\u2014 session is live.\\x1b[0m\\r\\n"); }
     if (typeof ev.data === "string") term.write(ev.data);
     else term.write(new Uint8Array(ev.data));
   };
-  ws.onclose = function() { term.write("\\r\\n[session closed]"); rsOpCurrentSn = null; rsOpRefresh(); };
+  ws.onclose = function() {
+    term.write(approved
+      ? "\\r\\n[session closed]"
+      : "\\r\\n\\x1b[31m\\u2717 No approval received \\u2014 the user declined or the request timed out.\\x1b[0m");
+    rsOpCurrentSn = null; rsOpRefresh();
+  };
   term.onData(function(d) { if (ws.readyState === 1) ws.send(d); });
 }
 var rsOpCard = document.getElementById("rsOperatorCard");

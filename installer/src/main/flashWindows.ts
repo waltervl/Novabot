@@ -31,6 +31,25 @@ function psQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
+/** Quote one Windows command-line argument using CommandLineToArgvW rules. */
+function winArgQuote(s: string): string {
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of s) {
+    if (ch === '\\') {
+      backslashes++;
+    } else if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2 + 1) + '"';
+      backslashes = 0;
+    } else {
+      out += '\\'.repeat(backslashes) + ch;
+      backslashes = 0;
+    }
+  }
+  out += '\\'.repeat(backslashes * 2) + '"';
+  return out;
+}
+
 /** The elevated PowerShell script (inline C# does the privileged raw write). */
 function buildScript(): string {
   return `param(
@@ -90,7 +109,7 @@ public static class OpenNovaRawWriter {
         DeviceIoControl(vh, FSCTL_DISMOUNT_VOLUME, IntPtr.Zero, 0, IntPtr.Zero, 0, out r, IntPtr.Zero);
         locked.Add(vh);
       }
-      using (var disk = Open("\\\\.\\PhysicalDrive" + diskNumber))
+      using (var disk = Open(@"\\\\.\\PhysicalDrive" + diskNumber))
       using (var img = new FileStream(imagePath, FileMode.Open, FileAccess.Read)) {
         int BS = 1024 * 1024;
         byte[] buf = new byte[BS];
@@ -120,7 +139,7 @@ public static class OpenNovaRawWriter {
   $vols = @()
   try {
     $vols = Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue |
-      Where-Object { $_.DriveLetter } | ForEach-Object { "\\.\$($_.DriveLetter):" }
+      Where-Object { $_.DriveLetter } | ForEach-Object { "\\\\.\\$($_.DriveLetter):" }
   } catch {}
   [OpenNovaRawWriter]::Write($ImagePath, $DiskNumber, [string[]]$vols, $ProgressFile, $CancelFile)
   Set-Content -Path $ResultFile -Value 'DONE' -NoNewline
@@ -171,24 +190,25 @@ export async function flashWindows(args: PlatformFlashArgs): Promise<void> {
   signal?.addEventListener('abort', onAbort, { once: true });
 
   // Elevate the script via UAC and wait for it to finish.
-  const inner = [
+  const innerArgs = [
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
     '-File',
-    psQuote(scriptFile),
+    scriptFile,
     '-ImagePath',
-    psQuote(imagePath),
+    imagePath,
     '-DiskNumber',
     String(diskNumber),
     '-ProgressFile',
-    psQuote(progFile),
+    progFile,
     '-CancelFile',
-    psQuote(cancelFile),
+    cancelFile,
     '-ResultFile',
-    psQuote(resultFile),
-  ].join(',');
-  const outerCmd = `Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList ${inner}`;
+    resultFile,
+  ];
+  const inner = innerArgs.map(winArgQuote).join(' ');
+  const outerCmd = `Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList ${psQuote(inner)}`;
 
   try {
     await new Promise<void>((resolve, reject) => {

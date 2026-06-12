@@ -1,0 +1,6 @@
+fixture	status	local_path	case
+self_intersection/house_map.pgm	missing		
+self_intersection/map2.pgm	missing		
+collinear_map_11inflation/map2.pgm	missing		
+dead_cycle_map/map2.pgm	missing		
+user_maps/narrow_and_self_intersection.pgm	missing		

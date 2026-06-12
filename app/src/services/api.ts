@@ -165,6 +165,18 @@ export interface RobotMessage {
   read: boolean;
 }
 
+export interface MapEditDraftDto { points: { x: number; y: number }[]; deleted: boolean; isNew: boolean }
+export interface MapEditEntryDto {
+  mapId: string; canonical: string; mapType: 'work' | 'obstacle' | 'unicom';
+  alias: string | null; parentMap: string | null;
+  points: { x: number; y: number }[]; draft: MapEditDraftDto | null;
+}
+export interface MapEditGeometryDto { maps: MapEditEntryDto[]; pendingSync: boolean; hasVersions: boolean }
+export interface MapEditApplyDto {
+  ok: boolean; reason?: string;
+  validation?: { ok: boolean; errors: { canonical: string; code: string; message: string }[]; warnings: { canonical: string; code: string; message: string }[] };
+}
+
 interface ScheduleDto {
   scheduleId?: string;
   mowerSn?: string;
@@ -785,6 +797,37 @@ export class ApiClient {
       body: { force: opts.force === true },
     });
   }
+
+  // ── Map geometry editing ─────────────────────────────────────────────
+
+  async getMapEditGeometry(sn: string): Promise<MapEditGeometryDto> {
+    return this.request<MapEditGeometryDto>('GET', `/api/dashboard/maps/${encodeURIComponent(sn)}/edit/geometry`);
+  }
+
+  async saveMapEditDraft(sn: string, body: {
+    canonical?: string; mapType?: 'work' | 'obstacle'; parentMap?: string;
+    points?: { x: number; y: number }[]; deleted?: boolean;
+  }): Promise<{ ok: boolean; canonical?: string }> {
+    const url = `${this.baseUrl}/api/dashboard/maps/${encodeURIComponent(sn)}/edit/draft`;
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.json() as Promise<{ ok: boolean; canonical?: string }>;
+  }
+
+  async discardMapEditDrafts(sn: string): Promise<{ ok: boolean }> {
+    return this.request('DELETE', `/api/dashboard/maps/${encodeURIComponent(sn)}/edit/drafts`);
+  }
+
+  private async postMapEdit(sn: string, action: 'apply' | 'revert'): Promise<MapEditApplyDto> {
+    const res = await fetch(`${this.baseUrl}/api/dashboard/maps/${encodeURIComponent(sn)}/edit/${action}`, { method: 'POST' });
+    try { return (await res.json()) as MapEditApplyDto; }
+    catch { return { ok: false, reason: `http_${res.status}` }; }
+  }
+  async applyMapEdits(sn: string): Promise<MapEditApplyDto> { return this.postMapEdit(sn, 'apply'); }
+  async revertMapEdits(sn: string): Promise<MapEditApplyDto> { return this.postMapEdit(sn, 'revert'); }
 
   // ── Cutting Height ───────────────────────────────────────────────────
 

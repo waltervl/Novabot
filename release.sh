@@ -51,13 +51,23 @@ git commit -m "release: v$NEW"
 git tag "v$NEW"
 git push && git push --tags
 
-# Build + push multi-platform Docker image (amd64 + arm64)
-echo "Building Docker image (amd64 + arm64)..."
+# Build + push multi-platform Docker image (amd64 + arm64).
+# Keep Docker's layer cache enabled by default; the native coverage planner
+# stage is expensive and only needs rebuilding when its inputs change.
+CACHE_ARGS=()
+if [ "${RELEASE_NO_CACHE:-0}" = "1" ] || [ "${RELEASE_NO_CACHE:-}" = "true" ]; then
+  CACHE_ARGS=(--no-cache)
+  echo "Building Docker image (amd64 + arm64, cache disabled)..."
+else
+  echo "Building Docker image (amd64 + arm64, cache enabled)..."
+  echo "  Set RELEASE_NO_CACHE=1 for a full rebuild."
+fi
+
 docker buildx build --platform linux/amd64,linux/arm64 \
   --builder multiplatform-builder \
   -t "rvbcrs/opennova:latest" \
   -t "rvbcrs/opennova:$NEW" \
-  --push --no-cache .
+  --push "${CACHE_ARGS[@]}" .
 
 # Restart local container with new image.
 # NOTE: `docker buildx build --push` (multiplatform) pushes to the registry but

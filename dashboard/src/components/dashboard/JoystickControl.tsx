@@ -12,11 +12,12 @@ interface Props {
 const DEAD_ZONE = 0.05;
 const THROTTLE_MS = 80; // min ms between joystick:move updates to server
 
-// Speed limits per level — matches manual_controller_v setting (0=low, 1=med, 2=high)
+// Speed limits per level — values copied verbatim from the app
+// (JoystickScreen.tsx SPEED_LEVELS) so mobile drives at identical speeds.
 const SPEED_LEVELS = [
-  { linear: 0.15, angular: 0.3 },  // 0 = low
-  { linear: 0.3,  angular: 0.5 },  // 1 = medium
-  { linear: 0.5,  angular: 0.8 },  // 2 = high
+  { linear: 0.5, angular: 0.4 },  // 0 = slow
+  { linear: 1.0, angular: 0.8 },  // 1 = normal
+  { linear: 2.0, angular: 1.5 },  // 2 = fast
 ];
 
 // Map joystick position to JoystickHoldType direction
@@ -49,9 +50,13 @@ export function JoystickControl({ sn, online, speedLevel = 0 }: Props) {
 
     const holdType = getHoldType(x, y);
     const lvl = SPEED_LEVELS[speedRef.current] ?? SPEED_LEVELS[0];
+    // Signed mst — matches the app (and BLE) semantics exactly: x_w = angular
+    // (turn, signed; negative = left), y_v = linear (drive, signed; screen-down
+    // = backward, so forward = -y). The old unsigned/swapped variant drove the
+    // mower erratically.
     joystickMove(sn, holdType, {
-      x_w: Math.round(dist * lvl.linear * 100) / 100,
-      y_v: Math.round(Math.abs(x) * lvl.angular * 100) / 100,
+      x_w: Math.round(x * lvl.angular * 100) / 100,
+      y_v: Math.round(-y * lvl.linear * 100) / 100,
       z_g: 0,
     });
   }, [sn]);
@@ -96,13 +101,13 @@ export function JoystickControl({ sn, online, speedLevel = 0 }: Props) {
       setThumbPos({ x: dx, y: dy });
 
       const holdType = getHoldType(dx, dy) || 3;
-      // Tell server to enter manual mode AND start the MQTT loop
+      // Tell server to enter manual mode AND start the MQTT loop. Signed mst,
+      // same convention as sendUpdate above.
       const lvl = SPEED_LEVELS[speedRef.current] ?? SPEED_LEVELS[0];
-      const speed = Math.sqrt(dx * dx + dy * dy);
       joystickStart(sn, holdType);
       joystickMove(sn, holdType, {
-        x_w: Math.round(speed * lvl.linear * 100) / 100,
-        y_v: Math.round(Math.abs(dx) * lvl.angular * 100) / 100,
+        x_w: Math.round(dx * lvl.angular * 100) / 100,
+        y_v: Math.round(-dy * lvl.linear * 100) / 100,
         z_g: 0,
       });
     }

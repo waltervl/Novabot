@@ -12,20 +12,33 @@ interface Props {
   otaProgress: Map<string, OtaProgressEntry>;
 }
 
-export function MapTab({ mower, liveOutlines, coveredLanes }: Props) {
+export function MapTab({ mower, connected, liveOutlines, coveredLanes }: Props) {
   const { t } = useTranslation();
   if (!mower) {
     return <div className="p-8 text-zinc-500">{t('pages.selectMowerForMap')}</div>;
   }
 
+  // Mirror the OpenNova app's isMowing test (MapScreen.tsx): the mower is
+  // actively mowing when its status msg reports RUNNING/NAVIGATING/COVERING/
+  // MOVING. While mowing the dashboard must show the LIVE plan path instead of
+  // refusing with a busy error.
+  const msg = mower.sensors.msg ?? '';
+  const isMowing = mower.online && (
+    msg.includes('Work:RUNNING') || msg.includes('Work:NAVIGATING') ||
+    msg.includes('Work:COVERING') || msg.includes('Work:MOVING')
+  );
+
   return (
     <MowerMap
       sn={mower.sn}
+      mowingActive={isMowing}
+      sensors={mower.sensors}
       lat={mower.sensors.latitude}
       lng={mower.sensors.longitude}
       mapX={mower.sensors.map_position_x}
       mapY={mower.sensors.map_position_y}
       heading={mower.sensors.theta}
+      online={mower.online && connected}
       signals={{
         wifiRssi: mower.sensors.wifi_rssi,
         rtkSat: mower.sensors.rtk_sat,

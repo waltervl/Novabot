@@ -733,6 +733,12 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
     return null;
   }
 
+  // JSON.parse accepts bare "null", "123", "true" etc. WITHOUT throwing, so
+  // `parsed` can be null or a non-object. Object.keys(null) throws "Cannot
+  // convert undefined or null to object" — the mower's stray null/keepalive
+  // payloads (literal "null") crashed the broker's publish handler right here.
+  if (parsed === null || typeof parsed !== 'object') return null;
+
   // Detecteer commando naam — twee formaten:
   // Maaier:  {"report_state_robot":{...}}   → key = "report_state_robot"
   // Charger: {"type":"ota_version_info_respond","message":{...}} → type wrapper

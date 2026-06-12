@@ -1,0 +1,41 @@
+FROM ubuntu:20.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG CGAL_VERSION=5.0.3
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    libboost-all-dev \
+    libgmp-dev \
+    libmpfr-dev \
+    libopencv-core-dev \
+    libopencv-imgcodecs-dev \
+    libopencv-imgproc-dev \
+    ninja-build \
+    pkg-config \
+    wget \
+    xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q -O "cgal-${CGAL_VERSION}.tar.gz" "https://github.com/CGAL/cgal/archive/refs/tags/v${CGAL_VERSION}.tar.gz" \
+  && tar -xf "cgal-${CGAL_VERSION}.tar.gz" \
+  && cmake -S "cgal-${CGAL_VERSION}" -B cgal-build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="/opt/cgal-${CGAL_VERSION}" \
+    -DWITH_CGAL_Qt5=OFF \
+  && cmake --build cgal-build --target install --parallel \
+  && rm -rf "cgal-${CGAL_VERSION}" "cgal-${CGAL_VERSION}.tar.gz" cgal-build
+
+ENV CMAKE_PREFIX_PATH="/opt/cgal-${CGAL_VERSION}"
+
+WORKDIR /src
+COPY . /src
+
+RUN cmake -S /src -B /src/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  && cmake --build /src/build --parallel \
+  && cd /src/build \
+  && ctest --output-on-failure \
+  && /src/build/coverage_smoke
