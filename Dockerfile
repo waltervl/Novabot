@@ -1,8 +1,65 @@
-# ── Stage 1: Build (TypeScript compilatie) ────────────────────────────────────
-FROM node:20-alpine AS build
+# ── Stage 0: Node runtime copied into Ubuntu 20.04 stages ────────────────────
+FROM node:20-bullseye-slim AS node-runtime
+
+
+# ── Stage 1: Native coverage planner (CGAL 5.0.3 + OpenCV 4.2) ───────────────
+FROM ubuntu:20.04 AS coverage-native
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG CGAL_VERSION=5.0.3
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    libboost-all-dev \
+    libgmp-dev \
+    libmpfr-dev \
+    libopencv-dev \
+    ninja-build \
+    pkg-config \
+    wget \
+    xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q -O "cgal-${CGAL_VERSION}.tar.gz" "https://github.com/CGAL/cgal/archive/refs/tags/v${CGAL_VERSION}.tar.gz" \
+  && tar -xf "cgal-${CGAL_VERSION}.tar.gz" \
+  && cmake -S "cgal-${CGAL_VERSION}" -B cgal-build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="/opt/cgal-${CGAL_VERSION}" \
+    -DWITH_CGAL_Qt5=OFF \
+  && cmake --build cgal-build --target install --parallel \
+  && rm -rf "cgal-${CGAL_VERSION}" "cgal-${CGAL_VERSION}.tar.gz" cgal-build
+
+ENV CMAKE_PREFIX_PATH="/opt/cgal-${CGAL_VERSION}"
+
+WORKDIR /coverage-native
+COPY research/coverage-native/ ./
+
+RUN cmake -S /coverage-native -B /coverage-native/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  && cmake --build /coverage-native/build --parallel \
+  && cd /coverage-native/build \
+  && ctest --output-on-failure \
+  && ./coverage_smoke
+
+
+# ── Stage 2: Build (TypeScript compilatie) ───────────────────────────────────
+FROM ubuntu:20.04 AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+COPY --from=node-runtime /usr/local /usr/local
 
 # Build tools for native modules (bcrypt, better-sqlite3)
-RUN apk add --no-cache python3 make g++ linux-headers
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    make \
+    g++ \
+    linux-libc-dev \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -28,10 +85,21 @@ COPY dashboard/public dashboard/public
 RUN cd dashboard && npm run build
 
 
-# ── Stage 2: Production dependencies (lean) ──────────────────────────────────
-FROM node:20-alpine AS deps
+# ── Stage 3: Production dependencies (lean) ──────────────────────────────────
+FROM ubuntu:20.04 AS deps
 
-RUN apk add --no-cache python3 make g++ linux-headers
+ARG DEBIAN_FRONTEND=noninteractive
+
+COPY --from=node-runtime /usr/local /usr/local
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    make \
+    g++ \
+    linux-libc-dev \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -61,10 +129,31 @@ RUN cd server/node_modules/better-sqlite3 && \
            build/config.gypi build/gyp-mac-tool build/binding.Makefile 2>/dev/null; true
 
 
-# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
-FROM node:20-alpine
+# ── Stage 4: Runtime ─────────────────────────────────────────────────────────
+FROM ubuntu:20.04
 
-RUN apk add --no-cache dnsmasq nginx openssl tzdata zip sqlite sshpass openssh-client bash
+ARG DEBIAN_FRONTEND=noninteractive
+
+COPY --from=node-runtime /usr/local /usr/local
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    dnsmasq \
+    libgmp10 \
+    libmpfr6 \
+    libopencv-core4.2 \
+    libopencv-imgcodecs4.2 \
+    libopencv-imgproc4.2 \
+    nginx \
+    openssh-client \
+    openssl \
+    sqlite3 \
+    sshpass \
+    tzdata \
+    zip \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -81,6 +170,11 @@ COPY server/public server/public
 
 # Copy factory device database (SN → MAC lookup for BLE provisioning)
 COPY server/cloud_devices_anonymous.json server/cloud_devices_anonymous.json
+
+# Copy native coverage planner built from open-source CGAL/ETH + vendor glue.
+COPY --from=coverage-native /coverage-native/build/coverage_grid_plan /opt/opennova/bin/coverage_grid_plan
+RUN chmod +x /opt/opennova/bin/coverage_grid_plan
+ENV COVERAGE_NATIVE_BIN=/opt/opennova/bin/coverage_grid_plan
 
 # Copy entrypoint
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
