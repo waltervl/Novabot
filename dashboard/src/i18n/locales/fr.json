@@ -317,6 +317,7 @@
       "coverageLive": "Parcours en direct",
       "coverageLiveHint": "Parcours en direct pendant la tonte",
       "coverageNone": "Impossible de calculer le parcours",
+      "coverageStart": "Le robot démarre ici",
       "coverageRefresh": "Recalculer sur le serveur"
     }
   },
@@ -474,6 +475,9 @@
     "high": "Élevé",
     "reset": "Rétablir par défaut",
     "resetDone": "Paramètres réinitialisés",
+    "defaultDirection": "Direction de tonte par défaut",
+    "saveToMower": "Enregistrer sur le robot",
+    "saved": "Paramètres enregistrés",
     "off": "Éteint",
     "dim": "Faible",
     "bright": "Vif",

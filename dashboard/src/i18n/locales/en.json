@@ -323,6 +323,7 @@
       "coverageLive": "Live mowing path",
       "coverageLiveHint": "Live path while the mower mows",
       "coverageNone": "Couldn't compute the path",
+      "coverageStart": "Mower starts here",
       "coverageRefresh": "Recompute on server"
     }
   },
@@ -463,6 +464,9 @@
     "high": "High",
     "reset": "Reset to defaults",
     "resetDone": "Settings reset",
+    "defaultDirection": "Default mowing direction",
+    "saveToMower": "Save to mower",
+    "saved": "Settings saved",
     "off": "Off",
     "dim": "Dim",
     "bright": "Bright",

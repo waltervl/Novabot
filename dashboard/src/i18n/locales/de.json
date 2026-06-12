@@ -317,6 +317,7 @@
       "coverageLive": "Live-Mähpfad",
       "coverageLiveHint": "Live-Pfad während der Mäher mäht",
       "coverageNone": "Pfad konnte nicht berechnet werden",
+      "coverageStart": "Mäher startet hier",
       "coverageRefresh": "Auf Server neu berechnen"
     }
   },
@@ -474,6 +475,9 @@
     "high": "Hoch",
     "reset": "Auf Standardwerte zurücksetzen",
     "resetDone": "Einstellungen zurückgesetzt",
+    "defaultDirection": "Standard-Mährichtung",
+    "saveToMower": "Auf Mäher speichern",
+    "saved": "Einstellungen gespeichert",
     "off": "Aus",
     "dim": "Schwach",
     "bright": "Hell",

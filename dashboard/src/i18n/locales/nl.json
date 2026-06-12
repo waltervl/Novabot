@@ -363,6 +363,7 @@
       "coverageLive": "Live maaipad",
       "coverageLiveHint": "Live pad terwijl de maaier maait",
       "coverageNone": "Kon het pad niet berekenen",
+      "coverageStart": "Maaier start hier",
       "coverageRefresh": "Herbereken op server"
     }
   },
@@ -503,6 +504,9 @@
     "high": "Hoog",
     "reset": "Standaardwaarden herstellen",
     "resetDone": "Instellingen hersteld",
+    "defaultDirection": "Standaard maairichting",
+    "saveToMower": "Opslaan naar maaier",
+    "saved": "Instellingen opgeslagen",
     "off": "Uit",
     "dim": "Zwak",
     "bright": "Fel",
