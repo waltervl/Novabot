@@ -107,4 +107,20 @@ describe('ensureBetaFlashSafe', () => {
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r).toEqual({ allowed: true, backup: null, reason: 'no-maps' });
   });
+
+  it('blocks when createBackup throws and maps exist', async () => {
+    vi.mocked(backup.listBackups).mockReturnValue([]);
+    vi.mocked(backup.createBackup).mockRejectedValue(new Error('disk full'));
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
+    const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
+    expect(r).toEqual({ allowed: false, error: 'BACKUP_FAILED', detail: expect.any(String) });
+  });
+
+  it('blocks when the DB cannot confirm maps (fail closed)', async () => {
+    vi.mocked(backup.listBackups).mockReturnValue([]);
+    vi.mocked(backup.createBackup).mockResolvedValue(null);
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockImplementation(() => { throw new Error('db locked'); });
+    const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
+    expect(r.allowed).toBe(false);
+  });
 });

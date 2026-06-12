@@ -28,20 +28,30 @@ export type BetaFlashGate =
   | { allowed: true; backup: BackupEntry | null; reason: 'not-beta' | 'recent-backup' | 'backup-created' | 'no-maps' }
   | { allowed: false; error: 'BACKUP_FAILED'; detail: string };
 
-/** True when the mower has at least one work polygon worth protecting. */
+/**
+ * True when the mower has at least one work polygon worth protecting.
+ * Fails CLOSED: if the DB can't be read we assume maps exist (return true) so
+ * the gate blocks rather than risk silently allowing a destructive flash.
+ */
 export function hasMapsToProtect(sn: string): boolean {
   try {
     return mapRepo.findAllByMowerSnAndType(sn, 'work').some((w: any) => w.map_area);
-  } catch {
-    return false;
+  } catch (err) {
+    console.error(`[firmware-safety] hasMapsToProtect DB error for ${sn}:`, err);
+    return true;
   }
 }
 
 /** Newest backup for `sn` whose age is within BACKUP_MAX_AGE_MS, else null. */
 function recentBackup(sn: string): BackupEntry | null {
-  const newest = listBackups(sn).sort((a, b) => b.createdAt - a.createdAt)[0];
-  if (!newest) return null;
-  return (Date.now() - newest.createdAt) <= BACKUP_MAX_AGE_MS ? newest : null;
+  try {
+    const newest = listBackups(sn).sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (!newest) return null;
+    return (Date.now() - newest.createdAt) <= BACKUP_MAX_AGE_MS ? newest : null;
+  } catch (err) {
+    console.error(`[firmware-safety] listBackups error for ${sn}:`, err);
+    return null;
+  }
 }
 
 /**
@@ -55,7 +65,12 @@ export async function ensureBetaFlashSafe(sn: string, version: string | null | u
   const recent = recentBackup(sn);
   if (recent) return { allowed: true, backup: recent, reason: 'recent-backup' };
 
-  const created = await createBackup(sn, 'pre-beta-flash');
+  let created: BackupEntry | null = null;
+  try {
+    created = await createBackup(sn, 'pre-beta-flash');
+  } catch (err) {
+    console.error(`[firmware-safety] createBackup threw for ${sn}:`, err);
+  }
   if (created) return { allowed: true, backup: created, reason: 'backup-created' };
 
   if (hasMapsToProtect(sn)) {
