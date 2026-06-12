@@ -54,6 +54,29 @@ function recentBackup(sn: string): BackupEntry | null {
   }
 }
 
+/** True when a backup ≤BACKUP_MAX_AGE_MS old already exists (filesystem-only, no MQTT). */
+export function hasRecentBackup(sn: string): boolean {
+  return recentBackup(sn) !== null;
+}
+
+/**
+ * Synchronous gate for the MQTT broker path, which must NOT block the event
+ * loop with an MQTT round-trip. Returns true if a BETA flash may proceed NOW
+ * (not beta, or nothing to lose, or a recent backup already exists). When it
+ * returns false it has kicked off a background backup (fire-and-forget) so the
+ * stock app's next flash attempt will find a fresh backup and go through.
+ * We cannot show the stock app a warning, so "deny once + snapshot, retry works"
+ * is the safe behavior — maps are never lost.
+ */
+export function allowBetaFlashOrSnapshot(sn: string, version: string | null | undefined): boolean {
+  if (!isBetaFirmware(version)) return true;
+  if (!hasMapsToProtect(sn)) return true;   // nothing to lose
+  if (hasRecentBackup(sn)) return true;     // already protected
+  void createBackup(sn, 'pre-beta-flash').catch((err) =>
+    console.error(`[firmware-safety] background backup failed for ${sn}:`, err));
+  return false;
+}
+
 /**
  * Guarantee a fresh backup before a BETA mower flash. Stock firmware and
  * chargers should never reach here (callers gate on device type), but stock

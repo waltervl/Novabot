@@ -31,7 +31,7 @@ vi.mock('../../db/repositories/maps.js', () => ({
 
 import * as backup from '../../services/portableBackup.js';
 import { mapRepo } from '../../db/repositories/maps.js';
-import { ensureBetaFlashSafe } from '../../services/firmwareSafety.js';
+import { ensureBetaFlashSafe, allowBetaFlashOrSnapshot } from '../../services/firmwareSafety.js';
 
 describe('isBetaFirmware', () => {
   it('flags custom builds', () => {
@@ -122,5 +122,38 @@ describe('ensureBetaFlashSafe', () => {
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockImplementation(() => { throw new Error('db locked'); });
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r.allowed).toBe(false);
+  });
+});
+
+// ── allowBetaFlashOrSnapshot ──────────────────────────────────────────────────
+
+describe('allowBetaFlashOrSnapshot', () => {
+  beforeEach(() => {
+    vi.mocked(backup.listBackups).mockReset().mockReturnValue([]);
+    vi.mocked(backup.createBackup).mockReset().mockResolvedValue(null);
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReset().mockReturnValue([]);
+  });
+
+  it('allows stock firmware', () => {
+    expect(allowBetaFlashOrSnapshot('LFIN2230700238', 'v6.0.2')).toBe(true);
+  });
+
+  it('allows beta when there are no maps', () => {
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([]);
+    expect(allowBetaFlashOrSnapshot('LFIN2230700238', 'v6.0.2-custom-36')).toBe(true);
+  });
+
+  it('allows beta when a recent backup exists', () => {
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
+    vi.mocked(backup.listBackups).mockReturnValue([{ filename: 'r.novabotmap', bytes: 1, createdAt: Date.now() - 1000, reason: 'manual' }]);
+    expect(allowBetaFlashOrSnapshot('LFIN2230700238', 'v6.0.2-custom-36')).toBe(true);
+  });
+
+  it('denies + snapshots beta when maps exist and no recent backup', () => {
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
+    vi.mocked(backup.listBackups).mockReturnValue([]);
+    vi.mocked(backup.createBackup).mockResolvedValue(null);
+    expect(allowBetaFlashOrSnapshot('LFIN2230700238', 'v6.0.2-custom-36')).toBe(false);
+    expect(vi.mocked(backup.createBackup)).toHaveBeenCalledWith('LFIN2230700238', 'pre-beta-flash');
   });
 });

@@ -17,7 +17,7 @@ import { updateDeviceData, clearDeviceData, deviceCache, consumeWifiRssiRefreshR
 import { isDemoMode } from '../services/demoSimulator.js';
 import { forwardToDashboard, emitDeviceOnline, emitDeviceOffline, pushMqttLog, emitOtaEvent, emitPinEvent, emitExtendedEvent, emitCommandRespond } from '../dashboard/socketHandler.js';
 import { initMapSync, handleMapMessage, handleExtendedResponse, handleDeviceResponse, publishToExtended, onExtendedResponse, offExtendedResponse, publishEncryptedOnTopic, notifyRespond, publishToDevice } from './mapSync.js';
-import { ensureBetaFlashSafe } from '../services/firmwareSafety.js';
+import { allowBetaFlashOrSnapshot } from '../services/firmwareSafety.js';
 
 const PROXY_MODE = process.env.PROXY_MODE ?? 'local';
 
@@ -544,21 +544,19 @@ export async function startMqttBroker(): Promise<void> {
               console.log(`\x1b[38;5;208m[OTA-FIX] Re-encrypted: ${encrypted.length}B → maaier\x1b[0m`);
 
               // ── BETA gate: stock app flashing custom firmware must back up first ──
+              // MUST stay synchronous — awaiting an MQTT backup round-trip here would
+              // block/deadlock the broker (the mower's read_map_files_respond also
+              // passes through authorizePublish). Decide from filesystem+DB only; if a
+              // backup is missing we deny this attempt and snapshot in the background.
               const betaVersion = parsed.ota_upgrade_cmd.version as string | undefined;
               if (betaVersion && /custom|opennova/i.test(betaVersion)) {
-                void ensureBetaFlashSafe(sn, betaVersion).then((gate) => {
-                  if (!gate.allowed) {
-                    console.warn(`\x1b[31m[OTA-FIX] BETA flash geblokkeerd (stock app) voor ${sn}: ${gate.detail}\x1b[0m`);
-                    callback(new Error('beta flash blocked: backup failed'));
-                  } else {
-                    if (gate.backup) console.log(`\x1b[38;5;208m[OTA-FIX] BETA backup ok (${gate.reason}): ${gate.backup.filename}\x1b[0m`);
-                    callback(null);
-                  }
-                }).catch((e) => {
-                  console.error(`[OTA-FIX] beta gate error for ${sn}:`, e);
-                  callback(new Error('beta gate error'));
-                });
-                return; // async path owns the callback — skip the synchronous callback below
+                if (allowBetaFlashOrSnapshot(sn, betaVersion)) {
+                  callback(null);
+                } else {
+                  console.warn(`\x1b[31m[OTA-FIX] BETA flash (stock app) geblokkeerd voor ${sn} — geen recente backup; snapshot gestart, vraag de gebruiker opnieuw te flashen\x1b[0m`);
+                  callback(new Error('beta flash blocked: backup snapshot started, retry shortly'));
+                }
+                return; // gate owns the callback — skip the synchronous terminal callback
               }
             } else if ('delete_map' in parsed) {
               // ── delete_map: app verwijdert kaart op maaier ──
