@@ -44,11 +44,17 @@ describe('Docker entrypoint', () => {
     expect(missingSources).toEqual([]);
   });
 
-  it('uses a prebuilt native coverage image instead of compiling CGAL in the default image', () => {
+  it('does not include the native coverage generator in the default image', () => {
     const dockerfile = readFileSync(dockerfilePath, 'utf8');
 
-    expect(dockerfile).toContain('ARG COVERAGE_NATIVE_IMAGE=');
-    expect(dockerfile).toMatch(/FROM\s+\$\{COVERAGE_NATIVE_IMAGE\}\s+AS\s+coverage-native/);
+    expect(dockerfile).not.toContain('COVERAGE_NATIVE_IMAGE');
+    expect(dockerfile).not.toMatch(/FROM\s+\$\{COVERAGE_NATIVE_IMAGE\}\s+AS\s+coverage-native/);
+    expect(dockerfile).not.toContain('coverage_grid_plan');
+    expect(dockerfile).not.toContain('COVERAGE_NATIVE_BIN');
+    expect(dockerfile).not.toContain('/opt/opennova/share/licenses/coverage-native');
+    expect(dockerfile).not.toContain('libopencv-');
+    expect(dockerfile).not.toContain('libgmp10');
+    expect(dockerfile).not.toContain('libmpfr6');
     expect(dockerfile).not.toContain('CGAL_VERSION');
     expect(dockerfile).not.toContain('build-essential');
     expect(dockerfile).not.toContain('cmake -S /coverage-native');

@@ -40,8 +40,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { getActiveAdvertisement, getCompetingServers } from '../services/mdnsAdvertiser.js';
 import { getDeviceHealth } from '../services/deviceHealth.js';
 import { getEditGeometry, saveDraft, discardDrafts, applyEdits, revertEdits } from '../services/mapEdit.js';
-import { getPolygonAnchor } from '../services/anchor.js';
-import { generateNativeCoveragePlanFromRows } from '../services/coveragePlanService.js';
 import {
   COVERAGE_PLANNER_RADIUS_KEY,
   DEFAULT_COVERAGE_PLANNER_RADIUS,
@@ -727,107 +725,37 @@ export function handlePlannedPathRespond(sn: string, data: Record<string, unknow
 // Requests via MQTT: {get_preview_cover_path: {map_name: "all"}}
 // Response cached from get_preview_cover_path_respond (via our broker intercept)
 const previewPathCache = new Map<string, Array<{ id: string; points: Array<{ x: number; y: number }> }>>();
+const previewPathMetaCache = new Map<string, { source: 'mower'; cachedAt: number }>();
 
 dashboardRouter.get('/preview-path/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
   const cached = previewPathCache.get(sn);
-  res.json({ paths: cached && cached.length > 0 ? cached : [] });
+  const meta = previewPathMetaCache.get(sn);
+  res.json({
+    paths: cached && cached.length > 0 ? cached : [],
+    source: cached && cached.length > 0 ? (meta?.source ?? 'cache') : 'none',
+    cachedAt: meta?.cachedAt,
+    ageMs: meta ? Date.now() - meta.cachedAt : undefined,
+  });
 });
 
 export function handlePreviewPathRespond(sn: string, data: Record<string, unknown>): void {
   try {
     const paths = parsePlannedPathJson(data);
     previewPathCache.set(sn, paths);
+    previewPathMetaCache.set(sn, { source: 'mower', cachedAt: Date.now() });
     console.log(`[PREVIEW-PATH] Cached ${paths.length} sub-paths for ${sn}`);
   } catch (err) {
     console.error(`[PREVIEW-PATH] Parse error:`, err);
   }
 }
 
-type NativePreviewBody = {
-  canonical?: unknown;
-  map_id?: unknown;
-  map_ids?: unknown;
-  startLocal?: unknown;
-  start_local?: unknown;
-  cov_direction?: unknown;
-  covDirection?: unknown;
-  radius?: unknown;
-  coverageRadius?: unknown;
-  coverage_radius?: unknown;
-  expected_pgm_md5?: unknown;
-  expectedPgmMd5?: unknown;
-};
-
-function finiteNumber(v: unknown): number | null {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function localPointFromUnknown(v: unknown): { x: number; y: number } | null {
-  if (v === null || typeof v !== 'object') return null;
-  const point = v as { x?: unknown; y?: unknown };
-  const x = finiteNumber(point.x);
-  const y = finiteNumber(point.y);
-  return x === null || y === null ? null : { x, y };
-}
-
 function storedCoveragePlannerRadius(sn: string) {
   return selectCoveragePlannerRadius(deviceSettingsRepo.findBySn(sn));
 }
 
-function requestedCoveragePlannerRadius(
-  body: NativePreviewBody,
-  fallback: number,
-): number | null {
-  const raw = body.coverage_radius ?? body.coverageRadius ?? body.radius;
-  if (raw === undefined) return fallback;
-  return parseCoveragePlannerRadius(raw);
-}
-
-function canonicalFromOneBasedMapId(v: unknown): string | null {
-  const n = finiteNumber(Array.isArray(v) ? v[0] : v);
-  if (n === null || !Number.isInteger(n) || n < 1) return null;
-  return `map${n - 1}`;
-}
-
-function nativePreviewCanonical(
-  body: NativePreviewBody,
-  sensors: Map<string, string> | undefined,
-  rows: Array<{ canonical_name: string | null; map_type: string }>,
-): string | null {
-  if (typeof body.canonical === 'string' && body.canonical.trim()) {
-    return body.canonical.trim();
-  }
-  const fromBodyMapId = canonicalFromOneBasedMapId(body.map_ids ?? body.map_id);
-  if (fromBodyMapId) return fromBodyMapId;
-  const fromSensors = canonicalFromOneBasedMapId(
-    sensors?.get('current_map_ids') ?? sensors?.get('current_map_id') ?? sensors?.get('cover_map_id'),
-  );
-  if (fromSensors) return fromSensors;
-  return rows.find((r) => r.map_type === 'work' && r.canonical_name)?.canonical_name ?? null;
-}
-
-function nativePreviewStartLocal(
-  body: NativePreviewBody,
-  sensors: Map<string, string> | undefined,
-  chargingPose: { x: number; y: number; orientation: number },
-): { x: number; y: number } | null {
-  const fromBody = localPointFromUnknown(body.startLocal ?? body.start_local);
-  if (fromBody) return fromBody;
-
-  const x = finiteNumber(sensors?.get('map_position_x'));
-  const y = finiteNumber(sensors?.get('map_position_y'));
-  if (x !== null && y !== null) return { x, y };
-
-  if (Number.isFinite(chargingPose.x) && Number.isFinite(chargingPose.y)) {
-    return { x: chargingPose.x, y: chargingPose.y };
-  }
-  return null;
-}
-
 // GET /api/dashboard/coverage-planner-radius/:sn - persisted planner radius
-// used by native preview and, when pushed, by the mower's coverage planner.
+// used by the mower's coverage planner.
 dashboardRouter.get('/coverage-planner-radius/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
   const selected = storedCoveragePlannerRadius(sn);
@@ -841,8 +769,8 @@ dashboardRouter.get('/coverage-planner-radius/:sn', (req: Request, res: Response
   });
 });
 
-// PUT /api/dashboard/coverage-planner-radius/:sn - store the radius for server
-// previews and dispatch an extended command so OpenNova firmware writes
+// PUT /api/dashboard/coverage-planner-radius/:sn - store the radius and
+// dispatch an extended command so OpenNova firmware writes
 // coverage_planner_params.yaml on the mower.
 dashboardRouter.put('/coverage-planner-radius/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
@@ -877,87 +805,15 @@ dashboardRouter.put('/coverage-planner-radius/:sn', (req: Request, res: Response
   });
 });
 
-// POST /api/dashboard/native-preview-path/:sn — compute a preview path locally
-// with the packaged native coverage planner. This intentionally does not send
-// generate_preview_cover_path to the mower, so it is safe while offline and does
-// not disturb mapping or active coverage state.
-dashboardRouter.post('/native-preview-path/:sn', async (req: Request, res: Response) => {
-  const { sn } = req.params;
-  const body = (req.body ?? {}) as NativePreviewBody;
-  const rows = mapRepo.findWithAreaOrderByMapId(sn);
-  if (rows.length === 0) {
-    res.status(404).json({ ok: false, error: 'no stored map rows for mower' });
-    return;
-  }
-
-  const sensors = deviceCache.get(sn);
-  const canonical = nativePreviewCanonical(body, sensors, rows);
-  if (!canonical) {
-    res.status(400).json({ ok: false, error: 'no map canonical selected' });
-    return;
-  }
-
-  const anchor = getPolygonAnchor(sn, sensors);
-  const chargingPose = anchor
-    ? { x: anchor.x, y: anchor.y, orientation: anchor.orientation }
-    : { x: 0, y: 0, orientation: 0 };
-  const startLocal = nativePreviewStartLocal(body, sensors, chargingPose);
-  if (!startLocal) {
-    res.status(400).json({ ok: false, error: 'no local start pose available' });
-    return;
-  }
-
-  const covDirectionRaw = body.cov_direction ?? body.covDirection;
-  const covDirection = covDirectionRaw === undefined ? undefined : finiteNumber(covDirectionRaw);
-  if (covDirectionRaw !== undefined && covDirection === null) {
-    res.status(400).json({ ok: false, error: 'invalid cov_direction' });
-    return;
-  }
-  const storedRadius = storedCoveragePlannerRadius(sn);
-  const radiusRaw = body.coverage_radius ?? body.coverageRadius ?? body.radius;
-  const coverageRadius = requestedCoveragePlannerRadius(body, storedRadius.radius);
-  if (coverageRadius === null) {
-    res.status(400).json({ ok: false, error: coveragePlannerRadiusError() });
-    return;
-  }
-  const coverageRadiusSource = radiusRaw === undefined ? storedRadius.source : 'request';
-  const expectedRaw = body.expected_pgm_md5 ?? body.expectedPgmMd5;
-  const expectedPgmMd5 = typeof expectedRaw === 'string' && expectedRaw.trim()
-    ? expectedRaw.trim()
-    : undefined;
-
-  try {
-    const result = await generateNativeCoveragePlanFromRows({
-      mowerSn: sn,
-      rows,
-      canonical,
-      startLocal,
-      chargingPose,
-      covDirection: covDirection ?? undefined,
-      coverageRadius,
-      expectedPgmMd5,
-    });
-    previewPathCache.set(sn, result.paths);
-    res.json({
-      ok: true,
-      source: 'native',
-      canonical: result.canonical,
-      areaId: result.areaId,
-      pgmMd5: result.pgmMd5,
-      cacheHit: result.cacheHit,
-      cacheKey: result.cacheKey,
-      coverageRadius,
-      coverageRadiusSource,
-      metadata: result.metadata,
-      startGrid: result.startGrid,
-      paths: result.paths,
-      count: result.paths.length,
-    });
-  } catch (err) {
-    const message = (err as Error).message;
-    const status = message.includes('md5 mismatch') ? 409 : 400;
-    res.status(status).json({ ok: false, error: message });
-  }
+// POST /api/dashboard/native-preview-path/:sn — removed from the standard
+// server. Keep an explicit 410 so stale browser bundles or old admin pages
+// reveal themselves instead of silently looking like a valid mower preview.
+dashboardRouter.post('/native-preview-path/:sn', (_req: Request, res: Response) => {
+  res.status(410).json({
+    ok: false,
+    source: 'removed',
+    error: 'native coverage preview has been removed; use /api/dashboard/refresh-preview-path/:sn for mower-generated preview',
+  });
 });
 
 // ── SAFETY: never trigger generate_preview_cover_path while a coverage
@@ -981,11 +837,17 @@ function isCoverageActive(sn: string): boolean {
   // planner is still "busy" from its point of view, and generate_preview
   // will still 128-error. Block until task_mode drops to 0.
   if (workStatus === '9' && taskMode === 1) return true;
-  // Fallback: COVERAGE mode with an ACTIVE task. Gated on task_mode===1 — an
-  // idle mower keeps "Mode:COVERAGE" as its last-selected mode label even when
-  // it isn't running, which previously false-flagged it as busy and blocked the
-  // preview generation. Only an active cover task (task_mode 1) actually 128s.
-  if (taskMode === 1 && msg.includes('Mode:COVERAGE') && !msg.includes('Work:STANDBY') && !msg.includes('Work:IDLE')) {
+  // Fallback: COVERAGE mode with a possibly-active task (task_mode 1). The mower
+  // keeps "Mode:COVERAGE" + task_mode 1 as its LAST-SELECTED mode long after a
+  // task ends, so this must NOT fire for a clearly idle/finished Work: state —
+  // otherwise an idle mower (e.g. Work:WAIT or Work:CANCELLED after a cancel)
+  // gets its preview wrongly blocked with a 409, which the dashboard surfaces as
+  // "Couldn't compute the path". An actually-active task always shows an active
+  // Work: state and is already caught above; only a paused/avoiding task without
+  // one should still block here. Case-sensitive "Work:" so it ignores the lower-
+  // case "Prev work:" field in the same msg.
+  const workIsIdle = /Work:(STANDBY|IDLE|WAIT|CANCELLED|FINISH|CHARGE|CHARGING)/.test(msg);
+  if (taskMode === 1 && msg.includes('Mode:COVERAGE') && !workIsIdle) {
     return true;
   }
   return false;
@@ -1002,9 +864,23 @@ function isCoverageActive(sn: string): boolean {
 // default rechte strepen in de richting van path_direction.
 dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Response) => {
   const { sn } = req.params;
-  const body = (req.body ?? {}) as { map_ids?: number | number[]; cov_direction?: number };
+  const body = (req.body ?? {}) as { map_ids?: number | number[]; cov_direction?: number; specify_direction?: boolean };
   const mapIds = body.map_ids ?? 1;
-  const covDirection = typeof body.cov_direction === 'number' ? body.cov_direction : undefined;
+  const rawCovDirection = typeof body.cov_direction === 'number' ? body.cov_direction : undefined;
+  const rawSpecifyDirection = typeof body.specify_direction === 'boolean' ? body.specify_direction : undefined;
+
+  let covDirection: number | undefined;
+  if (rawSpecifyDirection !== false && rawCovDirection !== undefined && rawCovDirection >= 0) {
+    const normalizedDirection = Math.round(rawCovDirection);
+    if (!Number.isFinite(normalizedDirection) || normalizedDirection > 180) {
+      res.status(400).json({ ok: false, error: 'cov_direction must be between 0 and 180 degrees' });
+      return;
+    }
+    covDirection = normalizedDirection;
+  } else if (rawSpecifyDirection === true) {
+    res.status(400).json({ ok: false, error: 'specify_direction requires cov_direction between 0 and 180 degrees' });
+    return;
+  }
 
   if (!isDeviceOnline(sn)) {
     res.status(503).json({ ok: false, error: 'device offline' });
@@ -1016,31 +892,91 @@ dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Resp
   if (isCoverageActive(sn)) {
     console.log(`[PREVIEW-REFRESH] BLOCKED for ${sn} — coverage task active (would trigger error 128)`);
     const paths = previewPathCache.get(sn) ?? [];
+    const meta = previewPathMetaCache.get(sn);
     res.status(409).json({
       ok: false,
+      source: 'cache',
       error: 'coverage task active — generate_preview would error-128 the mower',
       paths,
       count: paths.length,
+      cachedAt: meta?.cachedAt,
+      ageMs: meta ? Date.now() - meta.cachedAt : undefined,
     });
     return;
   }
 
   try {
-    const { publishToDevice, publishToExtended, onExtendedResponse, offExtendedResponse } = await import('../mqtt/mapSync.js');
+    const startedAt = Date.now();
+    const {
+      publishToDevice,
+      publishToExtended,
+      onExtendedResponse,
+      offExtendedResponse,
+      onDeviceResponse,
+      offDeviceResponse,
+    } = await import('../mqtt/mapSync.js');
 
     // 1. Trigger preview generation via normal MQTT — mqtt_node handles this fine.
     const cmdNum = Date.now() & 0x7fffffff;
-    const genPayload: Record<string, unknown> = { cmd_num: cmdNum, map_ids: mapIds };
+    const genPayload: Record<string, unknown> = {
+      cmd_num: cmdNum,
+      map_ids: mapIds,
+    };
     if (covDirection !== undefined) genPayload.cov_direction = covDirection;
-    publishToDevice(sn, { generate_preview_cover_path: genPayload });
-    console.log(`[PREVIEW-REFRESH] generate_preview_cover_path sent to ${sn} (cmd=${cmdNum})`);
+    if (rawSpecifyDirection !== undefined && covDirection !== undefined) {
+      genPayload.specify_direction = rawSpecifyDirection;
+    }
 
-    // 2. Wait a bit — coverage_planner typically needs 1-3 s to finish.
-    await new Promise((r) => setTimeout(r, 3500));
+    const generateAck = new Promise<{ ok: boolean; error?: string; timeout?: boolean }>((resolve) => {
+      const timer = setTimeout(() => {
+        offDeviceResponse(sn, handler);
+        resolve({ ok: true, timeout: true });
+      }, 6000);
+      const handler = (data: Record<string, unknown>) => {
+        const wrapped = data.type === 'generate_preview_cover_path_respond'
+          ? data.message
+          : data['generate_preview_cover_path_respond'];
+        if (!wrapped || typeof wrapped !== 'object') return;
+        clearTimeout(timer);
+        offDeviceResponse(sn, handler);
+        const resp = wrapped as { result?: number; error?: string; msg?: string };
+        if (resp.result === 0 || resp.result === undefined) {
+          resolve({ ok: true });
+        } else {
+          resolve({ ok: false, error: resp.error ?? resp.msg ?? `generate_preview_cover_path result ${resp.result}` });
+        }
+      };
+      onDeviceResponse(sn, handler);
+    });
+
+    const ackStartedAt = Date.now();
+    publishToDevice(sn, { generate_preview_cover_path: genPayload });
+    console.log(`[PREVIEW-REFRESH] generate_preview_cover_path sent to ${sn}: ${JSON.stringify(genPayload)}`);
+
+    // 2. Match the stock app ordering: wait for generate_preview_cover_path_respond
+    // before asking for get_preview_cover_path. If older firmware/server plumbing
+    // drops the ack, continue after the timeout to preserve the previous fallback.
+    const ack = await generateAck;
+    const generateAckMs = Date.now() - ackStartedAt;
+    if (!ack.ok) {
+      res.status(502).json({
+        ok: false,
+        source: 'mower',
+        error: ack.error ?? 'preview generation failed',
+        cmd_num: cmdNum,
+        generateAckMs,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+    if (ack.timeout) {
+      console.warn(`[PREVIEW-REFRESH] generate_preview_cover_path ack timeout for ${sn}; trying preview file anyway`);
+    }
 
     // 3. Ask extended_commands for the content. This avoids the mqtt_node
     //    buffer overflow path entirely. Our broker intercept normally handles
     //    this when the app sends it — here we short-circuit direct from server.
+    const fetchStartedAt = Date.now();
     const contentPromise = new Promise<Record<string, unknown> | null>((resolve) => {
       const timer = setTimeout(() => {
         offExtendedResponse(sn, handler);
@@ -1062,14 +998,53 @@ dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Resp
     });
 
     const content = await contentPromise;
+    const fetchMs = Date.now() - fetchStartedAt;
     if (!content) {
-      res.status(504).json({ ok: false, error: 'no preview response within timeout (extended_commands.py running on mower?)' });
+      res.status(504).json({
+        ok: false,
+        source: 'mower',
+        error: 'no preview response within timeout (extended_commands.py running on mower?)',
+        cmd_num: cmdNum,
+        ackTimeout: ack.timeout === true,
+        generateAckMs,
+        fetchMs,
+        durationMs: Date.now() - startedAt,
+      });
       return;
     }
 
     handlePreviewPathRespond(sn, content);
     const paths = previewPathCache.get(sn) ?? [];
-    res.json({ ok: true, paths, count: paths.length, cmd_num: cmdNum });
+    const meta = previewPathMetaCache.get(sn);
+    if (paths.length === 0) {
+      console.warn(`[PREVIEW-REFRESH] Empty preview path for ${sn} after generate cmd=${cmdNum} ackTimeout=${ack.timeout === true} fetchMs=${fetchMs}`);
+      res.status(502).json({
+        ok: false,
+        source: 'mower',
+        error: 'mower returned an empty preview path',
+        paths,
+        count: paths.length,
+        cmd_num: cmdNum,
+        ackTimeout: ack.timeout === true,
+        generateAckMs,
+        fetchMs,
+        durationMs: Date.now() - startedAt,
+        cachedAt: meta?.cachedAt,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      source: 'mower',
+      paths,
+      count: paths.length,
+      cmd_num: cmdNum,
+      ackTimeout: ack.timeout === true,
+      generateAckMs,
+      fetchMs,
+      durationMs: Date.now() - startedAt,
+      cachedAt: meta?.cachedAt,
+    });
   } catch (err) {
     console.error(`[PREVIEW-REFRESH] Error:`, err);
     res.status(500).json({ ok: false, error: (err as Error).message });

@@ -1,10 +1,3 @@
-# ── Stage 0: Prebuilt native coverage planner artifact ───────────────────────
-# This image is built explicitly via scripts/build-coverage-native-image.sh.
-# The normal OpenNova image build must never compile the native planner.
-ARG COVERAGE_NATIVE_IMAGE=rvbcrs/opennova-coverage-native:latest
-FROM ${COVERAGE_NATIVE_IMAGE} AS coverage-native
-
-
 # ── Stage 1: Node runtime copied into Ubuntu 20.04 stages ────────────────────
 FROM node:20-bullseye-slim AS node-runtime
 
@@ -106,11 +99,6 @@ RUN apt-get update \
     bash \
     ca-certificates \
     dnsmasq \
-    libgmp10 \
-    libmpfr6 \
-    libopencv-core4.2 \
-    libopencv-imgcodecs4.2 \
-    libopencv-imgproc4.2 \
     nginx \
     openssh-client \
     openssl \
@@ -135,14 +123,6 @@ COPY server/public server/public
 
 # Copy factory device database (SN → MAC lookup for BLE provisioning)
 COPY server/cloud_devices_anonymous.json server/cloud_devices_anonymous.json
-
-# Copy native coverage planner from the prebuilt artifact image.
-COPY --from=coverage-native /opt/opennova/bin/coverage_grid_plan /opt/opennova/bin/coverage_grid_plan
-RUN chmod +x /opt/opennova/bin/coverage_grid_plan \
-  && mkdir -p /opt/opennova/share/licenses/coverage-native
-COPY --from=coverage-native /opt/opennova/share/licenses/coverage-native/GPL-3.0.txt /opt/opennova/share/licenses/coverage-native/GPL-3.0.txt
-COPY --from=coverage-native /opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md /opt/opennova/share/licenses/coverage-native/THIRD_PARTY_NOTICES.md
-ENV COVERAGE_NATIVE_BIN=/opt/opennova/bin/coverage_grid_plan
 
 # Copy entrypoint
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh

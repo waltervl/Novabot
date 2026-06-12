@@ -430,7 +430,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
           <div class="help-item"><b>Calibrate Polygon Offset</b> — paneel om de hele kaart-polygoon in cm te verschuiven met live preview. Gebruik als de vorm klopt maar systematisch een paar cm verschoven ligt.</div>
           <div class="help-item">↳ <b>pijlen / Reset / Cancel</b> — verschuiven de preview (Shift = 10 cm) of resetten/sluiten zonder opslaan.</div>
           <div class="help-item warn">↳ <b>Apply</b> — slaat de verschuiving op en synct de héle kaart opnieuw naar de maaier (niet ongedaan te maken zonder opnieuw Apply).</div>
-          <div class="help-item"><b>Native coverage preview</b> — berekent het coverage-pad op de server uit de opgeslagen kaart en tekent de banen over de map. Werkt zonder online maaier.</div>
+          <div class="help-item"><b>Mower coverage preview</b> — vraagt hetzelfde preview-pad op als de Novabot app en tekent de banen over de map. Vereist een online maaier.</div>
           <div class="help-item"><b>Hide preview</b> — verbergt de server-previewlijnen.</div>
           <div class="help-item"><b>Delete (per kaart)</b> — verwijdert die specifieke kaart van deze maaier.</div>
         </div></details>
@@ -649,10 +649,10 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
           <option value="">Select a mower...</option>
         </select>
         <button id="calibratePolygonBtn" onclick="enterPolygonCalibration()" title="Nudge the entire polygon by integer-cm offsets and sync to mower" style="padding:8px 16px;background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.5);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Calibrate Polygon Offset</button>
-        <button id="nativeCoverageBtn" onclick="runNativeCoveragePreview()" title="Server-side native coverage preview from stored DB maps. Does not require an online mower." style="padding:8px 16px;background:rgba(16,185,129,.16);color:#6ee7b7;border:1px solid rgba(16,185,129,.42);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Native coverage preview</button>
+        <button id="nativeCoverageBtn" onclick="runNativeCoveragePreview()" title="Mower-generated coverage preview using the stock Novabot preview flow." style="padding:8px 16px;background:rgba(16,185,129,.16);color:#6ee7b7;border:1px solid rgba(16,185,129,.42);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Mower coverage preview</button>
         <input id="nativeCoverageRadius" type="number" min="0.2" max="1.2" step="0.01" value="0.61" title="Coverage planner radius in meters" style="width:72px;padding:8px 8px;background:#0d0d20;border:1px solid rgba(16,185,129,.35);border-radius:8px;color:#d1fae5;font-size:12px;text-align:right">
         <button id="nativeCoverageRadiusSaveBtn" onclick="saveCoveragePlannerRadius()" title="Save coverage planner radius to server and mower" style="padding:8px 10px;background:rgba(16,185,129,.12);color:#a7f3d0;border:1px solid rgba(16,185,129,.35);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Save radius</button>
-        <button id="nativeCoverageClearBtn" onclick="clearNativeCoveragePreview()" title="Hide native coverage preview lines" style="padding:8px 12px;background:rgba(255,255,255,.05);color:#cbd5e1;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Hide preview</button>
+        <button id="nativeCoverageClearBtn" onclick="clearNativeCoveragePreview()" title="Hide coverage preview lines" style="padding:8px 12px;background:rgba(255,255,255,.05);color:#cbd5e1;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Hide preview</button>
       </div>
       <div id="mapInfo" style="font-size:12px;color:#aaa;margin-bottom:8px"></div>
       <div id="nativeCoverageStatus" style="font-size:11px;color:#9ca3af;margin:-3px 0 8px;min-height:14px"></div>
@@ -6192,9 +6192,9 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
     }
   }
 
-  // Server-side native coverage preview. Paths are local meter coordinates from
-  // /api/dashboard/native-preview-path/:sn, so they use the same tx/ty transform
-  // as stored polygons. Draw over polygons and under the charger/live markers.
+  // Mower coverage preview. Paths are local meter coordinates from the stock
+  // get_preview_cover_path flow, so they use the same tx/ty transform as stored
+  // polygons. Draw over polygons and under the charger/live markers.
   var coveragePaths = (canvas.__mapState && Array.isArray(canvas.__mapState.coveragePaths))
     ? canvas.__mapState.coveragePaths
     : [];
@@ -6318,7 +6318,7 @@ function renderMapCanvas(canvas, maps, chargingPose, ghostMaps) {
   if (window.__mapEdit) drawEditOverlay(canvas);
 }
 
-// ── Native coverage preview (server-side, no mower command) ────────────────
+// ── Mower coverage preview (stock generate_preview_cover_path flow) ─────────
 function setNativeCoverageStatus(text, color) {
   var el = document.getElementById('nativeCoverageStatus');
   if (!el) return;
@@ -6335,7 +6335,7 @@ function clearNativeCoveragePreview(showStatus) {
       renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
     }
   }
-  if (showStatus !== false) setNativeCoverageStatus('Native coverage preview hidden', '#9ca3af');
+  if (showStatus !== false) setNativeCoverageStatus('Mower coverage preview hidden', '#9ca3af');
 }
 
 function nativeCoverageRadiusValue() {
@@ -6406,23 +6406,19 @@ async function runNativeCoveragePreview() {
   }
 
   if (btn) btn.disabled = true;
-  setNativeCoverageStatus('Computing native coverage preview on server...', '#a78bfa');
+  setNativeCoverageStatus('Requesting mower coverage preview...', '#a78bfa');
 
   try {
     var state = c && c.__mapState ? c.__mapState : {};
     var maps = Array.isArray(state.maps) ? state.maps : [];
-    var work = maps.find(function(m) {
+    var workMaps = maps.filter(function(m) {
       return String(m.mapType || '').toLowerCase() === 'work' && m.canonicalName;
     });
-    var body = {};
-    if (work && work.canonicalName) body.canonical = work.canonicalName;
-    if (state.livePose && Number.isFinite(Number(state.livePose.x)) && Number.isFinite(Number(state.livePose.y))) {
-      body.startLocal = { x: Number(state.livePose.x), y: Number(state.livePose.y) };
-    }
-    var radius = nativeCoverageRadiusValue();
-    if (Number.isFinite(radius)) body.radius = radius;
+    var body = {
+      map_ids: previewMapIdsFromCanonicals(workMaps.map(function(m) { return m.canonicalName; })),
+    };
 
-    var r = await fetch('/api/dashboard/native-preview-path/' + encodeURIComponent(sn), {
+    var r = await fetch('/api/dashboard/refresh-preview-path/' + encodeURIComponent(sn), {
       method: 'POST',
       headers: { 'Authorization': token, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -6433,18 +6429,31 @@ async function runNativeCoveragePreview() {
     var paths = Array.isArray(data.paths) ? data.paths : [];
     c.__mapState = c.__mapState || { userScale: 1, userPanX: 0, userPanY: 0 };
     c.__mapState.coveragePaths = paths;
-    c.__mapState.coverageSource = 'native';
+    c.__mapState.coverageSource = 'mower';
     if (c.__mapState.maps) renderMapCanvas(c, c.__mapState.maps, c.__mapState.chargingPose || null);
 
-    var suffix = data.canonical ? (' on ' + data.canonical) : '';
-    var radiusText = Number.isFinite(Number(data.coverageRadius)) ? (' radius ' + data.coverageRadius + 'm') : '';
-    var md5 = data.pgmMd5 ? (' pgm ' + String(data.pgmMd5).slice(0, 8)) : '';
-    setNativeCoverageStatus('Native coverage preview: ' + paths.length + ' path(s)' + suffix + radiusText + md5, '#86efac');
+    var busy = data.busy ? ' (cached while mower is busy)' : '';
+    setNativeCoverageStatus('Mower coverage preview: ' + paths.length + ' path(s)' + busy, '#86efac');
   } catch (e) {
-    setNativeCoverageStatus('Native coverage preview failed: ' + (e && e.message ? e.message : e), '#fca5a5');
+    setNativeCoverageStatus('Mower coverage preview failed: ' + (e && e.message ? e.message : e), '#fca5a5');
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+function previewMapIdsFromCanonicals(canonicals) {
+  var weights = {};
+  for (var i = 0; i < canonicals.length; i++) {
+    var match = String(canonicals[i] || '').match(/^map(\\d+)$/);
+    if (!match) continue;
+    var idx = Number(match[1]);
+    if (idx === 0) weights[1] = true;
+    else if (idx === 1) weights[10] = true;
+    else if (idx === 2) weights[100] = true;
+  }
+  var sum = 0;
+  Object.keys(weights).forEach(function(k) { sum += Number(k); });
+  return sum || 1;
 }
 
 // ── Mask overlay layer ("what the mower sees") ──────────────────────────────
