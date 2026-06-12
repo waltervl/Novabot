@@ -23,6 +23,26 @@ This is a native binary inside the OpenNova container. It is not a sidecar
 container, it does not call the firmware binary, and it does not require qemu at
 runtime.
 
+## Runtime Map Sources
+
+Native coverage generation is server-side and does not require a mower. There are
+two supported inputs:
+
+- Existing PGM/YAML map files can be passed directly to `coverage_grid_plan`.
+- Stored OpenNova map rows are rasterized by `server/src/maps/occupancyGrid.ts`
+  into a temporary per-map PGM, then passed to the same native binary.
+
+The dashboard route `POST /api/dashboard/native-preview-path/:sn` uses the
+second path. It reads the map from SQLite, generates the occupancy grid inside
+the OpenNova server process, runs `/opt/opennova/bin/coverage_grid_plan`, and
+returns dashboard path JSON. It does not send `save_map`, it does not publish
+`generate_preview_cover_path`, and it does not need the mower to be online.
+
+Any `save_map type:1` capture mentioned in this document is a validation fixture
+only. It is useful for proving that the DB-polygon-to-PGM rasterizer is
+byte-identical to firmware output, but it is not part of runtime coverage
+generation.
+
 The image also contains third-party notices at:
 
 ```text
@@ -174,14 +194,16 @@ memetic GTSP solver.
 
 ## Remaining Exactness Gates
 
-Two gates remain intentionally blocked rather than guessed around:
+Two exactness-validation gates remain intentionally blocked rather than guessed
+around. They do not block offline server-side coverage generation from a stored
+map.
 
 | Beads issue | Status | Gate |
 |---|---|---|
 | `Novabot-828` | blocked | adversarial PGM fixtures referenced by the firmware binary are not present locally |
-| `Novabot-efu` | blocked | byte-identical occupancy-grid proof needs a live post-`expandPolygon` `save_map type:1` capture |
+| `Novabot-efu` | blocked | byte-identical proof for the DB-polygon rasterizer needs a matched post-`expandPolygon` polygon plus `map.pgm`/`map.yaml` fixture |
 
 Do not replace these with approximations. Unblock `Novabot-828` only when the
-missing fixtures are recovered. Unblock `Novabot-efu` only with explicit approval
-for a live capture window, or with a non-mutating source of the exact
-post-processed polygon plus matching `map.pgm`/`map.yaml`.
+missing fixtures are recovered. Unblock `Novabot-efu` only with a non-mutating
+fixture source, or with explicit approval for a live capture window. That capture
+is for oracle validation only and must never become a runtime dependency.
