@@ -13,8 +13,42 @@ set(ETH_GEOMETRY_ROOT "${ETH_ROOT}/polygon_coverage_geometry")
 set(ETH_SOLVERS_ROOT "${ETH_ROOT}/polygon_coverage_solvers")
 
 find_package(CGAL 5.0 REQUIRED COMPONENTS Core)
-find_package(OpenCV 4.2 REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(OpenCV 4.2 COMPONENTS core imgproc imgcodecs QUIET)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+if(OpenCV_FOUND)
+  set(COVERAGE_NATIVE_OPENCV_INCLUDE_DIRS ${OpenCV_INCLUDE_DIRS})
+  set(COVERAGE_NATIVE_OPENCV_LIBS ${OpenCV_LIBS})
+else()
+  find_path(COVERAGE_NATIVE_OPENCV_INCLUDE_DIR
+    NAMES opencv2/core.hpp
+    PATH_SUFFIXES opencv4
+    REQUIRED
+  )
+  find_library(COVERAGE_NATIVE_OPENCV_CORE opencv_core REQUIRED)
+  find_library(COVERAGE_NATIVE_OPENCV_IMGPROC opencv_imgproc REQUIRED)
+  find_library(COVERAGE_NATIVE_OPENCV_IMGCODECS opencv_imgcodecs REQUIRED)
+
+  set(COVERAGE_NATIVE_OPENCV_INCLUDE_DIRS
+    ${COVERAGE_NATIVE_OPENCV_INCLUDE_DIR}
+  )
+  set(COVERAGE_NATIVE_OPENCV_LIBS
+    ${COVERAGE_NATIVE_OPENCV_IMGCODECS}
+    ${COVERAGE_NATIVE_OPENCV_IMGPROC}
+    ${COVERAGE_NATIVE_OPENCV_CORE}
+  )
+  set(OpenCV_VERSION "manual core/imgproc/imgcodecs")
+endif()
+
+add_library(coverage_opencv INTERFACE)
+target_include_directories(coverage_opencv
+  INTERFACE
+    ${COVERAGE_NATIVE_OPENCV_INCLUDE_DIRS}
+)
+target_link_libraries(coverage_opencv
+  INTERFACE
+    ${COVERAGE_NATIVE_OPENCV_LIBS}
+)
 
 message(STATUS "CGAL_VERSION=${CGAL_VERSION}")
 message(STATUS "OpenCV_VERSION=${OpenCV_VERSION}")
@@ -88,7 +122,7 @@ target_include_directories(coverage_vendor_glue
 target_link_libraries(coverage_vendor_glue
   PUBLIC
     coverage_geometry
-    ${OpenCV_LIBS}
+    coverage_opencv
 )
 target_compile_options(coverage_vendor_glue PRIVATE -Wall)
 
@@ -96,14 +130,14 @@ add_executable(coverage_smoke src/smoke_bcd_sweep.cc)
 target_link_libraries(coverage_smoke
   PRIVATE
     coverage_geometry
-    ${OpenCV_LIBS}
+    coverage_opencv
 )
 
 add_executable(coverage_grid_plan src/coverage_grid_plan_main.cc)
 target_link_libraries(coverage_grid_plan
   PRIVATE
     coverage_vendor_glue
-    ${OpenCV_LIBS}
+    coverage_opencv
 )
 
 add_executable(coverage_vendor_glue_test
@@ -116,7 +150,7 @@ target_include_directories(coverage_vendor_glue_test
 target_link_libraries(coverage_vendor_glue_test
   PRIVATE
     coverage_vendor_glue
-    ${OpenCV_LIBS}
+    coverage_opencv
 )
 
 add_test(NAME coverage_vendor_glue_test COMMAND coverage_vendor_glue_test)

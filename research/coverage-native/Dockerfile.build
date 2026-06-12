@@ -11,7 +11,9 @@ RUN apt-get update \
     libboost-all-dev \
     libgmp-dev \
     libmpfr-dev \
-    libopencv-dev \
+    libopencv-core-dev \
+    libopencv-imgcodecs-dev \
+    libopencv-imgproc-dev \
     ninja-build \
     pkg-config \
     wget \
