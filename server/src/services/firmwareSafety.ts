@@ -21,3 +21,49 @@ export function isBetaFirmware(version: string | null | undefined): boolean {
   const v = version.toLowerCase();
   return v.includes('custom') || v.includes('opennova');
 }
+
+// ── ensureBetaFlashSafe ───────────────────────────────────────────────────────
+
+export type BetaFlashGate =
+  | { allowed: true; backup: BackupEntry | null; reason: 'not-beta' | 'recent-backup' | 'backup-created' | 'no-maps' }
+  | { allowed: false; error: 'BACKUP_FAILED'; detail: string };
+
+/** True when the mower has at least one work polygon worth protecting. */
+export function hasMapsToProtect(sn: string): boolean {
+  try {
+    return mapRepo.findAllByMowerSnAndType(sn, 'work').some((w: any) => w.map_area);
+  } catch {
+    return false;
+  }
+}
+
+/** Newest backup for `sn` whose age is within BACKUP_MAX_AGE_MS, else null. */
+function recentBackup(sn: string): BackupEntry | null {
+  const newest = listBackups(sn).sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (!newest) return null;
+  return (Date.now() - newest.createdAt) <= BACKUP_MAX_AGE_MS ? newest : null;
+}
+
+/**
+ * Guarantee a fresh backup before a BETA mower flash. Stock firmware and
+ * chargers should never reach here (callers gate on device type), but stock
+ * versions are passed through defensively.
+ */
+export async function ensureBetaFlashSafe(sn: string, version: string | null | undefined): Promise<BetaFlashGate> {
+  if (!isBetaFirmware(version)) return { allowed: true, backup: null, reason: 'not-beta' };
+
+  const recent = recentBackup(sn);
+  if (recent) return { allowed: true, backup: recent, reason: 'recent-backup' };
+
+  const created = await createBackup(sn, 'pre-beta-flash');
+  if (created) return { allowed: true, backup: created, reason: 'backup-created' };
+
+  if (hasMapsToProtect(sn)) {
+    return {
+      allowed: false,
+      error: 'BACKUP_FAILED',
+      detail: `Kon geen backup maken voor ${sn} terwijl er kaarten zijn — flash geblokkeerd.`,
+    };
+  }
+  return { allowed: true, backup: null, reason: 'no-maps' };
+}
