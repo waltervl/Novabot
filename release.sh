@@ -52,8 +52,9 @@ git tag "v$NEW"
 git push && git push --tags
 
 # Build + push multi-platform Docker image (amd64 + arm64).
-# Keep Docker's layer cache enabled by default; the native coverage planner
-# stage is expensive and only needs rebuilding when its inputs change.
+# Keep Docker's layer cache enabled by default; the npm ci dependency layers
+# (server + dashboard) are the expensive part and only rebuild when the
+# lockfiles change.
 CACHE_ARGS=()
 if [ "${RELEASE_NO_CACHE:-0}" = "1" ] || [ "${RELEASE_NO_CACHE:-}" = "true" ]; then
   CACHE_ARGS=(--no-cache)
