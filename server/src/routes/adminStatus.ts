@@ -656,11 +656,25 @@ adminStatusRouter.post('/dnsmasq', (req: AuthRequest, res: Response) => {
       res.json({ ok: false, error, detail });
     }
   } else {
-    try {
-      execSync('pkill -x dnsmasq', { stdio: 'ignore' });
+    // SIGTERM, let dnsmasq exit, then VERIFY. If it survives (ignored SIGTERM
+    // or a second instance), escalate to SIGKILL. Report the REAL state — the
+    // old code always returned running:false even when the process survived,
+    // so the UI button looked stuck on "Stop" and stopping appeared to do nothing.
+    try { execSync('pkill -x dnsmasq', { stdio: 'ignore' }); } catch { /* none running */ }
+    try { execSync('sleep 0.3', { stdio: 'ignore' }); } catch { /* best effort */ }
+    let stillRunning = false;
+    try { execSync('pgrep -x dnsmasq', { stdio: 'ignore' }); stillRunning = true; } catch { stillRunning = false; }
+    if (stillRunning) {
+      try { execSync('pkill -9 -x dnsmasq', { stdio: 'ignore' }); } catch { /* gone between checks */ }
+      try { execSync('sleep 0.3', { stdio: 'ignore' }); } catch { /* best effort */ }
+      stillRunning = false;
+      try { execSync('pgrep -x dnsmasq', { stdio: 'ignore' }); stillRunning = true; } catch { stillRunning = false; }
+    }
+    if (stillRunning) {
+      console.error('[DNS] dnsmasq still running after SIGTERM + SIGKILL');
+      res.json({ ok: false, running: true, error: 'dnsmasq did not stop (still running after SIGKILL).' });
+    } else {
       console.log('[DNS] dnsmasq stopped');
-      res.json({ ok: true, running: false });
-    } catch {
       res.json({ ok: true, running: false });
     }
   }

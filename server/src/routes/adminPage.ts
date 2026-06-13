@@ -1628,9 +1628,11 @@ function mdHandleExtendedResponse(ev) {
     }
     mdRenderOutput();
   } else {
-    // Generic fallback — dump the value
+    // Generic fallback — dump the value (or the whole data object when the
+    // response carries no value field, so we never stringify undefined).
     mdAppendLine('# ' + ev.command);
-    mdAppendLine(JSON.stringify(value, null, 2));
+    var dump = JSON.stringify(value !== undefined ? value : data, null, 2);
+    mdAppendLine(dump !== undefined ? dump : '(empty response)');
     mdRenderOutput();
   }
 
@@ -1638,6 +1640,9 @@ function mdHandleExtendedResponse(ev) {
 }
 
 function mdAppendLine(line) {
+  // Coerce to string: JSON.stringify(undefined) returns undefined (not a
+  // string), and any non-string line would crash mdRenderOutput's .toLowerCase().
+  if (typeof line !== 'string') line = (line == null ? '' : String(line));
   mdOutputLines.push(line);
   // Cap total lines to avoid memory blowup
   if (mdOutputLines.length > 5000) mdOutputLines.splice(0, mdOutputLines.length - 5000);
@@ -2739,7 +2744,7 @@ async function toggleDnsmasq() {
     // Surface the REAL backend error instead of silently flipping back to
     // "Start" (which made a failed enable look like nothing happened).
     if (d && d.ok === false) {
-      status.textContent = d.error || 'Failed to start dnsmasq';
+      status.textContent = d.error || (wasRunning ? 'Failed to stop dnsmasq' : 'Failed to start dnsmasq');
       status.style.color = '#f87171';
       btn.textContent = wasRunning ? 'Stop' : 'Start';
       return;
