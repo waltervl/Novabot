@@ -826,31 +826,19 @@ function isCoverageActive(sn: string): boolean {
   const sensors = deviceCache.get(sn);
   if (!sensors) return false;
   const msg = sensors.get('msg') ?? '';
-  const workStatus = sensors.get('work_status') ?? '';
-  const taskMode = parseInt(sensors.get('task_mode') ?? '0', 10);
-  // Work:RUNNING, Work:COVERING, Work:NAVIGATING, Work:MOVING — actief maaien
-  if (msg.includes('Work:RUNNING') || msg.includes('Work:COVERING')
-      || msg.includes('Work:NAVIGATING') || msg.includes('Work:MOVING')) {
-    return true;
-  }
-  // work_status:9 = COVERAGE FINISHED but task not cleared — mower's coverage
-  // planner is still "busy" from its point of view, and generate_preview
-  // will still 128-error. Block until task_mode drops to 0.
-  if (workStatus === '9' && taskMode === 1) return true;
-  // Fallback: COVERAGE mode with a possibly-active task (task_mode 1). The mower
-  // keeps "Mode:COVERAGE" + task_mode 1 as its LAST-SELECTED mode long after a
-  // task ends, so this must NOT fire for a clearly idle/finished Work: state —
-  // otherwise an idle mower (e.g. Work:WAIT or Work:CANCELLED after a cancel)
-  // gets its preview wrongly blocked with a 409, which the dashboard surfaces as
-  // "Couldn't compute the path". An actually-active task always shows an active
-  // Work: state and is already caught above; only a paused/avoiding task without
-  // one should still block here. Case-sensitive "Work:" so it ignores the lower-
-  // case "Prev work:" field in the same msg.
-  const workIsIdle = /Work:(STANDBY|IDLE|WAIT|CANCELLED|FINISH|CHARGE|CHARGING)/.test(msg);
-  if (taskMode === 1 && msg.includes('Mode:COVERAGE') && !workIsIdle) {
-    return true;
-  }
-  return false;
+  const batteryState = (sensors.get('battery_state') ?? '').toUpperCase();
+  // The mower only error-128s a generate_preview while a coverage task is
+  // ACTUALLY working (or paused). A charging / docked / idle / finished mower is
+  // safe to preview — even when it still reports its LAST "Mode:COVERAGE" +
+  // task_mode:1 long after the task ended. That lingering state (e.g. parked on
+  // the dock at "Work: FINISHED", work_status:Ready) was the source of the
+  // false-positive "coverage task active" 409s ("Couldn't compute the path"), so
+  // we no longer infer active-ness from task_mode / work_status / Mode:COVERAGE —
+  // only from a live working Work: state.
+  if (batteryState === 'CHARGING' || batteryState === 'FULL') return false;
+  // Case-sensitive "Work:" so it ignores the lower-case "Prev work:" field in the
+  // same msg; \s* so "Work:RUNNING" and "Work: RUNNING" both match.
+  return /Work:\s*(RUNNING|COVERING|NAVIGATING|MOVING|AVOIDING|BOUNDARY_COVERING|PAUSE)/.test(msg);
 }
 
 // POST /api/dashboard/refresh-preview-path/:sn
