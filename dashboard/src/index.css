@@ -49,3 +49,12 @@ body {
 @supports (padding: env(safe-area-inset-bottom)) {
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 }
+
+/* Time-wheel scroll columns: native snap scrolling, no visible scrollbar. */
+.tw-wheel-scroll {
+  -ms-overflow-style: none;     /* IE/Edge */
+  scrollbar-width: none;        /* Firefox */
+}
+.tw-wheel-scroll::-webkit-scrollbar {
+  display: none;                /* Chrome/Safari */
+}

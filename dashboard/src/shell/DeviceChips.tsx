@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   BatteryMedium, BatteryCharging, Satellite, Wifi, Thermometer,
-  Activity, ChevronDown, TreePine,
+  Activity, ChevronDown, Gauge,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Drawer } from './Drawer';
@@ -16,6 +16,27 @@ interface Props {
   /** Which half to render. Lets the shell place the mower switcher and the live
    *  telemetry capsule on opposite ends of the tab row. Omit to render both. */
   part?: 'identity' | 'telemetry';
+}
+
+// ── Mower identity row (status dot + name + firmware subtitle) ───────────────
+// Mirrors the OpenNova app's device picker: an online/offline dot before the
+// name, with the firmware version as a muted subtitle.
+
+function MowerIdentityRow({ online, name, sub }: { online: boolean; name: string; sub: string }) {
+  return (
+    <>
+      <span className="relative grid place-items-center shrink-0">
+        <span
+          className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-400' : 'bg-zinc-500'}`}
+          style={online ? { boxShadow: '0 0 0 3px rgba(52,211,153,.18)' } : undefined}
+        />
+      </span>
+      <span className="flex flex-col items-start leading-tight min-w-0">
+        <span className="text-sm font-semibold text-zinc-100 truncate max-w-[170px]">{name}</span>
+        <span className="text-[10px] font-mono text-zinc-500 truncate max-w-[170px]">{sub}</span>
+      </span>
+    </>
+  );
 }
 
 // ── Sensor grouping ──────────────────────────────────────────────────────────
@@ -257,6 +278,8 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
   if (mower === null) return null;
 
   const s = mower.sensors;
+  const subFor = (m: DeviceState) => m.sensors?.sw_version ?? m.sn;
+  const fwLabel = subFor(mower);
 
   function openDrawer() {
     setOpenedAt(Date.now());
@@ -272,36 +295,34 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
     if (part === 'telemetry') return offlineBadge;
     return (
       <>
-        <div className="inline-flex items-center gap-1.5 h-7">
+        <div className="inline-flex items-center gap-1.5">
           {/* Mower name / switcher */}
           {knownMowers.length > 1 ? (
             <div className="relative">
               <button
                 onClick={(e) => { e.stopPropagation(); setSwitcherOpen(v => !v); }}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-800 text-sm font-medium text-zinc-500"
+                className="inline-flex items-center gap-2.5 h-10 pl-3 pr-2.5 rounded-xl bg-zinc-800/40 border border-zinc-700/60 hover:bg-zinc-800 transition-colors"
               >
-                <TreePine className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
-                {mower.nickname ?? mower.sn}
-                <ChevronDown className={`w-3 h-3 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
+                <MowerIdentityRow online={false} name={mower.nickname ?? mower.sn} sub={fwLabel} />
+                <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
               </button>
               {switcherOpen && (
-                <div className="absolute top-full left-0 mt-1 z-[100] bg-zinc-900 border border-zinc-700 rounded shadow-xl min-w-[160px]">
+                <div className="absolute top-full left-0 mt-1.5 z-[100] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[200px] p-1">
                   {knownMowers.map(m => (
                     <button
                       key={m.sn}
                       onClick={(e) => { e.stopPropagation(); setSwitcherOpen(false); onSelectMower(m.sn); }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-800 ${m.sn === mower.sn ? 'text-emerald-400' : 'text-zinc-200'}`}
+                      className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-zinc-800 transition-colors ${m.sn === mower.sn ? 'bg-zinc-800/60' : ''}`}
                     >
-                      {m.nickname ?? m.sn}
+                      <MowerIdentityRow online={m.online} name={m.nickname ?? m.sn} sub={subFor(m)} />
                     </button>
                   ))}
                 </div>
               )}
             </div>
           ) : (
-            <span className="inline-flex items-center gap-1.5 px-2.5 rounded-md border border-zinc-700 text-xs text-zinc-500">
-              <TreePine className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
-              <span className="font-medium">{mower.nickname ?? mower.sn}</span>
+            <span className="inline-flex items-center gap-2.5 h-10 pl-3 pr-3 rounded-xl bg-zinc-800/40 border border-zinc-700/50">
+              <MowerIdentityRow online={false} name={mower.nickname ?? mower.sn} sub={fwLabel} />
             </span>
           )}
           {!part && offlineBadge}
@@ -331,6 +352,10 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
   const workStatus = s.work_status;
   const hasWork = workStatus != null && workStatus !== '0' && workStatus !== '';
 
+  // Live driving speed (m/s), derived server-side from the pose stream.
+  const driveSpeed = parseFloat(s.mow_speed ?? '');
+  const hasSpeed = isFinite(driveSpeed) && driveSpeed > 0.05;
+
   const rtkFixQuality = s.rtk_fix_quality as string | undefined;
   const hasRtkFixQuality = rtkFixQuality != null && rtkFixQuality !== '';
   const RTK_FIX_QUALITY_COLORS: Record<string, string> = {
@@ -359,34 +384,28 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
             <div className="relative">
               <button
                 onClick={(e) => { e.stopPropagation(); setSwitcherOpen(v => !v); }}
-                className="inline-flex items-center gap-2 h-8 pl-1.5 pr-2.5 rounded-xl bg-zinc-800/50 border border-zinc-700/70 hover:bg-zinc-800 hover:border-zinc-600 transition-colors text-sm font-semibold text-zinc-100"
+                className="inline-flex items-center gap-2.5 h-10 pl-3 pr-2.5 rounded-xl bg-zinc-800/50 border border-zinc-700/70 hover:bg-zinc-800 hover:border-zinc-600 transition-colors"
               >
-                <span className="grid place-items-center w-6 h-6 rounded-lg bg-emerald-950/50 border border-emerald-800/40">
-                  <TreePine className="w-3.5 h-3.5 text-emerald-400" />
-                </span>
-                {mower.nickname ?? mower.sn}
+                <MowerIdentityRow online={mower.online} name={mower.nickname ?? mower.sn} sub={fwLabel} />
                 <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
               </button>
               {switcherOpen && (
-                <div className="absolute top-full left-0 mt-1.5 z-[100] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[170px] p-1">
+                <div className="absolute top-full left-0 mt-1.5 z-[100] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[200px] p-1">
                   {knownMowers.map(m => (
                     <button
                       key={m.sn}
                       onClick={(e) => { e.stopPropagation(); setSwitcherOpen(false); onSelectMower(m.sn); }}
-                      className={`w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-zinc-800 ${m.sn === mower.sn ? 'text-emerald-400' : 'text-zinc-200'}`}
+                      className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-zinc-800 transition-colors ${m.sn === mower.sn ? 'bg-zinc-800/60' : ''}`}
                     >
-                      {m.nickname ?? m.sn}
+                      <MowerIdentityRow online={m.online} name={m.nickname ?? m.sn} sub={subFor(m)} />
                     </button>
                   ))}
                 </div>
               )}
             </div>
           ) : (
-            <span className="inline-flex items-center gap-2 h-8 pl-1.5 pr-2.5 rounded-xl bg-zinc-800/40 border border-zinc-700/50 text-sm font-semibold text-zinc-100">
-              <span className="grid place-items-center w-6 h-6 rounded-lg bg-emerald-950/50 border border-emerald-800/40">
-                <TreePine className="w-3.5 h-3.5 text-emerald-400" />
-              </span>
-              {mower.nickname ?? mower.sn}
+            <span className="inline-flex items-center gap-2.5 h-10 pl-3 pr-3 rounded-xl bg-zinc-800/40 border border-zinc-700/50">
+              <MowerIdentityRow online={mower.online} name={mower.nickname ?? mower.sn} sub={fwLabel} />
             </span>
           );
 
@@ -466,6 +485,16 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
                     color="text-emerald-300"
                     iconColor="text-emerald-400/80"
                     label={`Work status: ${workStatus}`}
+                  />
+                )}
+
+                {hasSpeed && (
+                  <TeleCell
+                    icon={Gauge}
+                    value={`${driveSpeed.toFixed(1)} m/s`}
+                    color="text-sky-300"
+                    iconColor="text-sky-400/80"
+                    label={`Driving speed: ${driveSpeed.toFixed(2)} m/s`}
                   />
                 )}
               </>

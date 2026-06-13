@@ -1,16 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  Play, Pause, Square, PlugZap, ArrowUp, X, ChevronDown, MapPin,
-  Map as MapIcon, Sparkles, RotateCw, Navigation, Settings2,
-  Power, Camera, Gauge, Battery, Eye, MoreHorizontal, Slice,
-  Home, SkipForward, CloudRain, Gamepad2, Anchor,
+  Play, Pause, Square, ArrowUp, X, ChevronDown, MapPin,
+  Map as MapIcon, Sparkles, RotateCw,
+  Eye, Slice,
+  Home, SkipForward, CloudRain, Gamepad2, Anchor, Move,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData, GpsPoint, LocalPoint } from '../../types';
 import {
-  sendCommand, sendExtendedCommand, fetchMaps, startPatrol, stopPatrol, rebootMower,
-  setChargeThreshold, setMaxSpeed, previewPath,
-  setDemoMode as setDemoModeApi, getDemoMode,
+  sendCommand, sendExtendedCommand, fetchMaps,
+  getDemoMode,
   fetchRainForecast, findIncomingRain, setRainIgnoreSession,
 } from '../../api/client';
 import { localToGps } from '../../utils/coords';
@@ -52,7 +52,7 @@ interface Props {
   patternCenter?: { lat: number; lng: number } | null;
   /** Ask the map to render a fresh coverage preview at the chosen direction for
    *  the selected work-area canonical(s) (all work maps when "All work areas"). */
-  onPreview?: (covDirection: number, canonicals: string[]) => void;
+  onPreview?: (covDirection: number, canonicals: string[], polygonArea?: Array<{ latitude: number; longitude: number }>) => void;
   /** True while the map is actually fetching the mower preview — keeps the
    *  Preview button disabled and spinning until the real path is back. */
   previewLoading?: boolean;
@@ -148,10 +148,34 @@ export function MowerControls({
   const [patternRotation, setPatternRotation] = useState(0);
   const [edgeOffset, setEdgeOffset] = useState(0);
 
-  // Extended controls state
-  const [settingsExpanded, setSettingsExpanded] = useState(false);
-  const [moreExpanded, setMoreExpanded] = useState(false);
   const [showManualControl, setShowManualControl] = useState(false);
+  // Manual-control floating window position (px, fixed). Draggable + persistent
+  // so it never opens hidden behind the top bar.
+  const [mcPos, setMcPos] = useState<{ x: number; y: number }>(() => {
+    try {
+      const s = localStorage.getItem('novabot.manualPos');
+      if (s) return JSON.parse(s) as { x: number; y: number };
+    } catch { /* ignore */ }
+    const w = typeof window !== 'undefined' ? window.innerWidth : 1024;
+    return { x: Math.max(8, Math.round(w / 2 - 150)), y: 84 };
+  });
+  const mcDragRef = useRef<{ ox: number; oy: number } | null>(null);
+  useEffect(() => {
+    try { localStorage.setItem('novabot.manualPos', JSON.stringify(mcPos)); } catch { /* ignore */ }
+  }, [mcPos]);
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      const d = mcDragRef.current;
+      if (!d) return;
+      const nx = Math.min(Math.max(0, e.clientX - d.ox), window.innerWidth - 80);
+      const ny = Math.min(Math.max(0, e.clientY - d.oy), window.innerHeight - 40);
+      setMcPos({ x: nx, y: ny });
+    };
+    const up = () => { mcDragRef.current = null; };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+  }, []);
 
   // ── Multi-map mowing queue (mirrors app MowQueueContext) ───────────
   // start_navigation only mows ONE map per call. To mow every work zone
@@ -181,27 +205,13 @@ export function MowerControls({
     queueWasMowingRef.current = false;
     queueAdvanceLockRef.current = false;
   }, []);
-  const [patrolActive, setPatrolActive] = useState(false);
-  const [chargeThresholdVal, setChargeThresholdVal] = useState(20);
-  const [maxSpeedVal, setMaxSpeedVal] = useState(0.5);
-  const [rebootConfirm, setRebootConfirm] = useState(false);
   const [demoActive, setDemoActive] = useState(false);
 
-  // Load demo mode status on mount
+  // Load demo mode status on mount (demo affects the activity gating).
   useEffect(() => {
     if (!sn) return;
     getDemoMode(sn).then(r => setDemoActive(r.demoMode)).catch(() => {});
   }, [sn]);
-
-  const toggleDemo = async () => {
-    try {
-      const r = await setDemoModeApi(sn, !demoActive);
-      setDemoActive(r.demoMode);
-      toast(r.demoMode ? 'Demo mode ON — commands are simulated' : 'Demo mode OFF', 'success');
-    } catch {
-      toast('Failed to toggle demo mode', 'error');
-    }
-  };
 
   const isMappingActive = sensors?.start_edit_or_assistant_map_flag === '1';
   const gpsEnabled = sensors?.gps_state === 'ENABLE';
@@ -286,18 +296,6 @@ export function MowerControls({
       onOffsetPreviewChange?.(null);
     }
   }, [expanded, edgeOffset, mapId, patternMode, pendingPolygon, maps, chargerGps]);
-
-  // Auto-clear reboot confirmation after 5s
-  useEffect(() => {
-    if (!rebootConfirm) return;
-    const timer = setTimeout(() => setRebootConfirm(false), 5000);
-    return () => clearTimeout(timer);
-  }, [rebootConfirm]);
-
-  // Clear reboot confirm when settings closes
-  useEffect(() => {
-    if (!settingsExpanded) setRebootConfirm(false);
-  }, [settingsExpanded]);
 
   const send = useCallback(async (cmd: Record<string, unknown>, label?: string, refreshPara?: boolean) => {
     setBusy(true);
@@ -416,26 +414,49 @@ export function MowerControls({
           const targetMap = mapId
             ? workMaps.find(m => m.mapId === mapId)
             : workMaps[0];
-          const fallbackIdx = targetMap ? workMaps.indexOf(targetMap) : 0;
-          const areaParam = workMapToArea(targetMap, fallbackIdx);
 
-          const navPayload: Record<string, unknown> = {
-            mapName: 'test',
-            cutterhigh: wireHeight,
-            area: areaParam,
-            cmd_num: nextCmdNum(),
-          };
-          const navResult = await sendCommand(sn, { start_navigation: navPayload });
-
-          if (!navResult.ok) {
-            // Fallback: old firmware protocol (matches app StartMowSheet.tsx line 317)
+          // Edge offset → mow the shrunk/expanded boundary via SPECIFIED_AREA
+          // (start_run + workArea — the firmware's custom-polygon path, the same
+          // one the Preview uses). The planner still plans on the obstacle-
+          // constrained grid, so red zones stay avoided; the Preview shows the
+          // exact path beforehand. Only the area-enum NORMAL start can't carry an
+          // offset, so a non-zero offset routes through here.
+          if (edgeOffset !== 0 && targetMap && Array.isArray(targetMap.mapArea) && targetMap.mapArea.length >= 3 && chargerGps) {
+            const gpsPoly = (targetMap.mapArea as Array<{ x: number; y: number }>).map(p => localToGps(p, chargerGps!));
+            const offsetGps = offsetPolygon(gpsPoly, edgeOffset);
             await sendCommand(sn, {
-              start_run: { mapName: null, area: areaParam, cutterhigh: wireHeight },
+              start_run: {
+                mapNames: [targetMap.mapName || 'home'],
+                cutGrassHeight: cuttingHeight,   // mm
+                startWay: 1,                     // SPECIFIED_AREA
+                workArea: offsetGps.map(p => ({ latitude: p.lat, longitude: p.lng })),
+                schedule: false,
+                scheduleId: '',
+              },
             });
-          }
+            toast(`✓ ${t('controls.startMowing')} (${edgeOffset > 0 ? '+' : ''}${edgeOffset.toFixed(1)}m)`, 'success');
+          } else {
+            const fallbackIdx = targetMap ? workMaps.indexOf(targetMap) : 0;
+            const areaParam = workMapToArea(targetMap, fallbackIdx);
 
-          const detail = navResult.encrypted ? ` (encrypted, ${navResult.size}B)` : '';
-          toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
+            const navPayload: Record<string, unknown> = {
+              mapName: 'test',
+              cutterhigh: wireHeight,
+              area: areaParam,
+              cmd_num: nextCmdNum(),
+            };
+            const navResult = await sendCommand(sn, { start_navigation: navPayload });
+
+            if (!navResult.ok) {
+              // Fallback: old firmware protocol (matches app StartMowSheet.tsx line 317)
+              await sendCommand(sn, {
+                start_run: { mapName: null, area: areaParam, cutterhigh: wireHeight },
+              });
+            }
+
+            const detail = navResult.encrypted ? ` (encrypted, ${navResult.size}B)` : '';
+            toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
+          }
         }
       }
 
@@ -635,41 +656,27 @@ export function MowerControls({
         ? workMaps.filter(m => m.mapId === mapId)
         : workMaps
       ).map(m => m.canonicalName!).filter(Boolean);
-      const canUseMowerPreview =
-        !patternMode &&
-        !pendingPolygon &&
-        edgeOffset === 0 &&
-        canonicals.length > 0;
+      // The mower preview only supports SAVED maps: generate_preview_cover_path
+      // reads map_ids + cov_direction and IGNORES polygon_area (firmware-
+      // confirmed in mqtt_node). So we never send a custom polygon to it — an
+      // edge offset can't be reflected in the preview (it's still applied to the
+      // actual mow via SPECIFIED_AREA), and a pattern/drawn shape simply has no
+      // planner preview. Any saved-map selection (with or without offset) runs
+      // the real mower preview of that map.
+      const canUseMowerPreview = !patternMode && !pendingPolygon && canonicals.length > 0;
       if (canUseMowerPreview) {
         // Hand off to the map: it owns the coverage overlay + projection and runs
-        // a fresh stock mower preview at this direction. Do NOT toast success or
-        // clear `previewing` here — the real fetch drives `previewLoading`, which
-        // keeps the button disabled (and only then shows ✓/✗) once the mower
-        // actually responds. Keeps the sheet open so the operator can re-preview.
+        // a fresh stock mower preview at this direction. previewLoading (from the
+        // map) drives the button state from here.
         onPreview?.(pathDirection, canonicals);
         return;
       }
-
-      let polySource: Array<{ lat: number; lng: number }> | undefined;
-      if (patternMode && patternContours.length > 0 && patternCenter) {
-        polySource = transformToGps(patternContours[0], patternCenter, patternSize, patternRotation);
-      } else {
-        const localPoly = pendingPolygon?.mapId === mapId
-          ? pendingPolygon.mapArea
-          : maps.find(m => m.mapId === mapId)?.mapArea;
-        polySource = localPoly && chargerGps
-          ? localPoly.map(p => localToGps(p, chargerGps))
-          : undefined;
-      }
-      if (!polySource || polySource.length < 3) {
-        toast(t('controls.previewNoArea'), 'error');
-        setPreviewing(false);
-        return;
-      }
-      const finalPoly = edgeOffset !== 0 ? offsetPolygon(polySource, edgeOffset) : polySource;
-      const polygonArea = finalPoly.map(p => ({ latitude: p.lat, longitude: p.lng }));
-      await previewPath(sn, polygonArea, pathDirection);
-      toast(`✓ ${t('controls.previewPath')}`, 'success');
+      // Pattern / freshly-drawn polygon → no saved map to preview, and the
+      // firmware can't preview an arbitrary polygon. It still MOWS the shape via
+      // SPECIFIED_AREA; there's just no pre-mow planner preview for it.
+      toast(t('controls.previewSavedOnly', "Preview works for saved work areas only — patterns mow but can't be previewed."), 'error');
+      setPreviewing(false);
+      return;
     } catch (err) {
       const detail = err instanceof Error ? `: ${err.message}` : '';
       toast(`✗ ${t('controls.previewPath')}${detail}`, 'error');
@@ -740,9 +747,7 @@ export function MowerControls({
               }
               const next = !expanded;
               setExpanded(next);
-              setSettingsExpanded(false);
               setMappingExpanded(false);
-              setMoreExpanded(false);
               onPathDirectionChange?.(next ? pathDirection : null);
             }}
             disabled={startDisabled}
@@ -840,140 +845,44 @@ export function MowerControls({
           </button>
         )}
 
-        {/* GO-HOME — idle, error, mowing, edge, paused (NOT charging, returning,
-            mapping, offline-enabled). Disabled when offline. Mirrors the app's
-            Go-Home visibility (hidden on dock / while returning). */}
-        {(activity === 'idle' || activity === 'error' || activity === 'mowing'
-          || activity === 'edge_cutting' || activity === 'paused' || activity === 'offline') && (
-          <button
-            onClick={handleGoHomeClick}
-            disabled={disabled || (!online && !demoActive)}
-            className={`${btnBase} bg-gray-700/60 text-yellow-300 hover:bg-yellow-700/40`}
-            title={t('controls.goToCharge')}
-          >
-            <Home className="w-3.5 h-3.5" />
-          </button>
-        )}
+        {/* GO TO CHARGER — persistent house button in the bar. Same
+            go_pile→go_to_charge as the app; while mowing/edge it asks first
+            (return dialog). Disabled offline/busy and during mapping (unsafe to
+            interrupt). */}
+        <button
+          onClick={handleGoHomeClick}
+          disabled={disabled || activity === 'mapping'}
+          className={`${btnBase} bg-gray-700/60 text-yellow-300 hover:bg-yellow-700/40`}
+          title={t('controls.goToCharge')}
+        >
+          <Home className="w-3.5 h-3.5" />
+        </button>
 
-        {/* Divider: transport/go controls (left) vs the More menu (right) */}
-        <div className="w-px h-5 bg-zinc-700/60 mx-0.5" />
+        {/* MANUAL CONTROL — persistent button (joystick / blade / speed sheet). */}
+        <button
+          onClick={() => { setShowManualControl(true); setExpanded(false); setMappingExpanded(false); }}
+          disabled={disabled}
+          className={`${btnBase} bg-gray-700/60 text-sky-300 hover:bg-sky-700/40`}
+          title={t('controls.manualControl', 'Handmatige besturing')}
+        >
+          <Gamepad2 className="w-3.5 h-3.5" />
+        </button>
 
-        {/* Secondary actions (mapping, settings, manual, patrol, demo, go-pile)
-            all live in the More (⋯) menu now, on every screen size. */}
-        <div className="relative">
-          <button
-            onClick={() => { setMoreExpanded(!moreExpanded); setExpanded(false); setMappingExpanded(false); setSettingsExpanded(false); }}
-            disabled={disabled}
-            className={`${btnBase} ${moreExpanded ? 'bg-gray-600 text-white' : 'bg-gray-700/60 text-gray-400 hover:text-white'}`}
-            title={t('controls.more')}
-          >
-            <MoreHorizontal className="w-3.5 h-3.5" />
-          </button>
-          {moreExpanded && (
-            <>
-              <div className="fixed inset-0 z-[9998]" onClick={() => setMoreExpanded(false)} />
-              <div className="absolute top-full right-0 mt-1 w-48 z-[10000] bg-gray-800 rounded-lg border border-gray-700 shadow-xl py-1">
-                <button
-                  onClick={async () => {
-                    setMoreExpanded(false);
-                    try {
-                      setBusy(true);
-                      await sendCommand(sn, { go_pile: {} });
-                      await new Promise(r => setTimeout(r, 500));
-                      await sendCommand(sn, {
-                        go_to_charge: {
-                          cmd_num: nextCmdNum(),
-                          chargerpile: { latitude: 200, longitude: 200 },
-                        },
-                      });
-                      toast(`✓ ${t('controls.goToCharge')}`, 'success');
-                    } catch (err) {
-                      const detail = err instanceof Error ? `: ${err.message}` : '';
-                      toast(`✗ ${t('controls.goToCharge')}${detail}`, 'error');
-                    }
-                    setBusy(false);
-                  }}
-                  disabled={disabled}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-yellow-300 hover:bg-gray-700/50 transition-colors disabled:opacity-30"
-                >
-                  <PlugZap className="w-3.5 h-3.5" />
-                  {t('controls.goToCharge')}
-                </button>
-                <button
-                  onClick={async () => {
-                    setMoreExpanded(false);
-                    setBusy(true);
-                    try {
-                      if (patrolActive) {
-                        await stopPatrol(sn);
-                        setPatrolActive(false);
-                        toast(`✓ ${t('controls.stopPatrol')}`, 'success');
-                      } else {
-                        await startPatrol(sn);
-                        setPatrolActive(true);
-                        toast(`✓ ${t('controls.patrol')}`, 'success');
-                      }
-                    } catch (err) {
-                      const detail = err instanceof Error ? `: ${err.message}` : '';
-                      toast(`✗ Patrol${detail}`, 'error');
-                    }
-                    setBusy(false);
-                  }}
-                  disabled={disabled}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors disabled:opacity-30 ${
-                    patrolActive ? 'text-cyan-300 bg-cyan-900/20' : 'text-gray-300 hover:bg-gray-700/50'
-                  }`}
-                >
-                  <Navigation className="w-3.5 h-3.5" />
-                  {patrolActive ? t('controls.stopPatrol') : t('controls.patrol')}
-                </button>
-                <button
-                  onClick={() => { setMoreExpanded(false); setShowManualControl(true); setExpanded(false); setSettingsExpanded(false); setMappingExpanded(false); }}
-                  disabled={disabled}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-sky-300 hover:bg-gray-700/50 transition-colors disabled:opacity-30"
-                >
-                  <Gamepad2 className="w-3.5 h-3.5" />
-                  {t('controls.manualControl', 'Handmatige besturing')}
-                </button>
-                <button
-                  onClick={() => { setMoreExpanded(false); setMappingExpanded(!mappingExpanded); setExpanded(false); setSettingsExpanded(false); }}
-                  disabled={disabled}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors disabled:opacity-30 ${
-                    mappingExpanded || isMappingActive ? 'text-purple-300 bg-purple-900/20' : 'text-gray-300 hover:bg-gray-700/50'
-                  }`}
-                >
-                  <MapIcon className="w-3.5 h-3.5" />
-                  {t('controls.mapping')}
-                </button>
-                <button
-                  onClick={() => { setMoreExpanded(false); setSettingsExpanded(!settingsExpanded); setExpanded(false); setMappingExpanded(false); }}
-                  disabled={disabled}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors disabled:opacity-30 ${
-                    settingsExpanded ? 'text-white bg-gray-700/30' : 'text-gray-300 hover:bg-gray-700/50'
-                  }`}
-                >
-                  <Settings2 className="w-3.5 h-3.5" />
-                  {t('controls.extendedSettings')}
-                </button>
-                <button
-                  onClick={() => { setMoreExpanded(false); toggleDemo(); }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors ${
-                    demoActive ? 'text-amber-300 bg-amber-900/20' : 'text-gray-300 hover:bg-gray-700/50'
-                  }`}
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  {demoActive ? t('controls.demoOn', 'Demo aan') : t('controls.demo', 'Demo')}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        {/* MAPPING — persistent button; opens the mapping dropdown. */}
+        <button
+          onClick={() => { setMappingExpanded(!mappingExpanded); setExpanded(false); }}
+          disabled={disabled}
+          className={`${btnBase} ${mappingExpanded || isMappingActive ? 'bg-purple-700/40 text-purple-200' : 'bg-gray-700/60 text-gray-400 hover:text-white'}`}
+          title={t('controls.mapping')}
+        >
+          <MapIcon className="w-3.5 h-3.5" />
+        </button>
 
       </div>
 
       {/* Expanded start settings dropdown */}
       {expanded && (
-        <div className="absolute top-full right-0 mt-1 w-[calc(100vw-1rem)] sm:w-72 z-[10000] bg-gray-800 rounded-lg border border-gray-700 shadow-xl overflow-hidden">
+        <div className="absolute top-full right-0 mt-1 w-[calc(100vw-1rem)] sm:w-72 z-[10000] bg-gray-800 rounded-lg border border-gray-700 shadow-xl max-h-[80vh] overflow-y-auto overflow-x-hidden">
           <div className="p-3 space-y-3">
 
             {/* Mode toggle: Map area / Pattern / Edge cut */}
@@ -1252,140 +1161,9 @@ export function MowerControls({
         </div>
       )}
 
-      {/* Extended settings dropdown */}
-      {settingsExpanded && (
-        <div className="absolute top-full right-0 mt-1 w-[calc(100vw-1rem)] sm:w-64 z-[10000] bg-gray-800 rounded-lg border border-gray-700 shadow-xl p-3 space-y-3">
-          {/* Max speed */}
-          <div>
-            <div className="flex items-center justify-between">
-              <label className="text-[9px] text-gray-500 uppercase tracking-wide flex items-center gap-1">
-                <Gauge className="w-3 h-3" />
-                {t('controls.maxSpeed')}
-              </label>
-              <span className="text-[11px] text-gray-300 font-mono">{maxSpeedVal.toFixed(1)} m/s</span>
-            </div>
-            <input
-              type="range" min={0.1} max={1.0} step={0.1}
-              value={maxSpeedVal}
-              onChange={e => setMaxSpeedVal(parseFloat(e.target.value))}
-              className="w-full h-1.5 mt-1 accent-blue-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
-            />
-            <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
-              <span>0.1</span><span>1.0 m/s</span>
-            </div>
-            <button
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await setMaxSpeed(sn, maxSpeedVal);
-                  toast(`✓ ${t('controls.maxSpeed')}: ${maxSpeedVal.toFixed(1)} m/s`, 'success');
-                } catch { toast(`✗ ${t('controls.maxSpeed')}`, 'error'); }
-                setBusy(false);
-              }}
-              disabled={busy}
-              className="w-full mt-1.5 text-[10px] py-1 rounded bg-blue-700/40 text-blue-300 hover:bg-blue-700/60 transition-colors disabled:opacity-40"
-            >
-              {t('controls.apply')}
-            </button>
-          </div>
-
-          <div className="border-t border-gray-700" />
-
-          {/* Charge threshold */}
-          <div>
-            <div className="flex items-center justify-between">
-              <label className="text-[9px] text-gray-500 uppercase tracking-wide flex items-center gap-1">
-                <Battery className="w-3 h-3" />
-                {t('controls.chargeThreshold')}
-              </label>
-              <span className="text-[11px] text-gray-300 font-mono">{chargeThresholdVal}%</span>
-            </div>
-            <input
-              type="range" min={10} max={50} step={5}
-              value={chargeThresholdVal}
-              onChange={e => setChargeThresholdVal(parseInt(e.target.value))}
-              className="w-full h-1.5 mt-1 accent-yellow-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
-            />
-            <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
-              <span>10%</span><span>50%</span>
-            </div>
-            <button
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await setChargeThreshold(sn, chargeThresholdVal);
-                  toast(`✓ ${t('controls.chargeThreshold')}: ${chargeThresholdVal}%`, 'success');
-                } catch { toast(`✗ ${t('controls.chargeThreshold')}`, 'error'); }
-                setBusy(false);
-              }}
-              disabled={busy}
-              className="w-full mt-1.5 text-[10px] py-1 rounded bg-yellow-700/40 text-yellow-300 hover:bg-yellow-700/60 transition-colors disabled:opacity-40"
-            >
-              {t('controls.apply')}
-            </button>
-          </div>
-
-          <div className="border-t border-gray-700" />
-
-          {/* Quick actions */}
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  const resp = await fetch(`/api/dashboard/camera/${encodeURIComponent(sn)}/snapshot`);
-                  if (!resp.ok) throw new Error(resp.statusText);
-                  const blob = await resp.blob();
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `snapshot_${sn}_${Date.now()}.jpg`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  toast(`✓ ${t('controls.snapshot')}`, 'success');
-                } catch { toast(`✗ ${t('controls.snapshot')}`, 'error'); }
-                setBusy(false);
-              }}
-              disabled={busy}
-              className="flex items-center justify-center gap-1 text-[10px] py-2 rounded bg-cyan-900/40 text-cyan-300 hover:bg-cyan-800/50 transition-colors disabled:opacity-40"
-            >
-              <Camera className="w-3 h-3" />
-              {t('controls.snapshot')}
-            </button>
-
-            {!rebootConfirm ? (
-              <button
-                onClick={() => setRebootConfirm(true)}
-                disabled={busy}
-                className="flex items-center justify-center gap-1 text-[10px] py-2 rounded bg-red-900/40 text-red-300 hover:bg-red-800/50 transition-colors disabled:opacity-40"
-              >
-                <Power className="w-3 h-3" />
-                {t('controls.reboot')}
-              </button>
-            ) : (
-              <button
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await rebootMower(sn);
-                    toast(`✓ ${t('controls.rebootSent')}`, 'success');
-                  } catch { toast(`✗ ${t('controls.reboot')}`, 'error'); }
-                  setRebootConfirm(false);
-                  setBusy(false);
-                }}
-                disabled={busy}
-                className="flex items-center justify-center gap-1 text-[10px] py-2 rounded bg-red-600 text-white hover:bg-red-500 transition-colors disabled:opacity-40 animate-pulse"
-              >
-                <Power className="w-3 h-3" />
-                {t('controls.confirmReboot')}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Return-to-home keuze (zoals de OpenNova app): beëindigen of pauzeren + terug. */}
-      {showReturnDialog && (
+      {showReturnDialog && createPortal(
         <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowReturnDialog(false)} />
           <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl max-w-sm w-full p-6">
@@ -1421,11 +1199,12 @@ export function MowerControls({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Re-anchor wizard — post-restore frame re-anchoring (mirrors app). */}
-      {showReanchor && (
+      {showReanchor && createPortal(
         <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowReanchor(false)} />
           <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl max-w-sm w-full p-5 max-h-[90vh] overflow-y-auto">
@@ -1436,27 +1215,46 @@ export function MowerControls({
               onClose={() => setShowReanchor(false)}
             />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Manual control (joystick + blade) — mirrors the app JoystickScreen. */}
-      {showManualControl && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowManualControl(false)} />
-          <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl max-w-sm w-full p-5">
-            <ManualControlPanel
-              sn={sn}
-              online={online}
-              sensors={sensors}
-              onClose={() => setShowManualControl(false)}
-            />
+      {showManualControl && createPortal(
+        <div
+          className="fixed z-[99999] w-[300px] max-w-[92vw] bg-gray-900/95 backdrop-blur border border-gray-700/60 rounded-2xl shadow-2xl"
+          style={{ left: mcPos.x, top: mcPos.y }}
+        >
+          {/* Drag handle header */}
+          <div
+            className="flex items-center gap-2 px-3 py-2 cursor-move select-none border-b border-gray-700/60"
+            onMouseDown={(e) => {
+              if ((e.target as HTMLElement).closest('button')) return;
+              mcDragRef.current = { ox: e.clientX - mcPos.x, oy: e.clientY - mcPos.y };
+              e.preventDefault();
+            }}
+            title={t('controls.dragWindow', 'Sleep om te verplaatsen')}
+          >
+            <Move className="w-4 h-4 text-sky-400 shrink-0" />
+            <span className="text-xs font-semibold text-gray-200">{t('controls.manualControl', 'Handmatige besturing')}</span>
+            <button
+              onClick={() => setShowManualControl(false)}
+              className="ml-auto p-1 rounded text-gray-400 hover:text-red-400 hover:bg-gray-700/60 transition-colors"
+              title={t('common.close', 'Close')}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
-        </div>
+          <div className="p-4">
+            <ManualControlPanel sn={sn} online={online} sensors={sensors} />
+          </div>
+        </div>,
+        document.body,
       )}
 
       {/* Rain forecast confirmation — mirrors the app StartMowSheet rain modal.
           Shown when rain is forecast within ~3h of a manual start/resume. */}
-      {rainPrompt && (
+      {rainPrompt && createPortal(
         <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={cancelRainStart} />
           <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl max-w-sm w-full p-6">
@@ -1505,7 +1303,8 @@ export function MowerControls({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

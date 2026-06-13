@@ -150,7 +150,7 @@ interface Props {
   /** Bumped (nonce) by the Start-sheet "Preview" button to show a FRESH coverage
    *  preview at the configured cov_direction for the selected work-area
    *  canonical(s) (one, or all when "All work areas" is selected). */
-  previewRequest?: { nonce: number; covDirection: number; canonicals: string[] } | null;
+  previewRequest?: { nonce: number; covDirection: number; canonicals: string[]; polygonArea?: Array<{ latitude: number; longitude: number }> } | null;
   /** Callback when a new map is saved (draw/edit) — used for draw-to-start flow */
   onMapSaved?: (map: MapData) => void;
   /** Live growing polygon boundary during autonomous mapping (report_state_map_outline) */
@@ -1506,29 +1506,13 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // Server stuurt al GPS coords (lokaal→GPS conversie) — direct bruikbaar voor Leaflet.
   const startEditMap = useCallback((mapId: string, mapArea: Array<{ lat: number; lng: number }>) => {
     if (mapArea.length < 3) return;
-    // Mower-recorded rings carry hundreds of densely sampled points (~every
-    // 0.4 m). Editing every one is impossible (overlapping handles). Simplify
-    // adaptively to a manageable handle count via RDP in local meters
-    // (translation-invariant; the gpsToLocal/localToGps round-trip is exact),
-    // raising the tolerance until the ring drops to ~TARGET vertices. The saved
-    // draft replaces the dense ring — fine for editing, the planner re-rasterizes.
-    const TARGET = 28;
-    let verts = mapArea.map(p => [p.lat, p.lng] as [number, number]);
-    if (verts.length > TARGET && isUsableChargerGps(chargerGps)) {
-      const local = verts.map(([lat, lng]) => gpsToLocal({ lat, lng }, chargerGps));
-      let simplified = local;
-      let tol = 0.05;
-      for (let i = 0; i < 10 && simplified.length > TARGET; i++) {
-        simplified = simplifyPolygon(local, tol);
-        tol *= 1.7;
-      }
-      if (simplified.length >= 3 && simplified.length < verts.length) {
-        verts = simplified.map(pt => {
-          const g = localToGps(pt, chargerGps);
-          return [g.lat, g.lng] as [number, number];
-        });
-      }
-    }
+    // KEEP THE FULL RING — never simplify on edit. Mower-recorded rings carry
+    // hundreds of densely sampled points that trace the real garden contour;
+    // RDP-simplifying them (the old behaviour) straightened the boundary and
+    // corrupted the saved map. PolygonEditor caps the number of *drag handles*
+    // and warps the dense ring locally (cosine falloff) so editing stays usable
+    // while every un-touched point is preserved on save.
+    const verts = mapArea.map(p => [p.lat, p.lng] as [number, number]);
     setEditingMapId(mapId);
     setEditVertices(verts);
     setEditMode('edit');
@@ -1811,10 +1795,13 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // Generate a fresh coverage preview for one OR MANY work maps (honors the
   // Start-sheet work-area selector: "All work areas" → every work map, a single
   // selection → just that map). Static preview: no progress coloring, no poll.
-  const lastPreviewParamsRef = useRef<{ canonicals: string[]; covDirection: number } | null>(null);
-  const previewMaps = useCallback(async (canonicals: string[], covDirection: number) => {
-    if (!sn || canonicals.length === 0) return;
-    lastPreviewParamsRef.current = { canonicals, covDirection };
+  const lastPreviewParamsRef = useRef<{ canonicals: string[]; covDirection: number; polygonArea?: Array<{ latitude: number; longitude: number }> } | null>(null);
+  const previewMaps = useCallback(async (canonicals: string[], covDirection: number, polygonArea?: Array<{ latitude: number; longitude: number }>) => {
+    // A custom polygon (pattern / edge-offset) needs no canonicals; a saved-map
+    // preview needs at least one.
+    if (!sn) return;
+    if (canonicals.length === 0 && !polygonArea) return;
+    lastPreviewParamsRef.current = { canonicals, covDirection, polygonArea };
     setShowCoverage(true);
     setCoverageLive(false);
     stopCoveragePoll();
@@ -1826,6 +1813,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
       const result = await refreshPreviewPath(sn, {
         mapIds: previewMapIdsFromCanonicals(canonicals),
         covDirection,
+        polygonArea,
       });
       if (result.busy) {
         // 409: the server returned a CACHED path because it still believes the
@@ -1864,7 +1852,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     if (!previewRequest) return;
     if (previewRequest.nonce === lastPreviewNonceRef.current) return;
     lastPreviewNonceRef.current = previewRequest.nonce;
-    void previewMaps(previewRequest.canonicals, previewRequest.covDirection);
+    void previewMaps(previewRequest.canonicals, previewRequest.covDirection, previewRequest.polygonArea);
   }, [previewRequest, previewMaps]);
 
   // Cleanup poll on unmount.
@@ -3550,7 +3538,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
                           onClick={() => {
                             if (liveSession) { void refreshCoverage(); return; }
                             const lp = lastPreviewParamsRef.current;
-                            if (lp) void previewMaps(lp.canonicals, lp.covDirection);
+                            if (lp) void previewMaps(lp.canonicals, lp.covDirection, lp.polygonArea);
                             else void refreshCoverage();
                           }}
                           disabled={coverageLoading}
@@ -3989,8 +3977,9 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
                   <span>{new Date(m.createdAt).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
                 )}
               </div>
-              {/* Coverage stats for work areas */}
-              {coverageStats.has(m.mapId) && (() => {
+              {/* Coverage stats for work areas — only while actively mowing
+                  (otherwise it just shows last session's stale trail). */}
+              {mowingActive && coverageStats.has(m.mapId) && (() => {
                 const stats = coverageStats.get(m.mapId)!;
                 // Rough coverage: each trail point covers ~0.25m² (0.5m mow width × 0.5m spacing)
                 const coveredM2 = stats.points * 0.25;

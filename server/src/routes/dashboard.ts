@@ -864,8 +864,20 @@ function isCoverageActive(sn: string): boolean {
 // default rechte strepen in de richting van path_direction.
 dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Response) => {
   const { sn } = req.params;
-  const body = (req.body ?? {}) as { map_ids?: number | number[]; cov_direction?: number; specify_direction?: boolean };
+  const body = (req.body ?? {}) as {
+    map_ids?: number | number[];
+    cov_direction?: number;
+    specify_direction?: boolean;
+    // Custom polygon (pattern shape or edge-offset boundary). When given, the
+    // preview is generated for this polygon via SPECIFIED_AREA instead of a
+    // saved map — so pattern/offset previews actually render.
+    polygon_area?: Array<{ latitude: number; longitude: number }>;
+    cov_mode?: number;
+  };
   const mapIds = body.map_ids ?? 1;
+  const polygonArea = Array.isArray(body.polygon_area) && body.polygon_area.length >= 3
+    ? body.polygon_area
+    : undefined;
   const rawCovDirection = typeof body.cov_direction === 'number' ? body.cov_direction : undefined;
   const rawSpecifyDirection = typeof body.specify_direction === 'boolean' ? body.specify_direction : undefined;
 
@@ -918,10 +930,14 @@ dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Resp
 
     // 1. Trigger preview generation via normal MQTT — mqtt_node handles this fine.
     const cmdNum = Date.now() & 0x7fffffff;
-    const genPayload: Record<string, unknown> = {
-      cmd_num: cmdNum,
-      map_ids: mapIds,
-    };
+    const genPayload: Record<string, unknown> = { cmd_num: cmdNum };
+    if (polygonArea) {
+      // SPECIFIED_AREA: plan the preview over the supplied polygon (pattern/offset).
+      genPayload.cov_mode = body.cov_mode ?? 1;
+      genPayload.polygon_area = polygonArea;
+    } else {
+      genPayload.map_ids = mapIds;
+    }
     if (covDirection !== undefined) genPayload.cov_direction = covDirection;
     if (rawSpecifyDirection !== undefined && covDirection !== undefined) {
       genPayload.specify_direction = rawSpecifyDirection;

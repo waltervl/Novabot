@@ -11,7 +11,7 @@ import { WorkRecordsPage } from '../pages/WorkRecordsPage';
 import { SettingsPage } from '../pages/SettingsPage';
 import { NetworkHealthCard } from '../components/drawer/NetworkHealthCard';
 import { LiveStatusCard } from '../components/drawer/LiveStatusCard';
-import { ServerLogTail } from '../components/drawer/ServerLogTail';
+import { ServerLogTail, FloatingServerLog } from '../components/drawer/ServerLogTail';
 import { MowerControls } from '../components/dashboard/MowerControls';
 import type { PatternPlacement } from '../components/patterns/PatternOverlay';
 import { LongPauseBanner } from './LongPauseBanner';
@@ -31,10 +31,13 @@ function ShellInner() {
   const { activeMower, activeMowerSn, setActiveMowerSn, knownMowers } = useActiveMower(devices);
   const [tab, setTab] = useState<Tab>('map');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // The enlarged server-log lives here (not in the drawer) so it stays open
+  // when the drawer closes; only its own ✕ dismisses it.
+  const [logFloating, setLogFloating] = useState(false);
   // Bridge: the Start-sheet Preview button (in the header MowerControls) signals
   // the MowerMap (in MapTab) to show a fresh coverage preview at the chosen
   // direction. Nonce makes repeated clicks re-fire even with the same direction.
-  const [previewRequest, setPreviewRequest] = useState<{ nonce: number; covDirection: number; canonicals: string[] } | null>(null);
+  const [previewRequest, setPreviewRequest] = useState<{ nonce: number; covDirection: number; canonicals: string[]; polygonArea?: Array<{ latitude: number; longitude: number }> } | null>(null);
   // Pattern placement bridge: the Start-sheet Pattern tab (header MowerControls)
   // and the MowerMap (MapTab) are far apart in the tree. patternMode tells the
   // map to accept placement clicks (and stop polygons from swallowing them);
@@ -67,7 +70,7 @@ function ShellInner() {
       sn={activeMower.sn}
       online={activeMower.online}
       sensors={activeMower.sensors}
-      onPreview={(covDirection, canonicals) => { setTab('map'); setPreviewRequest({ nonce: Date.now(), covDirection, canonicals }); }}
+      onPreview={(covDirection, canonicals, polygonArea) => { setTab('map'); setPreviewRequest({ nonce: Date.now(), covDirection, canonicals, polygonArea }); }}
       patternCenter={patternCenter}
       onPatternModeChange={(active) => { setPatternMode(active); if (active) setTab('map'); if (!active) setPatternCenter(null); }}
       onPatternPlacementChange={setPatternPlacement}
@@ -150,8 +153,11 @@ function ShellInner() {
       <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
         <NetworkHealthCard />
         <LiveStatusCard sn={activeMowerSn} />
-        <ServerLogTail />
+        <ServerLogTail enlarged={logFloating} onEnlarge={() => setLogFloating(true)} />
       </Drawer>
+
+      {/* Floating server-log window — top-level so it survives the drawer. */}
+      <FloatingServerLog open={logFloating} onClose={() => setLogFloating(false)} />
     </div>
   );
 }

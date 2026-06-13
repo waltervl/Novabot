@@ -88,6 +88,8 @@ interface MowerDerived {
   mowerPosX: number | null;
   mowerPosY: number | null;
   mowerHeading: number | null;
+  /** Live driving speed in m/s, derived server-side from the pose stream. */
+  driveSpeed: number;
   /** Forwarded from `DeviceState.firmwareVersion` so the capability gates
    *  (edge cut, joystick, camera) can read it without a second lookup. */
   firmwareVersion: string | null;
@@ -310,6 +312,8 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
     mowerPosX: parseFloat(s.map_position_x ?? '') || null,
     mowerPosY: parseFloat(s.map_position_y ?? '') || null,
     mowerHeading: parseFloat(s.map_position_orientation ?? '') || null,
+    // Live driving speed (m/s), derived server-side from the pose stream.
+    driveSpeed: parseFloat(s.mow_speed ?? '') || 0,
     firmwareVersion: mower.firmwareVersion ?? null,
   };
 }
@@ -2058,6 +2062,12 @@ export default function HomeScreen() {
                 <View style={styles.chip}>
                   <Ionicons name="navigate" size={11} color={colors.textDim} />
                   <Text style={styles.chipText}>{mower.rtkSat} sat</Text>
+                </View>
+              )}
+              {mower.driveSpeed > 0.05 && (
+                <View style={styles.chip}>
+                  <Ionicons name="speedometer-outline" size={11} color={colors.textDim} />
+                  <Text style={styles.chipText}>{mower.driveSpeed.toFixed(1)} m/s</Text>
                 </View>
               )}
               {(() => {

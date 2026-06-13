@@ -13,7 +13,7 @@ interface Props {
   coveredLanes: Map<string, Array<{ lat1: number; lng1: number; lat2: number; lng2: number }>>;
   otaProgress: Map<string, OtaProgressEntry>;
   /** Bumped by the Start-sheet Preview button to show a fresh coverage preview. */
-  previewRequest?: { nonce: number; covDirection: number; canonicals: string[] } | null;
+  previewRequest?: { nonce: number; covDirection: number; canonicals: string[]; polygonArea?: Array<{ latitude: number; longitude: number }> } | null;
   /** Placed pattern overlay (controls→map) + map-click handler (map→controls). */
   patternPlacement?: PatternPlacement | null;
   onMapClickForPattern?: (center: { lat: number; lng: number }) => void;

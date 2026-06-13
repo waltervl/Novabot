@@ -388,6 +388,50 @@ export async function setMaxSpeed(sn: string, speed: number): Promise<CommandRes
   return (await post(`${BASE}/max-speed/${encodeURIComponent(sn)}`, { speed })).json();
 }
 
+// ── Mower settings (mirrors the app's MowerSettings screen, same endpoints) ──
+
+/**
+ * Mirror operator-set values into the server sensor cache so they survive a
+ * screen re-open without waiting for a fresh sensor frame. Body fields sit at
+ * the top level (same shape the app posts).
+ */
+export async function setSensorOverride(sn: string, fields: Record<string, string | number>): Promise<{ ok?: boolean }> {
+  return (await post(`${BASE}/sensor-override/${encodeURIComponent(sn)}`, fields)).json();
+}
+
+/**
+ * Soft-restart the mower's ROS stack (NOT an OS reboot). Refused with 409 while
+ * the mower is actively mowing unless `force` is set.
+ */
+export async function softRestartMower(sn: string, force = false): Promise<{ ok?: boolean; error?: string; message?: string }> {
+  const res = await fetch(`${BASE}/soft-restart/${encodeURIComponent(sn)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  });
+  return res.json().catch(() => ({}));
+}
+
+export interface RecalibrateResult {
+  ok?: boolean;
+  error?: string;
+  batteryState?: string;
+  pose?: { x: number; y: number; theta: number };
+}
+
+/**
+ * Overwrite map_info.json's charging pose with the mower's CURRENT reported
+ * pose. The mower must be docked + charging; pass `{ force: true }` to override.
+ */
+export async function recalibrateChargingPose(sn: string, opts?: { force?: boolean }): Promise<RecalibrateResult> {
+  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/recalibrate-charging-pose`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force: opts?.force === true }),
+  });
+  return res.json().catch(() => ({} as RecalibrateResult));
+}
+
 export async function previewPath(sn: string, polygonArea: Array<{ latitude: number; longitude: number }>, covDirection = 0): Promise<CommandResult> {
   return (await post(`${BASE}/preview-path/${encodeURIComponent(sn)}`, { polygonArea, covDirection })).json();
 }
@@ -802,10 +846,18 @@ export interface RefreshPreviewResult {
  *  `specify_direction`. Omit covDirection for mower-chosen auto direction. */
 export async function refreshPreviewPath(
   sn: string,
-  opts?: { mapIds?: number | number[]; covDirection?: number; specifyDirection?: boolean },
+  opts?: {
+    mapIds?: number | number[];
+    covDirection?: number;
+    specifyDirection?: boolean;
+    /** Custom polygon (pattern shape / edge-offset boundary). When set, the
+     *  preview is generated for this polygon via SPECIFIED_AREA. */
+    polygonArea?: Array<{ latitude: number; longitude: number }>;
+  },
 ): Promise<RefreshPreviewResult> {
   const body: Record<string, unknown> = {};
-  if (opts?.mapIds !== undefined) body.map_ids = opts.mapIds;
+  if (opts?.polygonArea && opts.polygonArea.length >= 3) body.polygon_area = opts.polygonArea;
+  else if (opts?.mapIds !== undefined) body.map_ids = opts.mapIds;
   if (opts?.covDirection !== undefined) body.cov_direction = opts.covDirection;
   if (opts?.specifyDirection !== undefined) body.specify_direction = opts.specifyDirection;
   const res = await fetch(`${BASE}/refresh-preview-path/${encodeURIComponent(sn)}`, {

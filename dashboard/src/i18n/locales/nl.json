@@ -50,7 +50,13 @@
     },
     "logs": {
       "title": "Server log",
-      "empty": "— leeg —"
+      "empty": "— leeg —",
+      "enlarge": "Vergroten",
+      "dragHint": "Sleep om te verplaatsen — sleep de hoek om te vergroten",
+      "mower": "Maaier",
+      "charger": "Charger",
+      "rest": "Overig",
+      "autoScroll": "Auto-scrollen"
     }
   },
   "common": {
@@ -226,7 +232,8 @@
     "preview": "Preview",
     "previewWaiting": "Wachten…",
     "previewPath": "Maaipad preview",
-    "previewNoArea": "Selecteer eerst een werkgebied"
+    "previewNoArea": "Selecteer eerst een werkgebied",
+    "previewSavedOnly": "Preview werkt alleen voor opgeslagen werkgebieden — patronen maaien wel maar zijn niet te previewen."
   },
   "camera": {
     "title": "Camera",
@@ -404,6 +411,7 @@
     "allWorkAreas": "Alle werkgebieden",
     "cuttingHeight": "Maaihoogte",
     "pathDirection": "Maairichting",
+    "pathDirectionHint": "Strepen tonen hoe de maaier rijdt",
     "saving": "Opslaan...",
     "create": "Aanmaken",
     "empty": "Geen schema's ingesteld",
@@ -570,6 +578,77 @@
       "cuttingHeight": "Maaihoogte",
       "direction": "Standaard richting",
       "saved": "Opgeslagen"
+    },
+    "weekStart": {
+      "title": "Week start",
+      "help": "Eerste dag van de week in de planner en tijdlijn.",
+      "mon": "Maandag",
+      "sun": "Zondag"
+    },
+    "display": {
+      "title": "Weergave",
+      "help": "Hoe dagen en tijden worden getoond in de planner en tijdlijn."
+    },
+    "timeFormat": {
+      "title": "Tijdnotatie",
+      "h24": "24u",
+      "h12": "12u"
+    },
+    "mower": {
+      "cuttingHeight": "Maaihoogte",
+      "obstacle": "Obstakeldetectie",
+      "sensitivity": {
+        "low": "Laag", "lowDesc": "Minder ontwijken, meer dekking",
+        "medium": "Gemiddeld", "mediumDesc": "Gebalanceerd (aanbevolen)",
+        "high": "Hoog", "highDesc": "Maximale obstakeldetectie"
+      },
+      "direction": "Maairichting",
+      "directionHint": "Strepen tonen hoe de maaier rijdt",
+      "directionDown": "Richting omlaag draaien",
+      "directionUp": "Richting omhoog draaien",
+      "joystickSpeed": "Joystick maximale snelheid",
+      "joystickHandling": "Joystick besturing",
+      "level": { "low": "Laag", "medium": "Gemiddeld", "high": "Hoog" },
+      "rain": "Automatisch pauzeren bij regen",
+      "rainPause": "Pauzeren bij regen",
+      "rainSummary": "≥ {{mm}} mm of ≥ {{prob}}% binnen {{h}}",
+      "rainMm": "Min. neerslag",
+      "rainProb": "Min. kans",
+      "rainHours": "Vooruitkijken",
+      "other": "Overig",
+      "headlight": "Koplamp",
+      "brightness": "Helderheid",
+      "speaker": "Speaker",
+      "timezone": "Tijdzone",
+      "save": "Instellingen opslaan",
+      "saving": "Opslaan…",
+      "saved": "Instellingen opgeslagen",
+      "saveFailed": "Kon instellingen niet opslaan",
+      "offline": "Maaier is offline — verbind 'm om op te slaan.",
+      "offlinePending": "Maaier offline — wijzigingen worden opgeslagen zodra hij weer verbindt.",
+      "savedAuto": "Wijzigingen automatisch opgeslagen",
+      "autoSaveHint": "Wijzigingen worden automatisch opgeslagen",
+      "recovery": "Herstel",
+      "recalibrate": "Laadpositie herkalibreren",
+      "recalibrateDesc": "Overschrijft map_info.json met de huidige positie. Zet de maaier eerst op het dock — hij moet LADEN.",
+      "recalibrateConfirm": "Laadpositie overschrijven met de HUIDIGE positie van de maaier? De maaier moet fysiek op het dock staan en laden, anders gaat toekomstige dekking driften.",
+      "recalibrateForce": "Batterijstatus is \"{{state}}\" — verwacht LADEN. Toch de veiligheidscheck overslaan?",
+      "recalibrated": "Laadpositie geherkalibreerd",
+      "recalibrateFailed": "Herkalibreren mislukt",
+      "restart": "Maaier herstarten",
+      "restartDesc": "Herstart de maaier-software (geen reboot). Wist vastgelopen toestanden; binnen ~1 min weer online.",
+      "restartConfirm": "De maaier-software herstarten (geen volledige reboot)? Wist vastgelopen toestanden en is binnen ~1 minuut weer online. Werkt alleen als de maaier idle is of laadt.",
+      "restarting": "Maaier herstart — binnen ~1 min weer online",
+      "restartFailed": "Herstarten mislukt",
+      "maxSpeed": "Max snelheid",
+      "maxSpeedHint": "Snelheid tijdens autonoom maaien",
+      "chargeThreshold": "Accuniveau om terug te keren",
+      "chargeThresholdHint": "Ga laden als de accu onder dit niveau komt",
+      "reboot": "Maaier rebooten",
+      "rebootDesc": "Volledige OS-herstart. Een paar minuten offline — gebruik eerst Herstarten bij vastgelopen toestanden.",
+      "rebootConfirm": "De maaier rebooten (volledige OS-herstart)? Hij is een paar minuten offline. Gebruik eerst Herstarten bij vastgelopen toestanden.",
+      "rebooting": "Reboot verstuurd — de maaier is een paar minuten offline",
+      "rebootFailed": "Reboot mislukt"
     },
     "notifications": {
       "title": "Notificaties",

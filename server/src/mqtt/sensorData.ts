@@ -1054,7 +1054,30 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
     if (changes.has('map_position_x') || changes.has('map_position_y')) {
       const mx = parseFloat(snValues.get('map_position_x') ?? '');
       const my = parseFloat(snValues.get('map_position_y') ?? '');
-      if (!isNaN(mx) && !isNaN(my)) appendLocalTrailPoint(sn, mx, my);
+      if (!isNaN(mx) && !isNaN(my)) {
+        appendLocalTrailPoint(sn, mx, my);
+        // Derive driving speed (m/s) from consecutive map-frame pose samples.
+        // The pose stream is ~1 Hz so this is coarse, but enough to show the real
+        // speed and confirm the navigation-max-speed setting. Light EMA + a small
+        // deadband de-jitter it; it surfaces as the existing `mow_speed` sensor so
+        // both the dashboard and the app display it without extra plumbing.
+        const lt = getLocalTrail(sn);
+        if (lt.length >= 2) {
+          const a = lt[lt.length - 2];
+          const b = lt[lt.length - 1];
+          const dt = (b.ts - a.ts) / 1000;
+          if (dt >= 0.2 && dt <= 5) {
+            const raw = Math.hypot(b.x - a.x, b.y - a.y) / dt;
+            const prev = parseFloat(snValues.get('mow_speed') ?? '');
+            const ema = Number.isFinite(prev) ? prev * 0.5 + raw * 0.5 : raw;
+            const sv = (ema < 0.03 ? 0 : ema).toFixed(2);
+            if (snValues.get('mow_speed') !== sv) {
+              snValues.set('mow_speed', sv);
+              changes.set('mow_speed', sv);
+            }
+          }
+        }
+      }
     }
     // Validation trail — paired GPS + map_position samples, RTK FIX only.
     // Sampled on every active frame because we need a stream of pairs for
@@ -1076,6 +1099,11 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
   // subsequent report while docked (in case localization drifts after
   // re-dock). Only stores when a valid map_position is present.
   const docked = isDockedByValues(snValues);
+  if (docked && snValues.get('mow_speed') !== '0.00') {
+    // Parked → speed is 0 (avoid a stale non-zero reading lingering on the dock).
+    snValues.set('mow_speed', '0.00');
+    changes.set('mow_speed', '0.00');
+  }
   if (docked) {
     const mx = parseFloat(snValues.get('map_position_x') ?? '');
     const my = parseFloat(snValues.get('map_position_y') ?? '');

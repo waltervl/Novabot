@@ -1,15 +1,22 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Square, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { joystickStart, joystickMove, joystickStop } from '../../api/socket';
 import { sendExtendedCommand } from '../../api/client';
 import { deriveMowerActivity } from '../../utils/mowerActivity';
 
+/** Saw-blade icon — the MaterialCommunityIcons "saw-blade" the OpenNova app uses. */
+function SawBlade({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M20,15C20,15 18.6,16.3 21.1,17L18.3,19.8H15.5C15.5,19.8 13.6,19.7 15,22H11L9,20C9,20 7.7,18.6 7,21.1L4.2,18.3V15.5C4.2,15.5 4.3,13.6 2,15V11L4,9C4,9 5.4,7.7 2.8,7.1L5.6,4.2H8.5C8.5,4.2 10.4,4.3 9,2H13L15,4C15,4 16.3,5.4 17,2.8L19.8,5.6V8.5C19.8,8.5 19.7,10.4 22,9V13L20,15M14,12A2,2 0 0,0 12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12Z" />
+    </svg>
+  );
+}
+
 interface Props {
   sn: string;
   online: boolean;
   sensors?: Record<string, string>;
-  onClose?: () => void;
 }
 
 const DEAD_ZONE = 0.05;
@@ -32,7 +39,7 @@ function getHoldType(x: number, y: number): number {
   return x < 0 ? 1 : 2; // left(1), right(2)
 }
 
-export function ManualControlPanel({ sn, online, sensors, onClose }: Props) {
+export function ManualControlPanel({ sn, online, sensors }: Props) {
   const { t } = useTranslation();
   const [active, setActive] = useState(false);
   const [thumbPos, setThumbPos] = useState({ x: 0, y: 0 });
@@ -214,15 +221,6 @@ export function ManualControlPanel({ sn, online, sensors, onClose }: Props) {
 
   return (
     <div className="flex flex-col items-center gap-4">
-      <div className="flex items-center justify-between w-full">
-        <span className="text-sm font-medium text-white">{t('controls.manualControl', 'Handmatige besturing')}</span>
-        {onClose && (
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <X className="w-4 h-4" />
-          </button>
-        )}
-      </div>
-
       {/* Speed selector */}
       <div className="flex gap-1.5 w-full">
         {SPEED_LEVELS.map((s, i) => (
@@ -297,7 +295,7 @@ export function ManualControlPanel({ sn, online, sensors, onClose }: Props) {
           onClick={toggleBlade}
           className="flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-red-900/30 ring-1 ring-red-500/40 hover:bg-red-900/50 transition-colors"
         >
-          <Square className="w-4 h-4 text-red-400 fill-red-400 animate-pulse" />
+          <SawBlade className="w-4 h-4 text-red-400 animate-spin" />
           <span className="text-xs font-semibold text-red-300 flex-1 text-left">
             {bladeSpeed > 0
               ? t('controls.bladeRunning', { rpm: bladeSpeed, defaultValue: 'Mes draait — {{rpm}} RPM (tik om te stoppen)' })
@@ -306,8 +304,8 @@ export function ManualControlPanel({ sn, online, sensors, onClose }: Props) {
         </button>
       )}
 
-      {/* Controls row: blade toggle + emergency stop */}
-      <div className="flex gap-2 w-full">
+      {/* Blade toggle */}
+      <div className="flex w-full">
         <button
           onClick={toggleBlade}
           disabled={!online || onDock || autonomousBusy}
@@ -318,16 +316,8 @@ export function ManualControlPanel({ sn, online, sensors, onClose }: Props) {
           }`}
           title={onDock ? t('controls.bladeDockedHint', 'Niet beschikbaar op het laadstation') : undefined}
         >
-          <Square className="w-3.5 h-3.5" />
+          <SawBlade className="w-4 h-4" />
           {motorRunning ? t('controls.bladeOff', 'Mes uit') : t('controls.bladeOn', 'Mes aan')}
-        </button>
-        <button
-          onClick={stopAll}
-          disabled={!active}
-          className="flex-1 flex items-center justify-center gap-1.5 text-xs py-2 rounded bg-gray-700/60 text-gray-400 hover:text-red-400 hover:bg-red-900/30 transition-colors disabled:opacity-30"
-        >
-          <Square className="w-3.5 h-3.5" />
-          {t('controls.stop')}
         </button>
       </div>
 

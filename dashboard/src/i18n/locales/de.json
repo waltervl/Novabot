@@ -358,6 +358,7 @@
     "allWorkAreas": "Alle Arbeitsbereiche",
     "cuttingHeight": "Schnitthöhe",
     "pathDirection": "Mährichtung",
+    "pathDirectionHint": "Streifen zeigen, wie der Mäher fährt",
     "saving": "Speichern...",
     "create": "Erstellen",
     "empty": "Keine Zeitpläne konfiguriert",
@@ -541,6 +542,21 @@
       "cuttingHeight": "Schnitthöhe",
       "direction": "Standardrichtung",
       "saved": "Gespeichert"
+    },
+    "weekStart": {
+      "title": "Wochenbeginn",
+      "help": "Erster Tag der Woche im Planer und in der Timeline.",
+      "mon": "Montag",
+      "sun": "Sonntag"
+    },
+    "display": {
+      "title": "Anzeige",
+      "help": "Wie Tage und Zeiten im Planer und in der Timeline angezeigt werden."
+    },
+    "timeFormat": {
+      "title": "Zeitformat",
+      "h24": "24h",
+      "h12": "12h"
     },
     "notifications": {
       "title": "Benachrichtigungen",

@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Clock, Plus, Trash2, Send, X, ChevronRight, Calendar,
-  Compass, ArrowUp, AlertTriangle, CloudRain, RefreshCw, Ruler,
+  Clock, Plus, Minus, Trash2, Send, X, ChevronRight, Calendar,
+  Compass, AlertTriangle, CloudRain, RefreshCw, Ruler,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Schedule, MapData } from '../../types';
 import type { RainSession } from '../../api/client';
 import { fetchSchedules, createSchedule, updateSchedule, deleteSchedule, sendSchedule, fetchMaps, fetchRainSessions } from '../../api/client';
-
-const DIR_DEGREES = [0, 45, 90, 135, 180, 225, 270, 315];
+import { TimeWheel } from './TimeWheel';
+import { MowingDirectionPreview } from './MowingDirectionPreview';
+import { useWeekStart, weekdayOrder } from '../../utils/weekStart';
+import { useTimeFormat, formatTime } from '../../utils/timeFormat';
 
 /** Check of twee tijdranges overlappen (HH:MM format) */
 function timesOverlap(s1: string, e1: string | null, s2: string, e2: string | null): boolean {
@@ -88,7 +90,9 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
   const [saving, setSaving] = useState(false);
 
   const weekdayLabels = t('schedule.weekdays', { returnObjects: true }) as string[];
-  const compassLabels = t('schedule.compass', { returnObjects: true }) as string[];
+  const weekStart = useWeekStart();
+  const order = weekdayOrder(weekStart);
+  const timeFormat = useTimeFormat();
 
   // Conflict detection: form vs existing schedules
   const formConflicts = useMemo(() => {
@@ -217,43 +221,37 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
             />
           </div>
 
-          {/* Time */}
+          {/* Time — scroll-wheel pickers */}
           <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
               <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.start')}</label>
-              <input
-                type="time"
-                value={form.startTime}
-                onChange={e => setForm(prev => ({ ...prev, startTime: e.target.value }))}
-                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-emerald-500"
-              />
+              <div className="mt-1">
+                <TimeWheel value={form.startTime} onChange={v => setForm(prev => ({ ...prev, startTime: v }))} />
+              </div>
             </div>
             <div>
               <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.end')}</label>
-              <input
-                type="time"
-                value={form.endTime}
-                onChange={e => setForm(prev => ({ ...prev, endTime: e.target.value }))}
-                className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 text-gray-200 focus:outline-none focus:border-emerald-500"
-              />
+              <div className="mt-1">
+                <TimeWheel value={form.endTime} onChange={v => setForm(prev => ({ ...prev, endTime: v }))} />
+              </div>
             </div>
           </div>
 
-          {/* Weekdays */}
+          {/* Weekdays — order follows the week-start setting (stored 0=Sun) */}
           <div className="mb-3">
             <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.days')}</label>
             <div className="flex gap-1 mt-1">
-              {weekdayLabels.map((label, idx) => (
+              {order.map(d => (
                 <button
-                  key={idx}
-                  onClick={() => toggleWeekday(idx)}
+                  key={d}
+                  onClick={() => toggleWeekday(d)}
                   className={`flex-1 text-[11px] py-1.5 rounded transition-colors ${
-                    form.weekdays.includes(idx)
+                    form.weekdays.includes(d)
                       ? 'bg-emerald-600 text-white font-medium'
                       : 'bg-gray-900 text-gray-500 hover:text-gray-300 border border-gray-700'
                   }`}
                 >
-                  {label}
+                  {weekdayLabels[d]}
                 </button>
               ))}
             </div>
@@ -279,60 +277,66 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
             </div>
           )}
 
-          {/* Cutting height */}
-          <div className="mb-3">
-            <div className="flex items-center justify-between">
-              <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.cuttingHeight')}</label>
-              <span className="text-[11px] text-gray-300 font-mono">{(form.cuttingHeight / 10).toFixed(1)} cm</span>
-            </div>
-            <input
-              type="range"
-              min={20}
-              max={80}
-              step={5}
-              value={form.cuttingHeight}
-              onChange={e => setForm(prev => ({ ...prev, cuttingHeight: parseInt(e.target.value) }))}
-              className="w-full h-1.5 mt-1 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
-            />
-            <div className="flex justify-between text-[9px] text-gray-600 mt-0.5">
-              <span>2 cm</span>
-              <span>8 cm</span>
+          {/* Cutting height — −/+ stepper like the OpenNova app */}
+          <div className="mb-4">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.cuttingHeight')}</label>
+            <div className="mt-1.5 flex items-center justify-between gap-3 rounded-xl border border-gray-700 bg-gray-900/60 px-2 py-1.5">
+              <button
+                type="button"
+                onClick={() => setForm(prev => ({ ...prev, cuttingHeight: Math.max(20, prev.cuttingHeight - 10) }))}
+                disabled={form.cuttingHeight <= 20}
+                className="grid place-items-center w-9 h-9 rounded-lg bg-gray-800/70 border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label={t('schedule.cuttingHeightDown', 'Decrease cutting height')}
+              >
+                <Minus className="w-4 h-4" />
+              </button>
+              <span className="font-mono text-lg font-semibold text-white tabular-nums">
+                {Math.round(form.cuttingHeight / 10)} <span className="text-sm text-gray-400">cm</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setForm(prev => ({ ...prev, cuttingHeight: Math.min(90, prev.cuttingHeight + 10) }))}
+                disabled={form.cuttingHeight >= 90}
+                className="grid place-items-center w-9 h-9 rounded-lg bg-gray-800/70 border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label={t('schedule.cuttingHeightUp', 'Increase cutting height')}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
-          {/* Path direction */}
+          {/* Mowing direction — lawn-stripe preview + −/+ stepper like the app */}
           <div className="mb-3">
-            <div className="flex items-center justify-between">
-              <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.pathDirection')}</label>
-              <span className="text-[11px] text-gray-300 font-mono inline-flex items-center gap-1">
-                <ArrowUp className="w-3 h-3 transition-transform" style={{ transform: `rotate(${form.pathDirection}deg)` }} />
-                {form.pathDirection}&deg;
-              </span>
+            <label className="text-[10px] text-gray-500 uppercase tracking-wide">{t('schedule.pathDirection')}</label>
+            <div className="mt-1.5 flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900/60 p-2.5">
+              <div className="shrink-0 rounded-lg bg-gray-950/40 p-1">
+                <MowingDirectionPreview direction={form.pathDirection} size={92} />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { const v = Math.max(0, form.pathDirection - 15); setForm(prev => ({ ...prev, pathDirection: v })); onPathDirectionChange?.(v); }}
+                    disabled={form.pathDirection <= 0}
+                    className="grid place-items-center w-9 h-9 rounded-lg bg-gray-800/70 border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    aria-label={t('schedule.pathDirectionDown', 'Rotate direction down')}
+                  >
+                    <Minus className="w-4 h-4" />
+                  </button>
+                  <span className="font-mono text-2xl font-bold text-white tabular-nums">{form.pathDirection}&deg;</span>
+                  <button
+                    type="button"
+                    onClick={() => { const v = Math.min(180, form.pathDirection + 15); setForm(prev => ({ ...prev, pathDirection: v })); onPathDirectionChange?.(v); }}
+                    disabled={form.pathDirection >= 180}
+                    className="grid place-items-center w-9 h-9 rounded-lg bg-gray-800/70 border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    aria-label={t('schedule.pathDirectionUp', 'Rotate direction up')}
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                <p className="mt-1.5 text-[10px] text-gray-500 text-center leading-snug">{t('schedule.pathDirectionHint', 'Stripes show how the mower drives')}</p>
+              </div>
             </div>
-            <div className="grid grid-cols-4 gap-1 mt-1 mb-1">
-              {DIR_DEGREES.map((deg, i) => (
-                <button
-                  key={deg}
-                  onClick={() => { setForm(prev => ({ ...prev, pathDirection: deg })); onPathDirectionChange?.(deg); }}
-                  className={`text-[9px] py-1 rounded transition-colors ${
-                    form.pathDirection === deg
-                      ? 'bg-emerald-600 text-white font-medium'
-                      : 'bg-gray-900 text-gray-500 hover:text-gray-300 border border-gray-700'
-                  }`}
-                >
-                  {compassLabels[i] ?? `${deg}°`}
-                </button>
-              ))}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={360}
-              step={5}
-              value={form.pathDirection}
-              onChange={e => { const v = parseInt(e.target.value); setForm(prev => ({ ...prev, pathDirection: v })); onPathDirectionChange?.(v); }}
-              className="w-full h-1.5 accent-emerald-500 bg-gray-700 rounded-full appearance-none cursor-pointer"
-            />
           </div>
 
           {/* Alternate direction */}
@@ -536,7 +540,7 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
                 </button>
                 <Clock className="w-3.5 h-3.5 text-emerald-400" />
                 <span className="text-sm font-semibold text-white font-mono">
-                  {s.startTime}{s.endTime ? ` \u2013 ${s.endTime}` : ''}
+                  {formatTime(s.startTime, timeFormat)}{s.endTime ? ` \u2013 ${formatTime(s.endTime, timeFormat)}` : ''}
                 </span>
                 {scheduleConflictMap.has(s.scheduleId) && (
                   <span title={t('schedule.conflict', { names: scheduleConflictMap.get(s.scheduleId)!.join(', ') })}>
@@ -566,16 +570,16 @@ export function Scheduler({ sn, online, onPathDirectionChange }: Props) {
             <div className="flex items-center gap-2 text-[11px] text-gray-400">
               {/* Weekday pills */}
               <div className="flex gap-0.5">
-                {weekdayLabels.map((label, idx) => (
+                {order.map(d => (
                   <span
-                    key={idx}
+                    key={d}
                     className={`w-5 h-5 flex items-center justify-center rounded-sm text-[9px] ${
-                      s.weekdays.includes(idx)
+                      s.weekdays.includes(d)
                         ? 'bg-emerald-900/40 text-emerald-300 font-medium'
                         : 'text-gray-600'
                     }`}
                   >
-                    {label[0]}
+                    {weekdayLabels[d][0]}
                   </span>
                 ))}
               </div>

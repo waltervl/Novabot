@@ -186,7 +186,8 @@
     "preview": "Preview",
     "previewWaiting": "Waiting…",
     "previewPath": "Preview mowing path",
-    "previewNoArea": "Select a work area first"
+    "previewNoArea": "Select a work area first",
+    "previewSavedOnly": "Preview works for saved work areas only — patterns mow but can't be previewed."
   },
   "camera": {
     "title": "Camera",
@@ -364,6 +365,7 @@
     "allWorkAreas": "All work areas",
     "cuttingHeight": "Cutting height",
     "pathDirection": "Mowing direction",
+    "pathDirectionHint": "Stripes show how the mower drives",
     "saving": "Saving...",
     "create": "Create",
     "empty": "No schedules configured",
@@ -531,6 +533,77 @@
       "direction": "Default direction",
       "saved": "Saved"
     },
+    "weekStart": {
+      "title": "Week start",
+      "help": "First day of the week in the scheduler and timeline.",
+      "mon": "Monday",
+      "sun": "Sunday"
+    },
+    "display": {
+      "title": "Display",
+      "help": "How days and times are shown in the scheduler and timeline."
+    },
+    "timeFormat": {
+      "title": "Time format",
+      "h24": "24h",
+      "h12": "12h"
+    },
+    "mower": {
+      "cuttingHeight": "Cutting height",
+      "obstacle": "Obstacle avoidance",
+      "sensitivity": {
+        "low": "Low", "lowDesc": "Less avoidance, more coverage",
+        "medium": "Medium", "mediumDesc": "Balanced (recommended)",
+        "high": "High", "highDesc": "Maximum obstacle avoidance"
+      },
+      "direction": "Mowing direction",
+      "directionHint": "Stripes show how the mower drives",
+      "directionDown": "Rotate direction down",
+      "directionUp": "Rotate direction up",
+      "joystickSpeed": "Joystick max speed",
+      "joystickHandling": "Joystick handling",
+      "level": { "low": "Low", "medium": "Medium", "high": "High" },
+      "rain": "Rain auto-pause",
+      "rainPause": "Pause when raining",
+      "rainSummary": "≥ {{mm}} mm or ≥ {{prob}}% within {{h}}",
+      "rainMm": "Min rainfall",
+      "rainProb": "Min probability",
+      "rainHours": "Look ahead",
+      "other": "Other",
+      "headlight": "Headlight",
+      "brightness": "Brightness",
+      "speaker": "Speaker",
+      "timezone": "Timezone",
+      "save": "Save settings",
+      "saving": "Saving…",
+      "saved": "Settings saved",
+      "saveFailed": "Could not save settings",
+      "offline": "Mower is offline — connect it to save.",
+      "offlinePending": "Mower offline — changes save once it reconnects.",
+      "savedAuto": "Changes saved automatically",
+      "autoSaveHint": "Changes save automatically",
+      "recovery": "Recovery",
+      "recalibrate": "Recalibrate charging pose",
+      "recalibrateDesc": "Overwrites map_info.json with the current pose. Put the mower on its dock first — it must be CHARGING.",
+      "recalibrateConfirm": "Overwrite the charging pose with the mower's CURRENT pose? The mower must be physically on its dock and charging, or future coverage will drift.",
+      "recalibrateForce": "Battery state is \"{{state}}\" — expected CHARGING. Override the safety check anyway?",
+      "recalibrated": "Charging pose recalibrated",
+      "recalibrateFailed": "Recalibrate failed",
+      "restart": "Restart mower",
+      "restartDesc": "Restarts the mower software (not a reboot). Clears stuck states; back online in ~1 min.",
+      "restartConfirm": "Restart the mower software (not a full reboot)? It clears stuck states and comes back online in about a minute. Only works when idle or charging.",
+      "restarting": "Mower restarting — back online in ~1 min",
+      "restartFailed": "Restart failed",
+      "maxSpeed": "Max speed",
+      "maxSpeedHint": "Autonomous mowing speed",
+      "chargeThreshold": "Return-to-dock battery level",
+      "chargeThresholdHint": "Go charge when battery drops below",
+      "reboot": "Reboot mower",
+      "rebootDesc": "Full OS restart. Offline for a few minutes — use Restart first for stuck states.",
+      "rebootConfirm": "Reboot the mower (full OS restart)? It goes offline for a few minutes. Use Restart first for stuck states.",
+      "rebooting": "Reboot sent — the mower is offline for a few minutes",
+      "rebootFailed": "Reboot failed"
+    },
     "notifications": {
       "title": "Notifications",
       "help": "Configure where you want to be notified about mowing events. Server-side configuration endpoint lands in a later phase — these channels are listed for reference today.",
@@ -662,7 +735,13 @@
     },
     "logs": {
       "title": "Server log",
-      "empty": "— empty —"
+      "empty": "— empty —",
+      "enlarge": "Enlarge",
+      "dragHint": "Drag to move — drag the corner to resize",
+      "mower": "Mower",
+      "charger": "Charger",
+      "rest": "Rest",
+      "autoScroll": "Auto-scroll"
     }
   },
   "mobile": {

@@ -358,6 +358,7 @@
     "allWorkAreas": "Toutes les zones",
     "cuttingHeight": "Hauteur de coupe",
     "pathDirection": "Direction de tonte",
+    "pathDirectionHint": "Les bandes montrent comment le robot tond",
     "saving": "Enregistrement...",
     "create": "Créer",
     "empty": "Aucune planification configurée",
@@ -541,6 +542,21 @@
       "cuttingHeight": "Hauteur de coupe",
       "direction": "Direction par défaut",
       "saved": "Enregistré"
+    },
+    "weekStart": {
+      "title": "Début de semaine",
+      "help": "Premier jour de la semaine dans le planificateur et la chronologie.",
+      "mon": "Lundi",
+      "sun": "Dimanche"
+    },
+    "display": {
+      "title": "Affichage",
+      "help": "Comment les jours et heures sont affichés dans le planificateur et la chronologie."
+    },
+    "timeFormat": {
+      "title": "Format horaire",
+      "h24": "24h",
+      "h12": "12h"
     },
     "notifications": {
       "title": "Notifications",

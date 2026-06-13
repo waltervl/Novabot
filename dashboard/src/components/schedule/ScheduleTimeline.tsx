@@ -3,15 +3,15 @@ import { CalendarClock, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Schedule } from '../../types';
 import { fetchSchedules } from '../../api/client';
+import { useWeekStart, weekdayOrder } from '../../utils/weekStart';
+import { useTimeFormat, formatTime, formatHour } from '../../utils/timeFormat';
 
 interface Props {
   sn: string;
 }
 
-const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-// Custom convention: 0=Mon, 1=Tue, ..., 6=Sun (matches Scheduler.tsx weekday indexing)
-const DAY_INDEX = [0, 1, 2, 3, 4, 5, 6];
-
+// Stored weekday convention is 0=Sunday (JS getDay, server scheduleRunner). The
+// column order is derived from the week-start setting; labels come from i18n.
 const HOUR_PX = 22; // px per hour → 528px for the 24h grid
 const AXIS_PX = 56; // width of the hour-label column
 // Dimmed "night" bands so the active daytime stands out.
@@ -42,6 +42,10 @@ const pad2 = (n: number) => String(n).padStart(2, '0');
 
 export function ScheduleTimeline({ sn }: Props) {
   const { t } = useTranslation();
+  const weekStart = useWeekStart();
+  const order = weekdayOrder(weekStart);
+  const weekdayLabels = t('schedule.weekdays', { returnObjects: true }) as string[];
+  const timeFormat = useTimeFormat();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,10 +103,10 @@ export function ScheduleTimeline({ sn }: Props) {
 
   // Current weekday (0=Mon..6=Sun) + minutes-into-day for the "now" line.
   const now = new Date();
-  const todayIdx = (now.getDay() + 6) % 7;
+  const todayIdx = order.indexOf(now.getDay()); // column where "today" sits
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const nowTop = (nowMin / 60) * HOUR_PX;
-  const nowLabel = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const nowLabel = formatTime(`${pad2(now.getHours())}:${pad2(now.getMinutes())}`, timeFormat);
 
   const gridCols = `${AXIS_PX}px repeat(7, minmax(0, 1fr))`;
   const bodyH = 24 * HOUR_PX;
@@ -131,10 +135,10 @@ export function ScheduleTimeline({ sn }: Props) {
           {/* Day headers */}
           <div className="grid pb-2" style={{ gridTemplateColumns: gridCols }}>
             <div />
-            {DAYS.map((d, i) => (
-              <div key={d} className="flex flex-col items-center gap-0.5">
-                <span className={`text-[11px] font-semibold ${i === todayIdx ? 'text-emerald-400' : 'text-gray-400'}`}>{d}</span>
-                {i === todayIdx && (
+            {order.map((stored, col) => (
+              <div key={stored} className="flex flex-col items-center gap-0.5">
+                <span className={`text-[11px] font-semibold ${col === todayIdx ? 'text-emerald-400' : 'text-gray-400'}`}>{weekdayLabels[stored]}</span>
+                {col === todayIdx && (
                   <span className="w-1 h-1 rounded-full bg-emerald-400" style={{ boxShadow: '0 0 8px #34d399' }} />
                 )}
               </div>
@@ -152,15 +156,15 @@ export function ScheduleTimeline({ sn }: Props) {
                   className={`absolute right-2 font-mono text-[10px] ${h >= NIGHT_END && h < NIGHT_START ? 'text-gray-400' : 'text-gray-600'}`}
                   style={{ top: h * HOUR_PX - 6 }}
                 >
-                  {pad2(h)}:00
+                  {formatHour(h, timeFormat)}
                 </div>
               ))}
             </div>
 
             {/* Day columns */}
-            {DAYS.map((_, dayIdx) => (
+            {order.map((stored, dayIdx) => (
               <div
-                key={dayIdx}
+                key={stored}
                 className="relative border-l border-white/[0.05]"
                 style={{ background: dayIdx === todayIdx ? 'linear-gradient(180deg, rgba(52,217,154,.06), rgba(52,217,154,.02))' : undefined }}
               >
@@ -178,7 +182,7 @@ export function ScheduleTimeline({ sn }: Props) {
 
                 {/* Schedule blocks */}
                 {enabled.flatMap(s => {
-                  if (!s.weekdays.some(w => DAY_INDEX[w] === dayIdx)) return [];
+                  if (!s.weekdays.includes(stored)) return [];
                   const start = timeToMinutes(s.startTime);
                   const end = s.endTime ? timeToMinutes(s.endTime) : Math.min(start + 60, 24 * 60);
                   if (end <= start) return [];
@@ -186,11 +190,12 @@ export function ScheduleTimeline({ sn }: Props) {
                   const height = ((end - start) / 60) * HOUR_PX;
                   const a = accentForId(s.scheduleId);
                   const compact = height < 30;
-                  const label = s.scheduleName ?? s.startTime;
+                  const timeRange = `${formatTime(s.startTime, timeFormat)}${s.endTime ? `–${formatTime(s.endTime, timeFormat)}` : ''}`;
+                  const label = s.scheduleName ?? formatTime(s.startTime, timeFormat);
                   return [
                     <div
                       key={s.scheduleId}
-                      title={`${s.scheduleName ?? 'Schedule'} ${s.startTime}–${s.endTime ?? ''}`}
+                      title={`${s.scheduleName ?? 'Schedule'} ${timeRange}`}
                       className="absolute rounded-lg overflow-hidden border transition-transform hover:-translate-y-px"
                       style={{ top: top + 1, height: height - 2, left: 4, right: 4, background: a.bg, borderColor: a.border, color: a.text }}
                     >
@@ -199,7 +204,7 @@ export function ScheduleTimeline({ sn }: Props) {
                         <div className="text-[11px] font-semibold leading-tight truncate">{label}</div>
                         {!compact && (
                           <div className="font-mono text-[9px] leading-tight mt-0.5 opacity-85">
-                            {s.startTime}{s.endTime ? `–${s.endTime}` : ''}
+                            {timeRange}
                           </div>
                         )}
                       </div>
@@ -232,7 +237,7 @@ export function ScheduleTimeline({ sn }: Props) {
             return (
               <span key={s.scheduleId} className="inline-flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-sm" style={{ background: a.bar }} />
-                {s.scheduleName ?? `${s.startTime}${s.endTime ? `–${s.endTime}` : ''}`}
+                {s.scheduleName ?? `${formatTime(s.startTime, timeFormat)}${s.endTime ? `–${formatTime(s.endTime, timeFormat)}` : ''}`}
               </span>
             );
           })}
