@@ -1,23 +1,8 @@
-# ── Stage 1: Node runtime copied into Ubuntu 20.04 stages ────────────────────
-FROM node:20-bullseye-slim AS node-runtime
-
-
-# ── Stage 2: Build (TypeScript compilatie) ───────────────────────────────────
-FROM ubuntu:20.04 AS build
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-COPY --from=node-runtime /usr/local /usr/local
+# ── Stage 1: Build (TypeScript compilatie) ────────────────────────────────────
+FROM node:20-alpine AS build
 
 # Build tools for native modules (bcrypt, better-sqlite3)
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    python3 \
-    make \
-    g++ \
-    linux-libc-dev \
-  && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache python3 make g++ linux-headers
 
 WORKDIR /app
 
@@ -43,21 +28,10 @@ COPY dashboard/public dashboard/public
 RUN cd dashboard && npm run build
 
 
-# ── Stage 3: Production dependencies (lean) ──────────────────────────────────
-FROM ubuntu:20.04 AS deps
+# ── Stage 2: Production dependencies (lean) ──────────────────────────────────
+FROM node:20-alpine AS deps
 
-ARG DEBIAN_FRONTEND=noninteractive
-
-COPY --from=node-runtime /usr/local /usr/local
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    python3 \
-    make \
-    g++ \
-    linux-libc-dev \
-  && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache python3 make g++ linux-headers
 
 WORKDIR /app
 
@@ -87,26 +61,10 @@ RUN cd server/node_modules/better-sqlite3 && \
            build/config.gypi build/gyp-mac-tool build/binding.Makefile 2>/dev/null; true
 
 
-# ── Stage 4: Runtime ─────────────────────────────────────────────────────────
-FROM ubuntu:20.04
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
+FROM node:20-alpine
 
-ARG DEBIAN_FRONTEND=noninteractive
-
-COPY --from=node-runtime /usr/local /usr/local
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    bash \
-    ca-certificates \
-    dnsmasq \
-    nginx \
-    openssh-client \
-    openssl \
-    sqlite3 \
-    sshpass \
-    tzdata \
-    zip \
-  && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache dnsmasq nginx openssl tzdata zip sqlite sshpass openssh-client bash
 
 WORKDIR /app
 
