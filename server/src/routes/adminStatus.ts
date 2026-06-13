@@ -604,14 +604,34 @@ adminStatusRouter.get('/dns-check', async (_req: AuthRequest, res: Response) => 
   res.json({ serverIp, domains: results });
 });
 
+// A killed dnsmasq lingers as a <defunct> zombie because PID 1 (node, started
+// via `exec` in the entrypoint) does not reap inherited orphans. A zombie holds
+// no listening socket and serves no DNS, so it must NOT count as "running" —
+// otherwise the admin Stop button looks stuck (pgrep keeps matching the zombie
+// even after SIGKILL).
+function dnsmasqLivePids(): string[] {
+  let out = '';
+  try { out = execSync('pgrep -x dnsmasq', { encoding: 'utf8' }); } catch { return []; }
+  const pids = out.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (pids.length === 0) return [];
+  // /proc is Linux-only. Without it (e.g. macOS dev) trust pgrep; with it, drop
+  // zombies by reading each PID's process State.
+  let hasProc = false;
+  try { hasProc = fs.existsSync('/proc/1/status'); } catch { hasProc = false; }
+  if (!hasProc) return pids;
+  return pids.filter((pid) => {
+    try {
+      const m = /^State:\s*(\S)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'));
+      return m ? m[1] !== 'Z' : true;
+    } catch {
+      return false; // /proc entry vanished — not a live process
+    }
+  });
+}
+
 // GET /api/admin-status/dnsmasq — get dnsmasq status
 adminStatusRouter.get('/dnsmasq', (_req: AuthRequest, res: Response) => {
-  try {
-    execSync('pgrep -x dnsmasq', { stdio: 'ignore' });
-    res.json({ running: true });
-  } catch {
-    res.json({ running: false });
-  }
+  res.json({ running: dnsmasqLivePids().length > 0 });
 });
 
 // POST /api/admin-status/dnsmasq — start or stop dnsmasq
@@ -656,21 +676,19 @@ adminStatusRouter.post('/dnsmasq', (req: AuthRequest, res: Response) => {
       res.json({ ok: false, error, detail });
     }
   } else {
-    // SIGTERM, let dnsmasq exit, then VERIFY. If it survives (ignored SIGTERM
-    // or a second instance), escalate to SIGKILL. Report the REAL state — the
-    // old code always returned running:false even when the process survived,
-    // so the UI button looked stuck on "Stop" and stopping appeared to do nothing.
+    // SIGTERM, let dnsmasq exit, then VERIFY using LIVE (non-zombie) PIDs. A
+    // killed dnsmasq lingers as a <defunct> zombie (PID 1 = node doesn't reap
+    // orphans), so a plain pgrep would wrongly report it as still running and
+    // the old code even returned running:false unconditionally. If a LIVE
+    // process survives SIGTERM, escalate to SIGKILL; once only zombies (or
+    // nothing) remain, it is truly stopped — the kernel has freed port 53.
     try { execSync('pkill -x dnsmasq', { stdio: 'ignore' }); } catch { /* none running */ }
     try { execSync('sleep 0.3', { stdio: 'ignore' }); } catch { /* best effort */ }
-    let stillRunning = false;
-    try { execSync('pgrep -x dnsmasq', { stdio: 'ignore' }); stillRunning = true; } catch { stillRunning = false; }
-    if (stillRunning) {
+    if (dnsmasqLivePids().length > 0) {
       try { execSync('pkill -9 -x dnsmasq', { stdio: 'ignore' }); } catch { /* gone between checks */ }
       try { execSync('sleep 0.3', { stdio: 'ignore' }); } catch { /* best effort */ }
-      stillRunning = false;
-      try { execSync('pgrep -x dnsmasq', { stdio: 'ignore' }); stillRunning = true; } catch { stillRunning = false; }
     }
-    if (stillRunning) {
+    if (dnsmasqLivePids().length > 0) {
       console.error('[DNS] dnsmasq still running after SIGTERM + SIGKILL');
       res.json({ ok: false, running: true, error: 'dnsmasq did not stop (still running after SIGKILL).' });
     } else {
