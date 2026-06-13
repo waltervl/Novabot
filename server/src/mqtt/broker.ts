@@ -618,16 +618,19 @@ export async function startMqttBroker(): Promise<void> {
                 // /preview-path/:sn kan ophalen. Anders valt de app terug op
                 // rechte direction stripes tijdens mowing.
                 if (respondData.value && typeof respondData.value === 'object') {
-                  try {
-                    const { handlePlannedPathRespond, handlePreviewPathRespond } = require('../routes/dashboard.js');
-                    if (cmd === 'get_map_plan_path') {
-                      handlePlannedPathRespond(sn, respondData.value as Record<string, unknown>);
-                    } else {
-                      handlePreviewPathRespond(sn, respondData.value as Record<string, unknown>);
-                    }
-                  } catch (e) {
-                    console.warn(`${C.red}[PATH-INTERCEPT] Cache update faalde: ${(e as Error).message}${C.reset}`);
-                  }
+                  // Dynamic import (not require — server is ESM): dashboard.js
+                  // imports from broker.js, so a static import would be circular.
+                  void import('../routes/dashboard.js')
+                    .then(({ handlePlannedPathRespond, handlePreviewPathRespond }) => {
+                      if (cmd === 'get_map_plan_path') {
+                        handlePlannedPathRespond(sn, respondData.value as Record<string, unknown>);
+                      } else {
+                        handlePreviewPathRespond(sn, respondData.value as Record<string, unknown>);
+                      }
+                    })
+                    .catch((e) => {
+                      console.warn(`${C.red}[PATH-INTERCEPT] Cache update faalde: ${(e as Error).message}${C.reset}`);
+                    });
                 }
 
                 // App-native format (bevestigd via blutter analyse):

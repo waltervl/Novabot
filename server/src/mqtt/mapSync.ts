@@ -868,11 +868,14 @@ export function handleMapMessage(sn: string, parsed: Record<string, unknown>): b
       return true;
 
     case 'get_map_plan_path_respond': {
-      // Forward to dashboard planned path cache
-      const { handlePlannedPathRespond } = require('../routes/dashboard.js');
+      // Forward to dashboard planned path cache. Dynamic import (not require —
+      // server is ESM): dashboard.js imports from mapSync.js, so a static
+      // import would be circular.
       const respondData = parsed[command] as Record<string, unknown>;
       if (respondData && typeof respondData === 'object') {
-        handlePlannedPathRespond(sn, respondData);
+        void import('../routes/dashboard.js')
+          .then(({ handlePlannedPathRespond }) => handlePlannedPathRespond(sn, respondData))
+          .catch(() => { /* cache best-effort */ });
       }
       return true;
     }
