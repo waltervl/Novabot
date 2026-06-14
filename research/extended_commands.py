@@ -4082,6 +4082,41 @@ def start_charging_station_guard():
         f"(interval={charging_station_guard_interval_seconds()}s)")
 
 
+def start_obstacle_detection_cadence():
+    """Background cadence: while actively mowing and level>1, periodically flip the
+    perception model to DETECTION (id 2) for a short window then back to
+    SEGMENTATION (id 1). The hit-count nav2 costmap keeps detected objects marked
+    between passes. Never runs two inferences in one frame (single BPU)."""
+    def _set_model(model_id):
+        try:
+            ros2_run(
+                ["ros2", "service", "call", "/perception/set_infer_model",
+                 "general_msgs/srv/SetUint8", f"'{{value: {model_id}}}'"],
+                timeout=10,
+            )
+        except Exception as ex:
+            log(f"[obstacle-detect] set_infer_model({model_id}) failed: {ex}")
+
+    def _loop():
+        while True:
+            try:
+                period = obstacle_detect_period(_obstacle_detection_level)
+                if period is None or not _coverage_is_active():
+                    time.sleep(obstacle_detect_idle_poll_seconds())
+                    continue
+                window = obstacle_detect_window_seconds()
+                _set_model(2)            # detection pass
+                time.sleep(window)
+                _set_model(1)            # back to segmentation
+                time.sleep(max(0.0, period - window))
+            except Exception as ex:
+                log(f"[obstacle-detect] loop error: {ex}")
+                time.sleep(obstacle_detect_idle_poll_seconds())
+
+    threading.Thread(target=_loop, daemon=True, name="obstacle-detect-cadence").start()
+    log("[obstacle-detect] cadence thread started")
+
+
 def start_rtk_telemetry_relay(sn, mqtt_ref):
     """Spin up a daemon node that bridges GNSS + localization state -> MQTT.
 
@@ -4292,6 +4327,7 @@ def main():
     # (Test 2026-06-02 confirmed the guard does NOT block the re-anchor write —
     # save_recharge_pos writes nothing whether the file is present or absent.)
     start_charging_station_guard()
+    start_obstacle_detection_cadence()
 
     def respond(cmd_name, data):
         """Publiceer een response naar de server."""
