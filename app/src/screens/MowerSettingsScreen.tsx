@@ -31,11 +31,13 @@ import { getServerUrl } from '../services/auth';
 // Cutting height: 20-90 in steps of 10 (displayed as 2-9 cm, matches Flutter slider)
 const HEIGHT_VALUES = [20, 30, 40, 50, 60, 70, 80, 90];
 
-// Obstacle sensitivity: 1=low, 2=medium, 3=high (Flutter slider: min=1, max=3, divisions=2)
+// obstacle_avoidance_sensitivity now drives object-detection CADENCE during
+// mowing (server -> set_obstacle_detection -> extended_commands cadence thread):
+// 1 = off (segmentation only), 2 = occasional detection, 3 = frequent detection.
 const SENSITIVITY_LEVELS = [
-  { value: 1, label: 'Low', desc: 'Less avoidance, more coverage' },
-  { value: 2, label: 'Medium', desc: 'Balanced (recommended)' },
-  { value: 3, label: 'High', desc: 'Maximum obstacle avoidance' },
+  { value: 1, label: 'Off (terrain only)', desc: 'Segmentation only, no object detection (max coverage)' },
+  { value: 2, label: 'Avoid objects', desc: 'Periodic object detection while mowing' },
+  { value: 3, label: 'Avoid objects (frequent)', desc: 'Frequent object detection (best avoidance)' },
 ];
 
 // Joystick speed/handling: 1=low, 2=medium, 3=high (sent as ×100: 100/200/300)
