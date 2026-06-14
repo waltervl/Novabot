@@ -697,6 +697,38 @@ def ros2_run(args, timeout=10):
     )
 
 
+def obstacle_detect_window_seconds():
+    """Length of one detection pass (seconds)."""
+    return _env_float("OPENNOVA_OBSTACLE_DETECT_WINDOW_S", 0.6, 0.3)
+
+
+def obstacle_detect_period_occasional_seconds():
+    """Seconds between detection passes at level 2 (occasional)."""
+    return _env_float("OPENNOVA_OBSTACLE_DETECT_OCCASIONAL_S", 6.0, 2.0)
+
+
+def obstacle_detect_period_frequent_seconds():
+    """Seconds between detection passes at level 3 (frequent)."""
+    return _env_float("OPENNOVA_OBSTACLE_DETECT_FREQUENT_S", 3.0, 1.0)
+
+
+def obstacle_detect_idle_poll_seconds():
+    """Poll interval when cadence is off or not mowing."""
+    return _env_float("OPENNOVA_OBSTACLE_DETECT_IDLE_POLL_S", 5.0, 2.0)
+
+
+def obstacle_detect_period(level):
+    """Seconds between detection windows for a cadence level. None = off.
+
+    level 1 (or <1) = off (segmentation only); 2 = occasional; 3 (or >3) = frequent.
+    """
+    if level is None or level <= 1:
+        return None
+    if level >= 3:
+        return obstacle_detect_period_frequent_seconds()
+    return obstacle_detect_period_occasional_seconds()
+
+
 # State file to persist semantic_mode (no ROS2 param available for read-back)
 SEMANTIC_MODE_FILE = "/tmp/semantic_mode"
 

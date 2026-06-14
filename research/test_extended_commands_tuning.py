@@ -77,6 +77,29 @@ class ExtendedCommandsTuningTest(unittest.TestCase):
         self.assertEqual(responses[0][1]["result"], 2)
         self.assertIn("coverage active", responses[0][1]["error"])
 
+    def test_obstacle_detect_period_maps_levels_to_cadence(self):
+        with patch.dict(os.environ, {}, clear=True):
+            # level 1 = off (no detection passes)
+            self.assertIsNone(ext.obstacle_detect_period(1))
+            # level 2 = occasional, level 3 = frequent (shorter period)
+            self.assertEqual(ext.obstacle_detect_period(2), 6.0)
+            self.assertEqual(ext.obstacle_detect_period(3), 3.0)
+            # >3 clamps to frequent, <1 treated as off
+            self.assertEqual(ext.obstacle_detect_period(5), 3.0)
+            self.assertIsNone(ext.obstacle_detect_period(0))
+
+    def test_obstacle_detect_tunables_have_safe_minimums(self):
+        with patch.dict(os.environ, {
+            "OPENNOVA_OBSTACLE_DETECT_WINDOW_S": "0.0",
+            "OPENNOVA_OBSTACLE_DETECT_FREQUENT_S": "0.1",
+            "OPENNOVA_OBSTACLE_DETECT_OCCASIONAL_S": "0.1",
+            "OPENNOVA_OBSTACLE_DETECT_IDLE_POLL_S": "0.1",
+        }, clear=True):
+            self.assertEqual(ext.obstacle_detect_window_seconds(), 0.3)
+            self.assertEqual(ext.obstacle_detect_period_frequent_seconds(), 1.0)
+            self.assertEqual(ext.obstacle_detect_period_occasional_seconds(), 2.0)
+            self.assertEqual(ext.obstacle_detect_idle_poll_seconds(), 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
