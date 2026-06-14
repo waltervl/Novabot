@@ -1,4 +1,11 @@
 export default {
+  // ── Beta firmware warning (OtaScreen) ─────────────────────────
+  betaFwTitle: 'BETA CUSTOM FIRMWARE',
+  betaFwExperimental: 'This is BETA / experimental custom firmware.',
+  betaFwBrick: 'Installing it can render the mower unusable (brick it).',
+  betaFwMaps: 'You may lose ALL your maps.',
+  betaFwAutoBackup: 'A fresh backup is made automatically before we flash.',
+  betaFwConfirm: 'I understand, flash anyway',
   // Added 2026-06-06: used in code but missing from the locale, so t() returned
   // the raw key instead of text (t() falls back to the key, not the || fallback).
   close: 'Close',

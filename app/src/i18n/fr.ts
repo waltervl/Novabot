@@ -1,4 +1,11 @@
 export default {
+  // ── Beta firmware warning (OtaScreen) ─────────────────────────
+  betaFwTitle: 'FIRMWARE PERSONNALISÉ BETA',
+  betaFwExperimental: 'Ceci est un firmware personnalisé BETA / expérimental.',
+  betaFwBrick: 'L\'installation peut rendre la tondeuse inutilisable (brick).',
+  betaFwMaps: 'Vous pouvez perdre TOUTES vos cartes.',
+  betaFwAutoBackup: 'Une sauvegarde récente est créée automatiquement avant le flash.',
+  betaFwConfirm: 'Je comprends, flasher quand même',
   // 2026-06-06: keys used in code but missing (t() returned the raw key).
   close: 'Fermer',
   intervalSchedules: 'Tous les N jours',

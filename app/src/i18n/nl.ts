@@ -1,4 +1,11 @@
 export default {
+  // ── Beta firmware warning (OtaScreen) ─────────────────────────
+  betaFwTitle: 'BETA CUSTOM FIRMWARE',
+  betaFwExperimental: 'Dit is BETA / experimentele custom firmware.',
+  betaFwBrick: 'De installatie kan de maaier onbruikbaar maken (bricken).',
+  betaFwMaps: 'Je kunt AL je kaarten verliezen.',
+  betaFwAutoBackup: 'Er wordt automatisch een verse backup gemaakt voordat we flashen.',
+  betaFwConfirm: 'Ik begrijp het, flash toch',
   // Toegevoegd 2026-06-06 (zie en.ts): keys die in code gebruikt werden maar
   // ontbraken, waardoor t() de ruwe key teruggaf i.p.v. tekst.
   close: 'Sluiten',

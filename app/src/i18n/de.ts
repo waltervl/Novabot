@@ -1,4 +1,11 @@
 export default {
+  // ── Beta firmware warning (OtaScreen) ─────────────────────────
+  betaFwTitle: 'BETA CUSTOM-FIRMWARE',
+  betaFwExperimental: 'Dies ist BETA / experimentelle Custom-Firmware.',
+  betaFwBrick: 'Die Installation kann den Mäher unbrauchbar machen (bricken).',
+  betaFwMaps: 'Du kannst ALLE deine Karten verlieren.',
+  betaFwAutoBackup: 'Vor dem Flashen wird automatisch ein frisches Backup erstellt.',
+  betaFwConfirm: 'Ich verstehe, trotzdem flashen',
   // 2026-06-06: keys used in code but missing (t() returned the raw key).
   close: 'Schließen',
   intervalSchedules: 'Alle N Tage',

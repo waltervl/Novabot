@@ -25,7 +25,7 @@ import { getServerUrl } from '../services/auth';
 import { getSocket } from '../services/socket';
 import { formatDate } from '../lib/format';
 import { isOpenNovaFirmware } from '../utils/firmwareCapability';
-import { BETA_FIRMWARE_WARNING_LINES } from '../utils/betaFirmware';
+import { useI18n } from '../i18n';
 
 interface OtaProgressEntry {
   status: string;       // 'upgrade' | 'success' | 'failed' | 'error' | ...
@@ -38,6 +38,7 @@ interface OtaProgressEntry {
 export default function OtaScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const { t } = useI18n();
   const { devices } = useMowerState();
   const styles = useStyles(makeStyles);
   const { colors } = useTheme();
@@ -402,12 +403,12 @@ export default function OtaScreen() {
           return (
             <View style={styles.betaModalBackdrop}>
               <View style={styles.betaModalCard}>
-                <Text style={styles.betaModalTitle}>⚠️ BETA CUSTOM FIRMWARE</Text>
-                {BETA_FIRMWARE_WARNING_LINES.map((line, i) => (
+                <Text style={styles.betaModalTitle}>⚠️ {t('betaFwTitle')}</Text>
+                {[t('betaFwExperimental'), t('betaFwBrick'), t('betaFwMaps')].map((line, i) => (
                   <Text key={i} style={styles.betaModalWarningLine}>{'• '}{line}</Text>
                 ))}
                 <Text style={styles.betaModalNote}>
-                  Er wordt automatisch een verse backup gemaakt voordat we flashen.
+                  {t('betaFwAutoBackup')}
                 </Text>
                 <View style={styles.betaModalButtons}>
                   <TouchableOpacity
@@ -415,7 +416,7 @@ export default function OtaScreen() {
                     onPress={() => setBetaModal(null)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.betaModalCancelText}>Annuleren</Text>
+                    <Text style={styles.betaModalCancelText}>{t('cancel')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.betaModalConfirmBtn}
@@ -425,7 +426,7 @@ export default function OtaScreen() {
                     }}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.betaModalConfirmText}>Ik begrijp het, flash toch</Text>
+                    <Text style={styles.betaModalConfirmText}>{t('betaFwConfirm')}</Text>
                   </TouchableOpacity>
                 </View>
               </View>
