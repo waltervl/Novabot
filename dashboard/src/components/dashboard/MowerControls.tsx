@@ -75,6 +75,21 @@ export function MowerControls({
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
 
+  // The Start sheet's mowing direction must reflect the operator's CONFIGURED
+  // setting (device para `path_direction`, e.g. 60 from the Settings tab), not the
+  // localStorage default (0). Fetch the para once on open and hydrate the slider a
+  // single time when it arrives; after that the operator can freely adjust it.
+  useEffect(() => { if (online && sn) sendCommand(sn, { get_para_info: {} }).catch(() => {}); }, [sn, online]);
+  const dirHydrated = useRef(false);
+  useEffect(() => {
+    if (dirHydrated.current) return;
+    const pd = Number(sensors?.path_direction);
+    if (Number.isFinite(pd) && pd >= 0 && pd <= 180) {
+      setPathDirection(pd);
+      dirHydrated.current = true;
+    }
+  }, [sensors?.path_direction]);
+
   // Work-map count drives the "no map" gate on the Start button (mirrors the
   // app's serverMapCount === 0). Fetched once per SN; the firmware's map_num
   // sensor lags after deletes so we trust the server list like the app does.
