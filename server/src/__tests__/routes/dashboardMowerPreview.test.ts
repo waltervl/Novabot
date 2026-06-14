@@ -79,6 +79,15 @@ vi.mock('../../services/anchor.js', () => ({
   getPolygonAnchor: vi.fn().mockReturnValue({ x: 0, y: 0, orientation: 1.5 }),
 }));
 
+vi.mock('../../services/mowerFileCapability.js', () => ({
+  getMowerFileCapability: vi.fn().mockReturnValue({
+    mowerFileApplySupported: false,
+    isOpenNova: false,
+    mowerVersion: null,
+    reason: null,
+  }),
+}));
+
 import { deviceSettingsRepo } from '../../db/repositories/index.js';
 import { deviceCache } from '../../mqtt/sensorData.js';
 import { dashboardRouter } from '../../routes/dashboard.js';
@@ -87,6 +96,15 @@ import {
 } from '../../services/coveragePlannerRadius.js';
 import * as extendedCommands from '../../mqtt/extendedCommands.js';
 import * as mapSync from '../../mqtt/mapSync.js';
+import { getMowerFileCapability } from '../../services/mowerFileCapability.js';
+
+/** Encode a preview-path object the way stock mqtt_node does: value.data = UTF-8 byte array. */
+function nativePreviewRespond(pathObj: Record<string, unknown>) {
+  return {
+    type: 'get_preview_cover_path_respond',
+    message: { result: 0, value: { data: Array.from(Buffer.from(JSON.stringify(pathObj), 'utf-8')) } },
+  };
+}
 
 const app = express();
 app.use(express.json());
@@ -97,6 +115,12 @@ const SN = 'LFINTEST';
 beforeEach(() => {
   vi.clearAllMocks();
   deviceCache.clear();
+  vi.mocked(getMowerFileCapability).mockReturnValue({
+    mowerFileApplySupported: false,
+    isOpenNova: false,
+    mowerVersion: null,
+    reason: null,
+  });
 });
 
 describe('POST /api/dashboard/native-preview-path/:sn', () => {
@@ -149,6 +173,56 @@ describe('coverage planner radius', () => {
 });
 
 describe('POST /api/dashboard/refresh-preview-path/:sn', () => {
+  it('fetches the preview over plain MQTT (like the Novabot app) on stock firmware', async () => {
+    // Stock firmware (is_opennova=false) has no extended_commands.py backchannel,
+    // so the preview must be fetched the way the real app does it: a plain-MQTT
+    // get_preview_cover_path, with the byte-array value.data response decoded.
+    let deviceHandler: ((data: Record<string, unknown>) => void) | null = null;
+    let extendedHandler: ((data: Record<string, unknown>) => void) | null = null;
+
+    vi.mocked(mapSync.onDeviceResponse).mockImplementation((_sn, handler) => { deviceHandler = handler; });
+    vi.mocked(mapSync.offDeviceResponse).mockImplementation((_sn, handler) => {
+      if (deviceHandler === handler) deviceHandler = null;
+    });
+    vi.mocked(mapSync.onExtendedResponse).mockImplementation((_sn, handler) => { extendedHandler = handler; });
+    vi.mocked(mapSync.offExtendedResponse).mockImplementation((_sn, handler) => {
+      if (extendedHandler === handler) extendedHandler = null;
+    });
+    vi.mocked(mapSync.publishToDevice).mockImplementation((_sn, command) => {
+      if ('generate_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.({
+          type: 'generate_preview_cover_path_respond', message: { result: 0, value: {} },
+        }), 0);
+      } else if ('get_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.(nativePreviewRespond({ '1': { '0': '1.00 2.00,3.00 4.00' } })), 0);
+      }
+    });
+    // If the (buggy) extended path is still used, let it answer so the request
+    // returns fast and the assertions below fail cleanly instead of timing out.
+    vi.mocked(mapSync.publishToExtended).mockImplementation(() => {
+      setTimeout(() => extendedHandler?.({
+        get_preview_cover_path_respond: { result: 0, value: { '1': { '0': '1.00 2.00,3.00 4.00' } } },
+      }), 0);
+    });
+
+    const res = await request(app)
+      .post(`/api/dashboard/refresh-preview-path/${SN}`)
+      .send({ map_ids: 11, cov_direction: 45 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      count: 1,
+      source: 'mower',
+      paths: [{ id: '1_0', points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }],
+    });
+    // Plain-MQTT fetch, exactly like the app — NOT the extended backchannel.
+    expect(mapSync.publishToDevice).toHaveBeenCalledWith(SN, {
+      get_preview_cover_path: { map_name: 'all' },
+    });
+    expect(mapSync.publishToExtended).not.toHaveBeenCalled();
+  });
+
   it('uses the stock preview command response before fetching the preview path', async () => {
     let deviceHandler: ((data: Record<string, unknown>) => void) | null = null;
     let extendedHandler: ((data: Record<string, unknown>) => void) | null = null;
@@ -165,23 +239,15 @@ describe('POST /api/dashboard/refresh-preview-path/:sn', () => {
     vi.mocked(mapSync.offExtendedResponse).mockImplementation((_sn, handler) => {
       if (extendedHandler === handler) extendedHandler = null;
     });
-    vi.mocked(mapSync.publishToDevice).mockImplementation(() => {
-      setTimeout(() => {
-        deviceHandler?.({
+    vi.mocked(mapSync.publishToDevice).mockImplementation((_sn, command) => {
+      if ('generate_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.({
           type: 'generate_preview_cover_path_respond',
           message: { result: 0, value: {} },
-        });
-      }, 0);
-    });
-    vi.mocked(mapSync.publishToExtended).mockImplementation(() => {
-      setTimeout(() => {
-        extendedHandler?.({
-          get_preview_cover_path_respond: {
-            result: 0,
-            value: { '1': { '0': '1.00 2.00,3.00 4.00' } },
-          },
-        });
-      }, 0);
+        }), 0);
+      } else if ('get_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.(nativePreviewRespond({ '1': { '0': '1.00 2.00,3.00 4.00' } })), 0);
+      }
     });
 
     const res = await request(app)
@@ -209,9 +275,10 @@ describe('POST /api/dashboard/refresh-preview-path/:sn', () => {
         cov_direction: 45,
       }),
     });
-    expect(mapSync.publishToExtended).toHaveBeenCalledWith(SN, {
+    expect(mapSync.publishToDevice).toHaveBeenCalledWith(SN, {
       get_preview_cover_path: { map_name: 'all' },
     });
+    expect(mapSync.publishToExtended).not.toHaveBeenCalled();
   });
 
   it('normalizes auto direction requests by omitting invalid direction sentinels', async () => {
@@ -230,23 +297,15 @@ describe('POST /api/dashboard/refresh-preview-path/:sn', () => {
     vi.mocked(mapSync.offExtendedResponse).mockImplementation((_sn, handler) => {
       if (extendedHandler === handler) extendedHandler = null;
     });
-    vi.mocked(mapSync.publishToDevice).mockImplementation(() => {
-      setTimeout(() => {
-        deviceHandler?.({
+    vi.mocked(mapSync.publishToDevice).mockImplementation((_sn, command) => {
+      if ('generate_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.({
           type: 'generate_preview_cover_path_respond',
           message: { result: 0, value: {} },
-        });
-      }, 0);
-    });
-    vi.mocked(mapSync.publishToExtended).mockImplementation(() => {
-      setTimeout(() => {
-        extendedHandler?.({
-          get_preview_cover_path_respond: {
-            result: 0,
-            value: { '1': { '0': '1.00 2.00,3.00 4.00' } },
-          },
-        });
-      }, 0);
+        }), 0);
+      } else if ('get_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.(nativePreviewRespond({ '1': { '0': '1.00 2.00,3.00 4.00' } })), 0);
+      }
     });
 
     const res = await request(app)
@@ -260,5 +319,58 @@ describe('POST /api/dashboard/refresh-preview-path/:sn', () => {
     expect(payload.generate_preview_cover_path).toMatchObject({ map_ids: 1 });
     expect(payload.generate_preview_cover_path).not.toHaveProperty('cov_direction');
     expect(payload.generate_preview_cover_path).not.toHaveProperty('specify_direction');
+  });
+
+  it('keeps the extended_commands backchannel on OpenNova/custom firmware', async () => {
+    // OpenNova firmware has extended_commands.py, which reads the preview file in
+    // Python and sidesteps the stock mqtt_node buffer overflow on large maps.
+    vi.mocked(getMowerFileCapability).mockReturnValue({
+      mowerFileApplySupported: true,
+      isOpenNova: true,
+      mowerVersion: 'v6.0.2-custom-24',
+      reason: null,
+    });
+
+    let deviceHandler: ((data: Record<string, unknown>) => void) | null = null;
+    let extendedHandler: ((data: Record<string, unknown>) => void) | null = null;
+
+    vi.mocked(mapSync.onDeviceResponse).mockImplementation((_sn, handler) => { deviceHandler = handler; });
+    vi.mocked(mapSync.offDeviceResponse).mockImplementation((_sn, handler) => {
+      if (deviceHandler === handler) deviceHandler = null;
+    });
+    vi.mocked(mapSync.onExtendedResponse).mockImplementation((_sn, handler) => { extendedHandler = handler; });
+    vi.mocked(mapSync.offExtendedResponse).mockImplementation((_sn, handler) => {
+      if (extendedHandler === handler) extendedHandler = null;
+    });
+    vi.mocked(mapSync.publishToDevice).mockImplementation((_sn, command) => {
+      if ('generate_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.({
+          type: 'generate_preview_cover_path_respond', message: { result: 0, value: {} },
+        }), 0);
+      }
+    });
+    vi.mocked(mapSync.publishToExtended).mockImplementation(() => {
+      setTimeout(() => extendedHandler?.({
+        get_preview_cover_path_respond: { result: 0, value: { '1': { '0': '1.00 2.00,3.00 4.00' } } },
+      }), 0);
+    });
+
+    const res = await request(app)
+      .post(`/api/dashboard/refresh-preview-path/${SN}`)
+      .send({ map_ids: 11, cov_direction: 45 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      count: 1,
+      source: 'mower',
+      paths: [{ id: '1_0', points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }],
+    });
+    expect(mapSync.publishToExtended).toHaveBeenCalledWith(SN, {
+      get_preview_cover_path: { map_name: 'all' },
+    });
+    expect(mapSync.publishToDevice).not.toHaveBeenCalledWith(SN, {
+      get_preview_cover_path: { map_name: 'all' },
+    });
   });
 });

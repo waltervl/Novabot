@@ -18,6 +18,7 @@ import { isDemoMode } from '../services/demoSimulator.js';
 import { forwardToDashboard, emitDeviceOnline, emitDeviceOffline, pushMqttLog, emitOtaEvent, emitPinEvent, emitExtendedEvent, emitCommandRespond } from '../dashboard/socketHandler.js';
 import { initMapSync, handleMapMessage, handleExtendedResponse, handleDeviceResponse, publishToExtended, onExtendedResponse, offExtendedResponse, publishEncryptedOnTopic, notifyRespond, publishToDevice } from './mapSync.js';
 import { allowBetaFlashOrSnapshot } from '../services/firmwareSafety.js';
+import { getMowerFileCapability } from '../services/mowerFileCapability.js';
 
 const PROXY_MODE = process.env.PROXY_MODE ?? 'local';
 
@@ -582,8 +583,9 @@ export async function startMqttBroker(): Promise<void> {
                 console.log(`${C.cyan}[MAP-PROXY] delete_map: alle maps verwijderd uit DB voor ${sn}${C.reset}`);
               }
               console.log(`${C.cyan}[MAP-PROXY] delete_map voor ${sn} map=${delName ?? 'ALL'} — doorsturen naar maaier${C.reset}`);
-            } else if ('get_preview_cover_path' in parsed || 'get_map_plan_path' in parsed) {
-              // ── Stock mqtt_node buffer overflow workaround ──
+            } else if (('get_preview_cover_path' in parsed || 'get_map_plan_path' in parsed)
+                       && getMowerFileCapability(sn).isOpenNova) {
+              // ── Stock mqtt_node buffer overflow workaround (OpenNova firmware only) ──
               // Stock mqtt_node crasht met `*** buffer overflow detected ***` (glibc
               // __fortify_fail) bij get_preview_cover_path / get_map_plan_path wanneer
               // de JSON file groter is dan ~8 KB. De firmware serialiseert het
@@ -591,6 +593,12 @@ export async function startMqttBroker(): Promise<void> {
               // Workaround: blokkeer het commando naar de mower en haal de data op
               // via onze extended_commands.py backchannel die geen last heeft van
               // deze bug. Herpak als wrapped respond voor de app.
+              //
+              // ALLEEN voor OpenNova/custom firmware — die heeft extended_commands.py.
+              // Op STOCK firmware bestaat die backchannel niet, dus daar laten we het
+              // commando ongewijzigd door naar mqtt_node (exact zoals de echte cloud).
+              // De Novabot app haalt de preview zo op en dat werkt in ~5s op stock;
+              // intercepteren zou de app juist breken (geen respond → timeout).
               const cmd = 'get_preview_cover_path' in parsed ? 'get_preview_cover_path' : 'get_map_plan_path';
               const respondCmd = `${cmd}_respond` as const;
               console.log(`${C.cyan}[PATH-INTERCEPT] ${cmd} geblokkeerd (stock mqtt_node overflow) — ophalen via extended channel${C.reset}`);

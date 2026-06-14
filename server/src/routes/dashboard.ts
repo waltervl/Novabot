@@ -51,6 +51,7 @@ import {
   selectCoveragePlannerRadius,
 } from '../services/coveragePlannerRadius.js';
 import { ensureBetaFlashSafe } from '../services/firmwareSafety.js';
+import { getMowerFileCapability } from '../services/mowerFileCapability.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -739,6 +740,30 @@ dashboardRouter.get('/preview-path/:sn', (req: Request, res: Response) => {
   });
 });
 
+/**
+ * Decode a get_preview_cover_path_respond / get_map_plan_path_respond `value`
+ * into the raw path object (e.g. {"1":{"0":"x y,x y,..."}}).
+ *
+ * Stock mqtt_node returns the file as a byte array under `value.data`
+ * (List<int> → UTF-8 → JSON — confirmed in the Novabot app, blutter v2.4.0).
+ * Our extended_commands.py backchannel returns the parsed object directly.
+ * Handle both shapes.
+ */
+function decodePreviewCoverValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (Array.isArray(v.data)) {
+    try {
+      const json = Buffer.from(v.data as number[]).toString('utf-8');
+      const parsed = JSON.parse(json);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return v;
+}
+
 export function handlePreviewPathRespond(sn: string, data: Record<string, unknown>): void {
   try {
     const paths = parsePlannedPathJson(data);
@@ -977,34 +1002,59 @@ dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Resp
       console.warn(`[PREVIEW-REFRESH] generate_preview_cover_path ack timeout for ${sn}; trying preview file anyway`);
     }
 
-    // 3. Ask extended_commands for the content. This avoids the mqtt_node
-    //    buffer overflow path entirely. Our broker intercept normally handles
-    //    this when the app sends it — here we short-circuit direct from server.
+    // 3. Fetch the preview path content.
+    //
+    // Stock firmware has NO extended_commands.py backchannel, so we fetch it
+    // exactly the way the real Novabot app does (verified in blutter v2.4.0):
+    // a plain-MQTT get_preview_cover_path, decoding the byte-array `value.data`
+    // response. This is what makes the preview work on stock firmware at all.
+    //
+    // OpenNova/custom firmware keeps the extended_commands.py backchannel, which
+    // reads the file in Python and sidesteps the stock mqtt_node buffer overflow
+    // that triggers on very large preview files (>~8 KB serialised byte-by-byte).
     const fetchStartedAt = Date.now();
-    const contentPromise = new Promise<Record<string, unknown> | null>((resolve) => {
+    const isOpenNova = getMowerFileCapability(sn).isOpenNova;
+    const content = await new Promise<Record<string, unknown> | null>((resolve) => {
       const timer = setTimeout(() => {
-        offExtendedResponse(sn, handler);
+        offExtendedResponse(sn, extHandler);
+        offDeviceResponse(sn, devHandler);
         resolve(null);
-      // 15s (> the broker app-path budget of 10s in broker.ts) — extended_commands
-      // serialises a large preview path byte-by-byte and can take 8-10s; an 8s cap
-      // timed out the dashboard refresh while the app path (10s) still succeeded.
+      // 15s (> the broker app-path budget of 10s in broker.ts) — a large preview
+      // path serialises byte-by-byte and can take 8-10s; an 8s cap timed out the
+      // dashboard refresh while the app path (10s) still succeeded.
       }, 15000);
-      const handler = (data: Record<string, unknown>) => {
-        const resp = data['get_preview_cover_path_respond'] as { result?: number; value?: unknown; error?: string } | undefined;
+
+      // Stock firmware: plain-MQTT get_preview_cover_path_respond. The mower may
+      // wrap it as {type, message} (charger-style) or {get_preview_cover_path_respond}
+      // (mower-style) — accept both, then decode the byte-array value.
+      const devHandler = (data: Record<string, unknown>) => {
+        const wrapped = data.type === 'get_preview_cover_path_respond'
+          ? data.message
+          : data['get_preview_cover_path_respond'];
+        if (!wrapped || typeof wrapped !== 'object') return;
+        clearTimeout(timer);
+        offDeviceResponse(sn, devHandler);
+        const resp = wrapped as { result?: number; value?: unknown };
+        resolve(resp.result === 0 || resp.result === undefined ? decodePreviewCoverValue(resp.value) : null);
+      };
+
+      // OpenNova/custom firmware: extended_commands.py backchannel.
+      const extHandler = (data: Record<string, unknown>) => {
+        const resp = data['get_preview_cover_path_respond'] as { result?: number; value?: unknown } | undefined;
         if (!resp) return;
         clearTimeout(timer);
-        offExtendedResponse(sn, handler);
-        if (resp.result === 0 && resp.value && typeof resp.value === 'object') {
-          resolve(resp.value as Record<string, unknown>);
-        } else {
-          resolve(null);
-        }
+        offExtendedResponse(sn, extHandler);
+        resolve(resp.result === 0 || resp.result === undefined ? decodePreviewCoverValue(resp.value) : null);
       };
-      onExtendedResponse(sn, handler);
-      publishToExtended(sn, { get_preview_cover_path: { map_name: 'all' } });
-    });
 
-    const content = await contentPromise;
+      if (isOpenNova) {
+        onExtendedResponse(sn, extHandler);
+        publishToExtended(sn, { get_preview_cover_path: { map_name: 'all' } });
+      } else {
+        onDeviceResponse(sn, devHandler);
+        publishToDevice(sn, { get_preview_cover_path: { map_name: 'all' } });
+      }
+    });
     const fetchMs = Date.now() - fetchStartedAt;
     if (!content) {
       res.status(504).json({
@@ -1067,29 +1117,46 @@ dashboardRouter.post('/refresh-plan-path/:sn', async (req: Request, res: Respons
     return;
   }
   try {
-    const { publishToExtended, onExtendedResponse, offExtendedResponse } = await import('../mqtt/mapSync.js');
-    const contentPromise = new Promise<Record<string, unknown> | null>((resolve) => {
+    const {
+      publishToDevice, onDeviceResponse, offDeviceResponse,
+      publishToExtended, onExtendedResponse, offExtendedResponse,
+    } = await import('../mqtt/mapSync.js');
+    // Stock firmware: plain-MQTT get_map_plan_path (like the app). OpenNova/custom
+    // firmware: extended_commands.py backchannel (sidesteps the mqtt_node overflow
+    // on large plan files). Same split as the preview fetch above.
+    const isOpenNova = getMowerFileCapability(sn).isOpenNova;
+    const content = await new Promise<Record<string, unknown> | null>((resolve) => {
       const timer = setTimeout(() => {
-        offExtendedResponse(sn, handler);
+        offExtendedResponse(sn, extHandler);
+        offDeviceResponse(sn, devHandler);
         resolve(null);
-      // 15s — same reason as the preview fetch: a large plan path can take 8-10s
-      // via extended_commands, and the broker app-path already allows 10s.
+      // 15s — a large plan path can take 8-10s, and the broker app-path allows 10s.
       }, 15000);
-      const handler = (data: Record<string, unknown>) => {
+      const devHandler = (data: Record<string, unknown>) => {
+        const wrapped = data.type === 'get_map_plan_path_respond'
+          ? data.message
+          : data['get_map_plan_path_respond'];
+        if (!wrapped || typeof wrapped !== 'object') return;
+        clearTimeout(timer);
+        offDeviceResponse(sn, devHandler);
+        const resp = wrapped as { result?: number; value?: unknown };
+        resolve(resp.result === 0 || resp.result === undefined ? decodePreviewCoverValue(resp.value) : null);
+      };
+      const extHandler = (data: Record<string, unknown>) => {
         const resp = data['get_map_plan_path_respond'] as { result?: number; value?: unknown } | undefined;
         if (!resp) return;
         clearTimeout(timer);
-        offExtendedResponse(sn, handler);
-        if (resp.result === 0 && resp.value && typeof resp.value === 'object') {
-          resolve(resp.value as Record<string, unknown>);
-        } else {
-          resolve(null);
-        }
+        offExtendedResponse(sn, extHandler);
+        resolve(resp.result === 0 || resp.result === undefined ? decodePreviewCoverValue(resp.value) : null);
       };
-      onExtendedResponse(sn, handler);
-      publishToExtended(sn, { get_map_plan_path: { map_name: 'all' } });
+      if (isOpenNova) {
+        onExtendedResponse(sn, extHandler);
+        publishToExtended(sn, { get_map_plan_path: { map_name: 'all' } });
+      } else {
+        onDeviceResponse(sn, devHandler);
+        publishToDevice(sn, { get_map_plan_path: { map_name: 'all' } });
+      }
     });
-    const content = await contentPromise;
     if (!content) {
       res.status(504).json({ ok: false, error: 'no plan path response within timeout' });
       return;
