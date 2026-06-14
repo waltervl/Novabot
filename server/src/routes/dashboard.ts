@@ -18,7 +18,7 @@ import {
 import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGpsTrail, getLocalTrail, clearLocalTrail, deviceCache, translateValue, markPinVerified, getDockPose } from '../mqtt/sensorData.js';
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
-import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose } from '../mqtt/mapSync.js';
+import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose, republishObstacleDetection } from '../mqtt/mapSync.js';
 import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
 import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
@@ -2783,6 +2783,9 @@ dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
     }
     // Push naar dashboard zodat UI direct update
     forwardToDashboard(sn, changes);
+    // Objectdetectie-cadans: stuur de nieuwe stand direct door naar de maaier
+    // (extended_commands.py zet daarop de detectie-cadans tijdens maaien).
+    if ('obstacle_avoidance_sensitivity' in paraInfo) republishObstacleDetection(sn);
     // LED bridge: stuur ook naar novabot/cmd/<SN> voor led_bridge.py
     if ('headlight' in paraInfo) {
       publishToTopic(`novabot/cmd/${sn}`, { led_set: Number(paraInfo.headlight) });
