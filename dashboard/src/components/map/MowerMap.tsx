@@ -141,6 +141,11 @@ interface Props {
    *  panel to show the LIVE plan path (get_map_plan_path) instead of refusing,
    *  and to poll it every ~5s while the overlay is shown. */
   mowingActive?: boolean;
+  /** True only right after the user starts a mow FROM THE DASHBOARD, until the
+   *  mower reports fresh cover data. Hides the previous session's carried-over
+   *  green/yellow at a fresh start. Owned by the shell (mirrors the app's
+   *  HomeScreen freshSession); monitoring never sets it, so progress always shows. */
+  progressSuppressed?: boolean;
   /** Volledige sensor-map (mower.sensors) — voor de MowingStatsCard tijdens maaien. */
   sensors?: Record<string, string>;
   signals?: SignalInfo;
@@ -988,7 +993,7 @@ function CelebrationOverlay({ area, onDismiss }: { area: number; onDismiss: () =
   );
 }
 
-export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sensors, signals, mowing, pathDirectionPreview, previewRequest, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes, controlsSlot, onPreviewLoading }: Props) {
+export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, progressSuppressed, sensors, signals, mowing, pathDirectionPreview, previewRequest, onMapSaved: _onMapSaved, liveOutline, patternPlacement, onMapClickForPattern, offsetPreview, coveredLanes, controlsSlot, onPreviewLoading }: Props) {
   const { t } = useTranslation();
   const mowingSensors = sensors ?? {};
   // ── Sticky live-session flag (hysteresis) ───────────────────────────
@@ -1013,27 +1018,36 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   }, [mowingActive]);
   useEffect(() => () => { if (liveSessionTimerRef.current) clearTimeout(liveSessionTimerRef.current); }, []);
 
-  // Suppress the PREVIOUS session's progress at a fresh start. Capture
-  // finished_area at the idle->mowing transition; while the live value still
-  // equals that captured (stale) value, treat the progress as stale and hide the
-  // "already mowed" overlays. The moment the mower reports a different
-  // finished_area (the new session's progress, or a reset) it's no longer stale.
-  // Keyed on liveSession (not raw mowingActive) so a brief flicker doesn't
-  // re-capture mid-session progress as the stale baseline. Deliberately NOT keyed
-  // on mowing_progress — that stays 0% for a long time on a large lawn while the
-  // mower is genuinely covering area.
-  const staleFinishedRef = useRef<string | null>(null);
-  const prevLiveSessionRef = useRef(liveSession);
-  useEffect(() => {
-    if (liveSession && !prevLiveSessionRef.current) {
-      staleFinishedRef.current = mowingSensors.finished_area ?? '';
-    } else if (!liveSession) {
-      staleFinishedRef.current = null;
-    }
-    prevLiveSessionRef.current = liveSession;
-  }, [liveSession, mowingSensors.finished_area]);
-  const progressIsStale = staleFinishedRef.current !== null
-    && (mowingSensors.finished_area ?? '') === staleFinishedRef.current;
+  // Fresh-session coverage suppression. Owned by the dashboard shell (mirrors the
+  // app's HomeScreen `freshSession`, which "doet het altijd prima"): it arms ONLY
+  // when the user starts a mow from the dashboard, and clears the moment the mower
+  // reports fresh cover data (finished_area/cover_map_id change), goes idle/charging,
+  // or after a safety timeout. Monitoring a mow started elsewhere — or opening the
+  // map mid-session, or resuming after a recharge/obstacle pause — never arms it, so
+  // live progress is always shown. The old liveSession-edge heuristic re-armed on
+  // every (re)entry, which hid green/yellow until the next lane completed (the
+  // progress lines flickering on/off the user reported).
+  const progressIsStale = !!progressSuppressed;
+
+  // A coverage session stays "live" for the overlay not only while actively
+  // mowing, but also while PAUSED (Work:USER_STOP/PAUSED) or RETURNING for a
+  // recharge — the mower is still mid-task. In those states we keep the live
+  // progress (green mowed + amber current lane) on screen instead of reverting to
+  // the cyan idle preview. We read `msg` directly because task_mode is not
+  // reliably reported during a pause. It ends only on Work:CANCELLED/FINISHED
+  // (true stop / completion) — then the overlay falls back to the idle preview.
+  const coverageSessionActive = (() => {
+    const m = mowingSensors.msg ?? '';
+    if (/Work:(CANCELLED|FINISHED)/.test(m)) return false;
+    return (
+      /Work:(RUNNING|COVERING|NAVIGATING|BOUNDARY_COVERING|AVOIDING|MOVING|USER_STOP|PAUSED)/.test(m) ||
+      /Recharge:\s*(GOING|ALIGN|ALIGNING|MOVING|RUNNING|BACK|DOCKING)/i.test(m) ||
+      /Work:(GO_PILE|BACK_CHARGER|DOCKING)/.test(m)
+    );
+  })();
+  // Treat the sticky live-mowing flag OR a paused/returning coverage session as
+  // "show the live plan + progress" (vs the idle generated preview).
+  const inLiveCoverage = liveSession || coverageSessionActive;
   const { toast } = useToast();
   const [maps, setMaps] = useState<MapData[]>([]);
   // Trail in LOKALE meters (map_position frame), net als de maaier-icoon en de
@@ -1712,7 +1726,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
   // instead because get_map_plan_path is the right source for the active task.
   const refreshCoverage = useCallback(async (dirOverride?: number) => {
     if (!sn) return;
-    if (liveSession) { stopCoveragePoll(); await showLiveCoverage(); return; }
+    if (inLiveCoverage) { stopCoveragePoll(); await showLiveCoverage(); return; }
     setCoverageLive(false);
     stopCoveragePoll();
     setCoveragePath(null);
@@ -1749,7 +1763,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     } finally {
       setCoverageLoading(false);
     }
-  }, [sn, liveSession, maps, selectedMapId, mowing?.covDirection, t, toast, showLiveCoverage, stopCoveragePoll]);
+  }, [sn, inLiveCoverage, maps, selectedMapId, mowing?.covDirection, t, toast, showLiveCoverage, stopCoveragePoll]);
 
   // Toggle handler: hide is pure visibility; show triggers the right mower
   // source. Idle uses a fresh stock preview, live mowing uses the live plan.
@@ -1762,19 +1776,23 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
     setShowCoverage(true);
     setCoverageStatus(null);
     if (!sn) return;
-    if (liveSession) { await showLiveCoverage(); return; }
+    if (inLiveCoverage) { await showLiveCoverage(); return; }
     await refreshCoverage();
-  }, [showCoverage, sn, liveSession, showLiveCoverage, stopCoveragePoll, refreshCoverage]);
+  }, [showCoverage, sn, inLiveCoverage, showLiveCoverage, stopCoveragePoll, refreshCoverage]);
 
   // Auto-switch: when the mower transitions into/out of mowing WHILE the panel
   // is open, switch to/from the live plan path automatically. Also stops the
   // poll when the panel closes or the component unmounts.
   useEffect(() => {
     if (!showCoverage) { stopCoveragePoll(); return; }
-    if (liveSession) {
+    if (inLiveCoverage) {
+      // Mowing OR paused/returning mid-coverage: keep the live plan + progress on
+      // screen. get_map_plan_path is safe in all these states (never 128s), so the
+      // poll can run while paused too; coverageLive stays true so the green/amber
+      // never revert to the cyan idle preview.
       if (!coveragePollRef.current) void showLiveCoverage();
     } else {
-      // Session truly ended (sustained pause past the grace window): stop
+      // Session truly ended (Work:CANCELLED/FINISHED, or docked/idle): stop
       // polling, drop the live indicator. Keep the last path on screen (no auto
       // preview-refresh — that needs a user action / could 128 a just-finished
       // task that hasn't cleared yet).
@@ -1783,14 +1801,14 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, sens
       setCoverageStatus((s) => (s === t('map.edit.coverageLive') ? null : s));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveSession, showCoverage]);
+  }, [inLiveCoverage, showCoverage]);
 
   // Auto-toon het maaipad zodra de maaier gaat maaien — geen knop-druk nodig.
   // Vuurt op de start van een live sessie; sluit de gebruiker de overlay
   // handmatig, dan blijft die dicht tot de volgende sessie.
   useEffect(() => {
-    if (liveSession) setShowCoverage(true);
-  }, [liveSession]);
+    if (inLiveCoverage) setShowCoverage(true);
+  }, [inLiveCoverage]);
 
   // Generate a fresh coverage preview for one OR MANY work maps (honors the
   // Start-sheet work-area selector: "All work areas" → every work map, a single

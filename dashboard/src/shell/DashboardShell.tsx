@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Header } from './Header';
 import { Drawer } from './Drawer';
 import { DeviceChips } from './DeviceChips';
 import { useDevices } from '../hooks/useDevices';
 import { useActiveMower } from '../hooks/useActiveMower';
+import { deriveMowerActivity } from '../utils/mowerActivity';
 import { ActiveMowerProvider } from '../contexts/ActiveMowerContext';
 import { MapTab } from '../pages/MapTab';
 import { SchedulePage } from '../pages/SchedulePage';
@@ -49,6 +50,41 @@ function ShellInner() {
   // the Preview button's disabled/spinner state so it waits for the real result.
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  // Fresh-session coverage suppression — mirrors the app's HomeScreen
+  // `freshSession` (the app "doet het altijd prima"). After a fresh start the
+  // mower keeps echoing the PREVIOUS session's coverage (finished_area, planned
+  // paths) until it reaches the start point. We hide that carried-over progress
+  // on the map until new data arrives. CRITICAL: arm ONLY on an explicit
+  // dashboard Start — never on mount or pause-resume — so monitoring a running
+  // mow always shows live progress (this was the on/off flicker bug). Cleared
+  // when the mower reports fresh data (finished_area/cover_map_id change), goes
+  // idle/charging, or after a 3-minute safety timeout.
+  const [freshSession, setFreshSession] = useState(false);
+  const freshSessionFingerprint = useRef('');
+  const freshSessionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeFingerprint = `${activeMower?.sensors.finished_area ?? ''}|${activeMower?.sensors.cover_map_id ?? ''}`;
+  const activeActivity = activeMower
+    ? deriveMowerActivity(activeMower.sensors, { online: activeMower.online })
+    : null;
+  useEffect(() => {
+    if (!freshSession) return;
+    if (
+      activeFingerprint !== freshSessionFingerprint.current ||
+      activeActivity === 'idle' ||
+      activeActivity === 'charging'
+    ) {
+      setFreshSession(false);
+      if (freshSessionTimer.current) { clearTimeout(freshSessionTimer.current); freshSessionTimer.current = null; }
+    }
+  }, [freshSession, activeFingerprint, activeActivity]);
+  useEffect(() => () => { if (freshSessionTimer.current) clearTimeout(freshSessionTimer.current); }, []);
+  const armFreshSession = () => {
+    freshSessionFingerprint.current = activeFingerprint;
+    setFreshSession(true);
+    if (freshSessionTimer.current) clearTimeout(freshSessionTimer.current);
+    freshSessionTimer.current = setTimeout(() => setFreshSession(false), 180000);
+  };
+
   // Rain state derived from active mower's sensors. The mower reports
   // `rain_paused: '1'` when a scheduled run is currently paused by rain
   // and `rain_detected: '1'` when the rain sensor is wet but no run is
@@ -71,6 +107,7 @@ function ShellInner() {
       online={activeMower.online}
       sensors={activeMower.sensors}
       onPreview={(covDirection, canonicals, polygonArea) => { setTab('map'); setPreviewRequest({ nonce: Date.now(), covDirection, canonicals, polygonArea }); }}
+      onStarted={() => { armFreshSession(); setTab('map'); }}
       patternCenter={patternCenter}
       onPatternModeChange={(active) => { setPatternMode(active); if (active) setTab('map'); if (!active) setPatternCenter(null); }}
       onPatternPlacementChange={setPatternPlacement}
@@ -142,6 +179,7 @@ function ShellInner() {
             patternPlacement={patternPlacement}
             onMapClickForPattern={patternMode ? setPatternCenter : undefined}
             controlsSlot={mowerControls}
+            progressSuppressed={freshSession}
             onPreviewLoading={setPreviewLoading}
           />
         )}

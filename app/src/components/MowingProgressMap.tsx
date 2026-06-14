@@ -33,6 +33,7 @@ const MAP_PALETTE: Record<MapScheme, {
   polygonStroke: string;
   plannedStroke: string;
   finishedStroke: string;
+  currentStroke: string;
   stripeStroke: string;
   trailStroke: string;
   liveCoverStroke: string;
@@ -48,6 +49,7 @@ const MAP_PALETTE: Record<MapScheme, {
     polygonStroke: '#22c55e',
     plannedStroke: 'rgba(255,255,255,0.22)',
     finishedStroke: 'rgba(34,197,94,0.85)',
+    currentStroke: '#fbbf24',
     stripeStroke: 'rgba(34,197,94,0.15)',
     trailStroke: 'rgba(34,197,94,0.5)',
     liveCoverStroke: '#fbbf24',
@@ -63,6 +65,7 @@ const MAP_PALETTE: Record<MapScheme, {
     polygonStroke: '#16a34a',
     plannedStroke: 'rgba(21,128,61,0.45)',
     finishedStroke: 'rgba(21,128,61,0.85)',
+    currentStroke: '#f59e0b',
     stripeStroke: 'rgba(22,163,74,0.28)',
     trailStroke: '#15803d',
     liveCoverStroke: '#f59e0b',
@@ -452,7 +455,7 @@ export function MowingProgressMap({
               Inclusief het actieve sub-path zodat ook daar de volledige plan-
               lijn zichtbaar blijft; de al-gedekte portie wordt hieronder in
               emerald overheen getekend. */}
-          {plannedPaths.filter(p => !finishedSet.has(p.id)).map((path) => (
+          {plannedPaths.filter(p => !finishedSet.has(p.id) && p.id !== activeAreaId).map((path) => (
             <Polyline
               key={`plan-${path.id}`}
               points={path.points.map(p => toSvg(p, bounds, renderSize, padding)).map(p => `${p.x},${p.y}`).join(' ')}
@@ -473,10 +476,13 @@ export function MowingProgressMap({
               point count renders as solid emerald (like finished sub-paths);
               the rest is thin stippel showing what's still coming. */}
           {activeAreaId && plannedPaths.filter(p => p.id === activeAreaId).map((path) => {
-            // Alleen de al-gedekte portie van het actieve sub-path tekenen —
-            // net zoals Novabot doet. De to-do-portie helemaal niet tonen zodat
-            // de mower icon vanzelf op de "frontier" komt te staan zonder dat
-            // er een tweede kleurvlak aan de toekomstige kant verschijnt.
+            // Active sub-path (incl. the edge-cut boundary) → draw the FULL lane in
+            // amber ("current lane"), matching the dashboard, then overlay the
+            // already-covered portion (up to activeAreaPoints) in green so the mower
+            // icon sits at the frontier. Before, only the green done-portion was
+            // drawn — so edge-cut (where the boundary IS the active lane) showed no
+            // visible current line in the app, unlike the dashboard.
+            const toStr = (pts: LocalPoint[]) => pts.map(p => toSvg(p, bounds, renderSize, padding)).map(p => `${p.x},${p.y}`).join(' ');
             const splitAt = Math.max(0, Math.min(
               typeof activeAreaPoints === 'number' && activeAreaPoints > 0
                 ? activeAreaPoints
@@ -484,14 +490,20 @@ export function MowingProgressMap({
               path.points.length,
             ));
             const done = path.points.slice(0, splitAt);
-            if (done.length < 2) return null;
-            const toStr = (pts: LocalPoint[]) => pts.map(p => toSvg(p, bounds, renderSize, padding)).map(p => `${p.x},${p.y}`).join(' ');
+            if (path.points.length < 2) return null;
             return (
-              <Polyline
-                key={`active-${path.id}`}
-                points={toStr(done)}
-                fill="none" stroke={mapPalette.finishedStroke} strokeWidth={3.5} strokeLinecap="round" strokeLinejoin="round"
-              />
+              <React.Fragment key={`active-${path.id}`}>
+                <Polyline
+                  points={toStr(path.points)}
+                  fill="none" stroke={mapPalette.currentStroke} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"
+                />
+                {done.length >= 2 && (
+                  <Polyline
+                    points={toStr(done)}
+                    fill="none" stroke={mapPalette.finishedStroke} strokeWidth={3.5} strokeLinecap="round" strokeLinejoin="round"
+                  />
+                )}
+              </React.Fragment>
             );
           })}
         </G>

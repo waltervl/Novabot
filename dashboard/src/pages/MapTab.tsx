@@ -19,11 +19,14 @@ interface Props {
   onMapClickForPattern?: (center: { lat: number; lng: number }) => void;
   /** Mower control buttons hosted in the map's floating tool-bar. */
   controlsSlot?: ReactNode;
+  /** True only right after a dashboard-initiated Start, until the mower reports
+   *  fresh cover data — hides the previous session's carried-over progress. */
+  progressSuppressed?: boolean;
   /** Reports when the map is actually fetching the mower coverage preview. */
   onPreviewLoading?: (loading: boolean) => void;
 }
 
-export function MapTab({ mower, connected, liveOutlines, coveredLanes, previewRequest, patternPlacement, onMapClickForPattern, controlsSlot, onPreviewLoading }: Props) {
+export function MapTab({ mower, connected, liveOutlines, coveredLanes, previewRequest, patternPlacement, onMapClickForPattern, controlsSlot, progressSuppressed, onPreviewLoading }: Props) {
   const { t } = useTranslation();
   if (!mower) {
     return <div className="p-8 text-zinc-500">{t('pages.selectMowerForMap')}</div>;
@@ -70,6 +73,7 @@ export function MapTab({ mower, connected, liveOutlines, coveredLanes, previewRe
       patternPlacement={patternPlacement}
       onMapClickForPattern={onMapClickForPattern}
       controlsSlot={controlsSlot}
+      progressSuppressed={progressSuppressed}
       onPreviewLoading={onPreviewLoading}
     />
   );
