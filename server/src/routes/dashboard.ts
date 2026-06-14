@@ -985,7 +985,10 @@ dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Resp
       const timer = setTimeout(() => {
         offExtendedResponse(sn, handler);
         resolve(null);
-      }, 8000);
+      // 15s (> the broker app-path budget of 10s in broker.ts) — extended_commands
+      // serialises a large preview path byte-by-byte and can take 8-10s; an 8s cap
+      // timed out the dashboard refresh while the app path (10s) still succeeded.
+      }, 15000);
       const handler = (data: Record<string, unknown>) => {
         const resp = data['get_preview_cover_path_respond'] as { result?: number; value?: unknown; error?: string } | undefined;
         if (!resp) return;
@@ -1069,7 +1072,9 @@ dashboardRouter.post('/refresh-plan-path/:sn', async (req: Request, res: Respons
       const timer = setTimeout(() => {
         offExtendedResponse(sn, handler);
         resolve(null);
-      }, 8000);
+      // 15s — same reason as the preview fetch: a large plan path can take 8-10s
+      // via extended_commands, and the broker app-path already allows 10s.
+      }, 15000);
       const handler = (data: Record<string, unknown>) => {
         const resp = data['get_map_plan_path_respond'] as { result?: number; value?: unknown } | undefined;
         if (!resp) return;
