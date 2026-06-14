@@ -1010,7 +1010,7 @@ dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Resp
       res.status(504).json({
         ok: false,
         source: 'mower',
-        error: 'no preview response within timeout (extended_commands.py running on mower?)',
+        error: 'preview path fetch timed out (15s) — the map may be large/slow to serialise, or the mower did not return the path in time',
         cmd_num: cmdNum,
         ackTimeout: ack.timeout === true,
         generateAckMs,
