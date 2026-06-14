@@ -454,13 +454,13 @@ function MowerSettingsSection({ mower }: { mower: DeviceState }) {
                 </span>
                 <span className="flex-1">
                   <span className={`block text-sm font-semibold ${active ? 'text-emerald-300' : 'text-white'}`}>
-                    {t(`settings.mower.sensitivity.${o.key}`, o.key === 'low' ? 'Low' : o.key === 'medium' ? 'Medium' : 'High')}
+                    {t(`settings.mower.sensitivity.${o.key}`, o.key === 'low' ? 'Off (terrain only)' : o.key === 'medium' ? 'Avoid objects' : 'Avoid objects (frequent)')}
                   </span>
                   <span className="block text-xs text-gray-500">
                     {t(`settings.mower.sensitivity.${o.key}Desc`,
-                      o.key === 'low' ? 'Less avoidance, more coverage'
-                      : o.key === 'medium' ? 'Balanced (recommended)'
-                      : 'Maximum obstacle avoidance')}
+                      o.key === 'low' ? 'Segmentation only, no object detection (max coverage)'
+                      : o.key === 'medium' ? 'Periodic object detection while mowing'
+                      : 'Frequent object detection (best avoidance)')}
                   </span>
                 </span>
               </button>

@@ -552,9 +552,9 @@
       "cuttingHeight": "Cutting height",
       "obstacle": "Obstacle avoidance",
       "sensitivity": {
-        "low": "Low", "lowDesc": "Less avoidance, more coverage",
-        "medium": "Medium", "mediumDesc": "Balanced (recommended)",
-        "high": "High", "highDesc": "Maximum obstacle avoidance"
+        "low": "Off (terrain only)", "lowDesc": "Segmentation only, no object detection (max coverage)",
+        "medium": "Avoid objects", "mediumDesc": "Periodic object detection while mowing",
+        "high": "Avoid objects (frequent)", "highDesc": "Frequent object detection (best avoidance)"
       },
       "direction": "Mowing direction",
       "directionHint": "Stripes show how the mower drives",

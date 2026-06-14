@@ -596,11 +596,11 @@
     },
     "mower": {
       "cuttingHeight": "Maaihoogte",
-      "obstacle": "Obstakeldetectie",
+      "obstacle": "Obstakel-ontwijking",
       "sensitivity": {
-        "low": "Laag", "lowDesc": "Minder ontwijken, meer dekking",
-        "medium": "Gemiddeld", "mediumDesc": "Gebalanceerd (aanbevolen)",
-        "high": "Hoog", "highDesc": "Maximale obstakeldetectie"
+        "low": "Uit (alleen terrein)", "lowDesc": "Alleen segmentatie, geen objectdetectie (max dekking)",
+        "medium": "Objecten ontwijken", "mediumDesc": "Periodieke objectdetectie tijdens maaien",
+        "high": "Objecten ontwijken (vaak)", "highDesc": "Vaak objectdetectie (beste ontwijking)"
       },
       "direction": "Maairichting",
       "directionHint": "Strepen tonen hoe de maaier rijdt",
