@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Server, ServerOff, Plus, Activity } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { BleScanner } from '../components/ble/BleScanner';
 import { RainBadge } from './RainBadge';
+import { getServerVersion } from '../api/client';
 
 const LANGS = ['nl', 'en', 'fr', 'de'] as const;
 
@@ -15,6 +16,8 @@ interface Props {
 export function Header({ connected, rainState, onOpenDrawer }: Props) {
   const { t, i18n } = useTranslation();
   const [showBle, setShowBle] = useState(false);
+  const [version, setVersion] = useState('');
+  useEffect(() => { getServerVersion().then(setVersion).catch(() => {}); }, []);
 
   const changeLang = (lng: string) => {
     i18n.changeLanguage(lng);
@@ -32,6 +35,14 @@ export function Header({ connected, rainState, onOpenDrawer }: Props) {
         >
           {t('header.dashboard')}
         </span>
+        {version && (
+          <span
+            className="hidden md:inline text-[10px] font-mono text-zinc-500 self-end mb-1"
+            title={t('header.serverVersion', 'Server version')}
+          >
+            v{version}
+          </span>
+        )}
       </div>
 
       {/* Right: add device + lang switcher + server status + rain badge + gear */}

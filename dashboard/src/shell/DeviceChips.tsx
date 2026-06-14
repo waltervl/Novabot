@@ -84,16 +84,19 @@ function TeleCell({
   color = 'text-zinc-200',
   iconColor = 'text-zinc-500',
   label,
+  blink = false,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   value: string | number;
   color?: string;
   iconColor?: string;
   label?: string;
+  /** Pulse the whole cell (e.g. a dangerous temperature) to draw attention. */
+  blink?: boolean;
 }) {
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-2.5 border-r border-zinc-700/40 last:border-r-0"
+      className={`inline-flex items-center gap-1.5 px-2.5 border-r border-zinc-700/40 last:border-r-0${blink ? ' animate-pulse' : ''}`}
       title={label}
     >
       <Icon className={`w-3.5 h-3.5 ${iconColor}`} />
@@ -346,6 +349,9 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
   const wifiRssi = parseInt(s.wifi_rssi ?? '', 10);
   const hasWifi = isFinite(wifiRssi) && wifiRssi !== 0;
 
+  // Mower SoC danger threshold (user-confirmed). At/above this the temp chip
+  // turns red and pulses to draw attention.
+  const DANGER_TEMP_C = 85;
   const cpuTemp = parseInt(s.cpu_temperature ?? '', 10);
   const hasCpu = isFinite(cpuTemp) && cpuTemp > 0;
 
@@ -472,9 +478,10 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
                   <TeleCell
                     icon={Thermometer}
                     value={`${cpuTemp}°`}
-                    color={cpuTemp < 50 ? 'text-zinc-200' : cpuTemp < 65 ? 'text-yellow-300' : 'text-red-400'}
-                    iconColor={cpuTemp < 50 ? 'text-zinc-500' : cpuTemp < 65 ? 'text-yellow-400/80' : 'text-red-400'}
-                    label={`CPU temp: ${cpuTemp}°C`}
+                    color={cpuTemp >= DANGER_TEMP_C ? 'text-red-400' : cpuTemp < 50 ? 'text-zinc-200' : cpuTemp < 65 ? 'text-yellow-300' : 'text-red-400'}
+                    iconColor={cpuTemp >= DANGER_TEMP_C ? 'text-red-400' : cpuTemp < 50 ? 'text-zinc-500' : cpuTemp < 65 ? 'text-yellow-400/80' : 'text-red-400'}
+                    label={cpuTemp >= DANGER_TEMP_C ? `DANGER - CPU temp ${cpuTemp}°C (>= ${DANGER_TEMP_C}°C)` : `CPU temp: ${cpuTemp}°C`}
+                    blink={cpuTemp >= DANGER_TEMP_C}
                   />
                 )}
 

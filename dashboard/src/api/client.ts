@@ -916,6 +916,17 @@ export async function refreshPreviewPath(
 // reply with `{ paths }` (POST also `{ ok, count }`). Same CoveragePathEntry
 // shape (local meters) as the preview path.
 
+/** Running server version (shown in the dashboard header). Returns '?' on error. */
+export async function getServerVersion(): Promise<string> {
+  try {
+    const res = await get(`${BASE}/version`);
+    const data = await res.json() as { version?: string };
+    return data.version ?? '?';
+  } catch {
+    return '?';
+  }
+}
+
 /** GET cached live plan path. Returns [] if nothing cached. */
 export async function getPlanPath(sn: string): Promise<CoveragePathEntry[]> {
   const res = await get(`${BASE}/planned-path/${encodeURIComponent(sn)}`);

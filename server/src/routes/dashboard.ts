@@ -73,6 +73,16 @@ interface EquipmentRow {
 
 export const dashboardRouter = Router();
 
+// Running server version (read once from package.json). Exposed on this OPEN
+// router so the dashboard header can show which build is live without admin auth.
+let DASHBOARD_SERVER_VERSION = '?';
+try {
+  DASHBOARD_SERVER_VERSION = JSON.parse(readFileSync(path.join(__dirname, '../../package.json'), 'utf8')).version;
+} catch { /* ignore */ }
+dashboardRouter.get('/version', (_req: Request, res: Response) => {
+  res.json({ version: DASHBOARD_SERVER_VERSION });
+});
+
 // Load persisted device settings into in-memory sensor cache at startup.
 // This ensures settings (cutting height, path direction, etc.) survive container restarts.
 {
