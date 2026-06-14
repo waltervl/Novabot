@@ -153,7 +153,10 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
   //       recovery, so we treat it as a soft warning and let the user try
   //       again (retrying triggers a fresh coverage request, which clears
   //       the flag on success).
-  const NON_BLOCKING_ERRORS = [8, 113, 118, 120, 122, 123, 124, 125, 126, 132];
+  // 139 = "Charging station position error" — fires on a spurious [0,0,0]
+  //       charging pose (map_info.json) even when the dock is physically fine.
+  //       Treat as a warning so it never blocks operating the mower.
+  const NON_BLOCKING_ERRORS = [8, 113, 118, 120, 122, 123, 124, 125, 126, 132, 139];
   // Codes the stock Novabot app NEVER surfaces to the user — they fire so
   // often (LoRa flicker, transient perception/data-loss) and self-recover so
   // quickly that showing a banner each time becomes noise. Mirror that

@@ -54,6 +54,7 @@ export const ERROR_MAP: Record<number, ErrorEntry> = {
   134: { type: 'hardware_fault', message: 'Failed to open TOF camera.' },            // 0x86
   136: { type: 'hardware_fault', message: 'Failed to open front camera.' },          // 0x88
   137: { type: 'hardware_fault', message: 'LoRa configuration error.' },             // 0x89
+  139: { type: 'map_error', message: 'Charging station position error.' },           // 0x8B
 
   // ── PIN lockout (0x97) ──────────────────────────────────────────
   151: { type: 'pin_locked', message: 'Please enter the PIN code on the device.' }, // 0x97

@@ -33,7 +33,9 @@ type Sensors = Record<string, string> | undefined;
  * Error codes the app treats as non-blocking (dismissable popup, mow button
  * stays active). Mirrors NON_BLOCKING_ERRORS in HomeScreen.deriveMower.
  */
-const NON_BLOCKING_ERRORS = [8, 113, 118, 120, 122, 123, 124, 125, 126, 132];
+// 139 = "Charging station position error" — spurious [0,0,0] charging pose;
+// the dock itself is fine, so treat as a non-blocking warning.
+const NON_BLOCKING_ERRORS = [8, 113, 118, 120, 122, 123, 124, 125, 126, 132, 139];
 
 /**
  * Idle-like work_status values (raw int form OR the server's translated

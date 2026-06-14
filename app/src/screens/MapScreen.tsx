@@ -1579,7 +1579,7 @@ export default function MapScreen() {
                                 {(() => {
                                   const rechargeStatus = parseInt(mower?.sensors.recharge_status ?? '0', 10);
                                   const errorStatusRaw = parseInt(mower?.sensors.error_status?.match(/\d+/)?.[0] ?? '0', 10);
-                                  const NON_BLOCKING = [8, 113, 120, 122, 123, 125, 126, 132];
+                                  const NON_BLOCKING = [8, 113, 120, 122, 123, 125, 126, 132, 139];
                                   const hasHardError = errorStatusRaw > 0 && !NON_BLOCKING.includes(errorStatusRaw);
                                   const dockFailed = msg.includes('Recharge: FAILED');
                                   const dockGoing = msg.includes('Recharge: GOING')
