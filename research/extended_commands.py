@@ -774,6 +774,26 @@ def handle_set_perception_mode(params, respond):
         respond("set_perception_mode_respond", {"result": 1, "error": str(e)})
 
 
+# Object-detection cadence level (1 = off, 2 = occasional, 3 = frequent).
+# Set by the server via the `set_obstacle_detection` extended command, read by
+# the cadence thread (start_obstacle_detection_cadence). Default off until told.
+_obstacle_detection_level = 1
+
+
+def handle_set_obstacle_detection(params, respond):
+    """Set the object-detection cadence level driven by the app's
+    obstacle_avoidance_sensitivity (1 = off, 2 = occasional, 3 = frequent)."""
+    global _obstacle_detection_level
+    try:
+        level = int(params.get("level", 1))
+    except (TypeError, ValueError):
+        level = 1
+    level = max(1, min(3, level))
+    _obstacle_detection_level = level
+    log(f"[obstacle-detect] cadence level set to {level}")
+    respond("set_obstacle_detection_respond", {"result": 0, "level": level})
+
+
 def handle_set_semantic_mode(params, respond):
     """Set how the navigation costmap uses semantic segmentation data.
 
@@ -3284,6 +3304,7 @@ COMMANDS = {
     "query_pin": handle_query_pin,
     "clear_error": handle_clear_error,
     "set_perception_mode": handle_set_perception_mode,
+    "set_obstacle_detection": handle_set_obstacle_detection,
     "set_semantic_mode": handle_set_semantic_mode,
     "get_perception_status": handle_get_perception_status,
     "set_mqtt_config": handle_set_mqtt_config,

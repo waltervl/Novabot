@@ -101,5 +101,28 @@ class ExtendedCommandsTuningTest(unittest.TestCase):
             self.assertEqual(ext.obstacle_detect_idle_poll_seconds(), 2.0)
 
 
+    def test_set_obstacle_detection_clamps_and_stores_level(self):
+        captured = {}
+
+        def fake_respond(cmd, payload):
+            captured["cmd"] = cmd
+            captured["payload"] = payload
+
+        ext.handle_set_obstacle_detection({"level": 9}, fake_respond)
+        self.assertEqual(ext._obstacle_detection_level, 3)
+        self.assertEqual(captured["cmd"], "set_obstacle_detection_respond")
+        self.assertEqual(captured["payload"]["result"], 0)
+        self.assertEqual(captured["payload"]["level"], 3)
+
+        ext.handle_set_obstacle_detection({"level": "bogus"}, fake_respond)
+        self.assertEqual(ext._obstacle_detection_level, 1)  # invalid -> off
+
+        ext.handle_set_obstacle_detection({"level": 2}, fake_respond)
+        self.assertEqual(ext._obstacle_detection_level, 2)
+
+    def test_set_obstacle_detection_is_registered(self):
+        self.assertIs(ext.COMMANDS["set_obstacle_detection"], ext.handle_set_obstacle_detection)
+
+
 if __name__ == "__main__":
     unittest.main()
