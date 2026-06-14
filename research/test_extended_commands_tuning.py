@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -122,6 +122,47 @@ class ExtendedCommandsTuningTest(unittest.TestCase):
 
     def test_set_obstacle_detection_is_registered(self):
         self.assertIs(ext.COMMANDS["set_obstacle_detection"], ext.handle_set_obstacle_detection)
+
+    def test_obstacle_detection_level_persists_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "level")
+            with patch.object(ext, "OBSTACLE_DETECTION_LEVEL_FILE", path):
+                ext._persist_obstacle_detection_level(3)
+                self.assertEqual(ext._load_obstacle_detection_level(), 3)
+                # out-of-range stored value is clamped on load
+                ext._persist_obstacle_detection_level(9)
+                self.assertEqual(ext._load_obstacle_detection_level(), 3)
+            # missing file -> off (default), never raises
+            with patch.object(ext, "OBSTACLE_DETECTION_LEVEL_FILE", str(Path(tmp) / "nope")):
+                self.assertEqual(ext._load_obstacle_detection_level(), 1)
+
+    def test_set_obstacle_detection_persists_to_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "level")
+            with patch.object(ext, "OBSTACLE_DETECTION_LEVEL_FILE", path):
+                ext.handle_set_obstacle_detection({"level": 3}, lambda *a: None)
+                self.assertEqual(Path(path).read_text().strip(), "3")
+
+    def test_cadence_coverage_active_reads_work_state(self):
+        import time as _t
+        fresh = _t.time()
+
+        def line(work, ts):
+            return (f"[2026-06-14-19:25:28][INFO] [{ts:.6f}] [robot_decision]: "
+                    f"Mode:COVERAGE Work:{work} Prev work:AVOIDING Recharge: WAIT")
+
+        cases = [
+            (line("BOUNDARY_COVERING", fresh), True),   # active coverage state
+            (line("MOVING", fresh), True),              # driving between lanes
+            (line("USER_STOP", fresh), False),          # paused -> not active
+            (line("FINISHED", fresh), False),           # done -> not active
+            (line("COVERING", fresh - 120), False),     # stale (>60s) -> not active
+            ("", False),                                # no work line -> not active
+        ]
+        for out, expected in cases:
+            with patch.object(ext.subprocess, "run", return_value=Mock(stdout=out)):
+                active, reason = ext._cadence_coverage_active()
+                self.assertEqual(active, expected, msg=f"{out!r} -> {reason}")
 
 
 if __name__ == "__main__":

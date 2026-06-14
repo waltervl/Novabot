@@ -777,7 +777,28 @@ def handle_set_perception_mode(params, respond):
 # Object-detection cadence level (1 = off, 2 = occasional, 3 = frequent).
 # Set by the server via the `set_obstacle_detection` extended command, read by
 # the cadence thread (start_obstacle_detection_cadence). Default off until told.
+# Persisted to a file so the level survives an extended_commands RESPAWN — the
+# server only re-pushes the level on a fresh MQTT (re)connect (onMowerConnected),
+# not on a bare process respawn, so without this the cadence silently reset to
+# off mid-session. (Reboot still clears /tmp; the server re-push covers that.)
+OBSTACLE_DETECTION_LEVEL_FILE = "/tmp/obstacle_detection_level"
 _obstacle_detection_level = 1
+
+
+def _persist_obstacle_detection_level(level):
+    try:
+        with open(OBSTACLE_DETECTION_LEVEL_FILE, "w") as f:
+            f.write(str(int(level)))
+    except Exception as ex:
+        log(f"[obstacle-detect] could not persist level: {ex}")
+
+
+def _load_obstacle_detection_level():
+    try:
+        with open(OBSTACLE_DETECTION_LEVEL_FILE) as f:
+            return max(1, min(3, int(f.read().strip())))
+    except Exception:
+        return 1
 
 
 def handle_set_obstacle_detection(params, respond):
@@ -790,6 +811,7 @@ def handle_set_obstacle_detection(params, respond):
         level = 1
     level = max(1, min(3, level))
     _obstacle_detection_level = level
+    _persist_obstacle_detection_level(level)
     log(f"[obstacle-detect] cadence level set to {level}")
     respond("set_obstacle_detection_respond", {"result": 0, "level": level})
 
@@ -4082,11 +4104,60 @@ def start_charging_station_guard():
         f"(interval={charging_station_guard_interval_seconds()}s)")
 
 
+# Active-coverage work states in robot_decision's status msg. Mirrors the
+# dashboard's coverageSessionActive: PAUSED/USER_STOP and FINISHED/CANCELLED are
+# NOT active. "COVERING" also matches "BOUNDARY_COVERING" (re \w+ keeps the token).
+_CADENCE_ACTIVE_WORK = (
+    "RUNNING", "COVERING", "NAVIGATING", "BOUNDARY_COVERING", "AVOIDING", "MOVING",
+)
+
+
+def _cadence_coverage_active():
+    """Whether robot_decision is in an active coverage state RIGHT NOW.
+
+    Replaces the brittle blade-current proxy (`cut_motor_current_ma > 200` read
+    from a 20-line log tail, which missed the field and excluded blade-off driving).
+    robot_decision logs the SAME `Mode:... Work:<state> ...` string the server sees
+    over MQTT, so we read the latest line from its log and apply the same predicate.
+    Requires a FRESH line (<60s) so a stale 'COVERING' left after a crash/idle does
+    not keep the cadence running. Returns (active, reason) for observable logging.
+    """
+    try:
+        out = subprocess.run(
+            ["bash", "-lc",
+             "grep -aE 'Work:' "
+             "$(ls -t /root/novabot/data/ros2_log/robot_decision_*.log 2>/dev/null | head -1) "
+             "2>/dev/null | tail -1"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        if not out:
+            return False, "no-work-line"
+        stamp = re.search(r"\[(\d{10}\.\d+)\]", out)
+        if stamp and (time.time() - float(stamp.group(1))) > 60.0:
+            return False, "stale"
+        wm = re.search(r"Work:(\w+)", out)
+        work = wm.group(1) if wm else "?"
+        if work in ("FINISHED", "CANCELLED"):
+            return False, f"work={work}"
+        return (work in _CADENCE_ACTIVE_WORK), f"work={work}"
+    except Exception as ex:
+        return False, f"err:{ex}"
+
+
 def start_obstacle_detection_cadence():
-    """Background cadence: while actively mowing and level>1, periodically flip the
+    """Background cadence: while actively COVERING and level>1, periodically flip the
     perception model to DETECTION (id 2) for a short window then back to
-    SEGMENTATION (id 1). The hit-count nav2 costmap keeps detected objects marked
-    between passes. Never runs two inferences in one frame (single BPU)."""
+    SEGMENTATION (id 1), so a sensitivity=3 (segmentation/stay-on-lawn) mow ALSO
+    detects loose objects. Single BPU: never two inferences in one frame.
+
+    Observable by design: logs every gate transition and every set_infer_model
+    flip — the prior version was silent, so a non-firing cadence was invisible.
+    Level is loaded from the persisted file so it survives an extended_commands
+    respawn (the server only re-pushes it on a fresh MQTT (re)connect).
+    """
+    global _obstacle_detection_level
+    _obstacle_detection_level = _load_obstacle_detection_level()
+
     def _set_model(model_id):
         try:
             ros2_run(
@@ -4094,14 +4165,26 @@ def start_obstacle_detection_cadence():
                  "general_msgs/srv/SetUint8", f"'{{value: {model_id}}}'"],
                 timeout=10,
             )
+            log(f"[obstacle-detect] set_infer_model({model_id}) ok "
+                f"({'detection' if model_id == 2 else 'segmentation'})")
+            return True
         except Exception as ex:
-            log(f"[obstacle-detect] set_infer_model({model_id}) failed: {ex}")
+            log(f"[obstacle-detect] set_infer_model({model_id}) FAILED: {ex}")
+            return False
 
     def _loop():
+        last_state = None  # (running, level) — log only on change to avoid spam
         while True:
             try:
-                period = obstacle_detect_period(_obstacle_detection_level)
-                if period is None or not _coverage_is_active():
+                level = _obstacle_detection_level
+                period = obstacle_detect_period(level)
+                active, reason = _cadence_coverage_active()
+                running = active and period is not None
+                if (running, level) != last_state:
+                    log(f"[obstacle-detect] {'ACTIVE cadence' if running else 'idle'} "
+                        f"(level={level}, {reason})")
+                    last_state = (running, level)
+                if not running:
                     time.sleep(obstacle_detect_idle_poll_seconds())
                     continue
                 window = obstacle_detect_window_seconds()
@@ -4114,7 +4197,7 @@ def start_obstacle_detection_cadence():
                 time.sleep(obstacle_detect_idle_poll_seconds())
 
     threading.Thread(target=_loop, daemon=True, name="obstacle-detect-cadence").start()
-    log("[obstacle-detect] cadence thread started")
+    log(f"[obstacle-detect] cadence thread started (level={_obstacle_detection_level})")
 
 
 def start_rtk_telemetry_relay(sn, mqtt_ref):
