@@ -33,6 +33,7 @@ import { parseFinishedAreas, prefixedAreaId } from '../../utils/coverPathProgres
 import { PatternOverlay, type PatternPlacement } from '../patterns/PatternOverlay';
 import { CameraTile } from './CameraTile';
 import { isOpenNovaFirmware } from '../../utils/firmwareCapability';
+import { readMowDefaults } from '../../utils/mowDefaults';
 
 // Fix Leaflet default marker icons in Vite
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
@@ -1742,9 +1743,12 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
           .filter(m => m.mapType === 'work' && m.canonicalName)
           .map(m => m.canonicalName!)
           .filter(Boolean);
-      // Prefer the direction the operator just set in the Start sheet; fall back
-      // to the mower's last reported cov_direction only when not previewing.
-      const dir = dirOverride ?? Number(mowing?.covDirection);
+      // The mowing direction ALWAYS comes from the stored setting (Settings tab →
+      // localStorage), so every preview reflects the operator's chosen direction.
+      // Never fall back to the mower's reported cov_direction — it is often empty,
+      // which made the generate omit the direction and the mower plan a spurious
+      // 0-degree preview. An explicit dirOverride still wins.
+      const dir = dirOverride ?? readMowDefaults().pathDirection;
       const covDirection = Number.isFinite(dir) && dir >= 0 && dir <= 180
         ? Math.round(dir)
         : undefined;
@@ -1763,7 +1767,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
     } finally {
       setCoverageLoading(false);
     }
-  }, [sn, inLiveCoverage, maps, selectedMapId, mowing?.covDirection, t, toast, showLiveCoverage, stopCoveragePoll]);
+  }, [sn, inLiveCoverage, maps, selectedMapId, t, toast, showLiveCoverage, stopCoveragePoll]);
 
   // Toggle handler: hide is pure visibility; show triggers the right mower
   // source. Idle uses a fresh stock preview, live mowing uses the live plan.

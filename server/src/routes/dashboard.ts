@@ -941,52 +941,68 @@ dashboardRouter.post('/refresh-preview-path/:sn', async (req: Request, res: Resp
       offDeviceResponse,
     } = await import('../mqtt/mapSync.js');
 
-    // 1. Trigger preview generation via normal MQTT — mqtt_node handles this fine.
-    const cmdNum = Date.now() & 0x7fffffff;
-    const genPayload: Record<string, unknown> = { cmd_num: cmdNum };
+    // 1. Trigger preview generation. The coverage planner is single-threaded: a
+    // generate fired while a previous one is still planning returns result:1
+    // ("couldn't compute the path"). Retry a few times with a FRESH cmd_num (the
+    // firmware dedups on cmd_num, so a same-number retry is silently ignored) and
+    // a short backoff so the planner can free up — this is what makes the preview
+    // reliable on the first press instead of needing 2-3 tries.
+    const genBase: Record<string, unknown> = {};
     if (polygonArea) {
       // SPECIFIED_AREA: plan the preview over the supplied polygon (pattern/offset).
-      genPayload.cov_mode = body.cov_mode ?? 1;
-      genPayload.polygon_area = polygonArea;
+      genBase.cov_mode = body.cov_mode ?? 1;
+      genBase.polygon_area = polygonArea;
     } else {
-      genPayload.map_ids = mapIds;
+      genBase.map_ids = mapIds;
     }
-    if (covDirection !== undefined) genPayload.cov_direction = covDirection;
+    if (covDirection !== undefined) genBase.cov_direction = covDirection;
     if (rawSpecifyDirection !== undefined && covDirection !== undefined) {
-      genPayload.specify_direction = rawSpecifyDirection;
+      genBase.specify_direction = rawSpecifyDirection;
     }
 
-    const generateAck = new Promise<{ ok: boolean; error?: string; timeout?: boolean }>((resolve) => {
-      const timer = setTimeout(() => {
-        offDeviceResponse(sn, handler);
-        resolve({ ok: true, timeout: true });
-      }, 6000);
-      const handler = (data: Record<string, unknown>) => {
-        const wrapped = data.type === 'generate_preview_cover_path_respond'
-          ? data.message
-          : data['generate_preview_cover_path_respond'];
-        if (!wrapped || typeof wrapped !== 'object') return;
-        clearTimeout(timer);
-        offDeviceResponse(sn, handler);
-        const resp = wrapped as { result?: number; error?: string; msg?: string };
-        if (resp.result === 0 || resp.result === undefined) {
-          resolve({ ok: true });
-        } else {
-          resolve({ ok: false, error: resp.error ?? resp.msg ?? `generate_preview_cover_path result ${resp.result}` });
-        }
-      };
-      onDeviceResponse(sn, handler);
-    });
+    const MAX_GEN_ATTEMPTS = 3;
+    const GEN_RETRY_BACKOFF_MS = Number(process.env.PREVIEW_GEN_RETRY_BACKOFF_MS ?? 1500);
+    let cmdNum = 0;
+    let generateAckMs = 0;
+    let ack: { ok: boolean; error?: string; timeout?: boolean } = { ok: false };
+    for (let attempt = 1; attempt <= MAX_GEN_ATTEMPTS; attempt++) {
+      cmdNum = (Date.now() & 0x7fffffff) + attempt; // fresh per attempt — firmware dedups on cmd_num
+      const genPayload: Record<string, unknown> = { ...genBase, cmd_num: cmdNum };
+      const generateAck = new Promise<{ ok: boolean; error?: string; timeout?: boolean }>((resolve) => {
+        const timer = setTimeout(() => {
+          offDeviceResponse(sn, handler);
+          resolve({ ok: true, timeout: true });
+        }, 6000);
+        const handler = (data: Record<string, unknown>) => {
+          const wrapped = data.type === 'generate_preview_cover_path_respond'
+            ? data.message
+            : data['generate_preview_cover_path_respond'];
+          if (!wrapped || typeof wrapped !== 'object') return;
+          clearTimeout(timer);
+          offDeviceResponse(sn, handler);
+          const resp = wrapped as { result?: number; error?: string; msg?: string };
+          if (resp.result === 0 || resp.result === undefined) {
+            resolve({ ok: true });
+          } else {
+            resolve({ ok: false, error: resp.error ?? resp.msg ?? `generate_preview_cover_path result ${resp.result}` });
+          }
+        };
+        onDeviceResponse(sn, handler);
+      });
 
-    const ackStartedAt = Date.now();
-    publishToDevice(sn, { generate_preview_cover_path: genPayload });
-    console.log(`[PREVIEW-REFRESH] generate_preview_cover_path sent to ${sn}: ${JSON.stringify(genPayload)}`);
+      const ackStartedAt = Date.now();
+      publishToDevice(sn, { generate_preview_cover_path: genPayload });
+      console.log(`[PREVIEW-REFRESH] generate_preview_cover_path sent to ${sn} (attempt ${attempt}/${MAX_GEN_ATTEMPTS}): ${JSON.stringify(genPayload)}`);
 
-    // 2. Match the stock app ordering: wait for generate_preview_cover_path_respond
-    // before asking for get_preview_cover_path. If older firmware/server plumbing
-    // drops the ack, continue after the timeout to preserve the previous fallback.
-    const ack = await generateAck;
-    const generateAckMs = Date.now() - ackStartedAt;
+      // 2. Match the stock app ordering: wait for generate_preview_cover_path_respond
+      // before asking for get_preview_cover_path. A dropped ack (timeout) is treated
+      // as success and we try the file anyway (preserves the previous fallback).
+      ack = await generateAck;
+      generateAckMs = Date.now() - ackStartedAt;
+      if (ack.ok) break;
+      console.warn(`[PREVIEW-REFRESH] generate failed for ${sn} (attempt ${attempt}/${MAX_GEN_ATTEMPTS}): ${ack.error} — ${attempt < MAX_GEN_ATTEMPTS ? 'retrying after backoff (planner likely busy)' : 'giving up'}`);
+      if (attempt < MAX_GEN_ATTEMPTS) await new Promise((r) => setTimeout(r, GEN_RETRY_BACKOFF_MS));
+    }
     if (!ack.ok) {
       res.status(502).json({
         ok: false,

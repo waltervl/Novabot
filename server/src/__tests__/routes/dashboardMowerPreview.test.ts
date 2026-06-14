@@ -281,6 +281,47 @@ describe('POST /api/dashboard/refresh-preview-path/:sn', () => {
     expect(mapSync.publishToExtended).not.toHaveBeenCalled();
   });
 
+  it('retries generate_preview_cover_path with a fresh cmd_num when the planner returns result:1 (busy)', async () => {
+    // The coverage planner is single-threaded; a generate fired while one is still
+    // planning returns result:1 ("couldn't compute"). The server must retry with a
+    // FRESH cmd_num (firmware dedups on cmd_num) instead of surfacing a hard error.
+    process.env.PREVIEW_GEN_RETRY_BACKOFF_MS = '0'; // no real wait between retries
+    let deviceHandler: ((data: Record<string, unknown>) => void) | null = null;
+    vi.mocked(mapSync.onDeviceResponse).mockImplementation((_sn, handler) => { deviceHandler = handler; });
+    vi.mocked(mapSync.offDeviceResponse).mockImplementation((_sn, handler) => {
+      if (deviceHandler === handler) deviceHandler = null;
+    });
+    vi.mocked(mapSync.onExtendedResponse).mockImplementation(() => {});
+    vi.mocked(mapSync.offExtendedResponse).mockImplementation(() => {});
+
+    const genCmdNums: number[] = [];
+    vi.mocked(mapSync.publishToDevice).mockImplementation((_sn, command) => {
+      const c = command as { generate_preview_cover_path?: { cmd_num: number } };
+      if (c.generate_preview_cover_path) {
+        genCmdNums.push(c.generate_preview_cover_path.cmd_num);
+        // First attempt: planner busy (result:1). Retry: success (result:0).
+        const result = genCmdNums.length === 1 ? 1 : 0;
+        setTimeout(() => deviceHandler?.({
+          type: 'generate_preview_cover_path_respond', message: { result, value: null },
+        }), 0);
+      } else if ('get_preview_cover_path' in command) {
+        setTimeout(() => deviceHandler?.(nativePreviewRespond({ '1': { '0': '1.00 2.00,3.00 4.00' } })), 0);
+      }
+    });
+
+    const res = await request(app)
+      .post(`/api/dashboard/refresh-preview-path/${SN}`)
+      .send({ map_ids: 11, cov_direction: 60 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, count: 1 });
+    // It retried: two generate calls with DISTINCT cmd_nums.
+    expect(genCmdNums).toHaveLength(2);
+    expect(genCmdNums[0]).not.toBe(genCmdNums[1]);
+
+    delete process.env.PREVIEW_GEN_RETRY_BACKOFF_MS;
+  });
+
   it('normalizes auto direction requests by omitting invalid direction sentinels', async () => {
     let deviceHandler: ((data: Record<string, unknown>) => void) | null = null;
     let extendedHandler: ((data: Record<string, unknown>) => void) | null = null;
