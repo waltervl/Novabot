@@ -19,6 +19,7 @@ type AedesPublishPacket = { topic: string; payload: Buffer | string; qos: 0 | 1 
 import { v4 as uuidv4 } from 'uuid';
 import { mapRepo, equipmentRepo, userRepo, deviceRepo, deviceSettingsRepo } from '../db/repositories/index.js';
 import { selectParaRepush } from './paraRepush.js';
+import { selectObstacleDetectionLevel } from '../services/obstacleDetectionCadence.js';
 import {
   COVERAGE_PLANNER_RADIUS_KEY,
   selectCoveragePlannerRadius,
@@ -581,6 +582,19 @@ function republishCoveragePlannerRadius(sn: string): void {
 }
 
 /**
+ * Her-push de objectdetectie-cadans naar de maaier. De stand komt uit het
+ * bestaande `obstacle_avoidance_sensitivity` (1 = uit, 2 = af en toe, 3 = vaak);
+ * de mower (`extended_commands.py`) zet daarop een detectie-cadans tijdens het
+ * maaien. Mirror van `republishCoveragePlannerRadius`.
+ */
+export function republishObstacleDetection(sn: string): void {
+  const level = selectObstacleDetectionLevel(deviceSettingsRepo.findBySn(sn));
+  if (level == null) return;
+  console.log(`${TAG} Her-push objectdetectie-cadans naar ${sn}: level=${level}`);
+  publishToExtended(sn, { set_obstacle_detection: { level } });
+}
+
+/**
  * Push een bundel's mower-files VERBATIM naar de maaier via `write_map_files`
  * — exact de push-mechaniek van de admin "Import bundle" → apply-verbatim route
  * (de single restore path). csv_files + charging_station.yaml + rasters worden
@@ -745,6 +759,7 @@ export function onMowerConnected(sn: string): void {
       // opnieuw toepassen — de firmware persisteert ze niet over een reboot heen.
       republishParaSettings(sn);
       republishCoveragePlannerRadius(sn);
+      republishObstacleDetection(sn);
 
       // BETA SAFETY (Option A): GEEN automatische map-push naar de maaier. Een
       // cloud-import/factory-reset herstelt alleen de server/app-kopie; de
