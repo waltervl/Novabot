@@ -1902,7 +1902,17 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
   const handleSavePolygon = useCallback(() => {
     if (editVertices.length < 3 || !chargerGps) return;
     const gpsArea = editVertices.map(([lat, lng]) => ({ lat, lng }));
-    const localArea = gpsArea.map(p => gpsToLocal(p, chargerGps!));
+    // Add the chargingPose offset back. The display projects stored local points
+    // as localToGps(p - chargingPose, charger), so the inverse for saving is
+    // gpsToLocal(gps, charger) + chargingPose. Without this, every saved vertex was
+    // shifted by -chargingPose, moving the WHOLE map on save (this matches the
+    // paste/paint/brush save paths, which already add the offset back).
+    const offX = chargingPose?.x ?? 0;
+    const offY = chargingPose?.y ?? 0;
+    const localArea = gpsArea.map(p => {
+      const l = gpsToLocal(p, chargerGps!);
+      return { x: l.x + offX, y: l.y + offY };
+    });
     const points = localArea.map(p => ({ x: p.x, y: p.y }));
 
     const finishEdit = () => {
@@ -1980,7 +1990,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
         setSelectedMapId(newMap.mapId);
       }).catch(() => {});
     }
-  }, [editVertices, editMode, editingMapId, sn, maps, selectedMapId, gpsMaps, drawType, drawName, AREA_TYPE_META, chargerGps, reloadMaps, refreshEditGeometry, recordHistory, t]);
+  }, [editVertices, editMode, editingMapId, sn, maps, selectedMapId, gpsMaps, drawType, drawName, AREA_TYPE_META, chargerGps, chargingPose, reloadMaps, refreshEditGeometry, recordHistory, t]);
 
   // Cancel edit/draw
   const cancelEditPolygon = useCallback(() => {
