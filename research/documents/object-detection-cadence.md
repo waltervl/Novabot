@@ -1,7 +1,10 @@
 # Object-Detection Cadence During Mowing — as-built reference
 
-> **Status:** Implemented + deployed. Live on the mower side `LFIN1231000211` (.100)
-> and the server side in `v2026.0615.1004` (.247), 2026-06-15. Authoritative
+> **Status:** Implemented + LIVE-CONFIRMED on `LFIN1231000211` (.100), 2026-06-15:
+> at level 3 the cadence flipped detection/segmentation every ~3s and the mower
+> dodged a box thrown into its path. Server side in `v2026.0615.1004` (.247). Two
+> subprocess pitfalls were found and fixed during that test (see §5 and §6).
+> Authoritative
 > as-built doc; supersedes scattered notes. See also the design spec
 > `docs/superpowers/specs/2026-06-13-object-detection-cadence-design.md`, the plan
 > `docs/superpowers/plans/2026-06-13-object-detection-cadence.md`, and the
@@ -126,9 +129,20 @@ It is **observable by design**: every gate transition and every model flip is
 logged (`[obstacle-detect] …`). The prior version was silent, so a non-firing
 cadence was invisible — that is why earlier testing looked like "nothing happened."
 
-The model flip uses the same service as the manual control
-`handle_set_perception_mode` — `ros2 service call /perception/set_infer_model
-general_msgs/srv/SetUint8 '{value: N}'`.
+The model flip goes through a **persistent rclpy `SetUint8` client** on
+`/perception/set_infer_model` — `start_perception_model_client()` adds the client
+node to the shared executor the blade/RTK relays already spin, and
+`_set_infer_model_fast()` does `call_async` + a short future poll. It does NOT
+shell out per flip.
+
+**PITFALL (fixed 2026-06-15):** the first build flipped via `ros2 service call`
+(`ros2_run`, a subprocess that sources the ROS env + starts the `ros2` CLI). Under
+mow-time CPU load that measured **~13s per call** (env-source ~5s + CLI discovery
+~8s) and blew the 10s timeout EVERY time, so the cadence armed but never actually
+switched models (`set_infer_model(2) FAILED … timed out after 10 seconds`). The
+persistent client makes each switch milliseconds; `_set_model()` only falls back to
+the subprocess if the client never came up. Do NOT turn the flip back into a
+per-call subprocess.
 
 **Perception model IDs** (`handle_set_perception_mode`, ~L739): `1 = segmentation`
 (default / stay-on-lawn), `2 = detection`, `3 = seg_high`, `4 = seg_low`. The
@@ -139,8 +153,9 @@ cadence only uses 1 ↔ 2.
 `_cadence_coverage_active()` (`extended_commands.py` ~L4150) decides whether the
 mower is in an active coverage state **right now**:
 
-- It reads the **latest `Work:<state>` line** from the newest
-  `/root/novabot/data/ros2_log/robot_decision_*.log` — the same `Mode:… Work:…`
+- It reads the **latest `Work:<state>` line** from the **tail** of the newest
+  `/root/novabot/data/ros2_log/robot_decision_*.log` (a direct Python seek + read
+  of the last ~200 KB via `_newest_robot_decision_log()`), the same `Mode:… Work:…`
   string the server sees over MQTT.
 - Requires a **fresh** line (`< 60 s`), so a stale `COVERING` left after a crash
   or idle does **not** keep the cadence running.
@@ -149,12 +164,14 @@ mower is in an active coverage state **right now**:
   `PAUSED` / `USER_STOP`, which aren't in the set) are **not** active. Mirrors the
   dashboard's `coverageSessionActive`.
 
-**Why this matters (the original bug):** the first implementation gated on a
-**blade-current proxy** (`cut_motor_current_ma > 200`, read from a short log tail).
-That field read ~3.7 mA when idle, was often missing from the tail, and excluded
-blade-off driving — so the gate **never armed** and the cadence never ran, even at
-level 3. Switching the gate to the work-status line fixed it. **Do not revert to a
-blade-current gate.**
+**Why this matters (two bugs, both fixed):** (1) the first implementation gated on a
+**blade-current proxy** (`cut_motor_current_ma > 200`) that read ~3.7 mA when idle
+and never armed, replaced by the work-status line. (2) The work-status read then
+used a `bash -lc "grep … $(ls -t …) | tail -1"` subprocess; the login shell sources
+the ROS env (~5s), which under mow load blew the gate's 5s timeout EVERY poll
+(`idle … err: … timed out after 5 seconds`), so it STILL never armed. Replaced by
+the direct Python tail read (~11ms). **Do not gate on blade current, and do not read
+the log via a shell subprocess.**
 
 ## 7. Level persistence across respawns
 

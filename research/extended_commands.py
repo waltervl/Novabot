@@ -4147,36 +4147,120 @@ _CADENCE_ACTIVE_WORK = (
 )
 
 
+def _newest_robot_decision_log():
+    """Path of the most recently modified robot_decision_*.log, or None."""
+    d = "/root/novabot/data/ros2_log"
+    try:
+        fs = [os.path.join(d, f) for f in os.listdir(d)
+              if f.startswith("robot_decision_") and f.endswith(".log")]
+    except OSError:
+        return None
+    return max(fs, key=os.path.getmtime) if fs else None
+
+
 def _cadence_coverage_active():
     """Whether robot_decision is in an active coverage state RIGHT NOW.
 
-    Replaces the brittle blade-current proxy (`cut_motor_current_ma > 200` read
-    from a 20-line log tail, which missed the field and excluded blade-off driving).
-    robot_decision logs the SAME `Mode:... Work:<state> ...` string the server sees
-    over MQTT, so we read the latest line from its log and apply the same predicate.
-    Requires a FRESH line (<60s) so a stale 'COVERING' left after a crash/idle does
-    not keep the cadence running. Returns (active, reason) for observable logging.
+    Reads the latest `Mode:... Work:<state> ...` line straight from the TAIL of
+    robot_decision's log (the same string the server sees over MQTT) and applies
+    the same predicate. Requires a FRESH line (<60s) so a stale 'COVERING' left
+    after a crash/idle does not keep the cadence running. Returns (active, reason).
+
+    NOTE: reads the file tail directly in Python — NOT via `bash -lc grep ...`.
+    That subprocess took ~5s here (the login shell sources the ROS env, slow under
+    mow-time CPU load) and blew the 5s timeout EVERY poll, so the cadence never
+    armed while mowing (the log only showed `idle (… err: … timed out …)`). A
+    direct tail read is ~10ms. Do NOT reintroduce a shell subprocess here.
     """
     try:
-        out = subprocess.run(
-            ["bash", "-lc",
-             "grep -aE 'Work:' "
-             "$(ls -t /root/novabot/data/ros2_log/robot_decision_*.log 2>/dev/null | head -1) "
-             "2>/dev/null | tail -1"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
-        if not out:
+        path = _newest_robot_decision_log()
+        if not path:
+            return False, "no-log"
+        # The Work: line we need is near the end; read only the last ~200 KB.
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > 200_000:
+                fh.seek(-200_000, os.SEEK_END)
+            text = fh.read().decode("utf-8", "replace")
+        line = None
+        for ln in text.splitlines():
+            if "Work:" in ln:
+                line = ln
+        if not line:
             return False, "no-work-line"
-        stamp = re.search(r"\[(\d{10}\.\d+)\]", out)
+        stamp = re.search(r"\[(\d{10}\.\d+)\]", line)
         if stamp and (time.time() - float(stamp.group(1))) > 60.0:
             return False, "stale"
-        wm = re.search(r"Work:(\w+)", out)
+        wm = re.search(r"Work:(\w+)", line)
         work = wm.group(1) if wm else "?"
         if work in ("FINISHED", "CANCELLED"):
             return False, f"work={work}"
         return (work in _CADENCE_ACTIVE_WORK), f"work={work}"
     except Exception as ex:
         return False, f"err:{ex}"
+
+
+# ── Persistent perception model-switch client ─────────────────────────────────
+# The cadence flips /perception/set_infer_model on every detection window. Doing
+# that with `ros2 service call` (a subprocess that sources the ROS env + starts
+# the ros2 CLI) measured ~13s/call here (env-source 5s + CLI discovery ~8s) under
+# mow-time CPU load and blew the 10s timeout EVERY time — the cadence armed but
+# never actually switched models. A persistent rclpy client on the shared executor
+# makes each switch a normal async call (ms). Do NOT go back to a per-flip subprocess.
+_PERCEPTION_CLI = [None]  # (node, client) once ready
+
+
+def start_perception_model_client():
+    """Create a long-lived SetUint8 client on /perception/set_infer_model and add it
+    to the shared executor (owned by the blade relay), so the cadence can flip the
+    model without spawning a subprocess each time."""
+    try:
+        import rclpy  # type: ignore  # noqa: F401
+        from rclpy.node import Node  # type: ignore
+        from general_msgs.srv import SetUint8  # type: ignore
+    except ImportError as ex:
+        log(f"[perception-cli] rclpy/general_msgs import failed — cadence falls back to subprocess: {ex}")
+        return
+
+    def _setup():
+        try:
+            # The blade relay owns rclpy.init() + the shared executor; wait for it.
+            if not _ROS_EXECUTOR_READY.wait(timeout=120):
+                log("[perception-cli] shared executor never became ready; giving up")
+                return
+            node = Node("perception_model_client")
+            cli = node.create_client(SetUint8, "/perception/set_infer_model")
+            _ROS_EXECUTOR[0].add_node(node)
+            _PERCEPTION_CLI[0] = (node, cli)
+            ready = cli.wait_for_service(timeout_sec=15.0)
+            log(f"[perception-cli] set_infer_model client ready (service_available={ready})")
+        except Exception as ex:
+            log(f"[perception-cli] setup failed: {ex}")
+
+    threading.Thread(target=_setup, daemon=True, name="perception-cli-setup").start()
+
+
+def _set_infer_model_fast(model_id, timeout=4.0):
+    """Switch the perception model via the persistent rclpy client. Returns True on
+    success, False on any failure/timeout (caller falls back to the subprocess).
+    The shared executor (blade thread) completes the future; we only poll it."""
+    entry = _PERCEPTION_CLI[0]
+    if entry is None:
+        return False
+    _node, cli = entry
+    try:
+        from general_msgs.srv import SetUint8  # type: ignore
+        if not cli.service_is_ready() and not cli.wait_for_service(timeout_sec=1.0):
+            return False
+        req = SetUint8.Request()
+        req.value = int(model_id)
+        future = cli.call_async(req)
+        deadline = time.time() + timeout
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.02)
+        return bool(future.done()) and future.result() is not None
+    except Exception:
+        return False
 
 
 def start_obstacle_detection_cadence():
@@ -4194,17 +4278,23 @@ def start_obstacle_detection_cadence():
     _obstacle_detection_level = _load_obstacle_detection_level()
 
     def _set_model(model_id):
+        name = "detection" if model_id == 2 else "segmentation"
+        # Fast path: persistent rclpy client (ms). The subprocess path is ~13s under
+        # mow load and blows its timeout, so it is only a last-resort fallback for
+        # when the client never came up (e.g. the service was absent at startup).
+        if _set_infer_model_fast(model_id):
+            log(f"[obstacle-detect] set_infer_model({model_id}) ok ({name}) [rclpy]")
+            return True
         try:
             ros2_run(
                 ["ros2", "service", "call", "/perception/set_infer_model",
                  "general_msgs/srv/SetUint8", f"'{{value: {model_id}}}'"],
                 timeout=10,
             )
-            log(f"[obstacle-detect] set_infer_model({model_id}) ok "
-                f"({'detection' if model_id == 2 else 'segmentation'})")
+            log(f"[obstacle-detect] set_infer_model({model_id}) ok ({name}) [subprocess]")
             return True
         except Exception as ex:
-            log(f"[obstacle-detect] set_infer_model({model_id}) FAILED: {ex}")
+            log(f"[obstacle-detect] set_infer_model({model_id}) FAILED ({name}): {ex}")
             return False
 
     def _loop():
@@ -4445,6 +4535,7 @@ def main():
     # (Test 2026-06-02 confirmed the guard does NOT block the re-anchor write —
     # save_recharge_pos writes nothing whether the file is present or absent.)
     start_charging_station_guard()
+    start_perception_model_client()
     start_obstacle_detection_cadence()
 
     def respond(cmd_name, data):
