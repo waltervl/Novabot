@@ -37,6 +37,15 @@ const WORK_STATUS_LABELS: Record<number, string> = {
   86: 'Time limit',
   87: 'User stopped',
   88: 'User recharge',
+  // 90-94: live coverage states decoded from the firmware
+  // robot_status::WorkStatusString jump table (90=COVERING, 91=AVOIDING,
+  // 92=MOVING, 93=BOUNDARY_COVERING, 94=COVERING_MISSING). Keep in sync with
+  // WORK_STATUS_LABELS in server/src/mqtt/sensorData.ts.
+  90: 'Mowing',
+  91: 'Avoiding obstacle',
+  92: 'Driving',
+  93: 'Edge cutting',
+  94: 'Re-covering missed spots',
   100: 'Mowing',
   101: 'Edge cutting',
   102: 'Re-covering missed',

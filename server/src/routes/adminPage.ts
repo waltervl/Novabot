@@ -6724,7 +6724,21 @@ async function startOtaUpdate() {
     if (String(_fwVersions[i].id || _fwVersions[i].ID) === String(versionId)) { vName = _fwVersions[i].version; break; }
   }
 
-  var ok = await modalConfirm('Start OTA Update', 'Update <b>' + sn + '</b> to <b>' + (vName || 'selected version') + '</b>?<br><br>The device will reboot during the update.');
+  // For BETA/custom firmware show the EXACT same warning as the app's OTA confirm
+  // modal (mirrors betaFirmware.ts / firmwareSafety BETA_FIRMWARE_WARNING). The
+  // admin panel is an internal Dutch tool, so the Dutch copy is the canonical one.
+  var isBeta = /custom|opennova/i.test(vName);
+  var ok;
+  if (isBeta) {
+    ok = await modalConfirm('⚠️ BETA CUSTOM FIRMWARE',
+      '&bull; Dit is BETA / experimentele custom firmware.<br>'
+      + '&bull; De installatie kan de maaier onbruikbaar maken (bricken).<br>'
+      + '&bull; Je kunt AL je kaarten verliezen.<br><br>'
+      + 'Er wordt automatisch een verse backup gemaakt voordat we flashen.<br><br>'
+      + 'Update <b>' + sn + '</b> naar <b>' + (vName || 'gekozen versie') + '</b>? Het apparaat herstart tijdens de update.');
+  } else {
+    ok = await modalConfirm('Start OTA Update', 'Update <b>' + sn + '</b> to <b>' + (vName || 'selected version') + '</b>?<br><br>The device will reboot during the update.');
+  }
   if (!ok) return;
 
   // Reset progress UI
