@@ -83,6 +83,19 @@ dashboardRouter.get('/version', (_req: Request, res: Response) => {
   res.json({ version: DASHBOARD_SERVER_VERSION });
 });
 
+// GET /api/dashboard/server-update — is a newer container image on Docker Hub?
+// Mirrors the admin panel's /api/admin-status/check-server-update but is
+// reachable from the dashboard (LAN unauthenticated / external authenticated).
+// Reuses the admin module's checker (and its 5-minute Docker Hub cache).
+dashboardRouter.get('/server-update', async (_req: Request, res: Response) => {
+  try {
+    const { checkServerUpdate } = await import('./adminStatus.js');
+    res.json(await checkServerUpdate());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'update check failed' });
+  }
+});
+
 // Load persisted device settings into in-memory sensor cache at startup.
 // This ensures settings (cutting height, path direction, etc.) survive container restarts.
 {

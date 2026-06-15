@@ -1,4 +1,21 @@
 {
+  "login": {
+    "title": "Anmelden",
+    "subtitle": "Dieses Dashboard ist aus dem Internet erreichbar. Melde dich mit deinem OpenNova-App-Konto an, um fortzufahren.",
+    "email": "E-Mail",
+    "password": "Passwort",
+    "submit": "Anmelden",
+    "signingIn": "Anmeldung läuft…",
+    "error": "Ungültige E-Mail oder Passwort"
+  },
+  "update": {
+    "title": "Server-Update verfügbar",
+    "detail": "Läuft v{{current}}, Docker Hub hat v{{latest}}",
+    "pushed": " (veröffentlicht {{when}})",
+    "howTo": "Anleitung",
+    "dismiss": "Ausblenden",
+    "instructions": "Container auf dem Host aktualisieren und neu starten:"
+  },
   "header": {
     "dashboard": "Dashboard",
     "server": "Server",

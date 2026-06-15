@@ -1,4 +1,21 @@
 {
+  "login": {
+    "title": "Inloggen",
+    "subtitle": "Dit dashboard is bereikbaar vanaf het internet. Log in met je OpenNova app-account om verder te gaan.",
+    "email": "E-mail",
+    "password": "Wachtwoord",
+    "submit": "Inloggen",
+    "signingIn": "Bezig met inloggen…",
+    "error": "Ongeldige e-mail of wachtwoord"
+  },
+  "update": {
+    "title": "Server-update beschikbaar",
+    "detail": "Draait v{{current}}, Docker Hub heeft v{{latest}}",
+    "pushed": " (gepusht {{when}})",
+    "howTo": "Hoe updaten",
+    "dismiss": "Verbergen",
+    "instructions": "Pull en herstart de OpenNova-container op je host:"
+  },
   "header": {
     "dashboard": "Dashboard",
     "server": "Server",

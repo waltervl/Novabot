@@ -50,6 +50,7 @@ import {
 } from './routes/adminStatus.js';
 import { adminPageHtml } from './routes/adminPage.js';
 import { authMiddleware, adminMiddleware, dashboardMiddleware, verifyAuthToken } from './middleware/auth.js';
+import { externalAuthGate } from './middleware/externalAuthGate.js';
 import { userRepo } from './db/repositories/users.js';
 import { dashboardRouter, initFirmwareSync, getOtaBaseUrl } from './routes/dashboard.js';
 import { buildWalkerFirmwareLatestResponse } from './routes/walkerFirmware.js';
@@ -212,8 +213,12 @@ if (PROXY_MODE === 'cloud') {
 } else {
   // Normal local mode: handle requests ourselves
 
-  // ── Setup wizard (always accessible) ────────────────────────────────────────
-  app.use('/api/setup', setupRouter);
+  // ── Setup wizard ────────────────────────────────────────────────────────────
+  // Always accessible from the LAN/VPN (installer + app + bootstrap discover and
+  // provision over the local network). The provisioning actions here (cloud
+  // login, wifi switch, factory lookup) must NOT be reachable from the public
+  // internet, so the same external gate applies.
+  app.use('/api/setup', externalAuthGate, setupRouter);
 
   // Admin static assets — before setup guard so they're always accessible
   app.use('/assets', express.static(path.resolve(__dirname, '../public')));
@@ -229,8 +234,9 @@ if (PROXY_MODE === 'cloud') {
   // Path list + router bindings are identical — see cloud-api/CHANGELOG.md.
   mountCloudApi(app);
 
-  // admin (lokaal gebruik, geen auth)
-  app.use('/api/admin', adminRouter);
+  // admin (lokaal gebruik). LAN/VPN: geen auth zoals voorheen; publiek
+  // internet: vereist een geldige login (externalAuthGate).
+  app.use('/api/admin', externalAuthGate, adminRouter);
 
   // Admin status API (always available for admin users)
   app.use('/api/admin-status', authMiddleware, adminMiddleware, adminStatusRouter);
@@ -241,8 +247,11 @@ if (PROXY_MODE === 'cloud') {
   });
 
 
-  // dashboard API — always mounted (setup/import routes needed by bootstrap wizard)
-  app.use('/api/dashboard', dashboardRouter);
+  // dashboard API — always mounted (setup/import routes needed by bootstrap wizard).
+  // LAN/VPN traffic (Expo app, bootstrap wizard, local browser) passes through
+  // unauthenticated as before; requests from the public internet must carry a
+  // valid login token. See middleware/externalAuthGate.ts.
+  app.use('/api/dashboard', externalAuthGate, dashboardRouter);
 
   // Remote support tunnel — relay side runs on Ramon's central instance.
   const remoteSupportAuditLogDir = path.resolve(

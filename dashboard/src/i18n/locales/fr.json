@@ -1,4 +1,21 @@
 {
+  "login": {
+    "title": "Connexion",
+    "subtitle": "Ce tableau de bord est accessible depuis Internet. Connectez-vous avec votre compte de l'application OpenNova pour continuer.",
+    "email": "E-mail",
+    "password": "Mot de passe",
+    "submit": "Se connecter",
+    "signingIn": "Connexion…",
+    "error": "E-mail ou mot de passe invalide"
+  },
+  "update": {
+    "title": "Mise à jour du serveur disponible",
+    "detail": "Version v{{current}}, Docker Hub propose v{{latest}}",
+    "pushed": " (publié {{when}})",
+    "howTo": "Comment mettre à jour",
+    "dismiss": "Masquer",
+    "instructions": "Mettez à jour et redémarrez le conteneur OpenNova sur votre hôte :"
+  },
   "header": {
     "dashboard": "Tableau de bord",
     "server": "Serveur",

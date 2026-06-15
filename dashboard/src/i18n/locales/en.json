@@ -1,4 +1,21 @@
 {
+  "login": {
+    "title": "Sign in",
+    "subtitle": "This dashboard is reachable from the internet. Sign in with your OpenNova app account to continue.",
+    "email": "Email",
+    "password": "Password",
+    "submit": "Sign in",
+    "signingIn": "Signing in…",
+    "error": "Invalid email or password"
+  },
+  "update": {
+    "title": "Server update available",
+    "detail": "Running v{{current}}, Docker Hub has v{{latest}}",
+    "pushed": " (pushed {{when}})",
+    "howTo": "How to update",
+    "dismiss": "Dismiss",
+    "instructions": "Pull and restart the OpenNova container on your host:"
+  },
   "header": {
     "dashboard": "Dashboard",
     "server": "Server",

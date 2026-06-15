@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { io, Socket } from 'socket.io-client';
 import {
   sendCommand, pinQuery, pinSet, pinVerify, pinRaw, setPerceptionMode, setSemanticMode, getPerceptionStatus,
-  fetchRainSettings, updateRainSettings, type RainSettings,
+  fetchRainSettings, updateRainSettings, type RainSettings, getToken,
 } from '../../api/client';
 import { useToast } from '../common/Toast';
 
@@ -523,7 +523,7 @@ function PinPanel({ sn, online }: { sn: string; online: boolean }) {
 
   // Listen for pin:event via socket.io
   useEffect(() => {
-    const socket = io({ transports: ['websocket', 'polling'] });
+    const socket = io({ transports: ['websocket', 'polling'], auth: { token: getToken() || undefined } });
     socketRef.current = socket;
 
     socket.on('pin:event', (e: PinEvent) => {
@@ -737,7 +737,7 @@ function PerceptionPanel({ sn, online }: { sn: string; online: boolean }) {
 
   // Listen for extended:response events
   useEffect(() => {
-    const socket = io({ transports: ['websocket', 'polling'] });
+    const socket = io({ transports: ['websocket', 'polling'], auth: { token: getToken() || undefined } });
     socketRef.current = socket;
 
     socket.on('extended:response', (e: ExtendedResponseEvent) => {

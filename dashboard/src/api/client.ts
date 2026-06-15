@@ -4,8 +4,93 @@ import { makeValidPolygon } from '../utils/brushPaint';
 
 const BASE = '/api/dashboard';
 
+// ── Auth token ──────────────────────────────────────────────────
+// The server only requires a login when a request arrives from the public
+// internet (see server middleware/externalAuthGate.ts). LAN/VPN users never
+// see a login screen; external users log in once and we attach the JWT to
+// every API + socket call. Stored in localStorage so a reload keeps the
+// session.
+
+const TOKEN_KEY = 'novabot.token';
+
+export function getToken(): string | null {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+export function setToken(token: string): void {
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* private mode */ }
+}
+export function clearToken(): void {
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ }
+}
+
+/** Thrown by apiFetch when the server rejects the request as unauthenticated. */
+export class UnauthorizedError extends Error {
+  constructor() { super('unauthorized'); this.name = 'UnauthorizedError'; }
+}
+
+function handleUnauthorized(): void {
+  clearToken();
+  try { window.dispatchEvent(new CustomEvent('novabot:unauthorized')); } catch { /* SSR */ }
+}
+
+/**
+ * fetch() wrapper that attaches the bearer token and detects auth failure.
+ * The server reports auth failure two ways: a real HTTP 401/403, OR (because
+ * the API shares the cloud envelope) an HTTP 200 body of
+ * `{success:false, code:401}`. Both clear the token, fire `novabot:unauthorized`
+ * and throw UnauthorizedError so callers fail loudly instead of silently
+ * rendering an empty/garbage payload.
+ */
+export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const token = getToken();
+  if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+
+  const res = await fetch(input, { ...init, headers });
+
+  if (res.status === 401 || res.status === 403) {
+    handleUnauthorized();
+    throw new UnauthorizedError();
+  }
+  // Envelope-level 401 carried over an HTTP 200 (shared cloud `fail()` shape).
+  const ct = res.headers.get('content-type') || '';
+  if (ct.includes('application/json')) {
+    const peek = await res.clone().json().catch(() => null) as { success?: boolean; code?: number } | null;
+    if (peek && peek.success === false && peek.code === 401) {
+      handleUnauthorized();
+      throw new UnauthorizedError();
+    }
+  }
+  return res;
+}
+
+/**
+ * Log in with the app account (same credentials as the OpenNova mobile app).
+ * Stores the returned JWT. Throws with the server message on bad credentials.
+ */
+export async function login(email: string, password: string): Promise<void> {
+  const res = await fetch('/api/nova-user/appUser/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: email.trim(), password }),
+  });
+  const body = await res.json().catch(() => null) as
+    | { success?: boolean; message?: string; value?: { accessToken?: string } }
+    | null;
+  const token = body?.value?.accessToken;
+  if (!res.ok || !body?.success || !token) {
+    throw new Error(body?.message || `Login failed (${res.status})`);
+  }
+  setToken(token);
+}
+
+export function logout(): void {
+  clearToken();
+  handleUnauthorized();
+}
+
 async function get(url: string): Promise<Response> {
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(data.error || `${res.status} ${res.statusText}`);
@@ -14,7 +99,7 @@ async function get(url: string): Promise<Response> {
 }
 
 async function post(url: string, body?: unknown): Promise<Response> {
-  const res = await fetch(url, {
+  const res = await apiFetch(url, {
     method: 'POST',
     headers: body != null ? { 'Content-Type': 'application/json' } : undefined,
     body: body != null ? JSON.stringify(body) : undefined,
@@ -47,7 +132,7 @@ export async function fetchDevices(): Promise<DeviceState[]> {
 }
 
 export async function deleteDevice(sn: string): Promise<void> {
-  await fetch(`${BASE}/devices/${encodeURIComponent(sn)}`, { method: 'DELETE' });
+  await apiFetch(`${BASE}/devices/${encodeURIComponent(sn)}`, { method: 'DELETE' });
 }
 
 export async function fetchSensors(): Promise<SensorDef[]> {
@@ -76,7 +161,7 @@ export async function fetchTrail(sn: string): Promise<TrailPoint[]> {
 }
 
 export async function clearTrail(sn: string): Promise<void> {
-  await fetch(`${BASE}/trail/${encodeURIComponent(sn)}`, { method: 'DELETE' });
+  await apiFetch(`${BASE}/trail/${encodeURIComponent(sn)}`, { method: 'DELETE' });
 }
 
 export async function fetchCalibration(sn: string): Promise<MapCalibration> {
@@ -87,7 +172,7 @@ export async function fetchCalibration(sn: string): Promise<MapCalibration> {
 export async function saveCalibration(
   sn: string, cal: MapCalibration, opts?: { relocateCharger?: boolean },
 ): Promise<{ mapsRecalculated?: number }> {
-  const res = await fetch(`${BASE}/calibration/${encodeURIComponent(sn)}`, {
+  const res = await apiFetch(`${BASE}/calibration/${encodeURIComponent(sn)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...cal, ...(opts?.relocateCharger ? { relocateCharger: true } : {}) }),
@@ -96,7 +181,7 @@ export async function saveCalibration(
 }
 
 export async function renameMap(sn: string, mapId: string, mapName: string): Promise<void> {
-  await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/${encodeURIComponent(mapId)}`, {
+  await apiFetch(`${BASE}/maps/${encodeURIComponent(sn)}/${encodeURIComponent(mapId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mapName }),
@@ -104,7 +189,7 @@ export async function renameMap(sn: string, mapId: string, mapName: string): Pro
 }
 
 export async function updateMapArea(sn: string, mapId: string, mapArea: LocalPoint[]): Promise<void> {
-  await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/${encodeURIComponent(mapId)}`, {
+  await apiFetch(`${BASE}/maps/${encodeURIComponent(sn)}/${encodeURIComponent(mapId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mapArea }),
@@ -117,7 +202,7 @@ export async function createMap(sn: string, mapName: string, mapArea: LocalPoint
 }
 
 export async function deleteMap(sn: string, mapId: string): Promise<void> {
-  await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/${encodeURIComponent(mapId)}`, {
+  await apiFetch(`${BASE}/maps/${encodeURIComponent(sn)}/${encodeURIComponent(mapId)}`, {
     method: 'DELETE',
   });
 }
@@ -231,7 +316,7 @@ export async function createSchedule(sn: string, schedule: Omit<Schedule, 'sched
 }
 
 export async function updateSchedule(sn: string, scheduleId: string, updates: Partial<Schedule>): Promise<Schedule> {
-  const res = await fetch(`${BASE}/schedules/${encodeURIComponent(sn)}/${encodeURIComponent(scheduleId)}`, {
+  const res = await apiFetch(`${BASE}/schedules/${encodeURIComponent(sn)}/${encodeURIComponent(scheduleId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
@@ -242,7 +327,7 @@ export async function updateSchedule(sn: string, scheduleId: string, updates: Pa
 }
 
 export async function deleteSchedule(sn: string, scheduleId: string): Promise<void> {
-  await fetch(`${BASE}/schedules/${encodeURIComponent(sn)}/${encodeURIComponent(scheduleId)}`, {
+  await apiFetch(`${BASE}/schedules/${encodeURIComponent(sn)}/${encodeURIComponent(scheduleId)}`, {
     method: 'DELETE',
   });
 }
@@ -300,7 +385,7 @@ export async function fetchRainSettings(sn: string): Promise<RainSettings> {
 }
 
 export async function updateRainSettings(sn: string, body: Partial<RainSettings>): Promise<RainSettings> {
-  const res = await fetch(`${BASE}/rain-settings/${encodeURIComponent(sn)}`, {
+  const res = await apiFetch(`${BASE}/rain-settings/${encodeURIComponent(sn)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -330,7 +415,7 @@ export async function reanchorAction(
   sn: string,
   action: 'auto' | 'continue_dock' | 'verify',
 ): Promise<{ ok: boolean; error?: string; message?: string }> {
-  const res = await fetch(`${BASE}/reanchor/${encodeURIComponent(sn)}`, {
+  const res = await apiFetch(`${BASE}/reanchor/${encodeURIComponent(sn)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
@@ -404,7 +489,7 @@ export async function setSensorOverride(sn: string, fields: Record<string, strin
  * the mower is actively mowing unless `force` is set.
  */
 export async function softRestartMower(sn: string, force = false): Promise<{ ok?: boolean; error?: string; message?: string }> {
-  const res = await fetch(`${BASE}/soft-restart/${encodeURIComponent(sn)}`, {
+  const res = await apiFetch(`${BASE}/soft-restart/${encodeURIComponent(sn)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ force }),
@@ -424,7 +509,7 @@ export interface RecalibrateResult {
  * pose. The mower must be docked + charging; pass `{ force: true }` to override.
  */
 export async function recalibrateChargingPose(sn: string, opts?: { force?: boolean }): Promise<RecalibrateResult> {
-  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/recalibrate-charging-pose`, {
+  const res = await apiFetch(`${BASE}/maps/${encodeURIComponent(sn)}/recalibrate-charging-pose`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ force: opts?.force === true }),
@@ -457,7 +542,7 @@ export async function updateCoveragePlannerRadius(
   radius: number,
   opts: { force?: boolean; applyToMower?: boolean } = {},
 ): Promise<CoveragePlannerRadiusResult> {
-  const res = await fetch(`${BASE}/coverage-planner-radius/${encodeURIComponent(sn)}`, {
+  const res = await apiFetch(`${BASE}/coverage-planner-radius/${encodeURIComponent(sn)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -497,7 +582,7 @@ export async function createVirtualWall(sn: string, wall: { wallName?: string; l
 }
 
 export async function deleteVirtualWall(sn: string, wallId: string): Promise<void> {
-  await fetch(`${BASE}/virtual-walls/${encodeURIComponent(sn)}/${encodeURIComponent(wallId)}`, { method: 'DELETE' });
+  await apiFetch(`${BASE}/virtual-walls/${encodeURIComponent(sn)}/${encodeURIComponent(wallId)}`, { method: 'DELETE' });
 }
 
 // ── Extended Commands (firmware Python node) ───────────────────
@@ -551,7 +636,7 @@ export async function updateOtaVersion(id: number, params: {
   download_url?: string;
   release_notes?: string;
 }): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}/ota/versions/${id}`, {
+  const res = await apiFetch(`${BASE}/ota/versions/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
@@ -560,7 +645,7 @@ export async function updateOtaVersion(id: number, params: {
 }
 
 export async function deleteOtaVersion(id: number): Promise<void> {
-  await fetch(`${BASE}/ota/versions/${id}`, { method: 'DELETE' });
+  await apiFetch(`${BASE}/ota/versions/${id}`, { method: 'DELETE' });
 }
 
 export async function triggerOta(
@@ -574,7 +659,7 @@ export async function triggerOta(
   error?: string;
   detail?: string;
 }> {
-  const res = await fetch(`${BASE}/ota/trigger/${encodeURIComponent(sn)}`, {
+  const res = await apiFetch(`${BASE}/ota/trigger/${encodeURIComponent(sn)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version_id: versionId, force }),
@@ -621,12 +706,12 @@ export async function fetchSetupInfo(): Promise<SetupInfo> {
 }
 
 export async function checkSetupStatus(): Promise<{ hasUsers: boolean }> {
-  const res = await fetch(`${BASE}/setup/status`);
+  const res = await apiFetch(`${BASE}/setup/status`);
   return res.json();
 }
 
 export async function createFirstUser(email: string, password: string, username?: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${BASE}/setup/create-user`, {
+  const res = await apiFetch(`${BASE}/setup/create-user`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password, username }),
@@ -705,7 +790,7 @@ export async function bindDevice(sn: string, name?: string): Promise<{ ok: boole
 // ── Equipment Settings ──────────────────────────────────────────
 
 export async function updateMowerNickname(sn: string, nickname: string | null): Promise<void> {
-  const res = await fetch(`${BASE}/equipment/${encodeURIComponent(sn)}/nickname`, {
+  const res = await apiFetch(`${BASE}/equipment/${encodeURIComponent(sn)}/nickname`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ nickname }),
@@ -732,7 +817,7 @@ export interface LoraStatus {
   drift: boolean;
 }
 export async function fetchLoraStatus(sn: string): Promise<LoraStatus | null> {
-  const res = await fetch(`${BASE}/system/lora-status/${encodeURIComponent(sn)}`);
+  const res = await apiFetch(`${BASE}/system/lora-status/${encodeURIComponent(sn)}`);
   if (res.status === 404) return null; // no_lora_cache
   if (!res.ok) throw new Error(`fetchLoraStatus failed: ${res.status}`);
   return res.json() as Promise<LoraStatus>;
@@ -792,17 +877,17 @@ export async function saveEditDraft(sn: string, body: {
     const fixed = makeValidPolygon(body.points);
     if (fixed.length >= 3) out = { ...body, points: fixed };
   }
-  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/draft`, {
+  const res = await apiFetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/draft`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out),
   });
   return res.json();
 }
 export async function discardEditDrafts(sn: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/drafts`, { method: 'DELETE' });
+  const res = await apiFetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/drafts`, { method: 'DELETE' });
   return res.json();
 }
 async function postEdit(sn: string, action: 'apply' | 'revert'): Promise<EditApplyDto> {
-  const res = await fetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/${action}`, { method: 'POST' });
+  const res = await apiFetch(`${BASE}/maps/${encodeURIComponent(sn)}/edit/${action}`, { method: 'POST' });
   try { return await res.json(); } catch { return { ok: false, reason: `http_${res.status}` }; }
 }
 export async function applyEdits(sn: string): Promise<EditApplyDto> { return postEdit(sn, 'apply'); }
@@ -860,7 +945,7 @@ export async function refreshPreviewPath(
   else if (opts?.mapIds !== undefined) body.map_ids = opts.mapIds;
   if (opts?.covDirection !== undefined) body.cov_direction = opts.covDirection;
   if (opts?.specifyDirection !== undefined) body.specify_direction = opts.specifyDirection;
-  const res = await fetch(`${BASE}/refresh-preview-path/${encodeURIComponent(sn)}`, {
+  const res = await apiFetch(`${BASE}/refresh-preview-path/${encodeURIComponent(sn)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -927,6 +1012,23 @@ export async function getServerVersion(): Promise<string> {
   }
 }
 
+export interface ServerUpdateInfo {
+  current: string;
+  latest: string | null;
+  updateAvailable: boolean;
+  lastUpdatedAt: string | null;
+}
+
+/**
+ * Whether a newer OpenNova container image is published on Docker Hub. Mirrors
+ * the admin panel's check. Throws on network/hub failure (caller hides the
+ * banner on error).
+ */
+export async function getServerUpdate(): Promise<ServerUpdateInfo> {
+  const res = await get(`${BASE}/server-update`);
+  return res.json();
+}
+
 /** GET cached live plan path. Returns [] if nothing cached. */
 export async function getPlanPath(sn: string): Promise<CoveragePathEntry[]> {
   const res = await get(`${BASE}/planned-path/${encodeURIComponent(sn)}`);
@@ -938,7 +1040,7 @@ export async function getPlanPath(sn: string): Promise<CoveragePathEntry[]> {
  *  backchannel (8s timeout), caches + returns the parsed paths. 503 if offline,
  *  504 if the mower didn't respond in time. */
 export async function refreshPlanPath(sn: string): Promise<CoveragePathEntry[]> {
-  const res = await fetch(`${BASE}/refresh-plan-path/${encodeURIComponent(sn)}`, { method: 'POST' });
+  const res = await apiFetch(`${BASE}/refresh-plan-path/${encodeURIComponent(sn)}`, { method: 'POST' });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const data = await res.json() as { ok?: boolean; paths?: CoveragePathEntry[]; error?: string };
   if (data.ok === false) throw new Error(data.error || 'refresh-plan-path failed');

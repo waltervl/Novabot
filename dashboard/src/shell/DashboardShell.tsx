@@ -17,6 +17,7 @@ import { MowerControls } from '../components/dashboard/MowerControls';
 import type { PatternPlacement } from '../components/patterns/PatternOverlay';
 import { LongPauseBanner } from './LongPauseBanner';
 import { MdnsConflictBanner } from './MdnsConflictBanner';
+import { UpdateBanner } from './UpdateBanner';
 
 type Tab = 'map' | 'schedule' | 'records' | 'settings';
 
@@ -164,6 +165,7 @@ function ShellInner() {
         </div>
       </div>
 
+      <UpdateBanner />
       <MdnsConflictBanner />
       <LongPauseBanner mower={activeMower} />
 

@@ -26,23 +26,25 @@ export function Header({ connected, rainState, onOpenDrawer }: Props) {
 
   return (
     <header className="h-12 md:h-16 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-3 md:px-6">
-      {/* Left: logo + title */}
+      {/* Left: logo + title (version sits directly under the DASHBOARD text) */}
       <div className="flex items-center gap-3">
         <img src="/OpenNova.png" alt="OpenNova" className="h-9 w-auto" />
-        <span
-          className="hidden md:inline text-xl text-gray-300 tracking-widest uppercase"
-          style={{ fontFamily: "'Posterama 1919', sans-serif", letterSpacing: '0.2em' }}
-        >
-          {t('header.dashboard')}
-        </span>
-        {version && (
+        <div className="hidden md:flex flex-col leading-none">
           <span
-            className="hidden md:inline text-[10px] font-mono text-zinc-500 self-end mb-1"
-            title={t('header.serverVersion', 'Server version')}
+            className="text-xl text-gray-300 tracking-widest uppercase"
+            style={{ fontFamily: "'Posterama 1919', sans-serif", letterSpacing: '0.2em' }}
           >
-            v{version}
+            {t('header.dashboard')}
           </span>
-        )}
+          {version && (
+            <span
+              className="text-[10px] font-mono text-zinc-500 mt-1"
+              title={t('header.serverVersion', 'Server version')}
+            >
+              v{version}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Right: add device + lang switcher + server status + rain badge + gear */}

@@ -9,6 +9,7 @@ import { isDeviceOnline } from '../mqtt/broker.js';
 import { db } from '../db/database.js';
 import { initBleLogger, sendBleLogHistory } from '../ble/bleLogger.js';
 import { verifyAuthToken } from '../middleware/auth.js';
+import { pickGateClientIp, gateAllowsWithoutAuth } from '../middleware/externalAuthGate.js';
 import { userRepo } from '../db/repositories/index.js';
 import { setOutlineEmitter, publishToDevice } from '../mqtt/mapSync.js';
 
@@ -88,6 +89,26 @@ export function initDashboardSocket(httpServer: HttpServer): void {
   io = new SocketServer(httpServer, {
     cors: { origin: process.env.CORS_ORIGIN || true },  // true = same-origin; set CORS_ORIGIN="*" for dev
     path: '/socket.io',
+  });
+
+  // External-only auth gate (mirrors the HTTP externalAuthGate): LAN/VPN
+  // browsers connect as before; a handshake from a public address must carry a
+  // valid JWT in `auth.token`. Without this the dashboard socket (live mower
+  // telemetry + joystick control) would stay open to the whole internet.
+  io.use((socket, next) => {
+    const ip = pickGateClientIp(
+      socket.handshake.headers['x-forwarded-for'],
+      socket.handshake.address,
+    );
+    if (gateAllowsWithoutAuth(ip)) { next(); return; }
+    try {
+      const token = (socket.handshake.auth as { token?: string })?.token || '';
+      if (!token) { next(new Error('unauthorized')); return; }
+      verifyAuthToken(token);
+      next();
+    } catch {
+      next(new Error('unauthorized'));
+    }
   });
 
   // Stuur live kaart-outlines naar dashboard tijdens actief mappen

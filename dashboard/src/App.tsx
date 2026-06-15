@@ -1,15 +1,32 @@
 import { useState, useEffect } from 'react';
 import { DashboardShell } from './shell/DashboardShell';
 import { OnboardingWizard } from './components/setup/OnboardingWizard';
+import { LoginScreen } from './components/auth/LoginScreen';
 import { ToastProvider } from './components/common/Toast';
 import { useDevices } from './hooks/useDevices';
-import { checkSetupStatus, checkCertTrusted } from './api/client';
+import { checkSetupStatus, checkCertTrusted, UnauthorizedError } from './api/client';
 import { MobilePage } from './mobile/MobilePage';
 
-type AppState = 'loading' | 'onboarding' | 'onboarding-cert-only' | 'ready';
+type AppState = 'loading' | 'onboarding' | 'onboarding-cert-only' | 'login' | 'ready';
+
+/**
+ * Mobile view wrapper. useDevices() opens the dashboard socket, so it must only
+ * mount once we're authenticated/ready — never on the loading/login screens.
+ */
+function MobileApp() {
+  const { devices, loading, connected, liveOutlines, coveredLanes } = useDevices();
+  return (
+    <MobilePage
+      devices={devices}
+      loading={loading}
+      connected={connected}
+      liveOutlines={liveOutlines}
+      coveredLanes={coveredLanes}
+    />
+  );
+}
 
 export default function App() {
-  const { devices, loading, connected, liveOutlines, coveredLanes } = useDevices();
   const [appState, setAppState] = useState<AppState>('loading');
 
   useEffect(() => {
@@ -27,16 +44,35 @@ export default function App() {
         } else {
           setAppState('ready');
         }
-      } catch {
-        // Server niet bereikbaar — toch tonen
-        setAppState('ready');
+      } catch (e) {
+        // External client without a valid token — the server gates the API by
+        // origin (see externalAuthGate). Show the login screen. Any other error
+        // (server unreachable) falls back to showing the dashboard, matching the
+        // previous behaviour for local users.
+        if (e instanceof UnauthorizedError) setAppState('login');
+        else setAppState('ready');
       }
     }
     init();
   }, []);
 
+  // A 401 anywhere (expired token mid-session) bounces back to the login screen.
+  useEffect(() => {
+    const onUnauthorized = () => setAppState('login');
+    window.addEventListener('novabot:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('novabot:unauthorized', onUnauthorized);
+  }, []);
+
   if (appState === 'loading') {
     return <div className="min-h-screen bg-gray-950" />;
+  }
+
+  if (appState === 'login') {
+    return (
+      <ToastProvider>
+        <LoginScreen onSuccess={() => setAppState('ready')} />
+      </ToastProvider>
+    );
   }
 
   if (appState === 'onboarding') {
@@ -60,7 +96,7 @@ export default function App() {
   return (
     <ToastProvider>
       {isMobile ? (
-        <MobilePage devices={devices} loading={loading} connected={connected} liveOutlines={liveOutlines} coveredLanes={coveredLanes} />
+        <MobileApp />
       ) : (
         <div className="dark min-h-screen bg-gray-950 text-white overflow-x-hidden">
           <DashboardShell />
