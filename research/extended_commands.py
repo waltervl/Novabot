@@ -1991,6 +1991,10 @@ def handle_regenerate_per_map_files(params, respond):
     UNICOM_W_M = 1.4     # unicom corridor width kept free (>= unicom inflation,
                          # preserves dock<->zone connectivity for the planner)
     DOCK_R_M = 0.8       # free disc kept around the charging pose
+    OBSTACLE_INFLATE_M = 0.10  # min thickness when punching obstacles occupied,
+                               # so even a tiny mapped obstacle leaves a mark at
+                               # the grid resolution (nav2's costmap adds the
+                               # robot-radius clearance on top at runtime)
 
     home = params.get("home", "home0") if isinstance(params, dict) else "home0"
     base = f"/userdata/lfi/maps/{home}"
@@ -2038,15 +2042,18 @@ def handle_regenerate_per_map_files(params, respond):
         def to_px(x, y):
             return (int((x - ox) / res), (H - 1) - int((y - oy) / res))
 
-        # discover work slots + every unicom polyline
+        # discover work slots + every unicom polyline + every obstacle polygon
         slots = set()
         unicom_files = []
+        obstacle_files = []
         for fname in os.listdir(csv_dir):
             m = _re.match(r"^(map\d+)_work\.csv$", fname)
             if m:
                 slots.add(m.group(1))
             if fname.endswith("_unicom.csv"):
                 unicom_files.append(fname)
+            if _re.match(r"^map\d+_\d+_obstacle\.csv$", fname):
+                obstacle_files.append(fname)
         if not slots:
             respond("regenerate_per_map_files_respond", {
                 "result": 0, "mirrored": [], "skipped_reason": "no map<N>_work.csv in csv_file/",
@@ -2067,6 +2074,21 @@ def handle_regenerate_per_map_files(params, respond):
                     up = [to_px(x, y) for (x, y) in _read_csv(f"{csv_dir}/{uf}")]
                     if len(up) >= 2:
                         out.append(up)
+            return out
+
+        # This slot's mapped obstacles (`map<N>_<M>_obstacle.csv`). They MUST be
+        # forced OCCUPIED in the per-map pgm: the coverage planner plans on this
+        # grid, and masking only preserves whatever the whole-area map.pgm had.
+        # An obstacle drawn/edited after the original mapping (or any map.pgm that
+        # never baked it in) would otherwise be invisible and the mower plans
+        # straight through it (issue #93).
+        def obstacles_for(slot):
+            out = []
+            for of in obstacle_files:
+                if _re.match(rf"^{slot}_\d+_obstacle\.csv$", of):
+                    op = [to_px(x, y) for (x, y) in _read_csv(f"{csv_dir}/{of}")]
+                    if len(op) >= 3:
+                        out.append(op)
             return out
 
         # dock vicinity (kept free so the start cell is navigable)
@@ -2098,6 +2120,19 @@ def handle_regenerate_per_map_files(params, respond):
                            dock_px[0] + dock_r, dock_px[1] + dock_r], fill=255)
             marr = _np.array(mask, dtype=_np.uint8)
             out = _np.where(marr > 0, whole, _np.uint8(OCCUPIED)).astype(_np.uint8)
+
+            # Force this slot's mapped obstacles OCCUPIED (the planner plans on
+            # this pgm; masking alone can leave an obstacle free if map.pgm never
+            # had it). Fill + a min-thickness outline so even tiny obstacles mark.
+            obs = obstacles_for(slot)
+            if obs:
+                omask = _Image.new("L", (W, H), 0)
+                od = _ImageDraw.Draw(omask)
+                obs_w = max(1, 2 * int(round(OBSTACLE_INFLATE_M / res)))
+                for op in obs:
+                    od.polygon(op, fill=255, outline=255)
+                    od.line(op + [op[0]], fill=255, width=obs_w, joint="curve")
+                out = _np.where(_np.array(omask, dtype=_np.uint8) > 0, _np.uint8(OCCUPIED), out).astype(_np.uint8)
 
             with open(f"{base}/{slot}.pgm", "wb") as fh:
                 fh.write(f"P5\n# CREATOR: map_generator.cpp {res:.3f} m/pix\n{W} {H}\n255\n".encode("ascii"))

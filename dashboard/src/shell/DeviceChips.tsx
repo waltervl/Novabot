@@ -18,6 +18,21 @@ interface Props {
   part?: 'identity' | 'telemetry';
 }
 
+/**
+ * A MAC is worth showing only when it's a well-formed 6-byte address that isn't
+ * an obvious placeholder. Imported / anonymised devices can carry sentinels like
+ * AA:AA:AA:AA:AA:AA, 00:00:00:00:00:00 or FF:..:FF (every byte identical) — we
+ * hide those rather than show a fake address.
+ */
+function isDisplayableMac(mac?: string | null): boolean {
+  if (!mac) return false;
+  const parts = mac.split(':');
+  if (parts.length !== 6 || !parts.every(p => /^[0-9a-f]{2}$/i.test(p))) return false;
+  const first = parts[0].toLowerCase();
+  if (parts.every(p => p.toLowerCase() === first)) return false; // all bytes identical → placeholder
+  return true;
+}
+
 // ── Mower identity row (status dot + name + firmware subtitle) ───────────────
 // Mirrors the OpenNova app's device picker: an online/offline dot before the
 // name, with the firmware version as a muted subtitle.
@@ -137,7 +152,7 @@ function SensorDetailPanel({ mower, openedAt }: { mower: DeviceState; openedAt: 
       {/* Identity row */}
       <div className="pb-2 border-b border-zinc-800 space-y-0.5">
         <p className="text-[10px] font-mono text-zinc-400">{mower.sn}</p>
-        {mower.macAddress && (
+        {isDisplayableMac(mower.macAddress) && (
           <p className="text-[10px] font-mono text-zinc-600">{mower.macAddress}</p>
         )}
         <p className="text-[10px] text-zinc-600">
@@ -188,7 +203,7 @@ function SummaryPanel({
       {/* Identity */}
       <div className="space-y-1">
         <p className="text-[10px] font-mono text-zinc-300">{mower.sn}</p>
-        {mower.macAddress && (
+        {isDisplayableMac(mower.macAddress) && (
           <p className="text-[10px] font-mono text-zinc-600">{mower.macAddress}</p>
         )}
         <div className="flex items-center gap-3 text-xs">
@@ -196,7 +211,7 @@ function SummaryPanel({
             {mower.online ? `● ${t('drawer.summary.online')}` : `● ${t('drawer.summary.offline')}`}
           </span>
           {mower.sensors.sw_version && (
-            <span className="font-mono text-purple-400">&lt;/&gt; {mower.sensors.sw_version}</span>
+            <span className="font-mono text-purple-400">{mower.sensors.sw_version}</span>
           )}
         </div>
         {mower.lastSeen && (

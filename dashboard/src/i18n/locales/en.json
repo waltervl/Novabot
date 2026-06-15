@@ -758,7 +758,8 @@
       "mower": "Mower",
       "charger": "Charger",
       "rest": "Rest",
-      "autoScroll": "Auto-scroll"
+      "autoScroll": "Auto-scroll",
+      "search": "Filter (e.g. start_run, error, LFIN)"
     }
   },
   "mobile": {

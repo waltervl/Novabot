@@ -44,7 +44,7 @@ import { getServerUrl } from '../services/auth';
 import { useExperimental } from '../context/ExperimentalContext';
 import { useI18n } from '../i18n';
 import { fixQualityLabel } from '../utils/fixQuality';
-import { findMissingChannels } from '../utils/mapChannels';
+import { findMissingChannels, type ChannelMapLike } from '../utils/mapChannels';
 import {
   bleJoystickConnect, bleJoystickDisconnect,
   bleJoystickStart, bleJoystickMove, bleJoystickStop,
@@ -211,47 +211,31 @@ export default function MappingScreen() {
   // Novabot doesn't block it, it just offers the option via a separate
   // ChooseMapType screen; we decided a mandatory flow is safer.
   //
-  // We derive this in two ways and prefer whichever produces a missing pair:
-  //   1. From `lastSaved`: if the user just saved mapN (N>0) as a work map,
-  //      we immediately know a channel between map(N-1) and mapN is required.
-  //      This avoids waiting for the mower ZIP upload + DB round-trip before
-  //      the blocker appears.
-  //   2. From `existingMaps`: scan the live DB for any consecutive work-map
-  //      pair without a unicom between them (catches historic gaps).
+  // A zone counts as "unconnected" only when it cannot be REACHED from the dock
+  // map (map0) through the channel graph — connectivity is transitive, so
+  // map0<->map1 + map0<->map2 needs no direct map1<->map2 channel (issue #97).
+  // The just-saved work map is folded in immediately (before the mower ZIP
+  // upload + DB round-trip) so the "connect this new zone" prompt appears
+  // without waiting. Shared with MapScreen via findMissingChannels so both
+  // screens agree.
   const missingMapChannels = (() => {
-    const missing: Array<{ from: string; to: string }> = [];
-    // Novabot's channel-drawing convention is to start in the NEWER map
-    // (the one the user just added) and drive back into the older one. The
-    // mower firmware uses the position at add_scan_map time as the "from"
-    // side. So we list `from` = newer map, `to` = older map — the UI tells
-    // the user "drive from mapN to mapN-1".
-
-    // 1. Immediate derivation from the just-saved map name.
-    if (lastSaved?.buildType === 'work') {
-      const m = lastSaved.mapName.match(/^map(\d+)/);
-      if (m) {
-        const idx = parseInt(m[1], 10);
-        if (idx > 0) {
-          const from = `map${idx}`;       // new map (start here)
-          const to = `map${idx - 1}`;     // older map (end here)
-          const hasIt = existingMaps.some(row =>
-            row.mapType === 'unicom' &&
-            (row.mapName?.includes(`${from}to${to}`) ||
-             row.fileName?.includes(`${from}to${to}`) ||
-             row.mapName?.includes(`${to}to${from}`) ||
-             row.fileName?.includes(`${to}to${from}`))
-          );
-          if (!hasIt) missing.push({ from, to });
-        }
+    const channelMaps: ChannelMapLike[] = existingMaps.map(m => ({
+      mapType: m.mapType,
+      canonicalName: m.canonicalName,
+      mapName: m.mapName,
+      fileName: m.fileName,
+      pointCount: m.points?.length,
+    }));
+    if (lastSaved?.buildType === 'work' && lastSaved.mapName) {
+      const canon = lastSaved.mapName.match(/^(map\d+)/)?.[1];
+      const alreadyListed = !!canon && channelMaps.some(m =>
+        m.mapType === 'work' &&
+        (m.canonicalName ?? m.fileName ?? m.mapName ?? '').startsWith(canon));
+      if (canon && !alreadyListed) {
+        channelMaps.push({ mapType: 'work', mapName: lastSaved.mapName, canonicalName: lastSaved.mapName });
       }
     }
-    // 2. Scan the live map list for older gaps (any adjacent work-map pair
-    //    without a unicom between them). Shared with MapScreen via the helper
-    //    so both screens agree on what counts as a missing channel.
-    for (const c of findMissingChannels(existingMaps)) {
-      if (!missing.some(p => p.from === c.from && p.to === c.to)) missing.push(c);
-    }
-    return missing;
+    return findMissingChannels(channelMaps);
   })();
   const mustCreateChannel = missingMapChannels.length > 0
     && mappingState === 'done'

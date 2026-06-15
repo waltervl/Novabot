@@ -7702,7 +7702,11 @@ function showSetup() {
   try {
     const s = await fetch('/api/setup/status');
     const sd = await s.json();
-    needsSetup = sd && !sd.setupComplete;
+    // Only an EXPLICIT setupComplete:false means first-time setup. A gated /
+    // auth-error response from outside (e.g. {success:false,code:401}) has no
+    // setupComplete field — don't mistake that for an unconfigured server, or
+    // /admin shows first-setup to anyone hitting it externally.
+    needsSetup = sd && sd.setupComplete === false;
   } catch { /* assume setup complete if endpoint fails */ }
 
   if (needsSetup) {

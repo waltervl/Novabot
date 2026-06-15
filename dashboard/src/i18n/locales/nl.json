@@ -73,7 +73,8 @@
       "mower": "Maaier",
       "charger": "Charger",
       "rest": "Overig",
-      "autoScroll": "Auto-scrollen"
+      "autoScroll": "Auto-scrollen",
+      "search": "Filter (bijv. start_run, error, LFIN)"
     }
   },
   "common": {

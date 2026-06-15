@@ -738,7 +738,8 @@
     },
     "logs": {
       "title": "Journal serveur",
-      "empty": "— vide —"
+      "empty": "— vide —",
+      "search": "Filtrer (p.ex. start_run, error, LFIN)"
     }
   },
   "pages": {

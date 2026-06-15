@@ -738,7 +738,8 @@
     },
     "logs": {
       "title": "Server-Log",
-      "empty": "— leer —"
+      "empty": "— leer —",
+      "search": "Filtern (z.B. start_run, error, LFIN)"
     }
   },
   "pages": {

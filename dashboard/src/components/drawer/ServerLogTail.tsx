@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Maximize2, X, Move, ArrowDownToLine } from 'lucide-react';
+import { Maximize2, X, Move, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchSystemLogs, type SystemLogEntry } from '../../api/client';
 
@@ -29,6 +29,16 @@ function classifyLog(l: SystemLogEntry): LogClass {
 function groupOf(l: SystemLogEntry): LogGroup {
   const c = classifyLog(l);
   return c === 'mower' ? 'mower' : c === 'charger' ? 'charger' : 'rest';
+}
+
+// Free-text filter — case-insensitive substring match across every visible
+// field of a log line (type, client, SN, direction, topic, payload). Mirrors
+// the admin console's search box.
+function matchesQuery(l: SystemLogEntry, q: string): boolean {
+  if (!q) return true;
+  const hay = [l.type, l.clientId, l.clientType, l.sn, l.direction, l.topic, l.payload]
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(q.toLowerCase());
 }
 
 function typeIcon(type: string): string {
@@ -100,18 +110,36 @@ function ClassFilter({ enabled, onToggle }: { enabled: Record<LogGroup, boolean>
   );
 }
 
-function AutoScrollToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+// Labeled auto-scroll checkbox (mirrors the admin console's "Auto-scroll").
+function AutoScrollCheck({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   const { t } = useTranslation();
   return (
-    <button
-      onClick={onToggle}
-      title={t('drawer.logs.autoScroll', 'Auto-scroll')}
-      className={`grid place-items-center w-6 h-6 rounded transition-colors ${
-        on ? 'text-emerald-400 bg-emerald-900/25' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800'
-      }`}
-    >
-      <ArrowDownToLine className="w-3.5 h-3.5" />
-    </button>
+    <label className="inline-flex items-center gap-1.5 text-[10px] text-zinc-400 cursor-pointer select-none whitespace-nowrap">
+      <input
+        type="checkbox"
+        checked={on}
+        onChange={onToggle}
+        className="accent-emerald-500 w-3 h-3 cursor-pointer"
+      />
+      {t('drawer.logs.autoScroll', 'Auto-scroll')}
+    </label>
+  );
+}
+
+// Free-text filter box (mirrors the admin console's search bar).
+function LogSearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="relative">
+      <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+      <input
+        type="text"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={t('drawer.logs.search', 'Filter (e.g. start_run, error, LFIN)')}
+        className="w-full bg-zinc-950 border border-zinc-800 rounded pl-7 pr-2 py-1 text-[11px] text-zinc-300 placeholder-zinc-600 focus:border-zinc-600 focus:outline-none"
+      />
+    </div>
   );
 }
 
@@ -168,24 +196,22 @@ export function ServerLogTail({ enlarged, onEnlarge }: { enlarged: boolean; onEn
   const { t } = useTranslation();
   const [groups, setGroups] = useState<Record<LogGroup, boolean>>(ALL_GROUPS);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [query, setQuery] = useState('');
   const { logs, error } = useServerLogs(200, !enlarged);
-  const shown = logs.filter(l => groups[groupOf(l)]);
+  const shown = logs.filter(l => groups[groupOf(l)] && matchesQuery(l, query));
   const toggle = (g: LogGroup) => setGroups(prev => ({ ...prev, [g]: !prev[g] }));
 
   return (
     <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-3">
       <div className="flex items-center justify-between mb-2 gap-2">
         <h3 className="text-xs font-semibold text-zinc-300">{t('drawer.logs.title')}</h3>
-        <div className="flex items-center gap-1.5">
-          {!enlarged && <AutoScrollToggle on={autoScroll} onToggle={() => setAutoScroll(v => !v)} />}
-          <button
-            onClick={onEnlarge}
-            title={t('drawer.logs.enlarge', 'Enlarge')}
-            className="grid place-items-center w-6 h-6 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
-          >
-            <Maximize2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <button
+          onClick={onEnlarge}
+          title={t('drawer.logs.enlarge', 'Enlarge')}
+          className="grid place-items-center w-6 h-6 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+        </button>
       </div>
 
       {enlarged ? (
@@ -193,7 +219,11 @@ export function ServerLogTail({ enlarged, onEnlarge }: { enlarged: boolean; onEn
       ) : (
         <>
           {error && <p className="text-xs text-red-400 mb-2">{t('common.failed')}: {error}</p>}
-          <ClassFilter enabled={groups} onToggle={toggle} />
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <ClassFilter enabled={groups} onToggle={toggle} />
+            <AutoScrollCheck on={autoScroll} onToggle={() => setAutoScroll(v => !v)} />
+          </div>
+          <LogSearch value={query} onChange={setQuery} />
           <LogList logs={shown} autoScroll={autoScroll} />
         </>
       )}
@@ -208,8 +238,9 @@ export function FloatingServerLog({ open, onClose }: { open: boolean; onClose: (
   const { t } = useTranslation();
   const [groups, setGroups] = useState<Record<LogGroup, boolean>>(ALL_GROUPS);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [query, setQuery] = useState('');
   const { logs, error } = useServerLogs(500, open);
-  const shown = logs.filter(l => groups[groupOf(l)]);
+  const shown = logs.filter(l => groups[groupOf(l)] && matchesQuery(l, query));
   const toggle = (g: LogGroup) => setGroups(prev => ({ ...prev, [g]: !prev[g] }));
 
   // Close on Escape.
@@ -297,7 +328,7 @@ export function FloatingServerLog({ open, onClose }: { open: boolean; onClose: (
         </span>
         <div className="flex items-center gap-2.5">
           <ClassFilter enabled={groups} onToggle={toggle} />
-          <AutoScrollToggle on={autoScroll} onToggle={() => setAutoScroll(v => !v)} />
+          <AutoScrollCheck on={autoScroll} onToggle={() => setAutoScroll(v => !v)} />
           <button
             onClick={onClose}
             title={t('common.close', 'Close')}
@@ -306,6 +337,9 @@ export function FloatingServerLog({ open, onClose }: { open: boolean; onClose: (
             <X className="w-4 h-4" />
           </button>
         </div>
+      </div>
+      <div className="px-3 py-2 border-b border-zinc-800 shrink-0">
+        <LogSearch value={query} onChange={setQuery} />
       </div>
       {error && <p className="text-xs text-red-400 px-3 pt-2">{t('common.failed')}: {error}</p>}
       <LogList logs={shown} autoScroll={autoScroll} big />

@@ -2704,15 +2704,37 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
   // Trail (lokale map_position) → GPS via EXACT dezelfde transform als de maaier-
   // icoon: localToGps({x,y} − chargingPose, chargerGps) + calibratie-offset. Zo
   // valt de trail samen met de maaier, de polygonen en het coverage-pad.
-  const trailPositions: [number, number][] = trail.flatMap(p => {
+  // GPS trail, split into contiguous SEGMENTS. We start a new segment whenever
+  // two consecutive fixes jump more than TRAIL_GAP_M apart — i.e. a GPS
+  // signal-loss gap. Rendering one straight polyline across such a gap made the
+  // trail appear to cut straight through obstacles even though the mower drove
+  // around them (issue #93: the long diagonal lines are interpolation across
+  // dropouts, not the physical path — confirmed via surveillance camera). At
+  // ~0.3 m/s a real step between samples is well under a metre, so a 5 m jump is
+  // unambiguously a dropout, not mowing.
+  const TRAIL_GAP_M = 5;
+  const trailSegments: [number, number][][] = (() => {
     if (!isUsableChargerGps(chargerGps)) return [];
     const offLat = Number.isFinite(activeCal.offsetLat) ? activeCal.offsetLat : 0;
     const offLng = Number.isFinite(activeCal.offsetLng) ? activeCal.offsetLng : 0;
-    const g = localToGps({ x: p.x - (chargingPose?.x ?? 0), y: p.y - (chargingPose?.y ?? 0) }, chargerGps);
-    const lat = g.lat + offLat;
-    const lng = g.lng + offLng;
-    return Number.isFinite(lat) && Number.isFinite(lng) ? [[lat, lng] as [number, number]] : [];
-  });
+    const segs: [number, number][][] = [];
+    let cur: [number, number][] = [];
+    let prev: { x: number; y: number } | null = null;
+    for (const p of trail) {
+      if (prev && Math.hypot(p.x - prev.x, p.y - prev.y) > TRAIL_GAP_M) {
+        if (cur.length >= 2) segs.push(cur);
+        cur = [];
+      }
+      prev = p;
+      const g = localToGps({ x: p.x - (chargingPose?.x ?? 0), y: p.y - (chargingPose?.y ?? 0) }, chargerGps);
+      const lat = g.lat + offLat;
+      const lng = g.lng + offLng;
+      if (Number.isFinite(lat) && Number.isFinite(lng)) cur.push([lat, lng]);
+    }
+    if (cur.length >= 2) segs.push(cur);
+    return segs;
+  })();
+  const trailPositions: [number, number][] = trailSegments.flat();
 
   // Mower heading icon — `heading` carries the firmware `theta` field in
   // radians using the ENU convention (0 = East, π/2 = North). The icon
@@ -3161,17 +3183,20 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
           {/* GPS trail centerline — ook TIJDENS maaien tonen als voortgang (waar de
               maaier al geweest is). Eerder verborgen bij work_status==='1', maar dat
               verstopte de maai-voortgang precies wanneer je 'm wilt zien. */}
-          {showTrail && !showHeatmap && trailPositions.length >= 2 && (
-            <Polyline
-              positions={trailPositions}
-              pathOptions={{
-                color: '#06b6d4',
-                weight: 1.5,
-                opacity: 0.5,
-                dashArray: '4, 3',
-              }}
-            />
-          )}
+          {showTrail && !showHeatmap && trailSegments.map((seg, i) => (
+            seg.length >= 2 ? (
+              <Polyline
+                key={`trail-${i}`}
+                positions={seg}
+                pathOptions={{
+                  color: '#06b6d4',
+                  weight: 1.5,
+                  opacity: 0.5,
+                  dashArray: '4, 3',
+                }}
+              />
+            ) : null
+          ))}
           {/* Heatmap mode: color trail segments by recency */}
           {showHeatmap && trailPositions.length >= 2 && (() => {
             const chunkSize = Math.max(2, Math.floor(trailPositions.length / 30));

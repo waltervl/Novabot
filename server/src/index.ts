@@ -215,10 +215,15 @@ if (PROXY_MODE === 'cloud') {
 
   // ── Setup wizard ────────────────────────────────────────────────────────────
   // Always accessible from the LAN/VPN (installer + app + bootstrap discover and
-  // provision over the local network). The provisioning actions here (cloud
-  // login, wifi switch, factory lookup) must NOT be reachable from the public
-  // internet, so the same external gate applies.
-  app.use('/api/setup', externalAuthGate, setupRouter);
+  // provision over the local network). Provisioning actions must NOT be reachable
+  // from the public internet, so the external gate applies — EXCEPT the benign
+  // read-only GET /status, which the admin UI and discovery check before login to
+  // decide login-vs-first-setup. Gating /status made /admin wrongly show
+  // first-setup from outside (the 401 envelope has no setupComplete field).
+  app.use('/api/setup', (req, res, next) => {
+    if (req.method === 'GET' && req.path === '/status') { next(); return; }
+    externalAuthGate(req, res, next);
+  }, setupRouter);
 
   // Admin static assets — before setup guard so they're always accessible
   app.use('/assets', express.static(path.resolve(__dirname, '../public')));

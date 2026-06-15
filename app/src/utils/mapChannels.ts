@@ -1,10 +1,16 @@
-// Detect inter-zone unicom connectors ("channels") that are missing between
-// adjacent work maps. The mower cannot navigate between two work maps without
-// an explicit mapXtomapY_N_unicom path (the firmware records it from a driven
+// Detect work maps the mower cannot REACH from the dock map (map0) through the
+// unicom "channel" graph. The mower drives between zones over explicit
+// mapXtomapY_N_unicom corridors (the firmware records each from a driven
 // trajectory and rasterises it into a ~1 m corridor via unicom_area_radius).
-// A missing pair therefore means the robot physically cannot cross from one
-// zone to the other, which surfaces as nav2 "no valid path to goal" (Error
-// 127) when a coverage task targets the unreachable zone.
+//
+// Connectivity is TRANSITIVE. With channels map0<->map1 and map0<->map2 the
+// mower can still drive map1 -> map0 -> map2, so a direct map1<->map2 channel is
+// NOT required. We therefore flag a zone only when it is genuinely unreachable
+// from map0 through the channel graph — NOT merely because an adjacent-index
+// pair (map1, map2) lacks a direct channel. The latter was a false positive:
+// the stock app and the mower handle hub-and-spoke layouts fine (see issue #97).
+// A truly disconnected zone surfaces as nav2 "no valid path to goal" (Error 127)
+// when a coverage task targets it.
 
 export interface ChannelMapLike {
   mapType: string;
@@ -15,16 +21,17 @@ export interface ChannelMapLike {
   fileName?: string | null;
   /** Number of geometry points. A unicom row with fewer than 2 points (a
    *  0-byte / metadata-only connector, e.g. after a polygon-only restore) is
-   *  NOT a navigable channel, so it must still count as "missing". When
+   *  NOT a navigable channel, so it does not connect its two maps. When
    *  undefined the geometry is assumed present (caller pre-filtered). */
   pointCount?: number;
 }
 
 export interface MissingChannel {
-  /** Newer (higher-index) map — the scan starts here. The firmware uses the
-   *  position at add_scan_map time as the "from" side. */
+  /** The unreachable work map — the scan starts here (the firmware uses the
+   *  position at add_scan_map time as the "from" side). */
   from: string;
-  /** Older (lower-index) map — drive into this one to close the channel. */
+  /** A reachable map to connect it to (nearest lower-index reachable map, or
+   *  the dock map map0). Drive into this one to close the gap. */
   to: string;
 }
 
@@ -37,21 +44,25 @@ function canonicalOf(m: ChannelMapLike): string | null {
   );
 }
 
+/** The two work maps a unicom connector joins, e.g.
+ *  "map0tomap1_0_unicom" -> ["map0","map1"]. Charge connectors
+ *  ("map0tocharge_unicom") return null — they join the charger, not a work map. */
+function unicomPair(m: ChannelMapLike): [string, string] | null {
+  const name = m.canonicalName ?? m.fileName ?? m.mapName ?? '';
+  const match = name.match(/(map\d+)to(map\d+)/);
+  return match ? [match[1], match[2]] : null;
+}
+
+const mapIndex = (name: string): number => parseInt(name.slice(3), 10);
+
 /**
- * Return the adjacent work-map pairs that have no unicom channel between them.
- * Pairs are ordered newest-first so the primary gap surfaces at index 0.
+ * Return the work maps that cannot be reached from the dock map (map0) through
+ * the unicom channel graph. Each entry pairs the unreachable map with a
+ * reachable connection target. Ordered newest-first so the primary gap surfaces
+ * at index 0. Returns [] when every zone is reachable — including transitively
+ * (e.g. map0<->map1 + map0<->map2 needs no map1<->map2 channel).
  */
 export function findMissingChannels(maps: ChannelMapLike[]): MissingChannel[] {
-  const hasUnicom = (a: string, b: string) =>
-    maps.some(
-      (m) =>
-        m.mapType === 'unicom' &&
-        (m.pointCount ?? Infinity) >= 2 &&
-        (Boolean(m.canonicalName?.includes(`${a}to${b}`)) ||
-          Boolean(m.fileName?.includes(`${a}to${b}`)) ||
-          Boolean(m.mapName?.includes(`${a}to${b}`))),
-    );
-
   const workNames = Array.from(
     new Set(
       maps
@@ -59,15 +70,57 @@ export function findMissingChannels(maps: ChannelMapLike[]): MissingChannel[] {
         .map(canonicalOf)
         .filter((v): v is string => !!v),
     ),
-  ).sort((a, b) => parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10));
+  ).sort((a, b) => mapIndex(a) - mapIndex(b));
 
-  const missing: MissingChannel[] = [];
-  for (let i = workNames.length - 1; i > 0; i--) {
-    const from = workNames[i]; // newer
-    const to = workNames[i - 1]; // older
-    if (!hasUnicom(from, to) && !hasUnicom(to, from)) {
-      missing.push({ from, to });
+  if (workNames.length <= 1) return [];
+
+  // Undirected channel graph among work maps.
+  const workSet = new Set(workNames);
+  const adj = new Map<string, Set<string>>();
+  for (const w of workNames) adj.set(w, new Set());
+  for (const m of maps) {
+    if (m.mapType !== 'unicom') continue;
+    if ((m.pointCount ?? Infinity) < 2) continue; // metadata-only connector is not navigable
+    const pair = unicomPair(m);
+    if (!pair) continue;
+    const [a, b] = pair;
+    if (workSet.has(a) && workSet.has(b)) {
+      adj.get(a)!.add(b);
+      adj.get(b)!.add(a);
     }
   }
+
+  // Reachability from the dock map (lowest-index work map, conventionally map0).
+  const anchor = workNames[0];
+  const reachable = new Set<string>([anchor]);
+  const stack = [anchor];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    for (const next of adj.get(cur) ?? []) {
+      if (!reachable.has(next)) {
+        reachable.add(next);
+        stack.push(next);
+      }
+    }
+  }
+
+  // Suggest a connection for each unreachable zone, oldest -> newest, growing
+  // the reachable set as we go: once a suggested channel is drawn that zone
+  // joins the network, so the next zone can attach to it (a spanning chain
+  // rather than every zone piling onto map0). The target is the nearest
+  // already-reachable lower-index zone (map0 is always the fallback). Reported
+  // newest-first so the primary gap surfaces at index 0.
+  const missing: MissingChannel[] = [];
+  for (let i = 1; i < workNames.length; i++) {
+    const w = workNames[i];
+    if (reachable.has(w)) continue;
+    let target = anchor;
+    for (const r of reachable) {
+      if (mapIndex(r) < mapIndex(w) && mapIndex(r) > mapIndex(target)) target = r;
+    }
+    missing.push({ from: w, to: target });
+    reachable.add(w);
+  }
+  missing.reverse();
   return missing;
 }
