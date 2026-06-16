@@ -4504,7 +4504,7 @@ dashboardRouter.post('/ota/trigger/:sn', async (req: Request, res: Response) => 
   } else {
     // ── BETA gate: custom/opennova firmware must have a fresh backup first ──
     try {
-      gate = await ensureBetaFlashSafe(sn, otaVersion.version);
+      gate = await ensureBetaFlashSafe(sn, otaVersion.version, { force: forceOta });
     } catch (err) {
       console.error(`\x1b[31m[OTA] BETA gate error voor ${sn}:\x1b[0m`, err);
       res.status(500).json({ error: 'BETA_GATE_ERROR', detail: 'Kon backup-gate niet uitvoeren' });

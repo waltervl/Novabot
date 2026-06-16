@@ -61,6 +61,7 @@ describe('ensureBetaFlashSafe', () => {
   beforeEach(() => {
     vi.mocked(backup.listBackups).mockReset().mockReturnValue([]);
     vi.mocked(backup.createBundleFromDb).mockReset().mockResolvedValue(null);
+    vi.mocked(backup.createBackup).mockReset().mockResolvedValue(null);
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReset().mockReturnValue([]);
   });
 
@@ -98,6 +99,32 @@ describe('ensureBetaFlashSafe', () => {
     vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
     const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
     expect(r).toEqual({ allowed: false, error: 'BACKUP_FAILED', detail: expect.any(String) });
+  });
+
+  it('falls back to a LIVE backup when DB synthesis yields nothing (no DB pose)', async () => {
+    // Regression: the {0,0,0} guard makes createBundleFromDb throw/return null
+    // for a mower with maps but no resolvable charging pose (mid-setup, needs
+    // re-anchor). The live backup reads the mower's real pose and must rescue it.
+    vi.mocked(backup.listBackups).mockReturnValue([]);
+    vi.mocked(backup.createBundleFromDb).mockResolvedValue(null);
+    const live: import('../../services/portableBackup.js').BackupEntry = {
+      filename: 'live.novabotmap', bytes: 30, createdAt: Date.now(), reason: 'pre-beta-flash-live',
+    };
+    vi.mocked(backup.createBackup).mockResolvedValue(live);
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
+    const r = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
+    expect(r).toEqual({ allowed: true, backup: live, reason: 'backup-created-live' });
+  });
+
+  it('allows with force when maps exist but no backup can be made (operator override)', async () => {
+    vi.mocked(backup.listBackups).mockReturnValue([]);
+    vi.mocked(backup.createBundleFromDb).mockResolvedValue(null);
+    vi.mocked(backup.createBackup).mockResolvedValue(null);
+    vi.mocked(mapRepo.findAllByMowerSnAndType).mockReturnValue([{ map_area: '[[0,0]]' } as any]);
+    const blocked = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36');
+    expect(blocked.allowed).toBe(false);
+    const forced = await ensureBetaFlashSafe('LFIN2230700238', 'v6.0.2-custom-36', { force: true });
+    expect(forced).toEqual({ allowed: true, backup: null, reason: 'forced-no-backup' });
   });
 
   it('allows beta flash when there are no maps to lose', async () => {

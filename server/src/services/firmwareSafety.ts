@@ -3,7 +3,7 @@
  * (custom/opennova) mower firmware flash. See
  * docs/superpowers/specs/2026-06-12-beta-firmware-install-gate-design.md
  */
-import { listBackups, createBundleFromDb, type BackupEntry } from './portableBackup.js';
+import { listBackups, createBundleFromDb, createBackup, type BackupEntry } from './portableBackup.js';
 import { mapRepo } from '../db/repositories/index.js';
 
 /** Reuse a backup younger than this; otherwise make a fresh one. */
@@ -25,8 +25,31 @@ export function isBetaFirmware(version: string | null | undefined): boolean {
 // ── ensureBetaFlashSafe ───────────────────────────────────────────────────────
 
 export type BetaFlashGate =
-  | { allowed: true; backup: BackupEntry | null; reason: 'not-beta' | 'recent-backup' | 'backup-created' | 'no-maps' }
+  | { allowed: true; backup: BackupEntry | null; reason: 'not-beta' | 'recent-backup' | 'backup-created' | 'backup-created-live' | 'no-maps' | 'forced-no-backup' }
   | { allowed: false; error: 'BACKUP_FAILED'; detail: string };
+
+/**
+ * Best-effort pre-flash backup. Tries pure-DB synthesis first; if that fails
+ * (most often because the DB has no resolvable charging pose yet — a mower that
+ * still needs re-anchor), falls back to a LIVE backup read from the mower's own
+ * files (which carry the real pose and do not depend on the DB). Returns the
+ * created backup + which path produced it, or null if both fail.
+ */
+async function bestEffortPreFlashBackup(sn: string): Promise<{ entry: BackupEntry; live: boolean } | null> {
+  try {
+    const fromDb = await createBundleFromDb(sn, 'pre-beta-flash');
+    if (fromDb) return { entry: fromDb, live: false };
+  } catch (err) {
+    console.error(`[firmware-safety] createBundleFromDb threw for ${sn}:`, err);
+  }
+  try {
+    const live = await createBackup(sn, 'pre-beta-flash-live');
+    if (live) return { entry: live, live: true };
+  } catch (err) {
+    console.error(`[firmware-safety] live createBackup threw for ${sn}:`, err);
+  }
+  return null;
+}
 
 /**
  * True when the mower has at least one work polygon worth protecting.
@@ -72,8 +95,10 @@ export function allowBetaFlashOrSnapshot(sn: string, version: string | null | un
   if (!isBetaFirmware(version)) return true;
   if (!hasMapsToProtect(sn)) return true;   // nothing to lose
   if (hasRecentBackup(sn)) return true;     // already protected
-  void createBundleFromDb(sn, 'pre-beta-flash').catch((err) =>
-    console.error(`[firmware-safety] background backup failed for ${sn}:`, err));
+  // Fire-and-forget: DB synth first, then a live backup fallback (so a mower
+  // without a DB-resolvable pose still gets protected on the next retry rather
+  // than being denied forever). bestEffortPreFlashBackup swallows its own errors.
+  void bestEffortPreFlashBackup(sn);
   return false;
 }
 
@@ -82,25 +107,36 @@ export function allowBetaFlashOrSnapshot(sn: string, version: string | null | un
  * chargers should never reach here (callers gate on device type), but stock
  * versions are passed through defensively.
  */
-export async function ensureBetaFlashSafe(sn: string, version: string | null | undefined): Promise<BetaFlashGate> {
+export async function ensureBetaFlashSafe(
+  sn: string,
+  version: string | null | undefined,
+  opts: { force?: boolean } = {},
+): Promise<BetaFlashGate> {
   if (!isBetaFirmware(version)) return { allowed: true, backup: null, reason: 'not-beta' };
 
   const recent = recentBackup(sn);
   if (recent) return { allowed: true, backup: recent, reason: 'recent-backup' };
 
-  let created: BackupEntry | null = null;
-  try {
-    created = await createBundleFromDb(sn, 'pre-beta-flash');
-  } catch (err) {
-    console.error(`[firmware-safety] createBundleFromDb threw for ${sn}:`, err);
+  const backup = await bestEffortPreFlashBackup(sn);
+  if (backup) {
+    return { allowed: true, backup: backup.entry, reason: backup.live ? 'backup-created-live' : 'backup-created' };
   }
-  if (created) return { allowed: true, backup: created, reason: 'backup-created' };
 
   if (hasMapsToProtect(sn)) {
+    // Neither DB synthesis nor a live backup could be produced — typically a
+    // mower with no resolvable charging pose anywhere yet (mid-setup, still
+    // needs re-anchor). Block by default, but let an explicit operator force
+    // proceed: they accept that the maps are not backed up. The firmware OTA
+    // swap only replaces /root/novabot and never touches /userdata maps, so a
+    // deliberate repair-flash is safe even without a backup.
+    if (opts.force) {
+      console.warn(`[firmware-safety] ${sn}: no backup possible but force=true → allowing flash (maps NOT backed up).`);
+      return { allowed: true, backup: null, reason: 'forced-no-backup' };
+    }
     return {
       allowed: false,
       error: 'BACKUP_FAILED',
-      detail: `Kon geen backup maken voor ${sn} terwijl er kaarten zijn — flash geblokkeerd.`,
+      detail: `Kon geen backup maken voor ${sn} terwijl er kaarten zijn — flash geblokkeerd. Forceer alleen als je accepteert dat de kaarten niet geback-upt zijn.`,
     };
   }
   return { allowed: true, backup: null, reason: 'no-maps' };
