@@ -51,4 +51,38 @@ describe('synthesizeMowerFiles', () => {
     expect(mi.charging_pose.x).toBeCloseTo(input.chargingPose.x);
     expect(mi['map0_work.csv'].map_size).toBeGreaterThan(0);
   });
+
+  describe('charging-pose fail-closed guard', () => {
+    // A real docked pose is never exactly {0,0,0}; all-zero is the corruption
+    // signature that broke production mower .100 (zeroed dock pose rasterized
+    // into map_info.json + pgm → broken auto-docking). The guard must throw
+    // before any file is produced.
+    it('throws on an all-zero charging pose', () => {
+      expect(() => synthesizeMowerFiles({ ...input, chargingPose: { x: 0, y: 0, orientation: 0 } }))
+        .toThrow(/zeroed\/invalid charging pose/);
+    });
+
+    it('throws on non-finite x', () => {
+      expect(() => synthesizeMowerFiles({ ...input, chargingPose: { x: NaN, y: 1, orientation: 0.5 } }))
+        .toThrow(/zeroed\/invalid charging pose/);
+    });
+
+    it('throws on non-finite orientation', () => {
+      expect(() => synthesizeMowerFiles({ ...input, chargingPose: { x: 1, y: 2, orientation: Infinity } }))
+        .toThrow(/zeroed\/invalid charging pose/);
+    });
+
+    it('throws on a missing charging pose', () => {
+      expect(() => synthesizeMowerFiles({ ...input, chargingPose: undefined as unknown as { x: number; y: number; orientation: number } }))
+        .toThrow(/zeroed\/invalid charging pose/);
+    });
+
+    it('succeeds on a real (non-zero, finite) charging pose', () => {
+      // A pose with x===0 but a real y/orientation is NOT all-zero → allowed.
+      const out = synthesizeMowerFiles({ ...input, chargingPose: { x: 0, y: -0.51, orientation: 1.57 } });
+      expect(out.csvFiles['map_info.json']).toBeTruthy();
+      expect(JSON.parse(out.csvFiles['map_info.json']).charging_pose.y).toBeCloseTo(-0.51);
+      expect(out.chargingStationYaml).toMatch(/^charging_pose: \[/);
+    });
+  });
 });

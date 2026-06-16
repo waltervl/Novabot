@@ -127,7 +127,10 @@ describe('synthesizePortableFromWalker', () => {
       void a.finalize();
     });
     const synth = await synthesizePortableFromWalker(walkerZip, {
-      currentDockPose: { x: 0, y: 0, orientation: 0 },
+      // Non-zero dock pose: a real docked mower is never {0,0,0}, and the
+      // synth path now fails closed on a zeroed pose. The value is incidental
+      // to this test (it asserts unicom-target derivation, not the pose).
+      currentDockPose: { x: 2, y: 1, orientation: 0 },
       resolution: 0.5, marginM: 0,
     });
     const parsed = await parseBundle(synth.portableZip);
@@ -211,6 +214,27 @@ describe('synthesizePortableFromWalker', () => {
         marginM: 0,
       }),
     ).rejects.toThrow(/map0tocharge_unicom/);
+  });
+
+  it('rejects a zeroed/invalid currentDockPose (never synthesizes a {0,0,0} bundle)', async () => {
+    const walkerZip = await buildFixtureWalkerBundle();
+    // All-zero dock pose — the corruption signature that broke mower .100.
+    await expect(
+      synthesizePortableFromWalker(walkerZip, {
+        currentDockPose: { x: 0, y: 0, orientation: 0 },
+        resolution: 0.5,
+        marginM: 0,
+      }),
+    ).rejects.toThrow(/zeroed\/invalid mower dock pose/);
+
+    // Non-finite component is rejected too.
+    await expect(
+      synthesizePortableFromWalker(walkerZip, {
+        currentDockPose: { x: 2, y: NaN, orientation: 0.1 },
+        resolution: 0.5,
+        marginM: 0,
+      }),
+    ).rejects.toThrow(/zeroed\/invalid mower dock pose/);
   });
 
   it('rejects bundles missing polygons.json', async () => {

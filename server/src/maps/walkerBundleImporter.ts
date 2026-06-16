@@ -202,6 +202,29 @@ export async function synthesizePortableFromWalker(
   const unicom = parseJsonArray<WalkerUnicom>(text.get('unicom.json'), 'unicom.json');
   const chargeAnchor = chargeAnchorFromWalkerData(polygons, unicom);
 
+  // The mower's live dock pose is both the rotate/translate anchor for every
+  // walker point AND the charging_pose handed to synthesizeMowerFiles (which
+  // rasterizes it into map_info.json + the pgm). A zeroed or invalid dock pose
+  // silently corrupts the mower's dock pose / auto-docking on apply, so fail
+  // closed rather than synthesizing a bad bundle. (synthesizeMowerFiles
+  // enforces the same invariant centrally; this throws earlier with walker
+  // context, since (0,0,0) here would also mis-anchor every transformed point.)
+  // Placed AFTER the structural checks above so a malformed bundle still fails
+  // on its own (missing polygons / unicom) before the dock-pose verdict.
+  const dock = opts.currentDockPose;
+  if (
+    !dock ||
+    !Number.isFinite(dock.x) || !Number.isFinite(dock.y) || !Number.isFinite(dock.orientation) ||
+    (dock.x === 0 && dock.y === 0 && dock.orientation === 0)
+  ) {
+    throw new Error(
+      `walker import: refusing to synthesize with a zeroed/invalid mower dock pose ` +
+      `(${JSON.stringify(dock)}) — this corrupts the mower's dock pose and mis-anchors ` +
+      `the imported map. Provide the mower's real live dock pose (mower must be docked ` +
+      `with a valid frame) before importing.`,
+    );
+  }
+
   // Δ-rotate + translate every point into the mower's current local frame.
   // The charger-side endpoint of mapNtocharge_unicom is the real anchor.
   // The walker session origin may be wherever the first RTK point was

@@ -418,6 +418,11 @@ export function parseMapZip(
     }
 
     // Lees map_info.json
+    // READ-ONLY default: this parsed chargingPose is only ever used for display
+    // (dashboard JSON) or DB-polygon restore (which writes area.points, NOT the
+    // pose). It is NEVER threaded into synthesizeMowerFiles / a mower write, so
+    // a {0,0,0} fallback here is harmless. Do NOT feed this value to
+    // synthesizeMowerFiles — that path fails closed on a zeroed pose by design.
     const infoPath = path.join(csvDir, 'map_info.json');
     let chargingPose: ChargingPose = { x: 0, y: 0, orientation: 0 };
     if (existsSync(infoPath)) {

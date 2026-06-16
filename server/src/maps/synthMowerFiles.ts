@@ -49,6 +49,28 @@ function polygonAreaM2(pts: XY[]): number {
 export function synthesizeMowerFiles(input: SynthInput): SynthResult {
   if (input.workMaps.length === 0) throw new Error('synthesizeMowerFiles: no work maps');
 
+  // CENTRAL fail-closed guard for the charging pose. This value is written
+  // verbatim into map_info.json AND rasterized into the pgm; pushing a zeroed
+  // or invalid dock pose to a mower silently corrupts its map_info + occupancy
+  // grid and breaks auto-docking (this is exactly what corrupted production
+  // mower .100). A real mower's docked pose is NEVER exactly {0,0,0} — there is
+  // always a dock offset + heading — so all-zero is the corruption signature.
+  // This single guard protects EVERY caller (DB synth, CSV/snapshot import,
+  // walker import, offline backup): {0,0,0} must NEVER be written, not even
+  // when the mower is offline. Callers must supply a real pose or skip.
+  const cp = input.chargingPose;
+  if (
+    !cp ||
+    !Number.isFinite(cp.x) || !Number.isFinite(cp.y) || !Number.isFinite(cp.orientation) ||
+    (cp.x === 0 && cp.y === 0 && cp.orientation === 0)
+  ) {
+    throw new Error(
+      `synthesizeMowerFiles: refusing to synthesize with a zeroed/invalid charging pose ` +
+      `(${JSON.stringify(cp)}) — this corrupts the mower's dock pose. Provide a real ` +
+      `charging pose (recalibrate the dock) or skip.`,
+    );
+  }
+
   const csvFiles: Record<string, string> = {};
   for (const w of input.workMaps) csvFiles[`${w.canonical}_work.csv`] = csvText(w.points);
   for (const o of input.obstacles) csvFiles[`${o.canonical}.csv`] = csvText(o.points);
@@ -85,7 +107,6 @@ export function synthesizeMowerFiles(input: SynthInput): SynthResult {
     if (m.file.png) mapFilesB64[`${m.name}.png`] = m.file.png.toString('base64');
   }
 
-  const cp = input.chargingPose;
   const chargingStationYaml = `charging_pose: [${cp.x}, ${cp.y}, ${cp.orientation}]`;
 
   return { csvFiles, mapFilesText, mapFilesB64, chargingStationYaml };
