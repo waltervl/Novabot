@@ -557,8 +557,11 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
           <label style="font-size:11px;color:#aaa;cursor:pointer;display:flex;align-items:center;gap:3px"><input type="checkbox" id="f_autoscroll" checked>Auto-scroll</label>
         </div>
       </div>
-      <div style="padding:6px 12px;border-bottom:1px solid rgba(255,255,255,.06)">
-        <input id="f_search" type="text" placeholder="Search (e.g. start_run, error, LFIN...)" oninput="renderLogs()" style="width:100%;padding:6px 10px;font-size:12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff">
+      <div style="padding:6px 12px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;gap:8px;align-items:center">
+        <select id="f_device" onchange="renderLogs()" title="Filter logs by device" style="min-width:170px;padding:6px 10px;font-size:12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;cursor:pointer">
+          <option value="">All devices</option>
+        </select>
+        <input id="f_search" type="text" placeholder="Search (e.g. start_run, error, LFIN...)" oninput="renderLogs()" style="flex:1;padding:6px 10px;font-size:12px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff">
       </div>
       <div id="mqttConsole" style="height:calc(100vh - 320px);min-height:300px;overflow-y:auto;font-family:'Roboto Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;padding:8px;background:#0a0a1a;line-height:1.6;word-break:break-all"></div>
     </div>
@@ -1255,6 +1258,7 @@ function switchTab(name) {
   // Auto-check DNS + dnsmasq when switching to settings
   if (name === 'settings') { checkDns(); checkDnsmasqStatus(); }
   if (name === 'mowerdebug') { mdPopulateDropdown(); }
+  if (name === 'console') { populateDeviceFilter(consoleDeviceCache); }
   // Load maps when switching to maps tab
   if (name === 'maps') {
     populateMowerDropdown(); loadWalkerBundles();
@@ -1290,6 +1294,9 @@ function wireWalkerFwToggle() {
 
 // ── MQTT Console ──────────────────────────────────────────────────
 let mqttLogs = [];
+// Latest device list, cached so the Console device dropdown can repopulate
+// when the tab opens without re-fetching. Filled by loadMyDevices().
+var consoleDeviceCache = [];
 const MAX_CONSOLE_LINES = 500;
 
 function classifyLog(entry) {
@@ -1387,6 +1394,7 @@ function copyConsole() {
     if (cls === 'app' && !fa) continue;
     if (cls === 'http' && !fh) continue;
     if (cls === 'system' && !fs) continue;
+    if (!matchesDevice(e)) continue;
     if (!matchesSearch(e, q)) continue;
     var t = new Date(e.ts);
     var time = t.toLocaleTimeString('nl-NL', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -1412,6 +1420,39 @@ function matchesSearch(entry, q) {
   return s.indexOf(q) >= 0;
 }
 
+// Per-device filter: empty selection = all devices, otherwise only this SN's logs.
+function matchesDevice(entry) {
+  var el = document.getElementById('f_device');
+  var sel = el ? el.value : '';
+  if (!sel) return true;
+  return (entry.sn || '') === sel;
+}
+
+// Fill the console device dropdown from the device list, preserving the current
+// selection. Called when devices (re)load and when the Console tab opens.
+// Uses textContent (not innerHTML) for labels — device nicknames are
+// user-controlled, so concatenating them into HTML would be an XSS vector.
+function populateDeviceFilter(devices) {
+  var sel = document.getElementById('f_device');
+  if (!sel) return;
+  var current = sel.value;
+  sel.innerHTML = '<option value="">All devices</option>';
+  var seen = {};
+  (devices || []).forEach(function(d) {
+    if (!d || !d.sn || seen[d.sn]) return;
+    seen[d.sn] = 1;
+    var isCharger = (d.device_type === 'charger') || d.sn.indexOf('LFIC') === 0;
+    var nick = d.equipment_nick_name || d.nick || d.nickname || '';
+    var opt = document.createElement('option');
+    opt.value = d.sn;
+    opt.textContent = (isCharger ? 'Charger' : 'Mower') + ' — ' + (nick ? nick + ' (' + d.sn + ')' : d.sn);
+    sel.appendChild(opt);
+  });
+  // Restore selection if that device is still listed; else fall back to "all".
+  sel.value = current;
+  if (sel.value !== current) sel.value = '';
+}
+
 function renderLogs() {
   var fm = document.getElementById('f_mower').checked;
   var fc = document.getElementById('f_charger').checked;
@@ -1428,6 +1469,7 @@ function renderLogs() {
     if (cls === 'app' && !fa) continue;
     if (cls === 'http' && !fh) continue;
     if (cls === 'system' && !fs) continue;
+    if (!matchesDevice(mqttLogs[i])) continue;
     if (!matchesSearch(mqttLogs[i], q)) continue;
     html += formatLog(mqttLogs[i], q);
   }
@@ -1453,6 +1495,7 @@ function addLog(entry) {
   if (cls === 'app' && !fa) return;
   if (cls === 'http' && !fh) return;
   if (cls === 'system' && !fs) return;
+  if (!matchesDevice(entry)) return;
   if (!matchesSearch(entry, q)) return;
 
   var el = document.getElementById('mqttConsole');
@@ -1792,22 +1835,42 @@ function setupSocketListeners(sock) {
   sock.on('command:respond', function(ev) {
     try { mdHandleCommandRespond(ev); } catch (e) { console.error('mdHandleCommandRespond error', e); }
   });
-  sock.emit('mqtt:log:history');
+  // Server pushes the recent-log backlog (logBuffer) on every connect. Replace
+  // our buffer with the authoritative server copy so the console shows history
+  // immediately — covers both the initial load and the post-login reconnect.
+  sock.on('mqtt:log:history', function(logs) {
+    if (!Array.isArray(logs)) return;
+    mqttLogs = logs.slice(-MAX_CONSOLE_LINES);
+    renderLogs();
+  });
 }
 
-// Try connecting socket.io — same origin first, then explicit port fallback
-if (typeof io !== 'undefined') {
-  mqttSocket = io();
-  setupSocketListeners(mqttSocket);
-} else {
-  // Wait for fallback socket.io script to load
-  setTimeout(function() {
-    if (typeof io !== 'undefined') {
-      mqttSocket = io(location.protocol + '//' + location.hostname + ':${process.env.PORT ?? '3000'}');
-      setupSocketListeners(mqttSocket);
-    }
-  }, 1500);
+// Connect socket.io — same origin first, then explicit port fallback. Always
+// carries the admin JWT in the handshake auth so the external auth gate
+// (socketHandler io.use) accepts the connection from a public address. Without
+// a token a public handshake is rejected with a 400 and the live console + all
+// socket events (mqtt:log, command:respond, extended:response, ota:event) stay
+// dead — which is exactly the "empty Server Console" symptom.
+function connectMqttSocket() {
+  if (mqttSocket) {
+    try { mqttSocket.removeAllListeners(); mqttSocket.disconnect(); } catch (e) {}
+    mqttSocket = null;
+  }
+  var opts = token ? { auth: { token: token } } : {};
+  if (typeof io !== 'undefined') {
+    mqttSocket = io(opts);
+    setupSocketListeners(mqttSocket);
+  } else {
+    // Wait for fallback socket.io script to load
+    setTimeout(function() {
+      if (typeof io !== 'undefined') {
+        mqttSocket = io(location.protocol + '//' + location.hostname + ':${process.env.PORT ?? '3000'}', opts);
+        setupSocketListeners(mqttSocket);
+      }
+    }, 1500);
+  }
 }
+connectMqttSocket();
 
 var _activityTimer = null;
 function showActivity(text, durationMs) {
@@ -1828,10 +1891,14 @@ function showToast(msg, color) {
   setTimeout(function() { el.style.opacity = '0'; setTimeout(function() { el.remove(); }, 500); }, 3000);
 }
 
-// Load initial logs
-fetch('/api/dashboard/mqtt-logs')
+// Load initial logs — fallback for when the socket history hasn't arrived yet
+// (socket still connecting / unavailable). Authed because /api/dashboard is
+// gated for public requests; skips seeding if the socket already populated the
+// buffer so we never duplicate the backlog.
+fetch('/api/dashboard/mqtt-logs', token ? { headers: { 'Authorization': token } } : {})
   .then(function(r) { return r.json(); })
   .then(function(d) {
+    if (mqttLogs.length) return;
     var logs = d.logs || d || [];
     for (var i = 0; i < logs.length; i++) mqttLogs.push(logs[i]);
     renderLogs();
@@ -1914,6 +1981,11 @@ async function doLogin() {
       token = d.data?.token || d.value?.accessToken;
       localStorage.setItem('admin_token', token);
       showApp();
+      // Reconnect the log socket with the fresh token: the script-load connect
+      // ran before login (token empty) and was rejected by the auth gate from
+      // public addresses. The reconnect's connect-time mqtt:log:history push
+      // then fills the console.
+      connectMqttSocket();
     } else {
       document.getElementById('loginErr').textContent = d.msg || 'Login failed';
     }
@@ -2274,6 +2346,8 @@ async function loadMyDevices() {
         }),
     ]);
     const devs = d.devices || [];
+    consoleDeviceCache = devs;
+    populateDeviceFilter(devs); // keep the Console device dropdown in sync
     const pending = (pendingResp && pendingResp.pending) || [];
     const banned = (bannedResp && bannedResp.banned) || [];
     if (!devs.length && !pending.length && !banned.length) { document.getElementById('myDevices').textContent = 'No devices found. Import from cloud or wait for devices to connect via MQTT.'; return; }
