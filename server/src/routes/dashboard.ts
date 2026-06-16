@@ -1532,8 +1532,11 @@ dashboardRouter.post('/maps/:sn/edit/apply', async (req: Request, res: Response)
     if (!result.ok) {
       const status = result.reason === 'validation' ? 422
         : result.reason === 'no_changes' ? 400
-        : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'locked' ? 409 : 502;
-      res.status(status).json(result);
+        : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'not_docked' || result.reason === 'locked' ? 409 : 502;
+      const body = result.reason === 'not_docked'
+        ? { ...result, error: 'Kaart wijzigen kan alleen als de maaier op het dock staat te laden.', msgKey: 'mapEditErrNotDocked' }
+        : result;
+      res.status(status).json(body);
       return;
     }
     res.json(result);
@@ -1548,8 +1551,11 @@ dashboardRouter.post('/maps/:sn/edit/revert', async (req: Request, res: Response
     const result = await revertEdits(req.params.sn);
     if (!result.ok) {
       const status = result.reason === 'no_version' ? 404
-        : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'locked' ? 409 : 502;
-      res.status(status).json(result);
+        : result.reason === 'offline' || result.reason === 'busy' || result.reason === 'not_docked' || result.reason === 'locked' ? 409 : 502;
+      const body = result.reason === 'not_docked'
+        ? { ...result, error: 'Kaart terugzetten kan alleen als de maaier op het dock staat te laden.', msgKey: 'mapEditErrNotDocked' }
+        : result;
+      res.status(status).json(body);
       return;
     }
     res.json(result);

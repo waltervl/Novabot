@@ -21,6 +21,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Shared, hoisted state so the getDockPose mock can be steered per test.
+const live = vi.hoisted(() => ({
+  dockPose: null as { x: number; y: number; orientation: number; capturedAt: number } | null,
+}));
+
 // Avoid pulling the broker → socketHandler chain into the test runtime.
 vi.mock('../../mqtt/mapSync.js', () => ({
   publishToExtended: vi.fn(),
@@ -29,6 +34,7 @@ vi.mock('../../mqtt/mapSync.js', () => ({
 }));
 vi.mock('../../mqtt/sensorData.js', () => ({
   deviceCache: new Map<string, Map<string, string>>(),
+  getDockPose: () => live.dockPose,
 }));
 
 import { createBundleFromDb, createBundleFromCsvFiles, listBackups } from '../../services/portableBackup.js';
@@ -57,6 +63,9 @@ function seedAnchorAndWork(sn: string): void {
 }
 
 beforeEach(() => {
+  // Default: no live dock pose (offline-rebuild path → anchor fallback). Tests
+  // that exercise the docked map-edit path set live.dockPose explicitly.
+  live.dockPose = null;
   // Clean DB rows + any prior backup files for all fixtures.
   for (const sn of [SN_NO_POSE, SN_WITH_POSE, SN_CSV]) {
     db.prepare('DELETE FROM maps WHERE mower_sn = ?').run(sn);
@@ -73,6 +82,34 @@ function csvFilesWith(mapInfo: Record<string, unknown> | null): Record<string, s
   };
   if (mapInfo) files['map_info.json'] = JSON.stringify(mapInfo);
   return files;
+}
+
+/** Unzip a saved .novabotmap and return its synthesized charging_pose. */
+async function readBundleCharging(
+  sn: string, filename: string,
+): Promise<{ x: number; y: number; orientation: number }> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const os = await import('node:os');
+  const zipPath = path.join(BACKUP_ROOT, sn, filename);
+  const peek = fs.mkdtempSync(path.join(os.tmpdir(), 'peek-cp-'));
+  await promisify(execFile)('unzip', ['-o', '-q', zipPath, '-d', peek]);
+  const info = JSON.parse(
+    fs.readFileSync(path.join(peek, 'mower', 'csv_file', 'map_info.json'), 'utf8'),
+  ) as { charging_pose: { x: number; y: number; orientation: number } };
+  fs.rmSync(peek, { recursive: true, force: true });
+  return info.charging_pose;
+}
+
+/** Seed anchor + work + a to-charge unicom + saved orientation (full DB pose). */
+function seedFullDbPose(sn: string, anchorPt: { x: number; y: number }, orient: number): void {
+  seedAnchorAndWork(sn);
+  mapRepo.create({
+    map_id: `${sn}-unicom`, mower_sn: sn, map_name: 'map0tocharge_unicom',
+    file_name: 'map0tocharge_unicom.csv', canonical_name: 'map0tocharge_unicom',
+    map_type: 'unicom', map_area: JSON.stringify([anchorPt, { x: -0.5, y: 0.2 }]),
+  });
+  mapRepo.setPolygonChargingOrientation(sn, orient);
 }
 
 describe('createBundleFromDb — charging-pose fail-closed guard', () => {
@@ -152,6 +189,33 @@ describe('createBundleFromDb — charging-pose fail-closed guard', () => {
       // Sanity: this is NOT the old zeroed default that corrupted the mower.
       expect(pose).not.toEqual({ x: 0, y: 0, orientation: 0 });
     }
+  });
+
+  it('PREFERS the live dock pose (getDockPose) over the DB anchor when docked', async () => {
+    // DB anchor would give (-1.21, 0.48, 1.7), but the mower is docked and
+    // reports its real live pose — that must win (this is what makes the
+    // map-edit-on-dock path push the correct dock pose, e.g. .100's 1.575).
+    seedFullDbPose(SN_WITH_POSE, { x: -1.21, y: 0.48 }, 1.7);
+    live.dockPose = { x: 0.13, y: -0.52, orientation: 1.58, capturedAt: 1 };
+
+    const entry = await createBundleFromDb(SN_WITH_POSE, 'map_edit');
+    expect(entry).not.toBeNull();
+    const pose = await readBundleCharging(SN_WITH_POSE, entry!.filename);
+    expect(pose.x).toBeCloseTo(0.13);
+    expect(pose.y).toBeCloseTo(-0.52);
+    expect(pose.orientation).toBeCloseTo(1.58);
+  });
+
+  it('ignores an all-zero live dock pose and falls back to the DB anchor', async () => {
+    seedFullDbPose(SN_WITH_POSE, { x: -1.21, y: 0.48 }, 1.7);
+    live.dockPose = { x: 0, y: 0, orientation: 0, capturedAt: 1 };
+
+    const entry = await createBundleFromDb(SN_WITH_POSE, 'map_edit');
+    expect(entry).not.toBeNull();
+    const pose = await readBundleCharging(SN_WITH_POSE, entry!.filename);
+    expect(pose.x).toBeCloseTo(-1.21);
+    expect(pose.y).toBeCloseTo(0.48);
+    expect(pose.orientation).toBeCloseTo(1.7);
   });
 });
 

@@ -180,9 +180,24 @@ function isMowerBusy(sn: string): boolean {
   return false;
 }
 
+// Map edits may ONLY be applied/reverted while the mower sits on the dock.
+// On the dock the server captures the mower's real live charging pose
+// (getDockPose, from map_position), which createBundleFromDb then uses for the
+// regenerated bundle — so a zeroed/anchor-guessed dock pose can never be pushed
+// (this is what corrupted .100). Same "docked" signal as sensorData
+// isDockedByValues: battery_state CHARGING/FULL, or recharge_status 9.
+function isMowerDocked(sn: string): boolean {
+  const sensors = deviceCache.get(sn);
+  if (!sensors) return false;
+  const rs = sensors.get('recharge_status') ?? '';
+  if (rs === '9' || rs.startsWith('Charging')) return true;
+  const bs = (sensors.get('battery_state') ?? '').toUpperCase();
+  return bs === 'CHARGING' || bs === 'FULL';
+}
+
 export interface ApplyResult {
   ok: boolean;
-  reason?: 'offline' | 'busy' | 'locked' | 'no_changes' | 'validation' | 'bundle_failed' | 'push_failed' | 'no_version';
+  reason?: 'offline' | 'busy' | 'not_docked' | 'locked' | 'no_changes' | 'validation' | 'bundle_failed' | 'push_failed' | 'no_version';
   validation?: ValidationResult;
   applied?: { canonical: string; action: 'updated' | 'created' | 'deleted' }[];
 }
@@ -234,6 +249,7 @@ export async function applyEdits(sn: string): Promise<ApplyResult> {
   try {
     if (!isDeviceOnline(sn)) return { ok: false, reason: 'offline' };
     if (isMowerBusy(sn)) return { ok: false, reason: 'busy' };
+    if (!isMowerDocked(sn)) return { ok: false, reason: 'not_docked' };
 
     const drafts = mapEditsRepo.listDrafts(sn);
     if (drafts.length === 0) {
@@ -314,6 +330,7 @@ export async function revertEdits(sn: string): Promise<ApplyResult> {
   try {
     if (!isDeviceOnline(sn)) return { ok: false, reason: 'offline' };
     if (isMowerBusy(sn)) return { ok: false, reason: 'busy' };
+    if (!isMowerDocked(sn)) return { ok: false, reason: 'not_docked' };
     const version = mapEditsRepo.latestVersion(sn);
     if (!version) return { ok: false, reason: 'no_version' };
     const snapshot = JSON.parse(version.snapshot) as SnapshotRow[];

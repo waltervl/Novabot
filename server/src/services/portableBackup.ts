@@ -18,6 +18,7 @@ import { exportBundle } from './portableMap.js';
 import { synthesizeMowerFiles } from '../maps/synthMowerFiles.js';
 import { mapRepo } from '../db/repositories/maps.js';
 import { getPolygonAnchor } from './anchor.js';
+import { getDockPose } from '../mqtt/sensorData.js';
 import { publishToExtended, onExtendedResponse, offExtendedResponse } from '../mqtt/mapSync.js';
 
 const BACKUP_ROOT = path.join(process.env.STORAGE_PATH ?? './storage', 'portable_backups');
@@ -273,28 +274,44 @@ export async function createBundleFromDb(sn: string, reason: string): Promise<Ba
     };
   });
 
-  // Charging pose: the REAL dock pose (position from the to-charge unicom CSV,
-  // heading from the operator-confirmed saved orientation). NEVER default to
-  // {0,0,0} here — this is pure-DB synthesis (no live mower read) and the
-  // result is rasterized straight into map_info.json + the pgm and pushed to
-  // the mower on a map-edit apply. A zeroed dock pose silently breaks
-  // auto-docking on the real mower (this corrupted .100, which had never been
-  // recalibrated so getPolygonChargingOrientation returned null). Fail closed:
-  // a missing pose throws so the backup/edit aborts loudly instead of writing a
-  // bad bundle. All callers handle a throw — mapEdit.bundleAndPush propagates to
-  // the dashboard apply/revert routes (try/catch → 500), setup.ts cloud-import,
-  // adminStatus rebuild, and firmwareSafety all wrap the call in try/catch.
-  const anchor = getPolygonAnchor(sn);
-  const savedOrient = mapRepo.getPolygonChargingOrientation(sn);
-  if (!anchor || savedOrient == null || !Number.isFinite(savedOrient)) {
-    throw new Error(
-      `[portable-backup] ${sn}: cannot synthesize bundle — no resolvable charging pose ` +
-      `(anchor=${anchor ? `${anchor.x},${anchor.y}` : 'null'}, savedOrientation=${savedOrient ?? 'null'}). ` +
-      `Refusing to write a zeroed {0,0,0} dock pose (would break auto-docking). ` +
-      `(Re)calibrate the dock for this mower first.`,
-    );
+  // Charging pose. PREFER the mower's REAL live dock pose, captured from
+  // map_position while it is docked (getDockPose only stores a non-zero
+  // position, and only while CHARGING/FULL). The map-edit apply path gates on
+  // the mower being docked (mapEdit.isMowerDocked), so on that path this is
+  // fresh and accurate — and it does not depend on a server-side recalibration
+  // (.100 had no saved orientation, which is why the old code wrote {0,0,0}).
+  // Fall back to the DB anchor (first point of the to-charge unicom) + saved
+  // orientation for offline rebuild/import/pre-flash paths with no live pose.
+  // NEVER default to {0,0,0}: the result is rasterized straight into
+  // map_info.json + the pgm and pushed to the mower; a zeroed dock pose
+  // silently breaks auto-docking (this corrupted .100). Fail closed — a missing
+  // pose throws so the backup/edit aborts loudly. All callers handle a throw —
+  // mapEdit.bundleAndPush propagates to the dashboard apply/revert routes
+  // (try/catch → 500), setup.ts cloud-import, adminStatus rebuild, and
+  // firmwareSafety all wrap the call in try/catch.
+  let chargingPose: { x: number; y: number; orientation: number } | null = null;
+  const live = getDockPose(sn);
+  if (
+    live &&
+    Number.isFinite(live.x) && Number.isFinite(live.y) && Number.isFinite(live.orientation) &&
+    !(live.x === 0 && live.y === 0 && live.orientation === 0)
+  ) {
+    chargingPose = { x: live.x, y: live.y, orientation: live.orientation };
   }
-  const chargingPose = { x: anchor.x, y: anchor.y, orientation: savedOrient };
+  if (!chargingPose) {
+    const anchor = getPolygonAnchor(sn);
+    const savedOrient = mapRepo.getPolygonChargingOrientation(sn);
+    if (!anchor || savedOrient == null || !Number.isFinite(savedOrient)) {
+      throw new Error(
+        `[portable-backup] ${sn}: cannot synthesize bundle — no resolvable charging pose ` +
+        `(live=${live ? `${live.x},${live.y},${live.orientation}` : 'null'}, ` +
+        `anchor=${anchor ? `${anchor.x},${anchor.y}` : 'null'}, savedOrientation=${savedOrient ?? 'null'}). ` +
+        `Refusing to write a zeroed {0,0,0} dock pose (would break auto-docking). ` +
+        `(Re)calibrate the dock for this mower first.`,
+      );
+    }
+    chargingPose = { x: anchor.x, y: anchor.y, orientation: savedOrient };
+  }
 
   return buildAndSaveSynthBundle(sn, reason, {
     workMaps, obstacles, unicom, chargingPose,

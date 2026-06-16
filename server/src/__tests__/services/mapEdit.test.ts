@@ -116,7 +116,9 @@ describe('mapEdit service: apply + revert', () => {
     vi.mocked(pushMapToMowerVerbatim).mockResolvedValue({ ok: true });
     vi.mocked(pushMapToMowerVerbatim).mockClear();
     vi.mocked(createBundleFromDb).mockClear();
-    deviceCache.delete(sn);
+    // Map edits require the mower to be docked (CHARGING/FULL). Default the
+    // happy-path tests to docked; the offline/busy/not_docked tests override.
+    deviceCache.set(sn, new Map([['battery_state', 'CHARGING']]));
     // device_settings table is wiped by global setup beforeEach — no cleanup needed here
   });
 
@@ -168,12 +170,32 @@ describe('mapEdit service: apply + revert', () => {
     expect(res.reason).toBe('busy');
   });
 
-  it('apply: idle maaier met Mode:COVERAGE (task_mode 0) blokkeert NIET', async () => {
-    // Idle maaier houdt "Mode:COVERAGE" als laatst-gekozen modus — mag Apply niet blokkeren.
-    deviceCache.set(sn, new Map([['msg', 'Mode:COVERAGE'], ['task_mode', '0']]));
+  it('apply: docked maaier met Mode:COVERAGE (task_mode 0) blokkeert NIET', async () => {
+    // Docked + idle "Mode:COVERAGE" (laatst-gekozen modus) mag Apply niet blokkeren.
+    deviceCache.set(sn, new Map([['msg', 'Mode:COVERAGE'], ['task_mode', '0'], ['battery_state', 'CHARGING']]));
     saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
     const res = await applyEdits(sn);
     expect(res.reason).not.toBe('busy');
+    expect(res.ok).toBe(true);
+  });
+
+  it('apply: maaier niet op dock (idle in veld) → geweigerd met not_docked', async () => {
+    // Online, niet bezig, maar NIET ladend op het dock → map-edit mag niet
+    // (anders kan een verkeerde/oude dock-pose naar de maaier gepusht worden).
+    deviceCache.set(sn, new Map([['msg', 'Mode:COVERAGE'], ['task_mode', '0'], ['battery_state', 'DISCHARGING']]));
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const res = await applyEdits(sn);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('not_docked');
+    // Niets gemuteerd, niets gepusht.
+    expect(mapEditsRepo.listDrafts(sn).length).toBe(1);
+    expect(vi.mocked(pushMapToMowerVerbatim)).not.toHaveBeenCalled();
+  });
+
+  it('apply: maaier FULL op dock → toegestaan (niet alleen CHARGING)', async () => {
+    deviceCache.set(sn, new Map([['battery_state', 'FULL']]));
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    const res = await applyEdits(sn);
     expect(res.ok).toBe(true);
   });
 
@@ -273,6 +295,13 @@ describe('mapEdit service: apply + revert', () => {
     const noVersionRes = await revertEdits(sn);
     expect(noVersionRes.ok).toBe(false);
     expect(noVersionRes.reason).toBe('no_version');
+  });
+
+  it('revert: maaier niet op dock → geweigerd met not_docked', async () => {
+    deviceCache.set(sn, new Map([['battery_state', 'DISCHARGING']]));
+    const res = await revertEdits(sn);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('not_docked');
   });
 
   it('getEditGeometry: overgebleven nieuw-obstacle draft zichtbaar als isNew', () => {
