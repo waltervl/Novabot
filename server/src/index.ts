@@ -113,6 +113,10 @@ startRainMonitor();
 import { startSoftRestartMonitor } from './services/softRestart.js';
 startSoftRestartMonitor();
 
+// ── Multi-zone mow queue (re-issue start_navigation per zone on FINISHED→docked) ──
+import { startMultiZoneMonitor } from './services/multiZoneMow.js';
+startMultiZoneMonitor();
+
 // ── Mower IP discovery (mDNS + camera-port verify) ────────────────────────
 // Houdt equipment.discovered_ip vers zodat camera/info en push-to-mower
 // werken zonder dat de gebruiker handmatig een IP hoeft in te stellen.

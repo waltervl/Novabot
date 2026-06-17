@@ -19,6 +19,7 @@ import { getAllDeviceSnapshots, getDeviceSnapshot, SENSORS, getGpsTrail, clearGp
 import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/broker.js';
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose, republishObstacleDetection } from '../mqtt/mapSync.js';
+import { startMultiZone, clearMultiZone } from '../services/multiZoneMow.js';
 import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
 import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
@@ -2778,6 +2779,26 @@ dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   res.status(400).json({ ok: false, error: `unknown action '${action}'` });
 });
 
+// POST /api/dashboard/mow/multi/:sn — start a server-driven multi-zone mow.
+// body: { mapIdxs: number[], cuttingHeight: number } (canonical slot indices,
+// user cm). The server re-issues start_navigation per zone on Work:FINISHED →
+// docked (services/multiZoneMow.ts). Single zone is a no-op here — the app
+// starts those directly via /command.
+dashboardRouter.post('/mow/multi/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const { mapIdxs, cuttingHeight } = req.body as { mapIdxs?: number[]; cuttingHeight?: number };
+  if (!Array.isArray(mapIdxs) || mapIdxs.length < 2) {
+    res.status(400).json({ error: 'mapIdxs (>=2 canonical slot indices) is vereist' });
+    return;
+  }
+  if (!isDemoMode(sn) && !isDeviceOnline(sn)) {
+    res.status(404).json({ error: 'Device is offline' });
+    return;
+  }
+  const started = startMultiZone(sn, mapIdxs, Number(cuttingHeight) || 0);
+  res.json({ ok: started, zones: mapIdxs.length });
+});
+
 dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
   const { command } = req.body as { command?: Record<string, unknown> };
@@ -2785,6 +2806,12 @@ dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
   if (!command || typeof command !== 'object') {
     res.status(400).json({ error: 'command object is vereist' });
     return;
+  }
+
+  // A manual stop / go-home cancels any running multi-zone queue so the server
+  // doesn't restart the mower after the user parked it.
+  if ('stop_run' in command || 'stop_task' in command || 'go_to_charge' in command || 'go_home' in command) {
+    clearMultiZone(sn);
   }
 
   const { force } = req.query as { force?: string };

@@ -62,11 +62,6 @@ function storageKey(sn: string): string {
   return `${STORAGE_KEY_PREFIX}${sn}`;
 }
 
-function areaParamFromIdx(idx: number): number {
-  // Flutter decompilation: 1 = map0, 10 = map1, 200 = map2.
-  return idx === 0 ? 1 : idx === 1 ? 10 : 200;
-}
-
 function isMowingMsg(msg: string): boolean {
   return msg.includes('Work:RUNNING')
       || msg.includes('Work:COVERING')
@@ -179,91 +174,13 @@ export function MowQueueProvider({ children }: { children: React.ReactNode }) {
     }
   }, [queue, sn]);
 
-  const advanceQueue = useCallback(async (): Promise<void> => {
-    setQueue(prev => {
-      if (!prev) return null;
-      // Drop the just-finished map (index 0).
-      const next = prev.remaining.slice(1);
-      if (next.length === 0) {
-        return null;   // queue drained
-      }
-      return { ...prev, remaining: next };
-    });
-  }, []);
-
-  const sendNextStart = useCallback(async (state: QueueState): Promise<void> => {
-    const head = state.remaining[0];
-    if (!head) return;
-    try {
-      const url = await getServerUrl();
-      if (!url) return;
-      const api = new ApiClient(url);
-      const wireHeight = Math.max(0, state.cuttingHeight - 2);
-      const cmdNum = Date.now() % 100000;
-      console.log(`[MowQueue] dispatch ${head.mapName} (idx=${head.mapIdx}) cutterhigh=${wireHeight}`);
-      await api.sendCommand(state.sn, {
-        start_navigation: {
-          mapName: 'test',
-          cutterhigh: wireHeight,
-          area: areaParamFromIdx(head.mapIdx),
-          cmd_num: cmdNum,
-        },
-      });
-    } catch (err) {
-      console.warn('[MowQueue] start_navigation dispatch failed:', err);
-    }
-  }, []);
-
-  // ── Watch the active mower's msg for Work:FINISHED transitions ────
-  const msg = String(activeMower?.sensors?.msg ?? '');
-  const errorStatus = parseInt(String(activeMower?.sensors?.error_status ?? '0').match(/\d+/)?.[0] ?? '0', 10);
-
-  useEffect(() => {
-    if (!queue || !sn || queue.sn !== sn) return;
-    const mowing = isMowingMsg(msg);
-    const finished = msg.includes('Work:FINISHED');
-
-    if (mowing) {
-      wasMowingRef.current = true;
-      advanceLockRef.current = false;
-      return;
-    }
-
-    if (wasMowingRef.current && finished && !advanceLockRef.current) {
-      if (errorStatus !== 0) {
-        // Don't auto-advance into the next map when the previous one
-        // ended in an error — the user needs to inspect first.
-        console.warn(`[MowQueue] aborting queue, error_status=${errorStatus}`);
-        wasMowingRef.current = false;
-        setQueue(null);
-        return;
-      }
-      advanceLockRef.current = true;
-      console.log(`[MowQueue] Work:FINISHED detected — advancing queue (${queue.remaining.length - 1} left)`);
-      // Edge-detect reset.
-      wasMowingRef.current = false;
-      // Advance + dispatch next after a short settle delay so the
-      // mower's internal state has time to flush before the next
-      // start_cov_task hits.
-      const timer = setTimeout(() => {
-        setQueue(prev => {
-          if (!prev) return null;
-          const next = prev.remaining.slice(1);
-          if (next.length === 0) {
-            advanceLockRef.current = false;
-            return null;
-          }
-          const updated = { ...prev, remaining: next };
-          // Fire the next start_navigation. We deliberately ignore the
-          // returned promise — the watcher above picks up the next
-          // FINISHED transition naturally.
-          void sendNextStart(updated);
-          return updated;
-        });
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [msg, errorStatus, queue, sn, advanceQueue, sendNextStart]);
+  // The server owns the queue (services/multiZoneMow.ts): it re-issues
+  // start_navigation per zone on the Work:FINISHED → docked edge, so it
+  // survives a backgrounded app. The client only kicks it off (enqueue) and
+  // shows a banner; it no longer watches/dispatches.
+  // ponytail: banner reads the local static list, not live server progress, so
+  // "zones left" won't tick down mid-run. Add server status to the device
+  // snapshot if accurate progress matters.
 
   // ── Public API ────────────────────────────────────────────────────
   const enqueue = useCallback(async ({
@@ -275,11 +192,11 @@ export function MowQueueProvider({ children }: { children: React.ReactNode }) {
     // encoding. Pull the canonical work-map list off the server so the
     // UI's selection (which only stores ids) maps to the firmware's
     // canonical order.
+    const url = await getServerUrl();
+    if (!url) return;
+    const api = new ApiClient(url);
     let workMaps: MapData[] = [];
     try {
-      const url = await getServerUrl();
-      if (!url) return;
-      const api = new ApiClient(url);
       const res = await api.fetchMaps(enqueueSn);
       workMaps = (res.maps ?? []).filter(m => m.mapType === 'work' && m.mapArea?.length >= 3);
     } catch {
@@ -291,31 +208,22 @@ export function MowQueueProvider({ children }: { children: React.ReactNode }) {
     for (const id of mapIds) {
       const arrayIdx = workMaps.findIndex(m => m.mapId === id);
       if (arrayIdx < 0) continue;
-      // Issue #14 / #18: prefer the firmware-canonical slot index from
-      // canonicalName ("map0", "map1", ...) over the server's update-order
-      // array position. Otherwise the queue dispatches the wrong map.
+      // Prefer the firmware-canonical slot index from canonicalName
+      // ("map0", "map1", …) over the server's update-order array position.
       const canonicalMatch = (workMaps[arrayIdx].canonicalName ?? '').match(/^map(\d+)/);
       const mapIdx = canonicalMatch ? parseInt(canonicalMatch[1], 10) : arrayIdx;
-      remaining.push({
-        mapId: id,
-        mapName: workMaps[arrayIdx].mapName ?? id,
-        mapIdx,
-      });
+      remaining.push({ mapId: id, mapName: workMaps[arrayIdx].mapName ?? id, mapIdx });
     }
     if (remaining.length === 0) return;
 
-    const state: QueueState = {
-      sn: enqueueSn,
-      cuttingHeight,
-      pathDirection,
-      remaining,
-      startedAt: Date.now(),
-    };
-    setQueue(state);
-    wasMowingRef.current = false;
-    advanceLockRef.current = false;
-    await sendNextStart(state);
-  }, [sendNextStart]);
+    // Banner only — the server drives the actual sequence.
+    setQueue({ sn: enqueueSn, cuttingHeight, pathDirection, remaining, startedAt: Date.now() });
+    try {
+      await api.startMultiZone(enqueueSn, remaining.map(r => r.mapIdx), cuttingHeight);
+    } catch (err) {
+      console.warn('[MowQueue] startMultiZone failed:', err);
+    }
+  }, []);
 
   const clear = useCallback(async () => {
     setQueue(null);
