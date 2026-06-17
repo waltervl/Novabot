@@ -154,6 +154,11 @@ export function saveDraft(sn: string, input: SaveDraftInput): SaveDraftResult {
 
 export function discardDrafts(sn: string): void {
   mapEditsRepo.clearDrafts(sn);
+  // Also clear a stuck pending-sync flag: when a push failed the DB was already
+  // mutated and the flag stays '1' forever (a failed re-sync never clears it),
+  // so the floating edit bar can never be dismissed. Discard = "give up, clear
+  // everything" → the user's unconditional escape hatch out of that state.
+  deviceSettingsRepo.upsert(sn, PENDING_KEY, '0');
 }
 
 // ── Task 7: apply / revert ──────────────────────────────────────────────────

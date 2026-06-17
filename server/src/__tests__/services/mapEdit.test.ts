@@ -229,6 +229,17 @@ describe('mapEdit service: apply + revert', () => {
     expect(getEditGeometry(sn).pendingSync).toBe(false);
   });
 
+  it('discardDrafts: ruimt een vastzittende pendingSync op (escape hatch)', async () => {
+    // Push faalt → pendingSync blijft '1', geen drafts meer over.
+    vi.mocked(pushMapToMowerVerbatim).mockResolvedValueOnce({ ok: false, offline: true });
+    saveDraft(sn, { canonical: 'map0_0_obstacle', deleted: true });
+    await applyEdits(sn);
+    expect(getEditGeometry(sn).pendingSync).toBe(true);
+    // Discard moet de bar onvoorwaardelijk kunnen wegnemen.
+    discardDrafts(sn);
+    expect(getEditGeometry(sn).pendingSync).toBe(false);
+  });
+
   it('revert: zet snapshot terug en pusht', async () => {
     const orig = mapRepo.findBySnAndCanonical(sn, 'map0')!.map_area;
     saveDraft(sn, { canonical: 'map0', points: square.map(p => (p.x === 20 ? { x: 22, y: p.y } : p)) });
