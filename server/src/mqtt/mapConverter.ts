@@ -331,56 +331,43 @@ export function generateMapZipFromDb(
       } catch { /* skip malformed row */ }
     }
 
-    // Zoek een handmatig getekend unicom kanaal voor dit werkgebied
-    if (unicomRows[i]) {
-      const rawUnicomPoints: LocalPoint[] = JSON.parse(unicomRows[i].map_area!);
-      const unicomName = unicomRows[i].file_name ?? unicomRows[i].map_name ?? '';
-      // Strip the trailing .csv extension to match isToChargeUnicomName regex
-      // which expects bare canonical names like "map0tocharge_unicom".
-      const unicomCanonical = unicomName.replace(/\.csv$/, '');
-      const unicomPoints = shiftPoints(rawUnicomPoints, offset.x, offset.y, isToChargeUnicomName(unicomCanonical));
-      if (unicomPoints && unicomPoints.length >= 2) {
-        // Haal target uit file_name/map_name: "map0tocharge_unicom" → "charge", "map0tomap1_0_unicom" → "map1_0"
-        const targetMatch = unicomName.match(/^map\d+to(.+?)_?unicom/);
-        areas.push({
-          mapIndex: i,
-          type: 'unicom',
-          target: targetMatch?.[1] ?? 'charge',
-          points: unicomPoints,
-        });
-        continue;
-      }
-    }
+  }
 
-    // Geen handmatig kanaal — genereer automatisch een unicom pad
-    // Rechte lijn van charger (0,0) naar dichtstbijzijnd punt
-    let closestIdx = 0;
-    let closestDist = Infinity;
-    for (let j = 0; j < points.length; j++) {
-      const dist = Math.sqrt(points[j].x ** 2 + points[j].y ** 2);
-      if (dist < closestDist) {
-        closestDist = dist;
-        closestIdx = j;
-      }
+  // Unicoms (kanalen) — emit elk OPGENOMEN kanaal op zijn ECHTE identiteit, afgeleid
+  // uit de file_name/map_name ("map0tocharge", "map1tomap2_0"), NOOIT op array-index.
+  //
+  // Twee bugs die hier zaten en nu weg zijn:
+  //  1. Index-koppeling (unicomRows[i] ↔ werkgebied i) plakte een opgenomen kanaal aan
+  //     de verkeerde zone — positie i zegt niets over wélke zones het kanaal verbindt.
+  //  2. Voor elke index zonder match werd een rechte-lijn-unicom vanaf de charger
+  //     verzonnen. Die "auto-kanalen" (rechte lijnen dwars door obstakels) overschreven
+  //     het kanaal dat de gebruiker net had opgenomen. We genereren niets meer zelf:
+  //     ontbrekende kanalen worden in de app gemeld ("Zones not connected — Add channel")
+  //     en door de gebruiker gereden.
+  //
+  // Lege rijen worden overgeslagen: de LFI-cloud levert map↔map unicoms als 0-byte
+  // placeholders (het pad zat alleen in de originele live-pgm), dus een lege rij mag
+  // nooit een echt, gereden kanaal verdringen.
+  for (const uRow of unicomRows) {
+    const unicomName = (uRow.file_name ?? uRow.map_name ?? '').replace(/\.csv$/, '');
+    const targetMatch = unicomName.match(/^map(\d+)to(.+?)_?unicom/);
+    if (!targetMatch) continue;
+    let rawUnicomPoints: LocalPoint[];
+    try {
+      rawUnicomPoints = JSON.parse(uRow.map_area ?? '[]');
+    } catch {
+      continue;
     }
-
-    const closest = points[closestIdx];
-    const steps = Math.max(5, Math.ceil(closestDist / 0.5)); // stappen van ~0.5m
-    const unicomPoints: LocalPoint[] = [];
-    for (let s = 0; s <= steps; s++) {
-      const t = s / steps;
-      unicomPoints.push({
-        x: t * closest.x,
-        y: t * closest.y,
+    if (!Array.isArray(rawUnicomPoints) || rawUnicomPoints.length < 2) continue; // lege/placeholder overslaan
+    const unicomPoints = shiftPoints(rawUnicomPoints, offset.x, offset.y, isToChargeUnicomName(unicomName));
+    if (unicomPoints && unicomPoints.length >= 2) {
+      areas.push({
+        mapIndex: parseInt(targetMatch[1], 10),
+        type: 'unicom',
+        target: targetMatch[2],
+        points: unicomPoints,
       });
     }
-
-    areas.push({
-      mapIndex: i,
-      type: 'unicom',
-      target: 'charge',
-      points: unicomPoints,
-    });
   }
 
   if (areas.length === 0) {
