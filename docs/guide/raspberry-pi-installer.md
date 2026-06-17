@@ -28,13 +28,16 @@ importing devices later.
 
 ## Step 1: Download and open the installer
 
-Open [downloads.ramonvanbruggen.nl](https://downloads.ramonvanbruggen.nl) and
-download the OpenNova Installer for your computer.
+Download the OpenNova Installer from
+**`downloads.ramonvanbruggen.nl/installer/`**. The version number is part of the
+file name and increases with each release, so the links below point at the
+current version (**0.2.0**); a newer release simply has a higher number.
 
-=== "macOS"
+=== "macOS (Apple Silicon)"
 
-    Download the `.dmg`, open it, and drag **OpenNova Installer** to your
-    Applications folder.
+    Download **[OpenNova Installer-0.2.0-arm64.dmg](https://downloads.ramonvanbruggen.nl/installer/OpenNova%20Installer-0.2.0-arm64.dmg)**,
+    open it, and drag **OpenNova Installer** to your Applications folder. This
+    build is for Apple Silicon Macs (M1/M2/M3 and newer).
 
     Because the app is self-distributed (not from the App Store), macOS may say
     it cannot verify the developer the first time. Right-click the app and choose
@@ -42,13 +45,15 @@ download the OpenNova Installer for your computer.
 
 === "Windows"
 
-    Download the `.exe` and run it. If Windows SmartScreen shows a blue warning,
-    click **More info → Run anyway**. You only have to do this once.
+    Download **[OpenNova Installer Setup 0.2.0.exe](https://downloads.ramonvanbruggen.nl/installer/OpenNova%20Installer%20Setup%200.2.0.exe)**
+    and run it. If Windows SmartScreen shows a blue warning, click
+    **More info → Run anyway**. You only have to do this once.
 
 === "Linux"
 
-    Download the `.AppImage`, make it executable
-    (`chmod +x OpenNova-Installer-*.AppImage`), and run it.
+    A Linux AppImage is not published yet. You can build one yourself from the
+    `installer/` folder with `npm run dist` (it produces an `.AppImage`), then
+    make it executable (`chmod +x`) and run it.
 
 When the app opens you will see a short welcome screen listing the three things
 you need. When you have them, click **Let's go!**
