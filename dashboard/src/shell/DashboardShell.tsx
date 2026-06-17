@@ -18,6 +18,7 @@ import type { PatternPlacement } from '../components/patterns/PatternOverlay';
 import { LongPauseBanner } from './LongPauseBanner';
 import { MdnsConflictBanner } from './MdnsConflictBanner';
 import { UpdateBanner } from './UpdateBanner';
+import { ErrorDisplay } from '../components/status/ErrorDisplay';
 
 type Tab = 'map' | 'schedule' | 'records' | 'settings';
 
@@ -168,6 +169,19 @@ function ShellInner() {
       <UpdateBanner />
       <MdnsConflictBanner />
       <LongPauseBanner mower={activeMower} />
+
+      {/* Device error/warning popup. Lost in the DashboardPage→DashboardShell
+          refactor (it used to live in <MowerStatus>); restored here so the
+          desktop dashboard surfaces mower errors and non-blocking warnings
+          (e.g. 139) again — same component the mobile view uses. */}
+      {activeMower && (
+        <ErrorDisplay
+          errorCode={activeMower.sensors.error_code}
+          errorMsg={activeMower.sensors.error_msg}
+          errorStatus={activeMower.sensors.error_status}
+          workStatus={activeMower.sensors.work_status}
+        />
+      )}
 
       <main className="flex-1 flex flex-col min-h-0 p-4">
         {tab === 'map' && (
