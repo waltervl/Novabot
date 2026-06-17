@@ -1630,6 +1630,48 @@ else
     echo "  extended_commands.py niet gevonden — overslaan"
 fi
 
+# === Stap 5h2: Unicom csv mirror service toevoegen ===
+echo "[5h2/9] Unicom csv mirror service toevoegen..."
+
+MIRROR_SRC="$SCRIPT_DIR/unicom_mirror.py"
+if [ -f "$MIRROR_SRC" ]; then
+    cp "$MIRROR_SRC" "$NOVABOT_ROOT/scripts/unicom_mirror.py"
+    chmod +x "$NOVABOT_ROOT/scripts/unicom_mirror.py"
+    echo "  unicom_mirror.py gekopieerd naar scripts/"
+
+    # Launch toevoegen aan run_novabot.sh start) blok (geen ROS env nodig, puur file-ops)
+    if [ -f "$RUN_NOVABOT" ] && ! grep -q "unicom_mirror.py" "$RUN_NOVABOT"; then
+        MIRROR_START_BLOCK="/tmp/unicom_mirror_start_block.sh"
+        cat > "$MIRROR_START_BLOCK" << 'MIRROREOF'
+
+  # CUSTOM: Unicom csv mirror - houdt csv_file/<...>tomap<...>_unicom.csv gelijk aan
+  # x3_csv_file (volledige gereden route). De stock mapping-node filtert de unicom-csv
+  # tot alleen punten BUITEN de work-areas (saveScanData) -> leeg bij rakende zones ->
+  # kanaal komt niet in DB/app + geen per-map pgm-corridor (server leest enkel csv_file).
+  # Zie research/documents/unicom-csv-outside-filter.md
+  if [ -f "/root/novabot/scripts/unicom_mirror.py" ]; then
+      pkill -f "/root/novabot/scripts/unicom_mirror.py" 2>/dev/null
+      (python3 /root/novabot/scripts/unicom_mirror.py >> $LOGS_PATH/unicom_mirror.log 2>&1) &
+      echo "unicom_mirror started" >> $LOGS_PATH/unicom_mirror.log
+  fi
+MIRROREOF
+        sed -i '' '/start_test.sh/r /tmp/unicom_mirror_start_block.sh' "$RUN_NOVABOT"
+        rm -f "$MIRROR_START_BLOCK"
+        echo "  run_novabot.sh: unicom_mirror launch toegevoegd aan start)"
+
+        # Kill toevoegen aan stop) blok
+        MIRROR_STOP_BLOCK="/tmp/unicom_mirror_stop_block.sh"
+        cat > "$MIRROR_STOP_BLOCK" << 'MIRROREOF'
+  killall -q -9 unicom_mirror.py
+MIRROREOF
+        sed -i '' '/killall -q -9 daemon_monitor.sh/r /tmp/unicom_mirror_stop_block.sh' "$RUN_NOVABOT"
+        rm -f "$MIRROR_STOP_BLOCK"
+        echo "  run_novabot.sh: unicom_mirror kill toegevoegd aan stop)"
+    fi
+else
+    echo "  unicom_mirror.py niet gevonden — overslaan"
+fi
+
 # === Stap 5i: STM32 MCU firmware — KEEP STOCK v3.6.0 ===
 # DISABLED: v3.6.7 pin_unlock causes motor lock issues (blade calibration broken).
 # The stock v3.6.0 from the source .deb is kept as-is.
