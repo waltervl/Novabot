@@ -85,6 +85,7 @@ nav:
     - Troubleshooting: user-guide/troubleshooting.md
     - LFI Knowledge Base (archived): reference/NOVABOT-ZENDESK-WIKI.md
   - Getting Started:
+    - Raspberry Pi Installer: guide/raspberry-pi-installer.md
     - Beginner Installation: guide/beginner-installation.md
     - Docker Container: guide/docker.md
     - DNS Setup: guide/dns-setup.md
