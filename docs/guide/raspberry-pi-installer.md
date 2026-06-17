@@ -53,10 +53,14 @@ download the OpenNova Installer for your computer.
 When the app opens you will see a short welcome screen listing the three things
 you need. When you have them, click **Let's go!**
 
+![OpenNova Installer welcome screen with the hardware checklist](img/installer/1-welcome.png)
+
 ## Step 2: Your settings
 
 The installer asks a few quick questions. These are saved onto the card and
 applied the first time your Pi starts.
+
+![OpenNova Installer settings step: name, network, timezone, SSH, and app choice](img/installer/2-config.png)
 
 - **Give it a name** — the Pi's name on your network. The default `opennova`
   works fine. The installer warns you if that name is already used by another
@@ -80,6 +84,8 @@ Click **Continue**.
 
 ## Step 3: Build the card
 
+![OpenNova Installer build step with the Build image button](img/installer/3-build.png)
+
 Click **Build image**. The installer now, in order:
 
 1. **Downloads** the latest Raspberry Pi OS Lite (64-bit) straight from
@@ -99,6 +105,8 @@ When it finishes you will see **Your card image is ready!** Click **Continue**.
 
 Put your microSD card in the reader. The installer lists **removable cards
 only**, so you can never overwrite your own hard drive by accident.
+
+![OpenNova Installer write step with a detected card and the erase confirmation](img/installer/4-flash.png)
 
 1. Pick your card from the list (it shows the name and size).
 2. Tick **I understand this erases everything on the card I picked**.
@@ -127,6 +135,8 @@ step. Leave it powered on and connected to the internet while it works.
 Back in the installer, the last screen looks for your Pi on the network. When it
 appears, you will see **Your Pi is online** with an **Open OpenNova** button
 that takes you straight to the admin page.
+
+![OpenNova Installer final step showing the Pi online with an Open OpenNova button](img/installer/5-finish.png)
 
 If it does not appear after a few minutes, open a browser and go to
 `http://opennova.local/admin` (or use the name you gave it, e.g.

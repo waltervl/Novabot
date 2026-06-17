@@ -1,21 +1,24 @@
 # OpenNova Installer
 
-A cross-platform Electron desktop app that builds a **ready-to-flash OpenNova
-image**: it downloads the latest stock Raspberry Pi OS Lite 64-bit, bakes an
-OpenNova first-boot configuration into the image's boot partition, and writes the
-result as a `.img` file. The user then flashes that file with **Raspberry Pi
-Imager**, boots the Pi, and is handed off to the Pi's existing `/admin` setup
-wizard.
+A cross-platform Electron desktop app that builds **and writes** a ready-to-run
+OpenNova SD card: it downloads the latest stock Raspberry Pi OS Lite 64-bit,
+bakes an OpenNova first-boot configuration into the image's boot partition,
+writes the result straight to your microSD card, and then helps you find the
+booted Pi and open its `/admin` setup wizard.
 
-## Why it patches an image instead of flashing the card
+## How it writes the card without Full Disk Access
 
-Writing a raw disk on macOS requires the writing app to hold **Full Disk Access**
-(a TCC grant) — it fails with `EPERM` even as root otherwise. For an unsigned,
-self-distributed tool that is unworkable. Patching a **file** has none of those
-constraints: no raw-disk access, no Full Disk Access, no elevation, no code
-signing required just to run. We attach the image with `hdiutil`, edit its FAT
-boot partition, and let Raspberry Pi Imager (which is signed and handles the disk
-machinery itself) do the actual card write.
+Writing a raw disk on macOS normally requires the app to hold **Full Disk
+Access** (a TCC grant) — it fails with `EPERM` even as root otherwise. For an
+unsigned, self-distributed tool that is unworkable. Two things sidestep it.
+First, the config is baked into the image **file** (no card, no mount, no
+elevation) by editing its FAT boot partition with mtools. Second, the card write
+uses the OS's own privileged opener instead of Full Disk Access: on macOS the
+bundled `fdwrite` helper runs `authopen -stdoutpipe -w <device>` (the same
+Apple-entitled technique Raspberry Pi Imager uses), on Linux `pkexec`, and on
+Windows an elevated PowerShell write via UAC. The user sees one password prompt
+at write time and nothing else; no Full Disk Access and no code signing are
+required just to run the app.
 
 ## How it works
 
@@ -33,10 +36,11 @@ machinery itself) do the actual card write.
    authorized public key) — modern Pi OS ships no default `pi` user, so without
    this `sshd` would run with no way in. The `ssh` sentinel is omitted when SSH is
    turned off.
-5. Save the finished image to the user's Downloads folder and show flashing
-   instructions (Raspberry Pi Imager → Use custom → this file).
-6. Optionally "Find my Pi" once it has booted and deep-link to
-   `http://opennova.local/admin`.
+5. Write the patched image to the chosen **removable** card (never the system
+   disk) with one elevation prompt — `fdwrite`/`authopen` on macOS, `pkexec` on
+   Linux, UAC on Windows — streaming write progress to the UI.
+6. "Find my Pi" once it has booted (mDNS) and deep-link to
+   `http://opennova.local/admin`. A manual-IP box covers networks without mDNS.
 
 ## Architecture
 
@@ -49,13 +53,17 @@ machinery itself) do the actual card write.
     no mount / root / Full Disk Access. One code path on macOS/Linux/Windows;
     the small mtools binaries are bundled under `vendor/mtools/` (see its README).
   - `bootInject.ts` — `writeBootFiles` (the idempotent boot-partition writes).
+  - `drives.ts` — enumerate SAFE removable cards (never the system disk).
+  - `flashDisk.ts` + `flashMac.ts` / `flashLinux.ts` / `flashWindows.ts` — write
+    the image to the card with a per-OS privileged writer (authopen / pkexec /
+    UAC) and stream progress.
   - `discovery.ts` — poll the health endpoint until the Pi answers `running`.
   - `ipc.ts` + `preload.ts` — typed, context-isolated bridge on
-    `window.installer` (`image:build`, `shell:reveal`, `shell:openExternal`,
-    `pi:find`).
+    `window.installer` exposing the `InstallerApi` (`buildImage`, `scanDrives`,
+    `startFlash`/`cancelFlash`, `checkHostname`, `findPi`, `openExternal`, …).
 - **Renderer** (`src/renderer/`): React + Tailwind wizard
-  (welcome, config, build, finish). `wizard.ts` is a pure, unit-tested step
-  state machine.
+  (welcome, config, build, flash, finish). `wizard.ts` is a pure, unit-tested
+  step state machine.
 - **Shared** (`src/shared/`): the IPC contract (`types.ts`) and the Pi OS release
   descriptor (`piOsRelease.ts`, always-latest).
 
@@ -83,10 +91,12 @@ npm run pack    # build + electron-builder --dir (unpacked app, fast, for testin
 npm run dist    # build + electron-builder (dmg / nsis / AppImage)
 ```
 
-The app does **not** write raw disks, so it does not need Full Disk Access or an
-elevation helper. Code signing / notarization is still recommended so macOS
-Gatekeeper opens the app without a warning, but it is not required for the build
-flow to work. Unsigned builds open via right-click → Open.
+The app writes the card with the OS's own privileged opener (macOS `authopen`
+via the bundled `fdwrite`, Linux `pkexec`, Windows UAC), so it needs **no Full
+Disk Access** on macOS — only the one password prompt at write time. Code
+signing / notarization is still recommended so macOS Gatekeeper opens the app
+without a warning, but it is not required to run. Unsigned builds open via
+right-click → Open.
 
 ## The Raspberry Pi OS image (always latest)
 
@@ -94,7 +104,7 @@ flow to work. Unsigned builds open via right-click → Open.
 app resolves it to the current dated image and verifies it against the published
 `.img.xz.sha256` sidecar, so there is no pinned hash to maintain and no new
 release needed when Raspberry Pi publishes a new image. The `cmdline.txt` token
-sequence in `configModel.ts` is the documented Raspberry Pi Imager first-boot
+sequence in `configModel.ts` is the documented Raspberry Pi OS first-boot
 mechanism.
 
 ## End-to-end verification (manual)
@@ -117,7 +127,7 @@ the bundled `mcopy`/`mtype` binary (`vendor/mtools/<platform>-<arch>/`).
 
 ### First boot (real hardware)
 
-- [ ] Flash the built image with Raspberry Pi Imager (Use custom), boot a real
+- [ ] Write the card in the app, boot a real
       **Raspberry Pi 4** and **5**: confirm first boot auto-installs Docker and
       OpenNova, then `http://opennova.local/api/setup/health` returns
       `server: "running"`.
