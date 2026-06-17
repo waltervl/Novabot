@@ -4191,6 +4191,18 @@ def _cadence_coverage_active():
         stamp = re.search(r"\[(\d{10}\.\d+)\]", line)
         if stamp and (time.time() - float(stamp.group(1))) > 60.0:
             return False, "stale"
+        # A return-to-charge runs its OWN perception + nav (auto_recharge_server
+        # drives to the guide pose, then visually docks on the ArUco marker). The
+        # cadence must NOT touch /perception/set_infer_model during that: flipping
+        # the model mid-dock starves the nav costmap of terrain segmentation, the
+        # dock approach gets seen as occupied, and the recharge aborts (error 126).
+        # robot_decision reports the recharge phase on the SAME line; anything
+        # other than an idle/terminal phase means a dock attempt is in progress,
+        # so we hard-gate the cadence off regardless of Work: (which is WAIT, or a
+        # transient MOVING, during the return drive).
+        rm = re.search(r"Recharge:\s*(\w+)", line)
+        if rm and rm.group(1) not in ("IDLE", "FINISHED", "CANCELLED", "FAILED", "WAIT", "NONE"):
+            return False, f"recharge={rm.group(1)}"
         wm = re.search(r"Work:(\w+)", line)
         work = wm.group(1) if wm else "?"
         if work in ("FINISHED", "CANCELLED"):
@@ -4207,19 +4219,30 @@ def _cadence_coverage_active():
 # mow-time CPU load and blew the 10s timeout EVERY time — the cadence armed but
 # never actually switched models. A persistent rclpy client on the shared executor
 # makes each switch a normal async call (ms). Do NOT go back to a per-flip subprocess.
-_PERCEPTION_CLI = [None]  # (node, client) once ready
+# (node, set_infer_model[SetUint8], set_detection_mode[SetBool], set_semantic_mode[SemanticMode])
+_PERCEPTION_CLI = [None]
 
 
 def start_perception_model_client():
-    """Create a long-lived SetUint8 client on /perception/set_infer_model and add it
-    to the shared executor (owned by the blade relay), so the cadence can flip the
-    model without spawning a subprocess each time."""
+    """Long-lived clients for the perception + costmap services that the stock
+    `RobotDecision::setPerceptionLevel(3)` (= obstacle-avoidance HIGH) drives, added
+    to the shared executor (owned by the blade relay). Verified by disassembly:
+    HIGH = set_infer_model(1) + set_detection_mode(false) + set_semantic_mode(FREE_MOVE).
+    The cadence uses these to do a detection pass and then restore the FULL HIGH
+    costmap config — flipping only the model (the old behaviour) left the costmap in
+    a non-HIGH state, so low (~0.3m) height cells read as obstacles and the
+    return-to-charge nav wedged on `goal occupied` (error 126).
+      /perception/set_infer_model        general_msgs/SetUint8
+      /local_costmap/set_detection_mode  std_srvs/SetBool
+      /local_costmap/set_semantic_mode   nav2_msgs/SemanticMode (FREE_MOVE=1)
+    """
     try:
         import rclpy  # type: ignore  # noqa: F401
         from rclpy.node import Node  # type: ignore
         from general_msgs.srv import SetUint8  # type: ignore
+        from std_srvs.srv import SetBool  # type: ignore
     except ImportError as ex:
-        log(f"[perception-cli] rclpy/general_msgs import failed — cadence falls back to subprocess: {ex}")
+        log(f"[perception-cli] core import failed — cadence falls back to subprocess: {ex}")
         return
 
     def _setup():
@@ -4229,36 +4252,84 @@ def start_perception_model_client():
                 log("[perception-cli] shared executor never became ready; giving up")
                 return
             node = Node("perception_model_client")
-            cli = node.create_client(SetUint8, "/perception/set_infer_model")
+            infer = node.create_client(SetUint8, "/perception/set_infer_model")
+            det = node.create_client(SetBool, "/local_costmap/set_detection_mode")
+            sem = None
+            try:
+                from nav2_msgs.srv import SemanticMode  # type: ignore
+                sem = node.create_client(SemanticMode, "/local_costmap/set_semantic_mode")
+            except ImportError as ex:
+                log(f"[perception-cli] nav2_msgs SemanticMode unavailable — semantic-mode restore disabled: {ex}")
             _ROS_EXECUTOR[0].add_node(node)
-            _PERCEPTION_CLI[0] = (node, cli)
-            ready = cli.wait_for_service(timeout_sec=15.0)
-            log(f"[perception-cli] set_infer_model client ready (service_available={ready})")
+            _PERCEPTION_CLI[0] = (node, infer, det, sem)
+            ri = infer.wait_for_service(timeout_sec=15.0)
+            log(f"[perception-cli] clients ready (infer={ri}, detection_mode+semantic_mode added)")
         except Exception as ex:
             log(f"[perception-cli] setup failed: {ex}")
 
     threading.Thread(target=_setup, daemon=True, name="perception-cli-setup").start()
 
 
+def _await_future(future, timeout):
+    """Poll a future the shared executor (blade thread) is completing for us."""
+    deadline = time.time() + timeout
+    while not future.done() and time.time() < deadline:
+        time.sleep(0.02)
+    return bool(future.done()) and future.result() is not None
+
+
 def _set_infer_model_fast(model_id, timeout=4.0):
     """Switch the perception model via the persistent rclpy client. Returns True on
-    success, False on any failure/timeout (caller falls back to the subprocess).
-    The shared executor (blade thread) completes the future; we only poll it."""
+    success, False on any failure/timeout (caller falls back to the subprocess)."""
     entry = _PERCEPTION_CLI[0]
     if entry is None:
         return False
-    _node, cli = entry
+    _node, cli, _det, _sem = entry
     try:
         from general_msgs.srv import SetUint8  # type: ignore
         if not cli.service_is_ready() and not cli.wait_for_service(timeout_sec=1.0):
             return False
         req = SetUint8.Request()
         req.value = int(model_id)
-        future = cli.call_async(req)
-        deadline = time.time() + timeout
-        while not future.done() and time.time() < deadline:
-            time.sleep(0.02)
-        return bool(future.done()) and future.result() is not None
+        return _await_future(cli.call_async(req), timeout)
+    except Exception:
+        return False
+
+
+def _set_detection_mode_fast(on, timeout=4.0):
+    """/local_costmap/set_detection_mode (SetBool). HIGH wants False."""
+    entry = _PERCEPTION_CLI[0]
+    if entry is None:
+        return False
+    _node, _cli, det, _sem = entry
+    if det is None:
+        return False
+    try:
+        from std_srvs.srv import SetBool  # type: ignore
+        if not det.service_is_ready() and not det.wait_for_service(timeout_sec=1.0):
+            return False
+        req = SetBool.Request()
+        req.data = bool(on)
+        return _await_future(det.call_async(req), timeout)
+    except Exception:
+        return False
+
+
+def _set_semantic_mode_fast(mode, timeout=4.0):
+    """/local_costmap/set_semantic_mode (nav2_msgs/SemanticMode). HIGH wants FREE_MOVE=1."""
+    entry = _PERCEPTION_CLI[0]
+    if entry is None:
+        return False
+    _node, _cli, _det, sem = entry
+    if sem is None:
+        return False
+    try:
+        from nav2_msgs.srv import SemanticMode  # type: ignore
+        if not sem.service_is_ready() and not sem.wait_for_service(timeout_sec=1.0):
+            return False
+        req = SemanticMode.Request()
+        req.semantic_mode = int(mode)
+        return _await_future(sem.call_async(req), timeout)
     except Exception:
         return False
 
@@ -4297,6 +4368,25 @@ def start_obstacle_detection_cadence():
             log(f"[obstacle-detect] set_infer_model({model_id}) FAILED ({name}): {ex}")
             return False
 
+    # nav2_msgs/SemanticMode: LAWN_COVER=0, FREE_MOVE=1, BOUNDARY_FOLLOW=2, IGNORE_SEMANTIC=3
+    _FREE_MOVE = 1
+
+    def _apply_high():
+        """Restore stock obstacle-avoidance HIGH on the perception + costmap, exactly
+        as RobotDecision::setPerceptionLevel(3) does (proven by disassembly):
+        segmentation model + costmap detection OFF + semantic FREE_MOVE. This is the
+        config nav / auto-recharge need so low (~0.3m) height cells read as
+        traversable lawn, not obstacles. Flipping only the model is NOT enough."""
+        _set_model(1)
+        _set_detection_mode_fast(False)
+        _set_semantic_mode_fast(_FREE_MOVE)
+
+    def _apply_detection():
+        """Detection pass (≈ stock MED): detection model + costmap detection ON, so
+        the costmap actually consumes the object detections during the window."""
+        _set_model(2)
+        _set_detection_mode_fast(True)
+
     def _loop():
         last_state = None  # (running, level) — log only on change to avoid spam
         while True:
@@ -4308,14 +4398,22 @@ def start_obstacle_detection_cadence():
                 if (running, level) != last_state:
                     log(f"[obstacle-detect] {'ACTIVE cadence' if running else 'idle'} "
                         f"(level={level}, {reason})")
+                    # On the active->idle edge, force perception back to SEGMENTATION
+                    # so nav / auto-recharge always inherit terrain data. A cycle
+                    # interrupted mid-detection-window (e.g. coverage finished right
+                    # after _set_model(2)) would otherwise strand the model on
+                    # DETECTION exactly when the return-to-charge needs the costmap.
+                    if last_state is not None and last_state[0] and not running:
+                        _apply_high()
+                        log("[obstacle-detect] coverage ended -> restored HIGH (seg + detection-off + FREE_MOVE)")
                     last_state = (running, level)
                 if not running:
                     time.sleep(obstacle_detect_idle_poll_seconds())
                     continue
                 window = obstacle_detect_window_seconds()
-                _set_model(2)            # detection pass
+                _apply_detection()       # detection pass: model 2 + costmap detection ON
                 time.sleep(window)
-                _set_model(1)            # back to segmentation
+                _apply_high()            # back to HIGH: model 1 + detection OFF + FREE_MOVE
                 time.sleep(max(0.0, period - window))
             except Exception as ex:
                 log(f"[obstacle-detect] loop error: {ex}")

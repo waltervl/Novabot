@@ -1,7 +1,10 @@
 # Per-map occupancy-grid duplication → single-zone mow covers the whole property
 
 > **Status:** ROOT CAUSE FOUND + FIXED. Live-confirmed on LFIN2230700238, 2026-06-07.
-> Introduced in `v6.0.2-custom-30`, fixed in `v6.0.2-custom-36`.
+> Introduced in `v6.0.2-custom-30`, zone-masking fixed in `v6.0.2-custom-36`.
+> Second half (mapped obstacles inside a zone, GitHub #93) fixed by the
+> obstacle-punch in commit `77a3f27d` (2026-06-15) — ships in `custom-39`, NOT in
+> the released `custom-38` (built 2026-06-14, before the punch). See last section.
 
 ## Symptom
 
@@ -104,6 +107,78 @@ cat /userdata/lfi/maps/home0/csv_file/map_info.json   # map_size per slot
 # free-pixel bounding box of a pgm (where the mowable area actually is)
 # python3 + numpy/PIL: value>=254 = free; convert px→world via map.yaml origin/res
 ```
+
+## Second half: mapped obstacles inside a zone are ignored (GitHub #93, dir26738)
+
+The per-slot masking from custom-36 fixes "mower covers the whole property",
+but it does NOT, by itself, make a **mapped obstacle that sits inside the work
+polygon** appear as occupied. Masking only keeps whatever the whole-area
+`map.pgm` already had inside the polygon; the polygon area is forced FREE. So a
+small obstacle the user drew inside a zone stays FREE in the plan pgm, the
+coverage planner routes straight through it, and there is no inflation ring.
+
+### Live evidence (custom-35, dir26738, 2026-06-14, `map1` = pool zone)
+
+`coverage_planner.log`:
+```
+Request for planning. Make plan by file: /userdata/lfi/maps/home0/map1.yaml 1 105
+No coverage map, using obstacle map to plan!!!          <- planner plans ON the pgm
+...
+planned area: 90.763  task_covered_area: 2.600  covered_ratio: 2.86%
+Start avoid obstacle ... (x64)  continued_avoid_failed_count: 1 .. 30
+Robot maybe trapped, no path to target!!!, clear costmap to try again!!!
+------ Current work status: NO_PATH_TO_GOAL prev work status: COVER_OBSTACLE_AVOIDING
+[navigate_through_coverage_paths] [ActionServer] Aborting handle.
+```
+
+`nav2.log` (the smoking gun):
+```
+Either of the start or goal pose are an obstacle!
+Path may be collision with obstacle, -18.22 -1.10 !!!!
+>>>>>>>>>> Follow path was aborted
+Local cost map and global cost map is different, some obstacle is not in global cost map!!!
+```
+
+Interpretation: the live local_costmap (camera/ultrasound) sees real obstacles
+around `x≈-18, y≈-1..-5` that are **absent from the global/static pgm** the plan
+was built on. The plan therefore routes into them, nav aborts, the planner enters
+obstacle-avoidance, every avoid end-pose is also occupied (the whole pocket is
+obstacles that were never in the plan map), the count climbs to 30, and the task
+aborts after mowing 2.86%. This is exactly dir26738's report: "2 obstacles are
+ignored (no gray circle around it, the path go through it) ... it used to work
+with the official app", plus the mower wandering outside the pool and an area
+left unmowed.
+
+### Fix (commit `77a3f27d`, 2026-06-15)
+
+`handle_regenerate_per_map_files` now, after masking, rasterises every
+`map<N>_<M>_obstacle.csv` for the slot as **OCCUPIED** in `mapN.pgm`
+(`OBSTACLE_INFLATE_M = 0.10` min thickness):
+
+```python
+# This slot's mapped obstacles MUST be forced OCCUPIED in the per-map pgm:
+# the coverage planner plans on this grid, and masking only preserves whatever
+# the whole-area map.pgm had.
+if _re.match(rf"^{slot}_\d+_obstacle\.csv$", of): ...
+out = _np.where(_np.array(omask) > 0, _np.uint8(OCCUPIED), out)
+```
+
+Now the planned path is built with the obstacles present, gets an inflation ring,
+routes around them, and the global pgm matches what the live costmap sees (no more
+"local != global" abort loop).
+
+### Release status (why upgrading to custom-38 is not enough)
+
+| Symptom | Fix | First release |
+|---|---|---|
+| Mows whole property / drives outside the selected zone | per-slot masking | `custom-36` (released) |
+| Mapped obstacle inside a zone ignored, no inflation ring, path through it | obstacle-punch | `77a3f27d` → **`custom-39` (not yet built/released)** |
+
+`custom-38.deb` was built 2026-06-14 21:53; the obstacle-punch landed
+2026-06-15 15:25, so **custom-38 does not contain it**. A `custom-39` build +
+manifest entry is required before #93's mapped-obstacle half is fixed for users.
+The per-map pgms must also be regenerated once on the upgraded firmware (happens
+on map load / `regenerate_per_map_files`) for the new occupancy to take effect.
 
 ## Related
 
