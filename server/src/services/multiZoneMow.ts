@@ -30,7 +30,8 @@ export function startMultiZone(sn: string, mapIdxs: number[], cuttingHeightCm: n
   const idxs = mapIdxs.filter(n => Number.isInteger(n) && n >= 0);
   if (idxs.length < 2) return false;
   const cutterhigh = Math.max(0, Math.round(cuttingHeightCm) - 2);
-  queues.set(sn, { remaining: [...idxs], cutterhigh, phase: 'running', sawMowing: false, startedAt: Date.now() });
+  const now = Date.now();
+  queues.set(sn, { remaining: [...idxs], cutterhigh, phase: 'running', sawMowing: false, startedAt: now, lastDispatch: now });
   dispatch(sn, idxs[0], cutterhigh);
   return true;
 }
