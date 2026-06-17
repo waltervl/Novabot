@@ -965,10 +965,11 @@ export async function checkServerUpdate(): Promise<ServerUpdatePayload> {
   const cmp = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
   const data = await fetchJson(HUB_TAGS_URL) as { results?: Array<{ name: string; last_updated: string }> };
   const tags = data.results ?? [];
-  // Server release.sh writes timestamps like "2026.0505.0821" as the
-  // version tag, plus the rolling "latest" alias. Skip "latest" so we
-  // compare against the actual version tags only.
-  const versionTags = tags.filter(t => t.name && t.name !== 'latest');
+  // release.sh writes timestamp version tags like "2026.0505.0821" plus rolling
+  // aliases ("latest", "beta"). Compare ONLY against real version tags — a
+  // moving alias (e.g. beta on a beta device) would otherwise sort above the
+  // numbers and read as a newer version. ponytail: regex is the whole guard.
+  const versionTags = tags.filter(t => t.name && /^\d{4}\.\d{3,4}\.\d{3,4}$/.test(t.name));
   let latest: string | null = null;
   let lastUpdatedAt: string | null = null;
   for (const t of versionTags) {
