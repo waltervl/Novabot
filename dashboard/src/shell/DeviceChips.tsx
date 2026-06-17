@@ -8,6 +8,7 @@ import { Drawer } from './Drawer';
 import type { DeviceState } from '../types';
 import { fetchLoraStatus, type LoraStatus } from '../api/client';
 import { workStatusLabel } from '../utils/workStatus';
+import { deriveMowerActivity } from '../utils/mowerActivity';
 
 interface Props {
   mower: DeviceState | null;
@@ -392,6 +393,12 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
 
   const hasSensorData = Object.keys(s).length > 0;
 
+  // Pulse the online dot while the mower is actively cutting. Uses the shared
+  // activity derivation (same one driving the control buttons / MowerStatus) so
+  // "is mowing" is consistent everywhere — covers coverage mowing AND edge-cut.
+  const activity = deriveMowerActivity(s, { online: mower.online });
+  const isMowing = activity === 'mowing' || activity === 'edge_cutting';
+
   // ── Online chip ─────────────────────────────────────────────────────────────
   const rtkLabel = hasRtkFixQuality
     ? rtkFixQuality!
@@ -437,12 +444,12 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
             className="group inline-flex items-stretch h-8 rounded-xl bg-zinc-900/60 border border-zinc-700/70 hover:border-zinc-600 overflow-hidden transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             aria-label={`${mower.nickname ?? mower.sn} sensor details`}
           >
-            {/* Online dot */}
+            {/* Online dot — pulses while actively mowing/edge-cutting */}
             <span className="inline-flex items-center px-2.5 border-r border-zinc-700/40">
               <span
-                className="w-2 h-2 rounded-full bg-emerald-400"
+                className={`w-2 h-2 rounded-full bg-emerald-400${isMowing ? ' animate-pulse' : ''}`}
                 style={{ boxShadow: '0 0 0 3px rgba(52,211,153,.18)' }}
-                title={t('drawer.summary.online')}
+                title={isMowing ? (workStatusLabel(workStatus) || 'Mowing') : t('drawer.summary.online')}
               />
             </span>
 
