@@ -66,6 +66,7 @@ export default {
   reProvisionMower: 'Provision',
   noMapCreateFirst: 'No Map - Create one first',
   clearErrorFirst: 'Clear error first',
+  error155Pin: 'Enter the PIN code directly on the mower to unlock it.',
   startMowing: 'Start Mowing',
   start: 'Start',
   alreadyMowing: 'Already mowing',

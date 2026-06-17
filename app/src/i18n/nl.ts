@@ -66,6 +66,7 @@ export default {
   reProvisionMower: 'Provision',
   noMapCreateFirst: 'Geen kaart - Maak er eerst een',
   clearErrorFirst: 'Los eerst de fout op',
+  error155Pin: 'Voer de pincode rechtstreeks op de maaier in om hem te ontgrendelen.',
   startMowing: 'Start maaien',
   start: 'Start',
   alreadyMowing: 'Is al aan het maaien',

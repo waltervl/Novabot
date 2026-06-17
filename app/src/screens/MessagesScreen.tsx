@@ -41,6 +41,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   '101': 'MQTT connection lost',
   '150': 'Unknown error',
   '151': 'Localization error',
+  '155': 'Enter the PIN code on the mower',
   '200': 'PIN lock active',
 };
 

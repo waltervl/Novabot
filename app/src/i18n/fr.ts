@@ -27,7 +27,7 @@ export default {
   pairWithCharger: 'Coupler avec la station', connectMower: 'Connecter la tondeuse',
   reProvisionMower: 'Provision',
   noMapCreateFirst: 'Pas de carte - Créez-en une d\'abord',
-  clearErrorFirst: 'Corrigez l\'erreur d\'abord', startMowing: 'Démarrer la tonte', start: 'Démarrer',
+  clearErrorFirst: 'Corrigez l\'erreur d\'abord', error155Pin: 'Saisissez le code PIN directement sur la tondeuse pour la déverrouiller.', startMowing: 'Démarrer la tonte', start: 'Démarrer',
   alreadyMowing: 'Tonte en cours',
   dockReturnInProgress: 'Retour à la station',
   dockReturnFailed: 'Échec du retour à la station',

@@ -2131,9 +2131,13 @@ export default function HomeScreen() {
               <Text style={styles.errorTitle}>
                 Error {String(mower.errorStatus ?? mower.errorCode ?? '').match(/\d+/)?.[0] ?? ''}
               </Text>
-              {mower.errorMsg && (
+              {String(mower.errorStatus ?? mower.errorCode ?? '').match(/\d+/)?.[0] === '155' ? (
+                <Text style={styles.errorMessage}>
+                  {t('error155Pin', undefined) || 'Enter the PIN code directly on the mower to unlock it.'}
+                </Text>
+              ) : mower.errorMsg ? (
                 <Text style={styles.errorMessage}>{mower.errorMsg}</Text>
-              )}
+              ) : null}
             </View>
             <TouchableOpacity
               style={{ backgroundColor: 'rgba(239,68,68,0.15)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}

@@ -27,7 +27,7 @@ export default {
   pairWithCharger: 'Mit Ladestation koppeln', connectMower: 'Mäher verbinden',
   reProvisionMower: 'Provision',
   noMapCreateFirst: 'Keine Karte - Erstellen Sie zuerst eine',
-  clearErrorFirst: 'Fehler zuerst beheben', startMowing: 'Mähen starten', start: 'Start',
+  clearErrorFirst: 'Fehler zuerst beheben', error155Pin: 'Gib den PIN-Code direkt am Mäher ein, um ihn zu entsperren.', startMowing: 'Mähen starten', start: 'Start',
   alreadyMowing: 'Mäht bereits',
   dockReturnInProgress: 'Rückkehr zur Station',
   dockReturnFailed: 'Andocken fehlgeschlagen',
