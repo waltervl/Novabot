@@ -353,10 +353,20 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
       token: opts.token,
       wsFactory: () => ws as unknown as AgentSocket,
       onRequest: ({ requestId }) => {
-        // Per-session consent: record the request and prompt the user to
-        // Approve/Deny (admin-page popup polls /status → pendingRequest).
-        // Auto-denies after SESSION_APPROVAL_TIMEOUT_MS if nobody answers.
-        armPendingRequest(requestId);
+        // Toggle-ON IS the consent. The agent only dials the relay when the
+        // user enabled support, so an incoming session request is already
+        // authorized — auto-approve immediately. No per-session popup, no
+        // auto-deny timeout. The user stays in control: flipping the toggle
+        // OFF (or /kill) tears the session down, and every keystroke remains
+        // audit-logged on the relay.
+        try {
+          pendingRequest = { requestId, since: Date.now() };
+          approvePending(requestId);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn(`[remote-support] auto-approve failed: ${(e as Error).message}`);
+          pendingRequest = null;
+        }
       },
       onRawBytes: (data) => {
         // Operator keystrokes — pipe them into the pty if one is active.
@@ -366,6 +376,28 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
       },
       onExec: (req) => runExecCommand(req.cmd, req.timeoutMs),
     });
+    // Heartbeat — the part that makes reconnect actually reliable. A dropped
+    // relay or network NAT timeout frequently HALF-OPENS the socket: the link
+    // is dead but no 'close' frame ever arrives, so 'close' never fires,
+    // `bootstrapHandle` stays set, and the 5 s poll keeps thinking we're
+    // connected. The agent then silently goes dark until the user toggles
+    // OFF/ON — exactly the "enabled but no connection" complaint. We ping the
+    // relay periodically; if no pong comes back within the grace window we
+    // force the socket closed so 'close' fires and the poll re-dials.
+    let lastPong = Date.now();
+    const HEARTBEAT_MS = 25_000;
+    const HEARTBEAT_GRACE_MS = 15_000;
+    const heartbeat = setInterval(() => {
+      if (Date.now() - lastPong > HEARTBEAT_MS + HEARTBEAT_GRACE_MS) {
+        try { (ws as unknown as { terminate?: () => void }).terminate?.(); } catch { /* ignore */ }
+        try { ws.close(); } catch { /* ignore */ }
+        return;
+      }
+      try { (ws as unknown as { ping?: () => void }).ping?.(); } catch { /* ignore */ }
+    }, HEARTBEAT_MS);
+    if (typeof (heartbeat as { unref?: () => void }).unref === 'function') (heartbeat as { unref: () => void }).unref();
+    (ws as unknown as { on(ev: string, cb: () => void): void }).on('pong', () => { lastPong = Date.now(); });
+
     // CRITICAL: ws emits 'error' on TLS / upgrade / DNS failures. Without
     // a handler Node treats it as an Unhandled 'error' event and crashes
     // the process. The bootstrap polling loop will retry on the next tick,
@@ -375,6 +407,7 @@ export function bootstrapAgent(opts: BootstrapOpts): void {
       console.warn(`[remote-support] agent ws error: ${(err as Error).message}`);
     });
     ws.on('close', () => {
+      clearInterval(heartbeat);
       killActiveSession();
       clearPendingTimer();
       pendingRequest = null;

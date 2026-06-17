@@ -38,7 +38,6 @@ interface Session {
   startedAt: number | null;
 }
 
-const HARD_TIMEOUT_MS = 30 * 60 * 1000;
 const BUFFER_MAX = 65536;
 
 export class Relay {
@@ -163,7 +162,10 @@ export class Relay {
     s.bufferBytes = 0;
     s.totalBytes = 0;
     this.wirePipe(sn, s);
-    s.closeTimer = setTimeout(() => this.closeSession(sn, 'hard-timeout'), HARD_TIMEOUT_MS);
+    // No hard session timeout: a support session stays open as long as the
+    // user keeps the toggle ON. The agent-side WS heartbeat + auto-reconnect
+    // handles dead links; an idle-but-live terminal must not be force-closed
+    // out from under the operator.
   }
 
   denySession(sn: string): void {

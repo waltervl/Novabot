@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Relay } from '../../../services/remoteSupport/relay.js';
 import { EventEmitter } from 'node:events';
 
@@ -56,6 +56,24 @@ describe('relay state machine', () => {
     relay.approveSession(SN);
     relay.closeSession(SN, 'timeout');
     expect(relay.getState(SN)).toBe('CLOSED');
+  });
+
+  it('keeps a session ACTIVE indefinitely — no hard-timeout auto-close', () => {
+    vi.useFakeTimers();
+    try {
+      relay.attachAgent(SN, agent as any);
+      relay.requestSession(SN);
+      relay.attachOperator(SN, operator as any);
+      relay.approveSession(SN);
+      expect(relay.getState(SN)).toBe('ACTIVE');
+      // An hour in — well past the old 30-minute hard timeout. A live session
+      // must stay open as long as the user keeps the toggle ON; nothing may
+      // force-close it out from under the operator.
+      vi.advanceTimersByTime(60 * 60 * 1000);
+      expect(relay.getState(SN)).toBe('ACTIVE');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
