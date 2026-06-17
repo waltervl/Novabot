@@ -12,8 +12,8 @@
  * Mirrors the OpenNova app's CameraScreen topic list. Custom-firmware only
  * (the proxy 404s on stock firmware); the parent gates rendering on that.
  */
-import { useState, useRef, useEffect } from 'react';
-import { Camera, ChevronDown, ChevronUp, X, RefreshCw, CameraOff } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { Camera, ChevronDown, ChevronUp, X, RefreshCw, CameraOff, Loader } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 interface TopicOption {
@@ -30,6 +30,11 @@ const DEFAULT_TOPICS: TopicOption[] = [
   { key: 'aruco', label: 'aruco' },
 ];
 
+/** Snapshot poll cadence (ms). ~2 fps is plenty for a map overview tile. */
+const CAMERA_POLL_MS = 500;
+/** Consecutive snapshot failures before we surface the "unavailable" screen. */
+const FAIL_THRESHOLD = 4;
+
 interface Props {
   sn: string;
   topics?: TopicOption[];
@@ -41,23 +46,80 @@ export function CameraTile({ sn, topics = DEFAULT_TOPICS, onClose }: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const [topic, setTopic] = useState(topics[0]?.key ?? 'front');
-  const [streamKey, setStreamKey] = useState(0);
   const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const activeRef = useRef(true);
+  const blobUrlRef = useRef<string | null>(null);
+  const failRef = useRef(0);
 
-  const streamUrl =
-    `/api/dashboard/camera/${encodeURIComponent(sn)}/stream` +
-    `?topic=${encodeURIComponent(topic)}&t=${streamKey}`;
+  // Poll short-lived JPEG snapshots instead of holding one permanent MJPEG
+  // stream open in an <img>. A long-lived stream connection fills the
+  // browser's per-host connection cap, and every retry / re-mount leaves a
+  // half-open connection behind, so the tile wedges on "unavailable" after a
+  // few opens (the camera bug reported alongside #93). Short snapshot requests
+  // free the socket immediately and self-heal after a transient hiccup, exactly
+  // like the OpenNova app and the mobile CameraTab.
+  const snapshotUrl =
+    `/api/dashboard/camera/${encodeURIComponent(sn)}/snapshot` +
+    `?topic=${encodeURIComponent(topic)}`;
+
+  const fetchSnapshot = useCallback(async () => {
+    if (!activeRef.current) return;
+    try {
+      const res = await fetch(`${snapshotUrl}&_t=${Date.now()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      if (!activeRef.current) return;
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      const url = URL.createObjectURL(blob);
+      blobUrlRef.current = url;
+      setImageSrc(url);
+      setLoading(false);
+      setError(false);
+      failRef.current = 0;
+    } catch {
+      if (!activeRef.current) return;
+      // Tolerate the odd dropped frame; only show the error screen after a few
+      // consecutive failures so a single hiccup does not wedge the tile.
+      failRef.current += 1;
+      setLoading(false);
+      if (failRef.current >= FAIL_THRESHOLD) setError(true);
+    }
+  }, [snapshotUrl]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    activeRef.current = true;
+    failRef.current = 0;
+    setLoading(true);
+    setError(false);
+    fetchSnapshot();
+    const interval = setInterval(fetchSnapshot, CAMERA_POLL_MS);
+    return () => {
+      activeRef.current = false;
+      clearInterval(interval);
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
+  }, [expanded, fetchSnapshot]);
 
   const retry = () => {
+    failRef.current = 0;
     setError(false);
-    setStreamKey((k) => k + 1);
+    setLoading(true);
+    fetchSnapshot();
   };
 
   const selectTopic = (key: string) => {
     if (key === topic) return;
+    failRef.current = 0;
     setTopic(key);
     setError(false);
-    setStreamKey((k) => k + 1);
+    setLoading(true);
+    setImageSrc(null);
   };
 
   // Resizable kaart-tile: herstel opgeslagen grootte + bewaar bij elke resize.
@@ -167,7 +229,7 @@ export function CameraTile({ sn, topics = DEFAULT_TOPICS, onClose }: Props) {
         </div>
       </div>
 
-      {/* Mount the <img> (open the MJPEG connection) only while expanded. */}
+      {/* Poll short-lived snapshots while expanded (see note above). */}
       {expanded && (
         <div className="relative bg-black flex-1 min-h-0">
           {error ? (
@@ -185,13 +247,23 @@ export function CameraTile({ sn, topics = DEFAULT_TOPICS, onClose }: Props) {
               </button>
             </div>
           ) : (
-            <img
-              key={streamKey}
-              src={streamUrl}
-              alt="Camera"
-              className="w-full h-full object-contain"
-              onError={() => setError(true)}
-            />
+            <>
+              {loading && !imageSrc && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="flex items-center gap-2 text-xs text-gray-400">
+                    <Loader className="w-4 h-4 animate-spin" />
+                    {t('camera.connecting', 'Connecting...')}
+                  </span>
+                </div>
+              )}
+              {imageSrc && (
+                <img
+                  src={imageSrc}
+                  alt="Camera"
+                  className="w-full h-full object-contain"
+                />
+              )}
+            </>
           )}
         </div>
       )}
