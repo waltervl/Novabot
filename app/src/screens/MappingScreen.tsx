@@ -453,11 +453,15 @@ export default function MappingScreen() {
     setTimeout(() => setBusy(false), 1500);
   }, []);
 
-  const waitForRespond = useCallback((command: string, timeoutMs: number): Promise<boolean> => {
+  // Detailed variant: resolves whether the matching _respond arrived AND the
+  // firmware error code from its payload. save_map_respond carries `value`
+  // (0 = ok, non-zero = rejected — e.g. the novabot_mapping overlap check that
+  // surfaces as error 120). Most callers only need arrival → use waitForRespond.
+  const waitForRespondDetailed = useCallback((command: string, timeoutMs: number): Promise<{ received: boolean; errorCode: number | null }> => {
     return new Promise((resolve) => {
       const socket = getSocket();
       if (!socket || !sn) {
-        resolve(false);
+        resolve({ received: false, errorCode: null });
         return;
       }
 
@@ -468,19 +472,27 @@ export default function MappingScreen() {
 
       const timer = setTimeout(() => {
         cleanup();
-        resolve(false);
+        resolve({ received: false, errorCode: null });
       }, timeoutMs);
 
-      const handler = (e: { sn: string; command: string }) => {
+      const handler = (e: { sn: string; command: string; data?: { value?: unknown } }) => {
         if (e.sn === sn && e.command === command) {
           cleanup();
-          resolve(true);
+          const v = e.data?.value;
+          resolve({ received: true, errorCode: typeof v === 'number' ? v : null });
         }
       };
 
       socket.on('command:respond', handler);
     });
   }, [sn]);
+
+  // Boolean wrapper for callers that only care whether the respond arrived.
+  const waitForRespond = useCallback(
+    (command: string, timeoutMs: number): Promise<boolean> =>
+      waitForRespondDetailed(command, timeoutMs).then(r => r.received),
+    [waitForRespondDetailed],
+  );
 
   const getNextWorkMapName = useCallback((maps: Array<{ mapName?: string | null; mapType?: string | null }>): string => {
     const usedNames = new Set<string>();
@@ -933,14 +945,16 @@ export default function MappingScreen() {
             // (user feedback 2026-04-26). Match the documented minimum.
             await new Promise(r => setTimeout(r, 500));
 
+            let saveFailed = false;
             if (isUnicom) {
               // Unicom gets a single save_map {type:1}
               sendCommand(
                 { save_map: { mapName: activeMapName, type: 1, cmd_num: cmdNumRef.current++ } },
                 'save_map (unicom total)',
               );
-              const saveOk = await waitForRespond('save_map_respond', 12000);
-              console.log(`[Mapping] Step 2: unicom save_map_respond ${saveOk ? 'OK' : 'TIMEOUT'}`);
+              const saveRes = await waitForRespondDetailed('save_map_respond', 12000);
+              console.log(`[Mapping] Step 2: unicom save_map_respond ${saveRes.received ? 'OK' : 'TIMEOUT'} (err=${saveRes.errorCode})`);
+              saveFailed = !!saveRes.errorCode;
               // Channel scan complete — next scan is unrelated.
               pendingChannelFromRef.current = null;
             } else {
@@ -952,8 +966,8 @@ export default function MappingScreen() {
                 { save_map: { mapName: saveMapName, type: 0, cmd_num: cmdNumRef.current++ } },
                 'save_map (sub)',
               );
-              const subOk = await waitForRespond('save_map_respond', 12000);
-              console.log(`[Mapping] Step 2a: sub save_map_respond ${subOk ? 'OK' : 'TIMEOUT'}`);
+              const subRes = await waitForRespondDetailed('save_map_respond', 12000);
+              console.log(`[Mapping] Step 2a: sub save_map_respond ${subRes.received ? 'OK' : 'TIMEOUT'} (err=${subRes.errorCode})`);
               // 500ms is the documented minimum between type:0 (sub) and
               // type:1 (total) save_map calls. The earlier 3 s padding was
               // the dominant contributor to the 50-second post-Stop wait.
@@ -962,8 +976,27 @@ export default function MappingScreen() {
                 { save_map: { mapName: saveMapName, type: 1, cmd_num: cmdNumRef.current++ } },
                 'save_map (total)',
               );
-              const totalOk = await waitForRespond('save_map_respond', 12000);
-              console.log(`[Mapping] Step 2b: total save_map_respond ${totalOk ? 'OK' : 'TIMEOUT'}`);
+              const totalRes = await waitForRespondDetailed('save_map_respond', 12000);
+              console.log(`[Mapping] Step 2b: total save_map_respond ${totalRes.received ? 'OK' : 'TIMEOUT'} (err=${totalRes.errorCode})`);
+              saveFailed = !!subRes.errorCode || !!totalRes.errorCode;
+            }
+
+            // Firmware rejected the save (non-zero error code in
+            // save_map_respond.value). The usual cause is the novabot_mapping
+            // overlap check — a new work map may not overlap an existing map or
+            // a unicom/charge area; it logs "current map is overlaping other
+            // maps" and reports error 120. Surface it instead of silently
+            // showing "saved", and stay on the mapping screen so the user can
+            // discard and remap a non-overlapping area.
+            if (saveFailed) {
+              appAlertCompat.alert(
+                t('mapSaveFailedTitle', undefined) || 'Map not saved',
+                t('mapSaveOverlapMsg', undefined) ||
+                  'The mower rejected this map (error 120). It usually means the new map overlaps an existing map or its connection path. Keep zones separate with a gap between them, then discard this attempt and map again.',
+                [{ text: t('ok', undefined) || 'OK' }],
+              );
+              setMappingState('mapping');
+              return;
             }
 
             sendCommand({ get_map_outline: { map_name: 'all', cmd_num: cmdNumRef.current++ } }, 'get_map_outline');
