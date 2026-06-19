@@ -633,8 +633,9 @@ dashboardRouter.get('/maps/:sn', (req: Request, res: Response) => {
       mapType: r.map_type ?? 'work',
       // canonicalName carries the firmware slot identifier (map0, map1, ...).
       // Issue #14 / #18: app needs this to map a user-selected work map to the
-      // correct firmware `area` enum (map0=1, map1=10, map2=200) — sorting by
-      // updated_at and using array index causes "select front, mow trampo".
+      // correct firmware `area` bitmask weight (slot N → 10^N: map0=1, map1=10,
+      // map2=100; summed for multi-map) — sorting by updated_at and using array
+      // index causes "select front, mow trampo".
       canonicalName: r.canonical_name ?? null,
       // fileName surfaces to the dashboard for charge-vs-inter-map unicom
       // detection in the channel-count badge (issue #28). Falls back to
@@ -2967,12 +2968,23 @@ dashboardRouter.get('/work-records/:sn', (req: Request, res: Response) => {
       aliasByCanonical.set(m.canonical_name, m.map_name);
     }
   }
-  // Firmware encodes the per-task map selection as a 3-slot enum (per
-  // docs/reference/MOWING-FLOW.md): 1 = map0, 10 = map1, 200 = map2.
-  // saveCutGrassRecord stores that enum verbatim in `map_names`. The
-  // stock Novabot app translates it to the user's alias for display
-  // (e.g. "1" → "Achtertuin"); mirror that here so OpenNova matches.
-  const SLOT_BY_ENUM: Record<string, number> = { '1': 0, '10': 1, '200': 2 };
+  // Firmware encodes the per-task map selection as a DECIMAL POSITIONAL
+  // BITMASK (per docs/reference/MOWING-FLOW.md): each map slot N is the digit
+  // at 10^N, so map0=1, map1=10, map2=100, and combinations sum (11=map0+map1,
+  // 111=all three). saveCutGrassRecord stores that value verbatim in
+  // `map_names`. Decode every non-zero digit to its slot and show the user's
+  // alias (e.g. "111" → "Achtertuin, Voortuin, Zijkant"), mirroring the app.
+  // Legacy single-map records may carry 200 for map2 (digit 2 at position 2 →
+  // slot 2), which this decoder still handles correctly.
+  function slotsFromAreaToken(tok: string): number[] | null {
+    if (!/^\d+$/.test(tok)) return null;
+    const slots: number[] = [];
+    for (let i = 0; i < tok.length; i++) {
+      const digit = tok.charCodeAt(tok.length - 1 - i) - 48; // position i = 10^i
+      if (digit !== 0) slots.push(i);
+    }
+    return slots;
+  }
   function resolveMapNames(raw: string | null | undefined): string | null {
     if (raw == null || raw === '') return null;
     const tokens = (() => {
@@ -2982,20 +2994,19 @@ dashboardRouter.get('/work-records/:sn', (req: Request, res: Response) => {
       } catch { /* not JSON, fall through */ }
       return String(raw).split(/[\s,]+/).filter(Boolean);
     })();
-    const friendly = tokens.map(tok => {
+    const friendly = tokens.flatMap(tok => {
       // Token shapes we accept:
-      //   "1"/"10"/"200"  → firmware enum, look up via SLOT_BY_ENUM
-      //   "map0"/"map1"   → already canonical
-      //   "Achtertuin"    → already an alias (older rows may store this)
-      let canonical: string | null = null;
-      if (Object.prototype.hasOwnProperty.call(SLOT_BY_ENUM, tok)) {
-        canonical = `map${SLOT_BY_ENUM[tok]}`;
-      } else if (/^map\d+$/i.test(tok)) {
-        canonical = tok.toLowerCase();
+      //   "1"/"10"/"100"/"111"/"200" → firmware bitmask → one name per set bit
+      //   "map0"/"map1"              → already canonical
+      //   "Achtertuin"              → already an alias (older rows may store this)
+      const slots = slotsFromAreaToken(tok);
+      if (slots && slots.length > 0) {
+        return slots.map(s => aliasByCanonical.get(`map${s}`) ?? `map${s}`);
       }
-      return (canonical && aliasByCanonical.get(canonical))
-        ?? aliasByCanonical.get(tok)
-        ?? tok;
+      if (/^map\d+$/i.test(tok)) {
+        return [aliasByCanonical.get(tok.toLowerCase()) ?? tok];
+      }
+      return [aliasByCanonical.get(tok) ?? tok];
     });
     return friendly.join(', ');
   }

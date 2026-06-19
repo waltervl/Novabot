@@ -149,6 +149,42 @@ async function checkWeatherAndTrigger(
   triggerSchedule(row);
 }
 
+/**
+ * Resolve a schedule's stored map selection to the firmware `area` value.
+ *
+ * `area` is a decimal positional bitmask (slot N → 10^N: map0=1, map1=10,
+ * map2=100; summed for multi-map). The firmware mows every selected map in one
+ * task, no dock between zones — see research/documents/multi-map-area-bitmask-decode.md.
+ *
+ * - `selectedMapId` set  → that one map's slot (10^slot).
+ * - `selectedMapId` null → "All work areas" (the ScheduleSheet default) → the
+ *   summed bitmask of EVERY work map, so a scheduled run mows the whole garden.
+ *
+ * Falls back to map0 (`1`) when the selection can't be resolved to a canonical
+ * slot, matching the previous always-map0 behaviour rather than mowing nothing.
+ * Pure (no DB) so it's unit-testable; the caller supplies the work-map list.
+ */
+export function computeScheduleArea(
+  workMaps: Array<{ map_id: string; canonical_name: string | null }>,
+  selectedMapId: string | null,
+): number {
+  const slotOf = (m: { canonical_name: string | null }): number | null => {
+    const match = m.canonical_name?.match(/^map(\d+)/);
+    return match ? parseInt(match[1], 10) : null;
+  };
+  if (selectedMapId) {
+    const m = workMaps.find(w => w.map_id === selectedMapId);
+    const slot = m ? slotOf(m) : null;
+    return slot != null ? Math.pow(10, slot) : 1;
+  }
+  // "All work areas": bitmask of every work map (map0+map1+map2 → 111).
+  const area = workMaps.reduce((sum, m) => {
+    const slot = slotOf(m);
+    return slot != null ? sum + Math.pow(10, slot) : sum;
+  }, 0);
+  return area > 0 ? area : 1;
+}
+
 function triggerSchedule(row: ScheduleRow) {
   // Bereken effectieve richting (met alternerende rotatie)
   let effectiveDirection = row.path_direction;
@@ -157,14 +193,19 @@ function triggerSchedule(row: ScheduleRow) {
     effectiveDirection = (row.path_direction + count * (row.alternate_step ?? 90)) % 360;
   }
 
+  // Honour the schedule's map selection (was hardcoded area:1 → always mowed
+  // map0 regardless of the chosen map). null map_id = "All work areas".
+  const workMaps = mapRepo.findByMowerSnAndType(row.mower_sn, 'work');
+  const area = computeScheduleArea(workMaps, row.map_id);
+
   // Start maaien via centrale mowingService
   const result = startMowing({
     sn: row.mower_sn,
     cuttingHeight: row.cutting_height ?? 5,
     pathDirection: effectiveDirection,
-    area: 1,
+    area,
   });
-  console.log(`[ScheduleRunner] ${row.schedule_id}: ${result.ok ? 'started' : 'FAILED: ' + result.error} (height=${row.cutting_height}, dir=${effectiveDirection})`);
+  console.log(`[ScheduleRunner] ${row.schedule_id}: ${result.ok ? 'started' : 'FAILED: ' + result.error} (height=${row.cutting_height}, dir=${effectiveDirection}, area=${area})`);
 
   // Update last_triggered_at
   scheduleRepo.updateLastTriggered(row.schedule_id);
