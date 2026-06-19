@@ -251,10 +251,6 @@ export default {
   ignoreRainSessionHint: 'Aan: regen-pauze blijft uit tot deze maai-sessie eindigt. Uit: maaier pauzeert zodra regen valt.',
   mowingHistory: 'Maaihistorie',
   messages: 'Berichten',
-  multiMapMowing: 'Meerdere zones maaien',
-  mowingNow: 'Maait nu',
-  zonesLeft: 'zones over',
-  next: 'volgende',
   mappingSessionDetected: 'Kaart maken bezig',
   mappingSessionResumeHint: 'De maaier staat nog in kaart-maak-modus. Kies hieronder een type om door te gaan, of stop het via de maaier.',
 

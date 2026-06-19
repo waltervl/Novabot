@@ -253,10 +253,6 @@ export default {
   ignoreRainSessionHint: 'On: rain-pause stays off until this mowing session ends. Off: mower pauses as soon as rain falls.',
   mowingHistory: 'Mowing History',
   messages: 'Messages',
-  multiMapMowing: 'Multi-zone mowing',
-  mowingNow: 'Mowing',
-  zonesLeft: 'zones left',
-  next: 'next',
   mappingSessionDetected: 'Mapping session in progress',
   mappingSessionResumeHint: 'The mower is still in mapping mode. Pick a type below to continue, or cancel from the mower.',
 

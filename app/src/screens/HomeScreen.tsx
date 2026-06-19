@@ -26,7 +26,6 @@ import { MowerScene } from '../components/mower/MowerScene';
 import { useMowerState } from '../hooks/useMowerState';
 import { useActiveMower } from '../hooks/useActiveMower';
 import { useActiveMowerContext } from '../context/ActiveMowerContext';
-import { useMowQueue } from '../context/MowQueueContext';
 import { isOpenNovaFirmware } from '../utils/firmwareCapability';
 import { fixQualityLabel } from '../utils/fixQuality';
 import { parseFinishedAreas, prefixedAreaId, parseCoveringPoints } from '../utils/coverPathProgress';
@@ -37,7 +36,7 @@ import { DemoBanner } from '../components/DemoBanner';
 import { HealthBanner } from '../components/HealthBanner';
 import { FirmwareUpdateBanner } from '../components/FirmwareUpdateBanner';
 import { MowingProgressMap } from '../components/MowingProgressMap';
-import { resolveMowingMapSelection } from '../utils/mowingMapSelection';
+import { resolveMowingMapSelection, gateCoverTelemetry, type CoverTelemetryBaseline } from '../utils/mowingMapSelection';
 import HistoryScreen from './HistoryScreen';
 import MessagesScreen from './MessagesScreen';
 import { useDemo } from '../context/DemoContext';
@@ -542,7 +541,6 @@ export default function HomeScreen() {
   const { devices, connected } = useMowerState();
   const { activeMower, activeMowerSn, setActiveMowerSn } = useActiveMower();
   const { activeMowerSn: pickedMowerSn, hydrated: activePickHydrated } = useActiveMowerContext();
-  const { queue: mowQueue, clear: clearMowQueue } = useMowQueue();
   const { t } = useI18n();
   const { colorScheme, colors } = useTheme();
   const styles = useStyles(makeStyles);
@@ -833,12 +831,11 @@ export default function HomeScreen() {
   // Track mowing settings for safety check + display
   const [mowSettings, setMowSettings] = useState<{ cuttingHeight: number; pathDirection: number } | null>(null);
   const demo = useDemo();
-  const intendedActiveMapId = useMemo(() => {
-    if (mowQueue && mower && mowQueue.sn === mower.sn && mowQueue.remaining.length > 0) {
-      return mowQueue.remaining[0].mapId;
-    }
-    return startedMapIds[0] ?? null;
-  }, [mowQueue, mower?.sn, startedMapIds]);
+  // The user's selected map(s) for this run. The firmware mows them all from one
+  // start_navigation (bitmask area), advancing between zones itself — so this is
+  // the whole selected SET, and telemetry landing on any of them is correct.
+  const intendedActiveMapIds = startedMapIds;
+  const intendedSessionKey = startedMapIds.join(',');
 
   useEffect(() => {
     const sessionActive =
@@ -1051,6 +1048,15 @@ export default function HomeScreen() {
   // sessions update the highlight as the mower moves between zones.
   const liveCoverMapId = devices.get(mower?.sn ?? '')?.sensors?.cover_map_id;
   const liveCurrentMapIds = devices.get(mower?.sn ?? '')?.sensors?.current_map_ids;
+  // cover_map_id is sticky firmware state that survives across sessions
+  // (sensorData.ts only ever writes it from telemetry, never clears it on a new
+  // start). Right after the user starts a mow it still holds the PREVIOUS run's
+  // map, so comparing it to the just-selected map false-flags a mismatch AND
+  // highlights the wrong polygon until the mower emits its first coverage tick —
+  // which can take minutes if it has to drive to a far zone. Treat telemetry as
+  // stale until cover_map_id changes from the value captured at session start.
+  // ponytail: snapshot-and-wait-for-change, no timer (drive time is unbounded).
+  const coverTelemetryBaselineRef = useRef<CoverTelemetryBaseline | null>(null);
   useEffect(() => {
     if (demo.enabled) {
       setActiveMapPolygon([
@@ -1061,6 +1067,17 @@ export default function HomeScreen() {
       return;
     }
     if (!mower?.sn) return;
+
+    // Telemetry freshness gate (see coverTelemetryBaselineRef above). While the
+    // live cover_map_id still matches the value captured at session start it's
+    // stale leftover state, so feed `undefined` and let the selection fall back
+    // to the user's chosen map (no false mismatch, correct polygon highlighted).
+    const sessionKey = intendedSessionKey;
+    const liveCover = liveCoverMapId == null ? null : String(liveCoverMapId);
+    const gated = gateCoverTelemetry(coverTelemetryBaselineRef.current, sessionKey, liveCover);
+    coverTelemetryBaselineRef.current = gated.baseline;
+    const telemetryFresh = gated.fresh;
+
     (async () => {
       try {
         const url = await getServerUrl();
@@ -1070,12 +1087,15 @@ export default function HomeScreen() {
         const workMaps = (res.maps ?? []).filter((m: any) => m.mapType === 'work' && m.mapArea?.length >= 3);
 
         const selection = resolveMowingMapSelection(workMaps, {
-          intendedMapId: intendedActiveMapId,
-          coverMapId: liveCoverMapId,
-          currentMapIds: liveCurrentMapIds,
+          intendedMapIds: intendedActiveMapIds,
+          coverMapId: telemetryFresh ? liveCoverMapId : undefined,
+          currentMapIds: telemetryFresh ? liveCurrentMapIds : undefined,
         });
         const activeWork = selection.activeMap;
         const mapLabel = (m: any) => m?.mapName ?? m?.canonicalName ?? m?.mapId ?? 'unknown map';
+        // Mismatch = the mower reports a map the user did NOT select. Moving
+        // between selected zones (native firmware multi-map) is expected, so the
+        // set-membership check in resolveMowingMapSelection already handles it.
         setMapSelectionMismatch(selection.mismatch && selection.expectedMap && selection.telemetryMap
           ? { expected: mapLabel(selection.expectedMap), actual: mapLabel(selection.telemetryMap) }
           : null);
@@ -1111,7 +1131,7 @@ export default function HomeScreen() {
         setChannelPolylines(chans.map((m: any) => ({ id: m.mapId, points: m.mapArea })));
       } catch { /* ignore */ }
     })();
-  }, [mower?.sn, demo.enabled, liveCoverMapId, liveCurrentMapIds, intendedActiveMapId]);
+  }, [mower?.sn, demo.enabled, liveCoverMapId, liveCurrentMapIds, intendedActiveMapIds, intendedSessionKey]);
 
   // Safety check: verify mower cutting height matches what we set.
   // Firmware echoes cutterhigh verbatim as target_height. Both are the wire
@@ -1884,42 +1904,6 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {/* Multi-map queue banner — visible while sequential mowing
-              is active. Shows "current of total" so the user knows the
-              session is part of a larger sweep, plus the next zone
-              that will fire after the current one finishes. */}
-          {mowQueue && mowQueue.sn === mower.sn && mowQueue.remaining.length > 0 && (() => {
-            const total = mowQueue.remaining.length;
-            const next = mowQueue.remaining[0];
-            const upcoming = mowQueue.remaining.slice(1).map(r => r.mapName).join(', ');
-            return (
-              <View style={[styles.queueBanner, { borderColor: activityColor }]}>
-                <Ionicons name="layers-outline" size={16} color={activityColor} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.queueBannerTitle}>
-                    {t('multiMapMowing', undefined) || 'Multi-zone mowing'}
-                  </Text>
-                  <Text style={styles.queueBannerSub}>
-                    {(t('mowingNow', undefined) || 'Mowing')} {next.mapName}
-                    {total > 1 ? ` · ${total - 1} ${t('zonesLeft', undefined) || 'zones left'}` : ''}
-                    {upcoming ? ` (${(t('next', undefined) || 'next')}: ${upcoming})` : ''}
-                  </Text>
-                </View>
-                {/* Issue #34: explicit Cancel so a stuck banner can always be
-                    dismissed manually, even when the auto-clear heuristics
-                    (idle-on-dock 60s, max-age 6h) haven't kicked in yet. */}
-                <TouchableOpacity
-                  onPress={() => { clearMowQueue(); }}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  accessibilityLabel={t('cancel', undefined) || 'Cancel'}
-                >
-                  <Ionicons name="close" size={18} color={colors.textDim} />
-                </TouchableOpacity>
-              </View>
-            );
-          })()}
-
-
           {/* Mowing/mapping/returning: show progress map instead of battery ring.
               Returning gebruikt dezelfde kaart zodat je ziet waar de maaier geweest
               is (finished_area blijft in de cover_path state van de maaier zolang
@@ -2424,7 +2408,6 @@ export default function HomeScreen() {
                               text: t('endSession') || 'End session',
                               style: 'destructive',
                               onPress: () => {
-                                clearMowQueue();
                                 sendCommand(mower.sn, { stop_navigation: { cmd_num: ++cmdNumRef.current } }, 'stop');
                                 setOptimisticActivity('idle');
                               },
@@ -3384,27 +3367,6 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   progressFill: {
     height: '100%',
     borderRadius: 3,
-  },
-  queueBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    backgroundColor: 'rgba(15,23,42,0.04)',
-    marginBottom: 12,
-  },
-  queueBannerTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: c.text,
-    marginBottom: 2,
-  },
-  queueBannerSub: {
-    fontSize: 11,
-    color: c.textDim,
   },
   batteryContainer: {
     position: 'relative',

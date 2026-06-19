@@ -392,21 +392,6 @@ export class ApiClient {
     );
   }
 
-  /** Start a server-driven multi-zone mow. The server re-issues start_navigation
-   *  per zone on the Work:FINISHED → docked edge (services/multiZoneMow.ts), so
-   *  it survives a backgrounded app. mapIdxs = canonical slot indices (0,1,2…). */
-  async startMultiZone(
-    sn: string,
-    mapIdxs: number[],
-    cuttingHeight: number,
-  ): Promise<{ ok: boolean; zones: number }> {
-    return this.request<{ ok: boolean; zones: number }>(
-      'POST',
-      `/api/dashboard/mow/multi/${encodeURIComponent(sn)}`,
-      { body: { mapIdxs, cuttingHeight } },
-    );
-  }
-
   /** Post-restore re-anchor (server-orchestrated):
    * - 'auto' (default): the whole sequence — reanchor_pos with the docked Fixed
    *   GPS, drive ~1m back to re-lock, visual ArUco dock, then self-verify the

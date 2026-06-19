@@ -25,7 +25,6 @@ import { getServerUrl } from '../services/auth';
 import { useNavigation } from '@react-navigation/native';
 import { PatternPicker } from './PatternPicker';
 import { usePattern } from '../context/PatternContext';
-import { useMowQueue } from '../context/MowQueueContext';
 import { transformToGps } from '../utils/patternUtils';
 import { offsetLocalPolygon } from '../utils/polygonOffset';
 import { useI18n } from '../i18n';
@@ -82,12 +81,11 @@ export function StartMowSheet({
   const navigation = useNavigation();
   const pattern = usePattern();
   const { t } = useI18n();
-  const { enqueue } = useMowQueue();
   const [maps, setMaps] = useState<MapData[]>([]);
   const [allMaps, setAllMaps] = useState<MapData[]>([]);
-  // Multi-select. Empty = nothing chosen, button disabled. One = single
-  // map start (existing single-shot path). 2+ = enqueue sequential
-  // mowing via MowQueueContext.
+  // Multi-select. Empty = nothing chosen, button disabled. Any number of maps
+  // starts with ONE start_navigation carrying a bitmask `area` — the firmware
+  // mows them all in sequence (no server queue, no client loop).
   const [selectedMapIds, setSelectedMapIds] = useState<Set<string>>(new Set());
   // Cutting height in user cm (2-9). Wire value is `cm - 2` (e.g. 4cm → cutterhigh:2).
   // Verified 2026-04-19 via a live Novabot-app capture on LFIN1231000211
@@ -358,7 +356,7 @@ export function StartMowSheet({
       const wireHeight = Math.max(0, cuttingHeight - 2);
 
       // Maintain the order in which the maps appear in the FRESH work-map list
-      // so the area-encoding (1=map0, 10=map1, 200=map2) is stable.
+      // so the area-encoding (1=map0, 10=map1, 100=map2) is stable.
       const orderedMapIds = freshWork
         .filter(m => selectedMapIds.has(m.mapId))
         .map(m => m.mapId);
@@ -372,44 +370,27 @@ export function StartMowSheet({
         return;
       }
 
-      if (orderedMapIds.length > 1) {
-        // Multi-map: hand off to the queue. The queue sends the FIRST
-        // start_navigation immediately and watches Work:FINISHED to
-        // dispatch the next.
-        await api.clearTrail(sn).catch(() => {});
-        await enqueue({
-          sn,
-          mapIds: orderedMapIds,
-          cuttingHeight,
-          pathDirection,
-        });
-        console.log(`[StartMow] enqueued ${orderedMapIds.length} maps:`, orderedMapIds.join(','));
-        onStarted({
-          cuttingHeight: wireHeight,
-          pathDirection,
-          mapIds: orderedMapIds,
-          activeMapId: orderedMapIds[0] ?? null,
-        });
-        onClose();
-        return;
-      }
-
-      // Single-map path (legacy, identical to pre-multi-select behaviour).
-      // Issue #14 / #18: derive the firmware `area` enum from the canonical
-      // slot identifier (map0/map1/map2) so the user's selection lines up
-      // with the mower's internal index. Sorting by updated_at + using array
-      // index produced "select front, mow trampo" because the alphabetical
-      // app order didn't match the firmware's creation order.
+      // Firmware `area` is a DECIMAL POSITIONAL BITMASK: each selected map's
+      // canonical slot N contributes 10^N (map0=1, map1=10, map2=100). One
+      // start_navigation with the summed area makes the firmware (robot_decision)
+      // mow EVERY selected map in sequence, advancing between zones with NO dock
+      // — proven in research/documents/multi-map-area-bitmask-decode.md. This
+      // replaces the old server-side multi-zone queue: the firmware does it
+      // natively, so single- and multi-map start are the exact same command.
+      //
+      // Slot comes from the canonical name (map0/map1/map2) so the user's pick
+      // lines up with the mower's internal index — NOT the app's display order
+      // (issue #14/#18: alphabetical order caused "select front, mow trampo").
+      // ponytail: slots 0-9 only (10^slot must fit uint32); real setups have ≤3 maps.
+      const slotOf = (mapId: string): number => {
+        const m = freshWork.find(w => w.mapId === mapId);
+        const canon = (m?.canonicalName ?? '').match(/^map(\d+)/);
+        if (canon) return parseInt(canon[1], 10);
+        const idx = freshWork.findIndex(w => w.mapId === mapId);
+        return idx >= 0 ? idx : 0;
+      };
+      const areaParam = orderedMapIds.reduce((sum, mapId) => sum + Math.pow(10, slotOf(mapId)), 0);
       const selectedMap = freshWork.find(m => m.mapId === orderedMapIds[0]) ?? freshWork[0];
-      const canonicalIdx = (() => {
-        const m = (selectedMap?.canonicalName ?? '').match(/^map(\d+)/);
-        return m ? parseInt(m[1], 10) : null;
-      })();
-      const fallbackIdx = freshWork.findIndex(m => m.mapId === orderedMapIds[0]);
-      const mapIdx = canonicalIdx ?? (fallbackIdx >= 0 ? fallbackIdx : 0);
-      // Firmware `area` enum: map0=1, map1=10, map2=200. Confirmed in
-      // docs/reference/MOWING-FLOW.md. Three slots only (firmware limit).
-      const areaParam = mapIdx === 0 ? 1 : mapIdx === 1 ? 10 : 200;
 
       // 0. Clear old trail from previous session
       await api.clearTrail(sn).catch(() => {});
@@ -715,8 +696,12 @@ export function StartMowSheet({
               // perpendicular spacing between stripes
               const rad = (pathDirection * Math.PI) / 180;
               const cx = SIZE / 2, cy = SIZE / 2;
-              const stripes = Array.from({ length: 12 }, (_, i) => {
-                const offset = (i - 6) * 12;
+              // Fine mowing lines (perpendicular spacing) covering the whole box.
+              const STRIPE_SPACING = 8;
+              const stripeHalf = Math.ceil((SIZE * 1.45) / 2 / STRIPE_SPACING);
+              const stripes = Array.from({ length: stripeHalf * 2 + 1 }, (_, k) => {
+                const i = k - stripeHalf;
+                const offset = i * STRIPE_SPACING;
                 const px = cx + Math.cos(rad + Math.PI / 2) * offset;
                 const py = cy + Math.sin(rad + Math.PI / 2) * offset;
                 return {
@@ -724,6 +709,7 @@ export function StartMowSheet({
                   y1: py + Math.sin(rad) * SIZE,
                   x2: px - Math.cos(rad) * SIZE,
                   y2: py - Math.sin(rad) * SIZE,
+                  alt: i % 2 === 0,
                 };
               });
 
@@ -780,8 +766,8 @@ export function StartMowSheet({
                       </Defs>
                       {/* Outline + fill for every selected polygon. */}
                       {origPolys.map((pts, i) => (
-                        <Polygon key={`poly-${i}`} points={pts} fill="rgba(34,197,94,0.15)"
-                          stroke="#22c55e" strokeWidth={1.5} />
+                        <Polygon key={`poly-${i}`} points={pts} fill="rgba(34,197,94,0.22)"
+                          stroke="#22c55e" strokeWidth={1.5} strokeLinejoin="round" />
                       ))}
                       {/* Direction stripes — drawn once per polygon so each
                           selected zone shows its own clipped pattern. */}
@@ -789,7 +775,8 @@ export function StartMowSheet({
                         <G key={`stripes-${i}`} clipPath={`url(#previewClip-${i})`}>
                           {stripes.map((s, j) => (
                             <Line key={j} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}
-                              stroke="rgba(34,197,94,0.2)" strokeWidth={6} />
+                              stroke={s.alt ? 'rgba(52,211,153,0.22)' : 'rgba(16,185,129,0.12)'}
+                              strokeWidth={2.5} strokeLinecap="round" />
                           ))}
                         </G>
                       ))}
@@ -871,7 +858,7 @@ export function StartMowSheet({
             {/* Action buttons */}
             <View style={styles.actionRow}>
               <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={starting} activeOpacity={0.7}>
-                <Text style={styles.cancelText}>{t('cancel')}</Text>
+                <Text style={styles.cancelText} numberOfLines={1}>{t('cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -887,29 +874,29 @@ export function StartMowSheet({
                 ) : (
                   <>
                     <Ionicons name="eye" size={18} color={colors.emerald} />
-                    <Text style={styles.previewText}>{t('preview')}</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.startBtn,
-                  (starting || workMaps.length === 0 || selectedMapIds.size === 0) && { opacity: 0.5 },
-                ]}
-                onPress={handleStart}
-                disabled={starting || workMaps.length === 0 || selectedMapIds.size === 0}
-                activeOpacity={0.7}
-              >
-                {starting ? (
-                  <ActivityIndicator size="small" color={colors.white} />
-                ) : (
-                  <>
-                    <Ionicons name="play" size={18} color={colors.white} />
-                    <Text style={styles.startText}>{t('startMowing')}</Text>
+                    <Text style={styles.previewText} numberOfLines={1}>{t('preview')}</Text>
                   </>
                 )}
               </TouchableOpacity>
             </View>
+            <TouchableOpacity
+              style={[
+                styles.startBtn,
+                (starting || workMaps.length === 0 || selectedMapIds.size === 0) && { opacity: 0.5 },
+              ]}
+              onPress={handleStart}
+              disabled={starting || workMaps.length === 0 || selectedMapIds.size === 0}
+              activeOpacity={0.7}
+            >
+              {starting ? (
+                <ActivityIndicator size="small" color={colors.white} />
+              ) : (
+                <>
+                  <Ionicons name="play" size={18} color={colors.white} />
+                  <Text style={styles.startText} numberOfLines={1}>{t('startMowing')}</Text>
+                </>
+              )}
+            </TouchableOpacity>
           </ScrollView>
         </View>
       </View>
@@ -1052,14 +1039,14 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   },
   cancelText: { fontSize: 14, fontWeight: '600', color: c.textDim },
   startBtn: {
-    flex: 1,
-    height: 44,
+    height: 48,
     borderRadius: 12,
     backgroundColor: c.emerald,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     gap: 8,
+    marginTop: 12,
   },
   startText: { fontSize: 14, fontWeight: '700', color: c.white },
   previewBtn: {

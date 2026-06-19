@@ -60,7 +60,7 @@ Response: `set_para_info_respond` met `result: 0`
 {"start_navigation": {"mapName": "test", "cutterhigh": 40, "area": 1, "cmd_num": 12345}}
 ```
 - `mapName`: altijd `"test"` — **hardcoded literal string** (`pp+0x11c10`), NIET de echte kaartnaam
-- `area`: **1** = map0, **10** = map1, **200** = map2
+- `area`: **decimale positie-bitmask** — map0=**1**, map1=**10**, map2=**100**; combinaties tellen op (zie hieronder)
 - `cutterhigh`: snijhoogte (mm)
 - `cmd_num`: auto-incrementing counter
 - Response: `start_navigation_respond`
@@ -133,13 +133,28 @@ De `cutterhigh` in het MQTT commando is de directe waarde (bijv. 40 = 40mm).
 
 ---
 
-## Map Area Parameter Mapping
+## Map Area Parameter Mapping — decimale positie-bitmask (multi-map NATIVE)
 
-| Waarde | Map |
-|--------|-----|
+`area` is een **decimale positie-code**: elke map-slot N draagt `10^N` bij. Eén
+`start_navigation` met de opgetelde `area` laat de firmware (`robot_decision`)
+**alle geselecteerde maps achter elkaar maaien, zónder tussendoor te docken** —
+recharge pas als álles klaar is. Geen server-queue of client-loop nodig.
+
+| Waarde | Maps |
+|--------|------|
 | 1 | map0 |
 | 10 | map1 |
-| 200 | map2 |
+| 100 | map2 |
+| 11 | map0 + map1 |
+| 101 | map0 + map2 |
+| 110 | map1 + map2 |
+| 111 | alle drie |
+
+**Bewijs (firmware + app decompilatie):** `research/documents/multi-map-area-bitmask-decode.md`.
+- `mqtt_node::api_start_navigation` schrijft `area` 1-op-1 in `StartCoverageTask.map_ids` (uint32) → één `/robot_decision/start_cov_task`.
+- `robot_decision::coverRequestDataInit()` decodeert per decimale positie (`pow(10,pos)` → `value/placevalue % 10`); cijfer ≠ 0 = map meenemen.
+- `coverFinishedDeal()`: op FINISHED → volgende map-index → start volgende; recharge alleen in de all-done tak.
+- map2 = **100** (NIET 200 — eerdere doc-fout; bevestigd via Smi-untag in de app-decompilatie).
 
 ---
 

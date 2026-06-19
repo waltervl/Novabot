@@ -14,7 +14,7 @@ import {
   fetchRainForecast, findIncomingRain, setRainIgnoreSession,
 } from '../../api/client';
 import { localToGps } from '../../utils/coords';
-import { mmToCutterhigh, workMapToArea, nextCmdNum } from '../../utils/mqtt';
+import { mmToCutterhigh, workMapsToArea, nextCmdNum } from '../../utils/mqtt';
 import { readMowDefaults } from '../../utils/mowDefaults';
 import {
   deriveMowerActivity,
@@ -192,34 +192,10 @@ export function MowerControls({
     return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
   }, []);
 
-  // ── Multi-map mowing queue (mirrors app MowQueueContext) ───────────
-  // start_navigation only mows ONE map per call. To mow every work zone
-  // ("Alle werkgebieden") we dispatch the first, watch the mower's msg for
-  // Work:FINISHED + error_status 0, then dispatch the next. `queue` holds the
-  // remaining zones INCLUDING the currently-running one at index 0.
-  interface QueueEntry { mapId: string; mapName: string; area: number }
-  const [queue, setQueue] = useState<QueueEntry[] | null>(null);
-  const queueWireHeightRef = useRef(0);
-  const queueTotalRef = useRef(0);
-  const queueWasMowingRef = useRef(false);
-  const queueAdvanceLockRef = useRef(false);
-
-  const dispatchQueueNav = useCallback(async (entry: QueueEntry, wireHeight: number) => {
-    const navResult = await sendCommand(sn, {
-      start_navigation: { mapName: 'test', cutterhigh: wireHeight, area: entry.area, cmd_num: nextCmdNum() },
-    }).catch(() => ({ ok: false } as { ok: boolean }));
-    if (!navResult.ok) {
-      await sendCommand(sn, {
-        start_run: { mapName: null, area: entry.area, cutterhigh: wireHeight },
-      }).catch(() => {});
-    }
-  }, [sn]);
-
-  const clearQueue = useCallback(() => {
-    setQueue(null);
-    queueWasMowingRef.current = false;
-    queueAdvanceLockRef.current = false;
-  }, []);
+  // Multi-map mowing is NATIVE in the firmware: one start_navigation with a
+  // decimal-bitmask `area` (map0=1, map1=10, map2=100; summed) mows every
+  // selected zone in one task, no docking between zones. No client-side queue.
+  // Proof: research/documents/multi-map-area-bitmask-decode.md.
   const [demoActive, setDemoActive] = useState(false);
 
   // Load demo mode status on mount (demo affects the activity gating).
@@ -401,77 +377,53 @@ export function MowerControls({
         const detail = result.encrypted ? ` (encrypted, ${result.size}B)` : '';
         toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
       } else {
-        // Normal map mowing — use start_navigation (mirrors app StartMowSheet.tsx).
-        // App's `area` enum = mapIdx (0 → 1, 1 → 10, 2+ → 200). The 200 catch-all
-        // is for the >2 case; the app NEVER ships area=200 for "alle werkgebieden"
-        // because it queues each map separately via MowQueueContext.
-        // Dashboard simplification: when "Alle werkgebieden" is selected, start
-        // the first work map. Multi-map queueing is a follow-up.
+        // Normal map mowing via start_navigation. `area` is a decimal-bitmask:
+        // the specific pick, or ALL work maps for "Alle werkgebieden", summed to
+        // one value (map0=1, map1=10, map2=100). The firmware mows them all in
+        // one task — no client queue. Mirrors app StartMowSheet.tsx.
         const workMaps = maps.filter(m => m.mapType === 'work');
+        const targetMaps = mapId ? workMaps.filter(m => m.mapId === mapId) : workMaps;
+        const targetMap = targetMaps[0] ?? workMaps[0];
 
-        // "Alle werkgebieden" (mapId === '') + multiple zones → queue them and
-        // mow each in turn (mirrors app MowQueue). A single zone (or a specific
-        // pick) goes straight through with one start_navigation.
-        if (!mapId && workMaps.length > 1) {
-          const entries: QueueEntry[] = workMaps.map((m, idx) => ({
-            mapId: m.mapId,
-            mapName: m.mapName || m.mapId,
-            area: workMapToArea(m, idx),
-          }));
-          queueWireHeightRef.current = wireHeight;
-          queueTotalRef.current = entries.length;
-          queueWasMowingRef.current = false;
-          queueAdvanceLockRef.current = false;
-          setQueue(entries);
-          await dispatchQueueNav(entries[0], wireHeight);
-          toast(`✓ ${t('controls.queueStarted', { count: entries.length, defaultValue: 'Wachtrij gestart ({{count}} zones)' })}`, 'success');
+        // Edge offset → mow the shrunk/expanded boundary of ONE map via
+        // SPECIFIED_AREA (start_run + workArea — the firmware's custom-polygon
+        // path, the same one the Preview uses). The planner still plans on the
+        // obstacle-constrained grid, so red zones stay avoided. Only a single map
+        // can carry an offset, so this path is single-map only.
+        if (edgeOffset !== 0 && targetMaps.length === 1 && targetMap && Array.isArray(targetMap.mapArea) && targetMap.mapArea.length >= 3 && chargerGps) {
+          const gpsPoly = (targetMap.mapArea as Array<{ x: number; y: number }>).map(p => localToGps(p, chargerGps!));
+          const offsetGps = offsetPolygon(gpsPoly, edgeOffset);
+          await sendCommand(sn, {
+            start_run: {
+              mapNames: [targetMap.mapName || 'home'],
+              cutGrassHeight: cuttingHeight,   // mm
+              startWay: 1,                     // SPECIFIED_AREA
+              workArea: offsetGps.map(p => ({ latitude: p.lat, longitude: p.lng })),
+              schedule: false,
+              scheduleId: '',
+            },
+          });
+          toast(`✓ ${t('controls.startMowing')} (${edgeOffset > 0 ? '+' : ''}${edgeOffset.toFixed(1)}m)`, 'success');
         } else {
-          const targetMap = mapId
-            ? workMaps.find(m => m.mapId === mapId)
-            : workMaps[0];
+          const areaParam = workMapsToArea(targetMaps);
 
-          // Edge offset → mow the shrunk/expanded boundary via SPECIFIED_AREA
-          // (start_run + workArea — the firmware's custom-polygon path, the same
-          // one the Preview uses). The planner still plans on the obstacle-
-          // constrained grid, so red zones stay avoided; the Preview shows the
-          // exact path beforehand. Only the area-enum NORMAL start can't carry an
-          // offset, so a non-zero offset routes through here.
-          if (edgeOffset !== 0 && targetMap && Array.isArray(targetMap.mapArea) && targetMap.mapArea.length >= 3 && chargerGps) {
-            const gpsPoly = (targetMap.mapArea as Array<{ x: number; y: number }>).map(p => localToGps(p, chargerGps!));
-            const offsetGps = offsetPolygon(gpsPoly, edgeOffset);
+          const navPayload: Record<string, unknown> = {
+            mapName: 'test',
+            cutterhigh: wireHeight,
+            area: areaParam,
+            cmd_num: nextCmdNum(),
+          };
+          const navResult = await sendCommand(sn, { start_navigation: navPayload });
+
+          if (!navResult.ok) {
+            // Fallback: old firmware protocol (matches app StartMowSheet.tsx)
             await sendCommand(sn, {
-              start_run: {
-                mapNames: [targetMap.mapName || 'home'],
-                cutGrassHeight: cuttingHeight,   // mm
-                startWay: 1,                     // SPECIFIED_AREA
-                workArea: offsetGps.map(p => ({ latitude: p.lat, longitude: p.lng })),
-                schedule: false,
-                scheduleId: '',
-              },
+              start_run: { mapName: null, area: areaParam, cutterhigh: wireHeight },
             });
-            toast(`✓ ${t('controls.startMowing')} (${edgeOffset > 0 ? '+' : ''}${edgeOffset.toFixed(1)}m)`, 'success');
-          } else {
-            const fallbackIdx = targetMap ? workMaps.indexOf(targetMap) : 0;
-            const areaParam = workMapToArea(targetMap, fallbackIdx);
-
-            const navPayload: Record<string, unknown> = {
-              mapName: 'test',
-              cutterhigh: wireHeight,
-              area: areaParam,
-              cmd_num: nextCmdNum(),
-            };
-            const navResult = await sendCommand(sn, { start_navigation: navPayload });
-
-            if (!navResult.ok) {
-              // Fallback: old firmware protocol (matches app StartMowSheet.tsx line 317)
-              await sendCommand(sn, {
-                start_run: { mapName: null, area: areaParam, cutterhigh: wireHeight },
-              });
-            }
-
-            const detail = navResult.encrypted ? ` (encrypted, ${navResult.size}B)` : '';
-            toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
           }
+
+          const detail = navResult.encrypted ? ` (encrypted, ${navResult.size}B)` : '';
+          toast(`✓ ${t('controls.startMowing')}${detail}`, 'success');
         }
       }
 
@@ -487,7 +439,7 @@ export function MowerControls({
   }, [sn, cuttingHeight, pathDirection, edgeOffset, mapId, mapName, maps, pendingPolygon,
     patternMode, patternId, patternContours, patternCenter, patternSize, patternRotation,
     onPathDirectionChange, onPatternPlacementChange, onStarted, chargerGps, checkRainGate,
-    dispatchQueueNav, t, toast]);
+    t, toast]);
 
   // ── Activity-driven control state (mirrors app HomeScreen) ──────────────
   // The mower's derived activity decides which control buttons are shown,
@@ -552,48 +504,6 @@ export function MowerControls({
     setBusy(false);
   }, [sn, t, toast]);
 
-  // ── Multi-map queue watcher (mirrors app MowQueueContext watcher) ──
-  // Edge-detect Work:FINISHED after a mowing window; on a clean finish
-  // (error_status 0) advance to the next zone after a short settle delay.
-  useEffect(() => {
-    if (!queue || queue.length === 0) return;
-    const msg = sensors?.msg ?? '';
-    const errStatus = parseInt((sensors?.error_status ?? '0').match(/\d+/)?.[0] ?? '0', 10);
-    const mowing = /Work:(RUNNING|COVERING|NAVIGATING|BOUNDARY_COVERING|AVOIDING)/.test(msg);
-    const finished = msg.includes('Work:FINISHED');
-
-    if (mowing) {
-      queueWasMowingRef.current = true;
-      queueAdvanceLockRef.current = false;
-      return;
-    }
-    if (queueWasMowingRef.current && finished && !queueAdvanceLockRef.current) {
-      if (errStatus !== 0) {
-        // Previous zone ended in an error — stop the queue so the user can look.
-        queueWasMowingRef.current = false;
-        clearQueue();
-        toast(`✗ ${t('controls.queueAborted', { err: errStatus, defaultValue: 'Wachtrij gestopt (fout {{err}})' })}`, 'error');
-        return;
-      }
-      queueAdvanceLockRef.current = true;
-      queueWasMowingRef.current = false;
-      const timer = setTimeout(() => {
-        setQueue(prev => {
-          if (!prev) return null;
-          const next = prev.slice(1);
-          if (next.length === 0) {
-            queueAdvanceLockRef.current = false;
-            toast(`✓ ${t('controls.queueDone', 'Alle zones gemaaid')}`, 'success');
-            return null;
-          }
-          void dispatchQueueNav(next[0], queueWireHeightRef.current);
-          return next;
-        });
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [sensors, queue, dispatchQueueNav, clearQueue, t, toast]);
-
   // Pause an active coverage session.
   const handlePause = useCallback(() => {
     void send({ pause_navigation: { cmd_num: nextCmdNum() } }, t('controls.pause'));
@@ -613,21 +523,19 @@ export function MowerControls({
   // stop_boundary_follow for edge, best-effort).
   const handleStopMowing = useCallback(async (edge: boolean) => {
     if (!window.confirm('Stop mowing? The mower will halt where it is and the current session ends. It will NOT return to the dock.')) return;
-    clearQueue();
     await send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop'));
     if (edge) {
       try { await sendExtendedCommand(sn, { stop_boundary_follow: {} }); } catch { /* best-effort */ }
     }
-  }, [send, sn, t, clearQueue]);
+  }, [send, sn, t]);
 
   // Stop a return-to-dock: stop_to_charge cancels the auto_recharge action;
   // stop_navigation + stop_boundary_follow clear any lingering goals.
   const handleStopReturning = useCallback(async () => {
-    clearQueue();
     await send({ stop_to_charge: {} }, t('controls.stop'));
     await sendCommand(sn, { stop_navigation: { cmd_num: nextCmdNum() } }).catch(() => {});
     try { await sendExtendedCommand(sn, { stop_boundary_follow: {} }); } catch { /* best-effort */ }
-  }, [send, sn, t, clearQueue]);
+  }, [send, sn, t]);
 
   // Return-to-home: tijdens maaien/edge eerst vragen (stoppen-of-pauzeren), zoals
   // de OpenNova app. Bij idle direct naar huis.
@@ -639,12 +547,11 @@ export function MowerControls({
   // Taak beëindigen & terug: stop_navigation (+ boundary), dan naar huis.
   const endTaskAndReturn = useCallback(async () => {
     setShowReturnDialog(false);
-    clearQueue();
     await send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop'));
     try { await sendExtendedCommand(sn, { stop_boundary_follow: {} }); } catch { /* best-effort */ }
     await new Promise(r => setTimeout(r, 500));
     await sendGoHome();
-  }, [send, sn, t, sendGoHome, clearQueue]);
+  }, [send, sn, t, sendGoHome]);
   // Taak pauzeren & terug: pause_navigation, dan naar huis (hervatten kan later).
   const pauseAndReturn = useCallback(async () => {
     setShowReturnDialog(false);
@@ -720,28 +627,6 @@ export function MowerControls({
         </button>
       )}
 
-      {/* Multi-map queue banner — shows progress through the queued zones. */}
-      {queue && queue.length > 0 && (
-        <div className="flex items-center gap-2 mb-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-900/25 ring-1 ring-emerald-600/30">
-          <SkipForward className="w-3.5 h-3.5 text-emerald-300 flex-shrink-0" />
-          <span className="text-[11px] text-emerald-200 flex-1 truncate">
-            {t('controls.queueProgress', {
-              current: Math.max(1, queueTotalRef.current - queue.length + 1),
-              total: queueTotalRef.current,
-              name: queue[0]?.mapName ?? '',
-              defaultValue: 'Zone {{current}}/{{total}} — {{name}}',
-            })}
-          </span>
-          <button
-            onClick={() => { void handleStopMowing(false); }}
-            className="text-[11px] text-emerald-300/80 hover:text-red-300"
-            title={t('controls.queueCancel', 'Wachtrij stoppen')}
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
-
       {/* Action buttons row */}
       <div className="flex items-center gap-1">
         {/* ── Activity-driven primary controls (mirror app HomeScreen) ──────
@@ -793,7 +678,7 @@ export function MowerControls({
             parked session entirely instead of resuming it. */}
         {interruptedCoverage && (activity === 'idle' || activity === 'charging' || activity === 'error' || activity === 'offline') && (
           <button
-            onClick={() => { clearQueue(); void send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop')); }}
+            onClick={() => { void send({ stop_navigation: { cmd_num: nextCmdNum() } }, t('controls.stop')); }}
             disabled={disabled}
             className={`${btnBase} bg-gray-700/60 text-red-400 hover:bg-red-700/40`}
             title={t('controls.endSession', 'Sessie beëindigen')}

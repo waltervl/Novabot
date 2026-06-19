@@ -3,7 +3,7 @@ import { Play } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MapData } from '../../types';
 import { sendCommand, fetchMaps } from '../../api/client';
-import { mmToCutterhigh, workMapToArea, nextCmdNum } from '../../utils/mqtt';
+import { mmToCutterhigh, workMapToArea, workMapsToArea, nextCmdNum } from '../../utils/mqtt';
 import { useToast } from '../../components/common/Toast';
 
 interface Props {
@@ -49,8 +49,10 @@ export function StartMowSheet({ open, onClose, sn, onStarted, initialMapId = nul
       const workMaps = maps.filter(m => m.mapType === 'work');
       const selectedWorkMap = mapId ? workMaps.find(m => m.mapId === mapId) : null;
       const fallbackIdx = selectedWorkMap ? workMaps.indexOf(selectedWorkMap) : 0;
-      const areaParam = mapId ? workMapToArea(selectedWorkMap, fallbackIdx) : 200;
-      // When no map selected (all work areas), app uses mapName:'test' and area:200
+      // `area` is a decimal-bitmask: a specific map → 10^slot; "all work areas"
+      // → the summed bitmask of every work map, which the firmware mows in one
+      // task (no docking between zones). See utils/mqtt.workMapsToArea.
+      const areaParam = mapId ? workMapToArea(selectedWorkMap, fallbackIdx) : workMapsToArea(workMaps);
       const selectedMap = mapId ? maps.find(m => m.mapId === mapId) : null;
       const resolvedMapName = selectedMap?.mapName || 'test';
 

@@ -23,7 +23,6 @@ import {
   ActiveMowerProvider,
   clearPersistedActiveMowerSn,
 } from './src/context/ActiveMowerContext';
-import { MowQueueProvider } from './src/context/MowQueueContext';
 import { FirmwareUpdateProvider, useFirmwareUpdate } from './src/context/FirmwareUpdateContext';
 import { AppAlertProvider } from './src/context/AppAlertContext';
 import { PushRegistrar } from './src/components/PushRegistrar';
@@ -317,11 +316,9 @@ function ThemedApp({
       {isAuthenticated ? (
         <ActiveMowerProvider>
           <FirmwareUpdateProvider>
-            <MowQueueProvider>
-              <PushRegistrar />
-              <AuthenticatedApp onLogout={handleLogout} onGoToProvision={handleGoToProvision} />
-              <UpdateGate />
-            </MowQueueProvider>
+            <PushRegistrar />
+            <AuthenticatedApp onLogout={handleLogout} onGoToProvision={handleGoToProvision} />
+            <UpdateGate />
           </FirmwareUpdateProvider>
         </ActiveMowerProvider>
       ) : (

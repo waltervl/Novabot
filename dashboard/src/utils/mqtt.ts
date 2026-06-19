@@ -20,13 +20,16 @@ export function mmToCutterhigh(mm: number): number {
 }
 
 /**
- * Map work-map index to firmware area enum used by start_navigation.area.
- * App pattern: idx 0 → 1, idx 1 → 10, idx 2+ → 200 (catch-all).
+ * Map a work-map slot to the firmware `area` weight: slot N → 10^N
+ * (map0=1, map1=10, map2=100). `area` is a DECIMAL POSITIONAL BITMASK — the
+ * firmware (robot_decision) mows every map whose decimal digit is non-zero, so
+ * multiple maps sum (11 = map0+map1, 111 = all three) and mow in one task with
+ * no docking between zones. Proof: research/documents/multi-map-area-bitmask-decode.md.
+ * (Was idx 2+ → 200, which was wrong — map2 is 100.)
+ * ponytail: slots 0-9 only (10^slot must fit uint32); real setups have ≤3 maps.
  */
 export function workIndexToArea(idx: number): number {
-  if (idx === 0) return 1;
-  if (idx === 1) return 10;
-  return 200;
+  return Math.pow(10, Math.max(0, idx));
 }
 
 export function workMapSlotIndex(
@@ -43,6 +46,16 @@ export function workMapToArea(
   fallbackIdx: number,
 ): number {
   return workIndexToArea(workMapSlotIndex(map, fallbackIdx));
+}
+
+/**
+ * Bitmask `area` for a set of selected work maps: sum of each map's 10^slot.
+ * One start_navigation with this value mows them all natively (see workIndexToArea).
+ */
+export function workMapsToArea(
+  maps: Array<{ canonicalName?: string | null }>,
+): number {
+  return maps.reduce((sum, m, idx) => sum + workMapToArea(m, idx), 0);
 }
 
 /** Sequential cmd number used by start/stop_navigation. */
