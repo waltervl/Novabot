@@ -1,7 +1,17 @@
 # Multi-Map Support via Active-Slot Swap
 
 **Date:** 2026-05-04
-**Status:** Spec — pending implementation plan
+**Status:** ⚠️ SUPERSEDED / WRONG PREMISE (2026-06-19) — do not implement.
+
+> Multi-map mowing is **native in the firmware**. `start_navigation.area` is a
+> **decimal positional bitmask** (map0=1, map1=10, map2=**100**; summed, so
+> `111` = all three) and `robot_decision` mows every selected map in one task
+> with no docking between zones. One `start_navigation` does it — no active-slot
+> swap, no client/server queue. The "three magic values 1/10/200" premise below
+> is wrong (map2 is 100, not 200, and combinations are supported).
+> Authoritative: `docs/reference/MOWING-FLOW.md` +
+> `research/documents/multi-map-area-bitmask-decode.md`. The queue/swap
+> machinery this spec inspired was built and has since been removed.
 
 ## Problem
 

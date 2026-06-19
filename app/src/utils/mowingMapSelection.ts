@@ -32,10 +32,12 @@ function parseFiniteInt(value: unknown): number | null {
 function slotFromCoverMapId(value: unknown): number | null {
   const parsed = parseFiniteInt(value);
   if (parsed === null) return null;
-  // Firmware area enum (matches the start_navigation `area` value AND
-  // slotFromCurrentMapIds): map0=1, map1=10, map2=200. cover_map_id=1 is map0,
-  // NOT slot index 1 — the old `0..2 -> that slot` rule wrongly mapped 1 to
-  // map1, surfacing the false "Started map0, mower reports map1" banner.
+  // Telemetry → slot. The `area` COMMAND is a decimal positional bitmask
+  // (map0=1, map1=10, map2=100); cover_map_id reports the single zone being
+  // covered now. cover_map_id=1 is map0, NOT slot index 1 — the old
+  // `0..2 -> that slot` rule wrongly mapped 1 to map1, surfacing the false
+  // "Started map0, mower reports map1" banner. map2 has been observed reported
+  // as BOTH 100 and 200 across firmwares, so accept either.
   if (parsed === 1) return 0;
   if (parsed === 10) return 1;
   if (parsed === 100 || parsed === 200) return 2;

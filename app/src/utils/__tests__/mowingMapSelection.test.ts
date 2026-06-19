@@ -15,9 +15,10 @@ const maps: MowingMapCandidate[] = [
 describe('resolveMowingMapSelection — firmware area enum', () => {
   // The regression: cover_map_id=1 is map0 (NOT slot index 1). Mapping 1->map1
   // surfaced the false "Started map0, mower reports map1" banner.
-  it('maps cover_map_id enum 1/10/200 to map0/map1/map2', () => {
+  it('maps cover_map_id telemetry to map0/map1/map2 (map2 accepts 100 and legacy 200)', () => {
     expect(resolveMowingMapSelection(maps, { coverMapId: 1 }).telemetryMap?.canonicalName).toBe('map0');
     expect(resolveMowingMapSelection(maps, { coverMapId: 10 }).telemetryMap?.canonicalName).toBe('map1');
+    expect(resolveMowingMapSelection(maps, { coverMapId: 100 }).telemetryMap?.canonicalName).toBe('map2');
     expect(resolveMowingMapSelection(maps, { coverMapId: 200 }).telemetryMap?.canonicalName).toBe('map2');
   });
 

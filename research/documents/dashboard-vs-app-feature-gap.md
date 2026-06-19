@@ -19,7 +19,7 @@ Doel: (A) wat zit wél in de app maar niet in het dashboard, (B) doen de gedeeld
 | **Re-anchor wizard** | Stap-voor-stap frame-herankering na restore (`reanchor` + status-poll) | Wel charger-calibrate / dock-and-save, geen geleide re-anchor wizard | Midden |
 | **Map import (bestand/cloud)** | Import uit .zip + cloud-maps | Alleen **export** (zip); geen import-UI ⚠️ verifiëren | Midden |
 | **Spot-mowing (teken gebied → maai)** | "Maai specifiek gebied" (`start_run` SPECIFIED_AREA op getekende polygon) | Pattern-mode lijkt erop maar geen los "teken-en-maai" ⚠️ verifiëren | Laag |
-| **Multi-map wachtrij** | `MowQueue`: meerdere zones achter elkaar | "Alle werkgebieden" start alleen de eerste map ⚠️ verifiëren | Midden |
+| **Multi-map maaien** | ✅ Native: één `start_navigation` met bitmask-`area` (map0=1, map1=10, map2=100; som = alle) — firmware maait alle zones in één taak, geen dock ertussen | ✅ Idem (zelfde bitmask-command); oude `MowQueue`/server-queue verwijderd | Klaar |
 | **Mower-instellingen** | Veel: koplamp, geluid, tijdzone, obstakel-gevoeligheid, joystick-snelheid/handling, regen-thresholds, soft-restart | Deels in SettingsPanel (licht, perceptie, PIN, blade-hoogte); rest ontbreekt | Midden |
 | **Account / login / taal** | Login, account, logout | Lokaal/geen account (per ontwerp decentraal) | n.v.t. |
 | **Return-reason modal** | Vraagt reden van terugkeer (accu/regen/klaar) | Niet | Laag |

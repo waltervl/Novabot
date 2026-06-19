@@ -23,7 +23,7 @@ Start a mowing session on v6.x firmware. Sent directly to the mower via WiFi MQT
 | Field | Type | Description |
 |-------|------|-------------|
 | `mapName` | string | Hardcoded literal `"test"`, NOT the real map name |
-| `area` | number | Map-selection bitfield: `1`=map0, `10`=map1, `200`=map2 |
+| `area` | number | Decimal positional bitmask: `1`=map0, `10`=map1, `100`=map2; sum for multi-map (`11`=map0+map1, `111`=all three) — firmware mows every selected map in one task, no dock between zones |
 | `cutterhigh` | number | Blade height enum 0..7 (see [cutterhigh](#cutterhigh-cutting-height)) |
 | `cmd_num` | number | Auto-incrementing command counter |
 
@@ -116,7 +116,7 @@ Start a mowing session (legacy protocol, used by older firmware).
 | Field | Type | Description |
 |-------|------|-------------|
 | `mapName` | string \| null | Always `null` in the legacy flow (NOT `"map0"`) |
-| `area` | number | Map-selection bitfield: `1`=map0, `10`=map1, `200`=map2 |
+| `area` | number | Decimal positional bitmask: `1`=map0, `10`=map1, `100`=map2; sum for multi-map (`11`=map0+map1, `111`=all three) — firmware mows every selected map in one task, no dock between zones |
 | `cutterhigh` | number | Blade height enum 0..7 (see [cutterhigh](#cutterhigh-cutting-height)) |
 | `targetIsMower` | boolean | Always `false` |
 

@@ -47,7 +47,7 @@ All MQTT messages are JSON objects. The **command name is the root key**:
 ```
 
 !!! note "About `mapName` and `area`"
-    `mapName` is a hardcoded literal string `"test"` in the app, NOT the real map name. The active map is selected by the `area` bitfield: `1` = map0, `10` = map1, `200` = map2. The `cutterhigh` value is the 0..7 enum (see [Mowing Commands](mowing-commands.md#cutterhigh-cutting-height)).
+    `mapName` is a hardcoded literal string `"test"` in the app, NOT the real map name. The map(s) to mow are selected by the `area` decimal positional bitmask: `1` = map0, `10` = map1, `100` = map2, summed for multi-map (`111` = all three). The firmware mows every selected map in one task with no docking between zones. The `cutterhigh` value is the 0..7 enum (see [Mowing Commands](mowing-commands.md#cutterhigh-cutting-height)).
 
 ```json title="Response (device → app)"
 {

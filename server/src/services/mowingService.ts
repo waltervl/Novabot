@@ -46,7 +46,10 @@ export interface MowingParams {
    */
   cuttingHeight?: number;
   pathDirection?: number;   // degrees (0-359), default 120
-  area?: number;            // 1=map0, 10=map1, 200=map2
+  // Decimal positional bitmask: map0=1, map1=10, map2=100; sum for multi-map
+  // (11=map0+map1, 111=all three). The firmware mows every set map in one task.
+  // Passed verbatim to start_navigation. See research/documents/multi-map-area-bitmask-decode.md.
+  area?: number;
 }
 
 export interface MowingResult {

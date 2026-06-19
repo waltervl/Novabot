@@ -326,7 +326,7 @@ curl -X POST http://<server>/api/dashboard/command/<SN> \
 |-------|-------|
 | `mapName` | Required, literal string `"test"` (firmware ignores the value but rejects when missing). |
 | `cutterhigh` | Wire enum, range `0..7`. Formula: `user_cm − 2`. So 5 cm → `3`, 6 cm → `4`. |
-| `area` | Map enum: `1` = map0, `10` = map1, `200` = map2. Firmware only knows three slots. |
+| `area` | Decimal positional bitmask: `1` = map0, `10` = map1, `100` = map2; sum for multi-map (`11` = map0+map1, `111` = all three). The firmware mows every selected map in one task, no dock between zones. |
 | `cmd_num` | Must be unique per call — the firmware ignores duplicates. Use `$(date +%s)` or `$RANDOM`. |
 
 #### Stop
