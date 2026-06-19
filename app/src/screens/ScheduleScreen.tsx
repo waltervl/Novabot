@@ -414,11 +414,9 @@ export default function ScheduleScreen() {
                           {s.pathDirection ?? s.path_direction}°
                         </Text>
                       )}
-                      {(s.mapName ?? s.map_name) && (
-                        <Text style={styles.scheduleChip}>
-                          {s.mapName ?? s.map_name}
-                        </Text>
-                      )}
+                      <Text style={styles.scheduleChip}>
+                        {(s.mapName ?? s.map_name) || t('allAreas')}
+                      </Text>
                       {(s.rainPause ?? s.rain_pause) && (
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
                           <Ionicons name="rainy" size={12} color="#60a5fa" />
@@ -496,11 +494,9 @@ export default function ScheduleScreen() {
                           {s.cuttingHeight ?? s.cutting_height} cm
                         </Text>
                       )}
-                      {(s.mapName ?? s.map_name) && (
-                        <Text style={styles.scheduleChip}>
-                          {s.mapName ?? s.map_name}
-                        </Text>
-                      )}
+                      <Text style={styles.scheduleChip}>
+                        {(s.mapName ?? s.map_name) || t('allAreas')}
+                      </Text>
                       {(s.rainPause ?? s.rain_pause) && (
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
                           <Ionicons name="rainy" size={12} color="#60a5fa" />
