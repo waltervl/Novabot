@@ -31,13 +31,18 @@ import { getServerUrl } from '../services/auth';
 // Cutting height: 20-90 in steps of 10 (displayed as 2-9 cm, matches Flutter slider)
 const HEIGHT_VALUES = [20, 30, 40, 50, 60, 70, 80, 90];
 
-// obstacle_avoidance_sensitivity now drives object-detection CADENCE during
-// mowing (server -> set_obstacle_detection -> extended_commands cadence thread):
-// 1 = off (segmentation only), 2 = occasional detection, 3 = frequent detection.
+// obstacle_avoidance_sensitivity = the mower's stock perception_level (sent value
+// equals perception_level 1:1 — verified live: value 3 -> perception_level 3, and
+// byte-level in the stock app: a slider min=1 / max=3 / divisions=2 emits 1/2/3).
+// perception_level: 0=collision-only (avoidance OFF), 1=detection, 2=segmentation,
+// 3=segmentation high-sensitivity (most cautious — tries to avoid even leaves). The
+// stock LFI app exposes only 1/2/3 (Low/Med/High) and hides level 0; OpenNova also
+// exposes 0. (Server cadence republish is disabled, so this drives stock perception.)
 const SENSITIVITY_LEVELS = [
-  { value: 1, label: 'Off (terrain only)', desc: 'Segmentation only, no object detection (max coverage)' },
-  { value: 2, label: 'Avoid objects', desc: 'Periodic object detection while mowing' },
-  { value: 3, label: 'Avoid objects (frequent)', desc: 'Frequent object detection (best avoidance)' },
+  { value: 0, label: 'Off', desc: 'Collision only — ToF + camera off. No avoidance: bumps into people, animals and objects to feel them. (Hidden in the stock app.)' },
+  { value: 1, label: 'Low', desc: 'Detection — camera recognises trained objects (person, animal, obstacle) and steers around them.' },
+  { value: 2, label: 'Medium', desc: 'Segmentation — treats any non-grass area as off-limits (normal sensitivity).' },
+  { value: 3, label: 'High', desc: 'Segmentation, high sensitivity — strictest stay-on-lawn. Very cautious: tries to avoid even leaves on the grass.' },
 ];
 
 // Joystick speed/handling: 1=low, 2=medium, 3=high (sent as ×100: 100/200/300)
@@ -181,9 +186,9 @@ export default function MowerSettingsScreen() {
       const t = parseInt(s.target_height, 10);
       if (Number.isFinite(t) && t >= 0 && t <= 7) setCuttingHeight((t + 2) * 10);
     }
-    if (s.obstacle_avoidance_sensitivity) {
+    if (s.obstacle_avoidance_sensitivity != null) {
       const v = parseInt(s.obstacle_avoidance_sensitivity, 10);
-      if (v >= 1 && v <= 3) setSensitivity(v);
+      if (v >= 0 && v <= 3) setSensitivity(v);
     }
     if (s.path_direction) {
       const a = parseInt(s.path_direction, 10);
@@ -214,7 +219,7 @@ export default function MowerSettingsScreen() {
       ...prev,
       sensitivity: (() => {
         const v = parseInt(s.obstacle_avoidance_sensitivity ?? '', 10);
-        return v >= 1 && v <= 3 ? v : prev.sensitivity;
+        return v >= 0 && v <= 3 ? v : prev.sensitivity;
       })(),
       pathDirection: (() => {
         const a = parseInt(s.path_direction ?? '', 10);

@@ -19,7 +19,6 @@ type AedesPublishPacket = { topic: string; payload: Buffer | string; qos: 0 | 1 
 import { v4 as uuidv4 } from 'uuid';
 import { mapRepo, equipmentRepo, userRepo, deviceRepo, deviceSettingsRepo } from '../db/repositories/index.js';
 import { selectParaRepush } from './paraRepush.js';
-import { selectObstacleDetectionLevel } from '../services/obstacleDetectionCadence.js';
 import {
   COVERAGE_PLANNER_RADIUS_KEY,
   selectCoveragePlannerRadius,
@@ -582,16 +581,17 @@ function republishCoveragePlannerRadius(sn: string): void {
 }
 
 /**
- * Her-push de objectdetectie-cadans naar de maaier. De stand komt uit het
- * bestaande `obstacle_avoidance_sensitivity` (1 = uit, 2 = af en toe, 3 = vaak);
- * de mower (`extended_commands.py`) zet daarop een detectie-cadans tijdens het
- * maaien. Mirror van `republishCoveragePlannerRadius`.
+ * Object-detectie-cadans UITGESCHAKELD — OpenNova gebruikt weer de stock
+ * obstacle avoidance: `obstacle_avoidance_sensitivity` (1/2/3) stuurt de mower's
+ * STOCK perceptie (Low=collision / Medium=detectie / High=segmentatie) rechtstreeks
+ * via `set_para_info`. We sturen de cadans daarom altijd `level 1` (uit) zodat de
+ * mower het model niet meer time-multiplext en de stand 1-op-1 stock-gedrag geeft.
+ * (Bewust geen `selectObstacleDetectionLevel` meer — de stand mag de cadans niet
+ * heractiveren.)
  */
 export function republishObstacleDetection(sn: string): void {
-  const level = selectObstacleDetectionLevel(deviceSettingsRepo.findBySn(sn));
-  if (level == null) return;
-  console.log(`${TAG} Her-push objectdetectie-cadans naar ${sn}: level=${level}`);
-  publishToExtended(sn, { set_obstacle_detection: { level } });
+  console.log(`${TAG} Object-detectie-cadans uit (level 1) naar ${sn} — stock perceptie via set_para_info`);
+  publishToExtended(sn, { set_obstacle_detection: { level: 1 } });
 }
 
 /**
