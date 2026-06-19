@@ -12,7 +12,7 @@ vi.mock('../../mqtt/mapSync.js', () => ({
   publishToDevice: vi.fn(),
 }));
 
-import { isMowerBusy, startMowing } from '../../services/mowingService.js';
+import { isMowerBusy, startMowing, cuttingHeightToWire } from '../../services/mowingService.js';
 import { deviceCache } from '../../mqtt/sensorData.js';
 import { publishToDevice } from '../../mqtt/mapSync.js';
 
@@ -70,6 +70,28 @@ describe('isMowerBusy', () => {
   });
 });
 
+describe('cuttingHeightToWire', () => {
+  // Regression: a 9 cm schedule made in the app stored cutting_height=9 (cm),
+  // which the old heuristic mis-read as a "cm+2 wire value" and mowed at 7 cm.
+  it('treats app user-cm (2..9) as cm', () => {
+    expect(cuttingHeightToWire(9)).toBe(7); // 9cm  (was wrongly 5 = 7cm)
+    expect(cuttingHeightToWire(5)).toBe(3); // 5cm
+    expect(cuttingHeightToWire(2)).toBe(0); // 2cm
+  });
+  it('treats dashboard mm (20..90) as mm', () => {
+    expect(cuttingHeightToWire(90)).toBe(7); // 90mm = 9cm
+    expect(cuttingHeightToWire(50)).toBe(3); // 50mm = 5cm
+    expect(cuttingHeightToWire(20)).toBe(0); // 20mm = 2cm
+  });
+  it('app 9cm and dashboard 90mm produce the same wire value', () => {
+    expect(cuttingHeightToWire(9)).toBe(cuttingHeightToWire(90));
+  });
+  it('clamps out-of-range inputs to 2..9 cm', () => {
+    expect(cuttingHeightToWire(1)).toBe(0);   // below min → 2cm
+    expect(cuttingHeightToWire(99)).toBe(7);  // 99mm ≈ 10cm → clamp 9cm
+  });
+});
+
 describe('startMowing busy guard', () => {
   beforeEach(() => {
     deviceCache.delete(sn);
@@ -95,5 +117,21 @@ describe('startMowing busy guard', () => {
     const result = startMowing({ sn });
     expect(result.ok).toBe(true);
     expect(publishToDevice).toHaveBeenCalledOnce();
+  });
+
+  it('sends cutterhigh 7 for a 9cm app schedule (regression: was 5 = 7cm)', () => {
+    setSensors({ work_status: '9', msg: 'Mode:DOCK Work:WAIT' });
+    startMowing({ sn, cuttingHeight: 9 });
+    expect(vi.mocked(publishToDevice).mock.calls[0][1]).toMatchObject({
+      start_navigation: { cutterhigh: 7 },
+    });
+  });
+
+  it('sends cutterhigh 7 for a 90mm dashboard schedule', () => {
+    setSensors({ work_status: '9', msg: 'Mode:DOCK Work:WAIT' });
+    startMowing({ sn, cuttingHeight: 90 });
+    expect(vi.mocked(publishToDevice).mock.calls[0][1]).toMatchObject({
+      start_navigation: { cutterhigh: 7 },
+    });
   });
 });

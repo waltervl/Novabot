@@ -57,6 +57,26 @@ export interface MowingResult {
   error?: string;
 }
 
+/**
+ * Normalise a schedule's stored cutting height to the firmware wire enum
+ * (`cutterhigh = cm − 2`, range 0..7). `dashboard_schedules.cutting_height` is
+ * stored in DIFFERENT units by the two schedule editors, but in DISJOINT
+ * ranges, so we can tell them apart unambiguously:
+ *   - app ScheduleScreen  → user cm  (2..9)
+ *   - dashboard Scheduler → mm       (20..90)
+ * So: ≥ 20 is mm (÷10), anything below is already user cm. Clamp to 2..9 cm.
+ *
+ * This replaces an older value-range heuristic whose "3..11 → legacy cm+2 wire,
+ * subtract 2" branch mis-read app cm values: a 9 cm schedule became 7 cm
+ * (9 − 2). The wire (0..2) and legacy-cm+2 branches are dropped — the only
+ * caller (scheduleRunner) always passes cm or mm, never a wire value.
+ */
+export function cuttingHeightToWire(input: number): number {
+  const displayCm = input >= 20 ? Math.round(input / 10) : input;
+  const clampedCm = Math.max(2, Math.min(9, Math.round(displayCm)));
+  return Math.max(0, clampedCm - 2);
+}
+
 /** Publish a command to the mower. Delegates to publishToDevice which
  *  checks isAesCapable() and falls back to plain JSON for stock v5.x
  *  mowers and charger v0.3.x — both silently drop AES payloads, so
@@ -81,19 +101,9 @@ export function startMowing(params: MowingParams): MowingResult {
     return { ok: false, error: 'mower busy — already in a task' };
   }
 
-  // Normalise input to user cm (2-9), then compute wire value (cm-2).
-  // Accept multiple encodings because older callers used different scales:
-  //   2..9   → user cm (new preferred)
-  //   20..90 → legacy mm → divide by 10
-  //   3..11  → legacy `cm + 2` wire from previous bug → subtract 2
-  //   0..7   → already correct wire value → add 2 to get cm
-  let displayCm: number;
-  if (cuttingHeight >= 20) displayCm = Math.round(cuttingHeight / 10);
-  else if (cuttingHeight >= 3 && cuttingHeight <= 11) displayCm = cuttingHeight - 2;
-  else if (cuttingHeight >= 0 && cuttingHeight <= 2) displayCm = cuttingHeight + 2;
-  else displayCm = cuttingHeight;
-  displayCm = Math.max(2, Math.min(9, displayCm));
-  const cutterhigh = Math.max(0, displayCm - 2);
+  // Normalise the stored cutting height (cm from the app, mm from the dashboard)
+  // to the firmware wire enum. See cuttingHeightToWire.
+  const cutterhigh = cuttingHeightToWire(cuttingHeight);
 
   const cmdNum = Date.now() % 100000;
   sendCommand(sn, {
@@ -105,7 +115,7 @@ export function startMowing(params: MowingParams): MowingResult {
     },
   });
 
-  console.log(`[MowingService] Started: sn=${sn} cutterhigh=${cutterhigh} (=${cutterhigh - 2}cm) dir=${pathDirection}° area=${area}`);
+  console.log(`[MowingService] Started: sn=${sn} cutterhigh=${cutterhigh} (=${cutterhigh + 2}cm) dir=${pathDirection}° area=${area}`);
   return { ok: true };
 }
 
