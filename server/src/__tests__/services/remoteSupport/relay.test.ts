@@ -196,3 +196,34 @@ describe('relay exec RPC (option B)', () => {
     await expect(p).rejects.toThrow(/disconnect/i);
   });
 });
+
+describe('relay agent reconnect (stale-close race)', () => {
+  let relay: Relay;
+  beforeEach(() => { relay = new Relay(); });
+
+  it('evicts the predecessor socket and tracks the current one', () => {
+    const wsA = new FakeWS();
+    const wsB = new FakeWS();
+    relay.attachAgent(SN, wsA as any);
+    expect(relay.isCurrentAgent(SN, wsA as any)).toBe(true);
+
+    relay.attachAgent(SN, wsB as any);          // agent reconnects on a fresh socket
+    expect(wsA.closed).toBe(true);              // stale predecessor is evicted
+    expect(relay.isCurrentAgent(SN, wsB as any)).toBe(true);
+    expect(relay.isCurrentAgent(SN, wsA as any)).toBe(false);
+  });
+
+  it("a delayed close from the replaced socket must NOT drop the live agent", () => {
+    const wsA = new FakeWS();
+    const wsB = new FakeWS();
+    relay.attachAgent(SN, wsA as any);
+    relay.attachAgent(SN, wsB as any);          // reconnect; wsB is now current
+
+    // The WS 'close' handler guards on isCurrentAgent before unregistering.
+    // Replay that guard for the stale predecessor's delayed close:
+    if (relay.isCurrentAgent(SN, wsA as any)) relay.unregisterAgent(SN);
+
+    // The live replacement must still be attached.
+    expect(relay.isCurrentAgent(SN, wsB as any)).toBe(true);
+  });
+});

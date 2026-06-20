@@ -112,7 +112,21 @@ export class Relay {
 
   attachAgent(sn: string, ws: RelaySocket): void {
     const s = this.getOrInit(sn);
+    const prev = s.agent;
     s.agent = ws;
+    // Evict a stale predecessor socket. When an agent reconnects (half-open
+    // old link), the old socket may still be open; close it so it can't keep
+    // lingering. Its delayed 'close' is then ignored via isCurrentAgent().
+    if (prev && prev !== ws) { try { prev.close(); } catch { /* already closed */ } }
+  }
+
+  /** True iff `ws` is STILL this sn's attached agent socket. The agent WS
+   *  'close' handler uses this to ignore a delayed close from a socket that
+   *  has already been replaced by a reconnect — otherwise that stale close
+   *  unregisters the live replacement and the agent goes dark until its own
+   *  heartbeat times out (the "enabled but no connection" flapping). */
+  isCurrentAgent(sn: string, ws: RelaySocket): boolean {
+    return this.sessions.get(sn)?.agent === ws;
   }
 
   attachOperator(sn: string, ws: RelaySocket): void {

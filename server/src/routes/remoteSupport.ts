@@ -349,6 +349,13 @@ export function attachRemoteSupportWebSocket(
       // before forwarding, so we don't need to append here.
     });
     ws.on('close', () => {
+      // Stale-close guard. A half-open predecessor socket can emit 'close'
+      // AFTER the agent already reconnected on a fresh socket. Tearing down by
+      // sn here would then evict the LIVE replacement, so the agent goes dark
+      // until its own heartbeat times out (~40s) — the intermittent
+      // "enabled but no connection" flapping. Only tear down if THIS socket is
+      // still the registered agent for sn.
+      if (!(relay as any).isCurrentAgent?.(sn, ws)) return;
       reg._unregisterAgent(sn);
       relay.clearSessionHooks(sn);
       auditLog?.close();
