@@ -78,6 +78,11 @@ describe('cuttingHeightToWire', () => {
     expect(cuttingHeightToWire(5)).toBe(3); // 5cm
     expect(cuttingHeightToWire(2)).toBe(0); // 2cm
   });
+  it('keeps low cm distinct (old heuristic collapsed 3cm AND 4cm to 2cm)', () => {
+    expect(cuttingHeightToWire(2)).toBe(0); // 2cm
+    expect(cuttingHeightToWire(3)).toBe(1); // 3cm  (old code gave 0 = 2cm)
+    expect(cuttingHeightToWire(4)).toBe(2); // 4cm  (old code gave 0 = 2cm)
+  });
   it('treats dashboard mm (20..90) as mm', () => {
     expect(cuttingHeightToWire(90)).toBe(7); // 90mm = 9cm
     expect(cuttingHeightToWire(50)).toBe(3); // 50mm = 5cm
