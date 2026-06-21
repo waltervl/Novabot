@@ -1672,6 +1672,48 @@ else
     echo "  unicom_mirror.py niet gevonden — overslaan"
 fi
 
+# === Stap 5h3: Seam-fix daemon toevoegen ===
+echo "[5h3/9] Seam-fix daemon toevoegen..."
+
+SEAM_SRC="$SCRIPT_DIR/seam_fix_daemon.py"
+if [ -f "$SEAM_SRC" ]; then
+    cp "$SEAM_SRC" "$NOVABOT_ROOT/scripts/seam_fix_daemon.py"
+    chmod +x "$NOVABOT_ROOT/scripts/seam_fix_daemon.py"
+    echo "  seam_fix_daemon.py gekopieerd naar scripts/"
+
+    # Launch toevoegen aan run_novabot.sh start) blok (geen ROS env nodig, puur pgm-ops)
+    if [ -f "$RUN_NOVABOT" ] && ! grep -q "seam_fix_daemon.py" "$RUN_NOVABOT"; then
+        SEAM_START_BLOCK="/tmp/seam_fix_start_block.sh"
+        cat > "$SEAM_START_BLOCK" << 'SEAMEOF'
+
+  # CUSTOM: Seam-fix daemon - houdt de occupancy-grid (map.pgm) schoon door de door
+  # de stock MapGenerator toegevoegde 'streep'-cellen binnen het gazon vrij te maken
+  # (occupied & inside work-polygon & geen obstakel -> free) + regenereert per-slot.
+  # Voorkomt geblokkeerde return-home + onvolledig maaien tot de onzichtbare streep.
+  # Zie research/documents/per-map-pgm-coverage-bug.md
+  if [ -f "/root/novabot/scripts/seam_fix_daemon.py" ]; then
+      pkill -f "/root/novabot/scripts/seam_fix_daemon.py" 2>/dev/null
+      (python3 /root/novabot/scripts/seam_fix_daemon.py >> $LOGS_PATH/seam_fix_daemon.log 2>&1) &
+      echo "seam_fix_daemon started" >> $LOGS_PATH/seam_fix_daemon.log
+  fi
+SEAMEOF
+        sed -i '' '/start_test.sh/r /tmp/seam_fix_start_block.sh' "$RUN_NOVABOT"
+        rm -f "$SEAM_START_BLOCK"
+        echo "  run_novabot.sh: seam_fix_daemon launch toegevoegd aan start)"
+
+        # Kill toevoegen aan stop) blok
+        SEAM_STOP_BLOCK="/tmp/seam_fix_stop_block.sh"
+        cat > "$SEAM_STOP_BLOCK" << 'SEAMEOF'
+  killall -q -9 seam_fix_daemon.py
+SEAMEOF
+        sed -i '' '/killall -q -9 daemon_monitor.sh/r /tmp/seam_fix_stop_block.sh' "$RUN_NOVABOT"
+        rm -f "$SEAM_STOP_BLOCK"
+        echo "  run_novabot.sh: seam_fix_daemon kill toegevoegd aan stop)"
+    fi
+else
+    echo "  seam_fix_daemon.py niet gevonden — overslaan"
+fi
+
 # === Stap 5i: STM32 MCU firmware — KEEP STOCK v3.6.0 ===
 # DISABLED: v3.6.7 pin_unlock causes motor lock issues (blade calibration broken).
 # The stock v3.6.0 from the source .deb is kept as-is.

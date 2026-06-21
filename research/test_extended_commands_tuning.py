@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -159,10 +159,74 @@ class ExtendedCommandsTuningTest(unittest.TestCase):
             (line("COVERING", fresh - 120), False),     # stale (>60s) -> not active
             ("", False),                                # no work line -> not active
         ]
+        # _cadence_coverage_active() now reads the robot_decision log tail
+        # DIRECTLY (a shell subprocess took ~5s and blew the poll timeout). So
+        # feed the line via a temp log file + patch the log-path resolver, not a
+        # subprocess mock.
         for out, expected in cases:
-            with patch.object(ext.subprocess, "run", return_value=Mock(stdout=out)):
-                active, reason = ext._cadence_coverage_active()
-                self.assertEqual(active, expected, msg=f"{out!r} -> {reason}")
+            with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as lf:
+                lf.write(out)
+                logpath = lf.name
+            try:
+                with patch.object(ext, "_newest_robot_decision_log", return_value=logpath):
+                    active, reason = ext._cadence_coverage_active()
+                    self.assertEqual(active, expected, msg=f"{out!r} -> {reason}")
+            finally:
+                os.unlink(logpath)
+
+
+class MapHelpersTest(unittest.TestCase):
+    """Guards the shared map helpers extracted from the three map handlers
+    (regenerate_per_map_files / generate_empty_map / fix_lawn_seams). These are
+    the only logic those handlers' refactor touched, so they are the regression
+    fence for it."""
+
+    def test_read_xy_csv_parses_comma_and_space_and_skips_junk(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+            f.write("1.0,2.0\n")          # comma
+            f.write("3.0 4.0\n")          # space
+            f.write("\n")                 # blank -> skipped
+            f.write("  5.0 , 6.0 \n")     # padded comma
+            f.write("oops\n")             # < 2 cols -> skipped
+            f.write("7.0,8.0,9.0\n")      # extra col -> first two
+            path = f.name
+        try:
+            self.assertEqual(
+                ext.read_xy_csv(path),
+                [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)],
+            )
+        finally:
+            os.unlink(path)
+
+    def test_read_xy_csv_missing_file_is_empty(self):
+        self.assertEqual(ext.read_xy_csv("/no/such/file.csv"), [])
+
+    def test_parse_map_yaml_extracts_resolution_and_origin(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write("image: map.pgm\nresolution: 0.05\norigin: [-1.5, -2.5, 0.0]\n")
+            path = f.name
+        try:
+            res, ox, oy, txt = ext.parse_map_yaml(path)
+            self.assertEqual((res, ox, oy), (0.05, -1.5, -2.5))
+            self.assertIn("image: map.pgm", txt)  # raw text returned for image rewrite
+        finally:
+            os.unlink(path)
+
+    def test_parse_map_yaml_raises_when_fields_missing(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write("image: map.pgm\n")  # no resolution/origin
+            path = f.name
+        try:
+            with self.assertRaises(ValueError):
+                ext.parse_map_yaml(path)
+        finally:
+            os.unlink(path)
+
+    def test_make_to_px_maps_world_to_pixel_with_y_flip(self):
+        # origin (-1.0, -1.0), 0.1 m/pix, image 100px tall
+        to_px = ext.make_to_px(-1.0, -1.0, 0.1, 100)
+        self.assertEqual(to_px(-1.0, -1.0), (0, 99))   # origin -> bottom-left
+        self.assertEqual(to_px(0.0, 0.0), (10, 89))    # +1m,+1m -> 10px right, row flips
 
 
 if __name__ == "__main__":

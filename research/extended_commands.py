@@ -20,6 +20,7 @@ import json
 import os
 import re
 import signal
+from contextlib import contextmanager
 import socket
 import struct
 import subprocess
@@ -145,6 +146,45 @@ def read_config():
         sn = "LFIN2230700238"
 
     return sn, mqtt_addr, mqtt_port
+
+
+# ── Map/CSV helpers (gedeeld door de map-handlers) ─────────────────────────
+def read_xy_csv(path):
+    """Parse a polygon/polyline CSV: one `x y` or `x,y` pair per line.
+
+    Tolerant: skips blank/short lines, takes the first two columns, and returns
+    [] for an unreadable file. Shared by the per-map / seam / empty-map handlers.
+    """
+    pts = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                a = line.strip().replace(",", " ").split()
+                if len(a) >= 2:
+                    pts.append((float(a[0]), float(a[1])))
+    except Exception:
+        pass
+    return pts
+
+
+def parse_map_yaml(path):
+    """Read resolution + origin x/y from a map.yaml.
+
+    Returns (res, ox, oy, raw_text). Raises ValueError if either field is
+    missing so callers can respond with their own error name.
+    """
+    with open(path) as fh:
+        txt = fh.read()
+    rm = re.search(r"resolution:\s*([0-9.eE+-]+)", txt)
+    om = re.search(r"origin:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)", txt)
+    if not rm or not om:
+        raise ValueError("map.yaml missing resolution/origin")
+    return float(rm.group(1)), float(om.group(1)), float(om.group(2)), txt
+
+
+def make_to_px(ox, oy, res, height_px):
+    """World (x,y) meters -> pixel (col, row) for a map.pgm of the given origin/res."""
+    return lambda x, y: (int((x - ox) / res), (height_px - 1) - int((y - oy) / res))
 
 
 # ── Minimale MQTT 3.1.1 client (geen externe dependencies) ────────────────
@@ -372,6 +412,27 @@ def parse_serial_frames(buf):
     return frames
 
 
+@contextmanager
+def stm32_serial(kill_chassis=True):
+    """Open /dev/ttyACM0 to the STM32, optionally freeing it first.
+
+    chassis_control_node holds the port, so STM32 commands kill it for exclusive
+    access (kill_chassis=True). serial_clear_error is also called in a loop after
+    a verify where chassis is already dead, so it passes kill_chassis=False.
+    Always closes the port — even on exception (the old inline code leaked the fd).
+    """
+    import serial as pyserial
+    if kill_chassis:
+        subprocess.run(["killall", "chassis_control_node"], capture_output=True)
+        time.sleep(0.5)
+    ser = pyserial.Serial("/dev/ttyACM0", 115200, timeout=0.3)
+    try:
+        ser.reset_input_buffer()
+        yield ser
+    finally:
+        ser.close()
+
+
 def serial_clear_error():
     """Send clear error command (CMD 0x23 type=3) to STM32 via serial.
 
@@ -381,28 +442,22 @@ def serial_clear_error():
     Returns:
         dict with result: 0=success, 2=serial error
     """
-    import serial as pyserial
-
     try:
-        ser = pyserial.Serial("/dev/ttyACM0", 115200, timeout=0.3)
-        ser.reset_input_buffer()
+        with stm32_serial(kill_chassis=False) as ser:
+            # Build CMD 0x23 type=3 clear error frame (PIN digits ignored, use 0x30 padding)
+            payload = bytes([0x03, 0x30, 0x30, 0x30, 0x30])  # type=3 + dummy digits
+            frame = build_serial_frame(0x23, payload)
+            log("Clear error TX: " + " ".join("{:02x}".format(b) for b in frame))
 
-        # Build CMD 0x23 type=3 clear error frame (PIN digits ignored, use 0x30 padding)
-        payload = bytes([0x03, 0x30, 0x30, 0x30, 0x30])  # type=3 + dummy digits
-        frame = build_serial_frame(0x23, payload)
-        log("Clear error TX: " + " ".join("{:02x}".format(b) for b in frame))
+            ser.write(frame)
 
-        ser.write(frame)
-
-        # Read response
-        buf = b""
-        t0 = time.time()
-        while time.time() - t0 < 0.5:
-            chunk = ser.read(512)
-            if chunk:
-                buf += chunk
-
-        ser.close()
+            # Read response
+            buf = b""
+            t0 = time.time()
+            while time.time() - t0 < 0.5:
+                chunk = ser.read(512)
+                if chunk:
+                    buf += chunk
 
         for f in parse_serial_frames(buf):
             if len(f) > 5 and f[5] == 0x23:
@@ -430,38 +485,28 @@ def serial_pin_verify(pin_str):
     Returns:
         dict with result: 0=success, 1=wrong PIN, 2=serial error
     """
-    import serial as pyserial
-
     if len(pin_str) != 4 or not pin_str.isdigit():
         return {"result": 1, "error": "PIN must be 4 digits"}
 
     # Convert PIN to ASCII bytes (e.g. "3053" → [0x33, 0x30, 0x35, 0x33])
     pin_bytes = pin_str.encode('ascii')
 
-    # Kill chassis_control_node to get exclusive serial access
-    subprocess.run(["killall", "chassis_control_node"], capture_output=True)
-    time.sleep(0.5)
-
     try:
-        ser = pyserial.Serial("/dev/ttyACM0", 115200, timeout=0.3)
-        ser.reset_input_buffer()
+        with stm32_serial() as ser:  # kills chassis_control_node for exclusive access
+            # Build CMD 0x23 type=2 verify frame
+            payload = bytes([0x02]) + pin_bytes  # type=2 + 4 ASCII digits (NO pad byte)
+            frame = build_serial_frame(0x23, payload)
+            log("PIN verify TX: " + " ".join("{:02x}".format(b) for b in frame))
 
-        # Build CMD 0x23 type=2 verify frame
-        payload = bytes([0x02]) + pin_bytes  # type=2 + 4 ASCII digits (NO pad byte)
-        frame = build_serial_frame(0x23, payload)
-        log("PIN verify TX: " + " ".join("{:02x}".format(b) for b in frame))
+            ser.write(frame)
 
-        ser.write(frame)
-
-        # Read responses for 2 seconds
-        buf = b""
-        t0 = time.time()
-        while time.time() - t0 < 2:
-            chunk = ser.read(512)
-            if chunk:
-                buf += chunk
-
-        ser.close()
+            # Read responses for 2 seconds
+            buf = b""
+            t0 = time.time()
+            while time.time() - t0 < 2:
+                chunk = ser.read(512)
+                if chunk:
+                    buf += chunk
 
         # Parse response frames, look for CMD 0x23
         verify_result = None
@@ -511,25 +556,16 @@ def handle_verify_pin(params, respond):
 
 def handle_query_pin(params, respond):
     """Query stored PIN from STM32 (CMD 0x23 type=0)."""
-    import serial as pyserial
-
-    subprocess.run(["killall", "chassis_control_node"], capture_output=True)
-    time.sleep(0.5)
-
     try:
-        ser = pyserial.Serial("/dev/ttyACM0", 115200, timeout=0.3)
-        ser.reset_input_buffer()
+        with stm32_serial() as ser:  # kills chassis_control_node for exclusive access
+            payload = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # type=0 query
+            frame = build_serial_frame(0x23, payload)
+            ser.write(frame)
 
-        payload = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # type=0 query
-        frame = build_serial_frame(0x23, payload)
-        ser.write(frame)
-
-        buf = b""
-        t0 = time.time()
-        while time.time() - t0 < 1:
-            buf += ser.read(512)
-
-        ser.close()
+            buf = b""
+            t0 = time.time()
+            while time.time() - t0 < 1:
+                buf += ser.read(512)
 
         for f in parse_serial_frames(buf):
             if len(f) > 5 and f[5] == 0x23:
@@ -1980,9 +2016,8 @@ def handle_regenerate_per_map_files(params, respond):
     Response:
       result:0, mirrored:[slot...], skipped_reason:str|null
     """
-    import re as _re
-    import numpy as _np
-    from PIL import Image as _Image, ImageDraw as _ImageDraw
+    import numpy as np
+    from PIL import Image, ImageDraw
 
     OCCUPIED = 0
     INFLATE_M = 0.6      # keep this much extra around each work polygon (the
@@ -2002,21 +2037,6 @@ def handle_regenerate_per_map_files(params, respond):
     whole_yaml = f"{base}/map.yaml"
     whole_pgm = f"{base}/map.pgm"
 
-    def _read_csv(path):
-        pts = []
-        try:
-            with open(path) as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    a = line.replace(",", " ").split()
-                    if len(a) >= 2:
-                        pts.append((float(a[0]), float(a[1])))
-        except Exception:
-            pass
-        return pts
-
     try:
         if not os.path.exists(whole_yaml) or not os.path.exists(whole_pgm):
             respond("regenerate_per_map_files_respond", {
@@ -2028,37 +2048,65 @@ def handle_regenerate_per_map_files(params, respond):
             respond("regenerate_per_map_files_respond", {"result": 1, "error": f"{csv_dir} not found"})
             return
 
-        whole_yaml_content = open(whole_yaml).read()
-        rm = _re.search(r"resolution:\s*([0-9.eE+-]+)", whole_yaml_content)
-        om = _re.search(r"origin:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)", whole_yaml_content)
-        if not rm or not om:
-            respond("regenerate_per_map_files_respond", {"result": 1, "error": "map.yaml missing resolution/origin"})
+        try:
+            res, ox, oy, whole_yaml_content = parse_map_yaml(whole_yaml)
+        except ValueError as e:
+            respond("regenerate_per_map_files_respond", {"result": 1, "error": str(e)})
             return
-        res = float(rm.group(1)); ox = float(om.group(1)); oy = float(om.group(2))
 
-        whole = _np.array(_Image.open(whole_pgm).convert("L"), dtype=_np.uint8)  # (H, W)
+        whole = np.array(Image.open(whole_pgm).convert("L"), dtype=np.uint8)  # (H, W)
         H, W = whole.shape
-
-        def to_px(x, y):
-            return (int((x - ox) / res), (H - 1) - int((y - oy) / res))
+        to_px = make_to_px(ox, oy, res, H)
 
         # discover work slots + every unicom polyline + every obstacle polygon
         slots = set()
         unicom_files = []
         obstacle_files = []
         for fname in os.listdir(csv_dir):
-            m = _re.match(r"^(map\d+)_work\.csv$", fname)
+            m = re.match(r"^(map\d+)_work\.csv$", fname)
             if m:
                 slots.add(m.group(1))
             if fname.endswith("_unicom.csv"):
                 unicom_files.append(fname)
-            if _re.match(r"^map\d+_\d+_obstacle\.csv$", fname):
+            if re.match(r"^map\d+_\d+_obstacle\.csv$", fname):
                 obstacle_files.append(fname)
         if not slots:
             respond("regenerate_per_map_files_respond", {
                 "result": 0, "mirrored": [], "skipped_reason": "no map<N>_work.csv in csv_file/",
             })
             return
+
+        # Seam-fix the in-memory `whole` grid BEFORE masking so every per-slot
+        # pgm is born CLEAN even if `whole` on disk still carries the firmware's
+        # occupied-inside-lawn stripe. map_generator.cpp re-adds that stripe on
+        # every updateMonitorMapData (proven: occupied cells inside covered lawn,
+        # in NO csv). The per-slot pgms — what the coverage planner plans on —
+        # are written ONLY here, so cleaning `whole` here makes them never
+        # striped, closing the race a post-hoc daemon loses at task start (mower
+        # mowed up to the stripe and returned). Rule: an occupied cell strictly
+        # inside a work polygon and not a mapped obstacle must be free. Talud-
+        # safe: raw (un-inflated) work polygons only, nothing outside is touched.
+        _lawn = Image.new("L", (W, H), 0)
+        _ld = ImageDraw.Draw(_lawn)
+        for _sn in sorted(slots):
+            _wp = read_xy_csv(f"{csv_dir}/{_sn}_work.csv")
+            if len(_wp) >= 3:
+                _ld.polygon([to_px(x, y) for (x, y) in _wp], fill=255)
+        _lawn_mask = np.array(_lawn) > 0
+        _obs_img = Image.new("L", (W, H), 0)
+        _od = ImageDraw.Draw(_obs_img)
+        _obw = max(1, 2 * int(round(OBSTACLE_INFLATE_M / res)))
+        for _of in obstacle_files:
+            _op = [to_px(x, y) for (x, y) in read_xy_csv(f"{csv_dir}/{_of}")]
+            if len(_op) >= 3:
+                _od.polygon(_op, fill=255, outline=255)
+                _od.line(_op + [_op[0]], fill=255, width=_obw, joint="curve")
+        _obs_mask = np.array(_obs_img) > 0
+        _seam = (whole < 128) & _lawn_mask & (~_obs_mask)
+        _nseam = int(_seam.sum())
+        if _nseam:
+            whole[_seam] = np.uint8(254)
+            log(f"regenerate_per_map_files: seam-fix freed {_nseam} occupied cell(s) inside lawn before masking")
 
         # Which unicoms connect to a given slot? `map<X>to<Y>_..._unicom`: the two
         # endpoints are map<X> and <Y> (<Y> = "map<M>" or "charge"). A slot owns a
@@ -2067,11 +2115,11 @@ def handle_regenerate_per_map_files(params, respond):
         def unicoms_for(slot):
             out = []
             for uf in unicom_files:
-                mm = _re.match(r"^(map\d+)to(map\d+|charge)", uf)
+                mm = re.match(r"^(map\d+)to(map\d+|charge)", uf)
                 if not mm:
                     continue
                 if mm.group(1) == slot or mm.group(2) == slot:
-                    up = [to_px(x, y) for (x, y) in _read_csv(f"{csv_dir}/{uf}")]
+                    up = [to_px(x, y) for (x, y) in read_xy_csv(f"{csv_dir}/{uf}")]
                     if len(up) >= 2:
                         out.append(up)
             return out
@@ -2085,8 +2133,8 @@ def handle_regenerate_per_map_files(params, respond):
         def obstacles_for(slot):
             out = []
             for of in obstacle_files:
-                if _re.match(rf"^{slot}_\d+_obstacle\.csv$", of):
-                    op = [to_px(x, y) for (x, y) in _read_csv(f"{csv_dir}/{of}")]
+                if re.match(rf"^{slot}_\d+_obstacle\.csv$", of):
+                    op = [to_px(x, y) for (x, y) in read_xy_csv(f"{csv_dir}/{of}")]
                     if len(op) >= 3:
                         out.append(op)
             return out
@@ -2095,7 +2143,7 @@ def handle_regenerate_per_map_files(params, respond):
         dock_px = None
         cs = f"{base}/charging_station_file/charging_station.yaml"
         if os.path.exists(cs):
-            cm = _re.search(r"charging_pose:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)", open(cs).read())
+            cm = re.search(r"charging_pose:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)", open(cs).read())
             if cm:
                 dock_px = to_px(float(cm.group(1)), float(cm.group(2)))
 
@@ -2105,11 +2153,11 @@ def handle_regenerate_per_map_files(params, respond):
 
         mirrored = []
         for slot in sorted(slots):
-            wpts = _read_csv(f"{csv_dir}/{slot}_work.csv")
+            wpts = read_xy_csv(f"{csv_dir}/{slot}_work.csv")
             if len(wpts) < 3:
                 continue
-            mask = _Image.new("L", (W, H), 0)
-            d = _ImageDraw.Draw(mask)
+            mask = Image.new("L", (W, H), 0)
+            d = ImageDraw.Draw(mask)
             poly = [to_px(x, y) for (x, y) in wpts]
             d.polygon(poly, fill=255)                                  # the zone itself
             d.line(poly + [poly[0]], fill=255, width=2 * infl_px, joint="curve")  # inflate the edge
@@ -2118,30 +2166,30 @@ def handle_regenerate_per_map_files(params, respond):
             if dock_px is not None:                                    # keep the dock start cell free
                 d.ellipse([dock_px[0] - dock_r, dock_px[1] - dock_r,
                            dock_px[0] + dock_r, dock_px[1] + dock_r], fill=255)
-            marr = _np.array(mask, dtype=_np.uint8)
-            out = _np.where(marr > 0, whole, _np.uint8(OCCUPIED)).astype(_np.uint8)
+            marr = np.array(mask, dtype=np.uint8)
+            out = np.where(marr > 0, whole, np.uint8(OCCUPIED)).astype(np.uint8)
 
             # Force this slot's mapped obstacles OCCUPIED (the planner plans on
             # this pgm; masking alone can leave an obstacle free if map.pgm never
             # had it). Fill + a min-thickness outline so even tiny obstacles mark.
             obs = obstacles_for(slot)
             if obs:
-                omask = _Image.new("L", (W, H), 0)
-                od = _ImageDraw.Draw(omask)
+                omask = Image.new("L", (W, H), 0)
+                od = ImageDraw.Draw(omask)
                 obs_w = max(1, 2 * int(round(OBSTACLE_INFLATE_M / res)))
                 for op in obs:
                     od.polygon(op, fill=255, outline=255)
                     od.line(op + [op[0]], fill=255, width=obs_w, joint="curve")
-                out = _np.where(_np.array(omask, dtype=_np.uint8) > 0, _np.uint8(OCCUPIED), out).astype(_np.uint8)
+                out = np.where(np.array(omask, dtype=np.uint8) > 0, np.uint8(OCCUPIED), out).astype(np.uint8)
 
             with open(f"{base}/{slot}.pgm", "wb") as fh:
                 fh.write(f"P5\n# CREATOR: map_generator.cpp {res:.3f} m/pix\n{W} {H}\n255\n".encode("ascii"))
                 fh.write(out.tobytes())
             with open(f"{base}/{slot}.yaml", "w") as fh:
-                fh.write(_re.sub(r"^image:\s*\S+\s*$", f"image: {slot}.pgm",
-                                 whole_yaml_content, flags=_re.MULTILINE))
+                fh.write(re.sub(r"^image:\s*\S+\s*$", f"image: {slot}.pgm",
+                                 whole_yaml_content, flags=re.MULTILINE))
             try:
-                _Image.fromarray(out, mode="L").save(f"{base}/{slot}.png")
+                Image.fromarray(out, mode="L").save(f"{base}/{slot}.png")
             except Exception:
                 pass
             mirrored.append(slot)
@@ -2209,25 +2257,14 @@ def handle_generate_empty_map(params, respond):
         respond("generate_empty_map_respond", {"result": 1, "error": f"PIL/numpy import failed: {e}"})
         return
 
-    def _load_csv(path):
-        pts = []
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                a, b = line.split(",")
-                pts.append((float(a), float(b)))
-        return pts
-
     try:
-        work_pts = _load_csv(work_csv)
+        work_pts = read_xy_csv(work_csv)
         if len(work_pts) < 3:
             respond("generate_empty_map_respond", {"result": 1, "error": f"work csv too small: {len(work_pts)} pts"})
             return
 
         obstacle_paths = sorted(glob.glob(f"{csv_dir}/{map_name}_*_obstacle.csv"))
-        obstacle_polys = [_load_csv(p) for p in obstacle_paths]
+        obstacle_polys = [read_xy_csv(p) for p in obstacle_paths]
         obstacle_polys = [p for p in obstacle_polys if len(p) >= 3]
 
         # Compute bbox over all polygons + margin
@@ -2302,6 +2339,106 @@ def handle_generate_empty_map(params, respond):
     except Exception as e:
         log(f"generate_empty_map error: {e}")
         respond("generate_empty_map_respond", {"result": 1, "error": str(e)})
+
+
+def handle_fix_lawn_seams(params, respond):
+    """Remove firmware grid-construction seams INSIDE the mowable area.
+
+    The stock occupancy-grid writer (`map_generator.cpp` in novabot_mapping)
+    can leave a thin OCCUPIED stripe inside the work area when it rebuilds
+    the grid from CSVs (e.g. after a portable restore) rather than building
+    it live from scan data. Such a stripe is in NO csv, sits inside covered
+    lawn, is a perfectly straight artefact, and blocks nav2 return-home
+    (proven on LFIN2231000633: ~0.6 m vertical stripe inside map0/map1).
+
+    Rule: a cell strictly INSIDE a work polygon that is not a mapped
+    obstacle must be free -> flip such occupied cells to free (254).
+    Talud-safe by construction: only cells inside the raw (un-inflated)
+    work polygons are touched; everything outside (boundary / embankment)
+    stays occupied. Obstacles (map<N>_<M>_obstacle.csv) are preserved.
+
+    Run BEFORE regenerate_per_map_files so the per-slot masks inherit the
+    cleaned global grid. Idempotent.
+
+    Optional params: home (default "home0"), thresh (occupied if pixel <
+    thresh, default 128), obstacle_inflate_m (default 0.10).
+    """
+    try:
+        import numpy as np
+        from PIL import Image, ImageDraw
+    except Exception as e:
+        respond("fix_lawn_seams_respond", {"result": 1, "error": f"PIL/numpy import failed: {e}"})
+        return
+
+    home = params.get("home", "home0") if isinstance(params, dict) else "home0"
+    thresh = int(params.get("thresh", 128)) if isinstance(params, dict) else 128
+    obs_inf = float(params.get("obstacle_inflate_m", 0.10)) if isinstance(params, dict) else 0.10
+    base = f"/userdata/lfi/maps/{home}"
+    csv_dir = f"{base}/csv_file"
+    whole_pgm = f"{base}/map.pgm"
+    whole_yaml = f"{base}/map.yaml"
+
+    try:
+        if not os.path.exists(whole_pgm) or not os.path.exists(whole_yaml):
+            respond("fix_lawn_seams_respond", {"result": 1, "error": "map.pgm / map.yaml missing"})
+            return
+        try:
+            res, ox, oy, _ = parse_map_yaml(whole_yaml)
+        except ValueError as e:
+            respond("fix_lawn_seams_respond", {"result": 1, "error": str(e)})
+            return
+        arr = np.array(Image.open(whole_pgm).convert("L"), dtype=np.uint8)
+        H, W = arr.shape
+        to_px = make_to_px(ox, oy, res, H)
+
+        if not os.path.isdir(csv_dir):
+            respond("fix_lawn_seams_respond", {"result": 1, "error": f"{csv_dir} not found"})
+            return
+
+        # lawn mask = union of RAW work polygons (no inflate -> strictly interior, talud-safe)
+        lawn_img = Image.new("L", (W, H), 0)
+        ld = ImageDraw.Draw(lawn_img)
+        n_work = 0
+        for fname in sorted(os.listdir(csv_dir)):
+            if re.match(r"^map\d+_work\.csv$", fname):
+                pts = read_xy_csv(f"{csv_dir}/{fname}")
+                if len(pts) >= 3:
+                    ld.polygon([to_px(x, y) for (x, y) in pts], fill=255)
+                    n_work += 1
+        if n_work == 0:
+            respond("fix_lawn_seams_respond", {"result": 0, "freed": 0, "skipped_reason": "no map<N>_work.csv"})
+            return
+        lawn = np.array(lawn_img) > 0
+
+        # obstacle mask = mapped obstacles + min thickness (MUST stay occupied)
+        obst_img = Image.new("L", (W, H), 0)
+        od = ImageDraw.Draw(obst_img)
+        ow = max(1, 2 * int(round(obs_inf / res)))
+        for fname in os.listdir(csv_dir):
+            if re.match(r"^map\d+_\d+_obstacle\.csv$", fname):
+                op = [to_px(x, y) for (x, y) in read_xy_csv(f"{csv_dir}/{fname}")]
+                if len(op) >= 3:
+                    od.polygon(op, fill=255, outline=255)
+                    od.line(op + [op[0]], fill=255, width=ow, joint="curve")
+        obst = np.array(obst_img) > 0
+
+        fix = (arr < thresh) & lawn & (~obst)
+        freed = int(fix.sum())
+        if freed:
+            arr[fix] = np.uint8(254)
+            with open(whole_pgm + ".tmp", "wb") as fh:
+                fh.write(f"P5\n# CREATOR: map_generator.cpp {res:.3f} m/pix\n{W} {H}\n255\n".encode("ascii"))
+                fh.write(arr.tobytes())
+            os.replace(whole_pgm + ".tmp", whole_pgm)
+            try:
+                Image.fromarray(arr, mode="L").save(f"{base}/map.png")
+            except Exception:
+                pass
+        log(f"fix_lawn_seams: freed {freed} occupied cell(s) inside {n_work} work polygon(s) (home={home})")
+        respond("fix_lawn_seams_respond", {"result": 0, "freed": freed, "work_polygons": n_work, "home": home})
+    except Exception as e:
+        log(f"fix_lawn_seams error: {e}")
+        respond("fix_lawn_seams_respond", {"result": 1, "error": str(e)})
 
 
 def handle_finalize_map_files(params, respond):
@@ -3372,6 +3509,7 @@ COMMANDS = {
     "read_map_files": handle_read_map_files,
     "write_map_files": handle_write_map_files,
     "regenerate_per_map_files": handle_regenerate_per_map_files,
+    "fix_lawn_seams": handle_fix_lawn_seams,
     "recalibrate_charging_pose": handle_recalibrate_charging_pose,
     "start_edge_cut": handle_start_edge_cut,
     "stop_boundary_follow": handle_stop_boundary_follow,
@@ -4634,7 +4772,14 @@ def main():
     # save_recharge_pos writes nothing whether the file is present or absent.)
     start_charging_station_guard()
     start_perception_model_client()
-    start_obstacle_detection_cadence()
+    # Object-detection cadence DISABLED. OpenNova now drives the mower's STOCK
+    # perception directly from obstacle_avoidance_sensitivity (0..3) via
+    # set_para_info (server mapSync forces the cadence republish to level 1).
+    # The cadence's detection windows also flipped semantic mode to FREE_MOVE
+    # (_apply_high), which makes nav ignore the lawn boundary -> the mower drove
+    # over the border mid-cover. Not starting the thread keeps semantic at the
+    # stock LAWN_COVER and the perception model under stock control.
+    # start_obstacle_detection_cadence()  # intentionally disabled
 
     def respond(cmd_name, data):
         """Publiceer een response naar de server."""
