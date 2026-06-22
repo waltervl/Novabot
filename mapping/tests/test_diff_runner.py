@@ -46,3 +46,31 @@ def test_mismatch_when_core_writes_nothing(tmp_path):
     assert not report.all_match
     statuses = {f.name: f.status for f in report.files}
     assert statuses["csv_file/map0_work.csv"] == "missing"
+
+
+def test_differ_when_bytes_change(tmp_path):
+    fx = _make_fixture(tmp_path, before={}, after={"csv_file/map0_work.csv": b"0,0\n"}, request={"type": 1})
+
+    def core_fn(input_dir, request, out_dir):
+        p = out_dir / "csv_file" / "map0_work.csv"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"9,9\n")
+
+    report = run_fixture(fx, core_fn)
+    assert not report.all_match
+    statuses = {f.name: f.status for f in report.files}
+    assert statuses["csv_file/map0_work.csv"] == "differ"
+
+
+def test_extra_when_core_writes_unexpected_file(tmp_path):
+    fx = _make_fixture(tmp_path, before={}, after={}, request={"type": 1})
+
+    def core_fn(input_dir, request, out_dir):
+        p = out_dir / "csv_file" / "x.csv"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"extra\n")
+
+    report = run_fixture(fx, core_fn)
+    assert not report.all_match
+    statuses = {f.name: f.status for f in report.files}
+    assert statuses["csv_file/x.csv"] == "extra"

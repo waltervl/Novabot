@@ -58,8 +58,11 @@ def run_fixture(fixture_dir: Path, core_fn) -> DiffReport:
                 report.files.append(FileDiff(name, "missing", "core produced no such file"))
             elif name not in golden_files:
                 report.files.append(FileDiff(name, "extra", "core produced an unexpected file"))
-            elif g.read_bytes() == o.read_bytes():
-                report.files.append(FileDiff(name, "match"))
             else:
-                report.files.append(FileDiff(name, "differ", f"{len(g.read_bytes())} vs {len(o.read_bytes())} bytes"))
+                g_bytes = g.read_bytes()
+                o_bytes = o.read_bytes()
+                if g_bytes == o_bytes:
+                    report.files.append(FileDiff(name, "match"))
+                else:
+                    report.files.append(FileDiff(name, "differ", f"{len(g_bytes)} vs {len(o_bytes)} bytes"))
         return report
