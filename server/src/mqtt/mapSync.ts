@@ -595,6 +595,20 @@ export function republishObstacleDetection(sn: string): void {
 }
 
 /**
+ * Re-push the per-mower border seam-fix config so it survives a firmware upgrade
+ * that wipes /userdata/lfi/seam_fix.json. Only pushes when the user actually
+ * configured it (a DB row exists) — a never-configured mower keeps the opt-in
+ * default (daemon idle), so we never touch mowers that didn't ask for it.
+ */
+export async function republishSeamFix(sn: string): Promise<void> {
+  const { seamFixRepo } = await import('../db/repositories/index.js');
+  if (!seamFixRepo.get(sn)) return;   // never configured -> leave at opt-in default
+  const cfg = seamFixRepo.getEffective(sn);
+  console.log(`${TAG} seam-fix -> ${sn}: enabled=${cfg.enabled} edge_margin_cm=${cfg.edgeMarginCm}`);
+  publishToExtended(sn, { set_seam_fix: { enabled: cfg.enabled, edge_margin_cm: cfg.edgeMarginCm } });
+}
+
+/**
  * Push een bundel's mower-files VERBATIM naar de maaier via `write_map_files`
  * — exact de push-mechaniek van de admin "Import bundle" → apply-verbatim route
  * (de single restore path). csv_files + charging_station.yaml + rasters worden
@@ -760,6 +774,7 @@ export function onMowerConnected(sn: string): void {
       republishParaSettings(sn);
       republishCoveragePlannerRadius(sn);
       republishObstacleDetection(sn);
+      void republishSeamFix(sn).catch((e) => console.warn(`${TAG} republishSeamFix failed for ${sn}: ${(e as Error)?.message ?? e}`));
 
       // BETA SAFETY (Option A): GEEN automatische map-push naar de maaier. Een
       // cloud-import/factory-reset herstelt alleen de server/app-kopie; de

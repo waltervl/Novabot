@@ -390,3 +390,40 @@ class RainSettingsRepository {
 }
 
 export const rainSettingsRepo = new RainSettingsRepository();
+
+
+interface SeamFixRow { mower_sn: string; enabled: number; edge_margin_cm: number; }
+
+/** Per-mower border seam-fix config (app-controlled). Mirrors the firmware
+ *  `/userdata/lfi/seam_fix.json`; the server re-pushes it to the mower on connect
+ *  so it survives a firmware upgrade that wipes the on-device file. */
+class SeamFixRepository {
+  private _get = db.prepare('SELECT * FROM seam_fix_settings WHERE mower_sn = ?');
+  private _upsert = db.prepare(`
+    INSERT INTO seam_fix_settings (mower_sn, enabled, edge_margin_cm, updated_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(mower_sn) DO UPDATE SET
+      enabled = excluded.enabled,
+      edge_margin_cm = excluded.edge_margin_cm,
+      updated_at = datetime('now')
+  `);
+
+  /** Raw row or null. null = never configured = opt-in default (OFF). */
+  get(mowerSn: string): SeamFixRow | null {
+    return (this._get.get(mowerSn) as SeamFixRow | undefined) ?? null;
+  }
+
+  getEffective(mowerSn: string): { enabled: boolean; edgeMarginCm: number } {
+    const row = this.get(mowerSn);
+    return { enabled: row ? row.enabled === 1 : false, edgeMarginCm: row?.edge_margin_cm ?? 15 };
+  }
+
+  set(mowerSn: string, update: { enabled?: boolean; edgeMarginCm?: number }): void {
+    const cur = this.getEffective(mowerSn);
+    const enabled = update.enabled ?? cur.enabled;
+    const margin = Math.max(0, Math.min(30, update.edgeMarginCm ?? cur.edgeMarginCm));
+    this._upsert.run(mowerSn, enabled ? 1 : 0, margin);
+  }
+}
+
+export const seamFixRepo = new SeamFixRepository();

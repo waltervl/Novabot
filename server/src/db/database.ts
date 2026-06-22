@@ -715,6 +715,17 @@ export function initDb(): void {
     );
   `);
 
+  // Feature: border seam-fix (per-mower, app-controlled). enabled + inward edge
+  // margin (cm). Default OFF = opt-in, so existing mowers stay untouched.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS seam_fix_settings (
+      mower_sn       TEXT    PRIMARY KEY,
+      enabled        INTEGER NOT NULL DEFAULT 0,
+      edge_margin_cm REAL    NOT NULL DEFAULT 15,
+      updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
   // Feature: virtual walls (no-go zones) per maaier
   db.exec(`
     CREATE TABLE IF NOT EXISTS virtual_walls (

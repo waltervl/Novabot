@@ -33,6 +33,7 @@ import os
 import re
 import glob
 import time
+import json
 import ctypes
 import struct
 import select
@@ -49,6 +50,14 @@ OBSTACLE_INFLATE_M = 0.10
 INFLATE_M = 0.6
 UNICOM_W_M = 1.4
 DOCK_R_M = 0.8
+EDGE_MARGIN_M = 0.15         # erode each work polygon inward this much so the mower
+                            # BODY (not just its center path) stays off the border.
+                            # 0 = path may reach the polygon edge (body overhangs).
+                            # Overwritten at runtime from CONFIG_PATH (app-controlled).
+CONFIG_PATH = "/userdata/lfi/seam_fix.json"   # written by extended_commands `set_seam_fix`
+                            # (from the app). {"enabled": bool, "edge_margin_cm": int}.
+                            # Absent/disabled -> daemon idles, so non-opted-in mowers
+                            # are untouched. /userdata survives firmware upgrades.
 
 
 def _read_csv(path):
@@ -164,6 +173,7 @@ def _regenerate_per_slot(base, res, ox, oy, whole, csv_dir, np, Image, ImageDraw
     uw = max(2, int(round(UNICOM_W_M / res)))
     dr = max(2, int(round(DOCK_R_M / res)))
     ow = max(1, 2 * int(round(OBSTACLE_INFLATE_M / res)))
+    edge_px = int(round(EDGE_MARGIN_M / res))
     whole_yaml_content = open(f"{base}/map.yaml").read()
     for slot in sorted(slots):
         wp = _read_csv(f"{csv_dir}/{slot}_work.csv")
@@ -173,7 +183,14 @@ def _regenerate_per_slot(base, res, ox, oy, whole, csv_dir, np, Image, ImageDraw
         d = ImageDraw.Draw(mask)
         poly = [to_px(x, y) for (x, y) in wp]
         d.polygon(poly, fill=255)
-        d.line(poly + [poly[0]], fill=255, width=2 * infl, joint="curve")
+        if edge_px > 0:
+            d.line(poly + [poly[0]], fill=0, width=2 * edge_px, joint="curve")  # erode inward: edge margin so the body stays off the border
+        # ponytail: NO outside halo. The old `d.line(poly, width=2*infl)` added a
+        # ~0.6 m FREE ring OUTSIDE the work polygon, so coverage (which plans on this
+        # pgm) mowed up to 0.6 m over the border — fine on open lawn, but on David's
+        # tight stone/talud edges it drove off. FREE is now clipped to the work
+        # polygon; unicom corridors + the dock disc below are the only legitimate
+        # out-of-polygon free.  (`infl` is now unused but left defined; harmless.)
         for uf in unicom_files:
             mm = re.match(r"^(map\d+)to(map\d+|charge)", uf)
             if mm and (mm.group(1) == slot or mm.group(2) == slot):
@@ -201,6 +218,32 @@ def _regenerate_per_slot(base, res, ox, oy, whole, csv_dir, np, Image, ImageDraw
             Image.fromarray(out, mode="L").save(f"{base}/{slot}.png")
         except Exception:
             pass
+
+
+def _read_config():
+    """(enabled, edge_margin_cm) from CONFIG_PATH. Absent/garbled -> (False, 0.0):
+    opt-in default, so a mower without the app toggle set is never touched."""
+    try:
+        with open(CONFIG_PATH) as fh:
+            c = json.load(fh)
+        return bool(c.get("enabled", False)), float(c.get("edge_margin_cm", 0))
+    except Exception:
+        return False, 0.0
+
+
+def regen_one(base, np, Image, ImageDraw):
+    """Force a per-slot regenerate from the current global map.pgm. Used at startup
+    so a masking change (e.g. dropping the outside halo) takes effect immediately,
+    even when the global is already clean and fix_one would skip the regenerate."""
+    wp = f"{base}/map.pgm"; wy = f"{base}/map.yaml"; cd = f"{base}/csv_file"
+    if not (os.path.exists(wp) and os.path.exists(wy) and os.path.isdir(cd)):
+        return
+    ro = _res_origin(open(wy).read())
+    if not ro:
+        return
+    res, ox, oy = ro
+    arr = np.array(Image.open(wp).convert("L"), dtype=np.uint8)
+    _regenerate_per_slot(base, res, ox, oy, arr, cd, np, Image, ImageDraw)
 
 
 _IN_CLOSE_WRITE = 0x00000008
@@ -258,6 +301,7 @@ class _InotifyWatch:
 
 
 def main():
+    global EDGE_MARGIN_M
     try:
         import numpy as np
         from PIL import Image, ImageDraw
@@ -283,11 +327,29 @@ def main():
         print("[seam_fix] inotify unavailable (%s) -> poll mode %ss" % (e, POLL_SEC), flush=True)
         _heartbeat("started mode=poll")
 
-    sweep()  # clean once at startup
+    enabled, margin_cm = _read_config()
+    EDGE_MARGIN_M = margin_cm / 100.0
+    if enabled:                          # force clean+regen at startup so a config change applies now
+        sweep()
+        for base in glob.glob(MAPS_GLOB):
+            try:
+                regen_one(base, np, Image, ImageDraw)
+            except Exception as e:
+                print("[seam_fix] regen_one %s: %s" % (base, e), flush=True)
+    _heartbeat("started enabled=%s margin=%.2f" % (enabled, EDGE_MARGIN_M))
     it = 0
     last_sweep = 0.0
     while True:
         it += 1
+        enabled, margin_cm = _read_config()   # re-read each loop -> app toggle/margin apply live
+        EDGE_MARGIN_M = margin_cm / 100.0
+        if not enabled:                  # opt-in: idle (no cleaning, no regen) until enabled via the app
+            _heartbeat("iter=%d disabled" % it)
+            if ino is not None:
+                ino.wait(FALLBACK_POLL_SEC)
+            else:
+                time.sleep(POLL_SEC)
+            continue
         try:
             if ino is not None:
                 hit = ino.wait(FALLBACK_POLL_SEC)
@@ -307,7 +369,7 @@ def main():
             _heartbeat("looperr iter=%d %s" % (it, e))
             time.sleep(POLL_SEC)
             continue
-        _heartbeat("iter=%d %s last_freed=%d" % (it, reason, total))
+        _heartbeat("iter=%d %s last_freed=%d margin=%.2f" % (it, reason, total, EDGE_MARGIN_M))
 
 
 def _heartbeat(msg):

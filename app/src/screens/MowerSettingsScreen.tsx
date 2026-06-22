@@ -137,6 +137,9 @@ export default function MowerSettingsScreen() {
   const [rainMm, setRainMm] = useState(0.1);
   const [rainProb, setRainProb] = useState(50);
   const [rainHours, setRainHours] = useState(0.5);
+  // Border seam-fix — loaded from /api/dashboard/seam-fix/:sn, per-mower (opt-in).
+  const [seamFixEnabled, setSeamFixEnabled] = useState(false);
+  const [seamFixMargin, setSeamFixMargin] = useState(15);
 
   const { activeMower: mower, activeMowerSn } = useActiveMower();
   const mowerSn = activeMowerSn ?? '';
@@ -378,6 +381,36 @@ export default function MowerSettingsScreen() {
         setRainHours(data.lookaheadHours);
       } catch { /* ignore */ }
     })();
+  }, [mowerSn]);
+
+  // Load border seam-fix config (server-side, per-mower)
+  useEffect(() => {
+    if (!mowerSn) return;
+    (async () => {
+      try {
+        const url = await getServerUrl();
+        if (!url) return;
+        const res = await fetch(`${url}/api/dashboard/seam-fix/${encodeURIComponent(mowerSn)}`);
+        const data = await res.json() as { enabled: boolean; edgeMarginCm: number };
+        setSeamFixEnabled(data.enabled);
+        setSeamFixMargin(data.edgeMarginCm);
+      } catch { /* ignore */ }
+    })();
+  }, [mowerSn]);
+
+  const saveSeamFix = useCallback(async (patch: Partial<{ enabled: boolean; edgeMarginCm: number }>) => {
+    if (!mowerSn) return;
+    if (patch.enabled !== undefined) setSeamFixEnabled(patch.enabled);
+    if (patch.edgeMarginCm !== undefined) setSeamFixMargin(patch.edgeMarginCm);
+    try {
+      const url = await getServerUrl();
+      if (!url) return;
+      await fetch(`${url}/api/dashboard/seam-fix/${encodeURIComponent(mowerSn)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+    } catch { /* ignore */ }
   }, [mowerSn]);
 
   const saveRain = useCallback(async (patch: Partial<{
@@ -756,6 +789,50 @@ export default function MowerSettingsScreen() {
                       <Text style={[styles.chipText, Math.abs(rainHours - v) < 0.05 && styles.chipTextActive]}>
                         {v < 1 ? `${(v * 60) | 0}m` : `${v}h`}
                       </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+
+        {/* Border seam-fix (per-mower, opt-in) */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>BORDER SEAM-FIX</Text>
+          <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.optionRow}
+              onPress={() => void saveSeamFix({ enabled: !seamFixEnabled })}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="grid-outline" size={20} color={seamFixEnabled ? colors.emerald : colors.textMuted} />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.optionLabel}>Keep off the border</Text>
+                <Text style={styles.optionSub}>
+                  {seamFixEnabled
+                    ? `Stays ${seamFixMargin | 0} cm inside the boundary`
+                    : 'Coverage may reach and slightly cross the boundary'}
+                </Text>
+              </View>
+              <View style={[styles.toggle, seamFixEnabled && styles.toggleActive]}>
+                <View style={[styles.toggleThumb, seamFixEnabled && styles.toggleThumbActive]} />
+              </View>
+            </TouchableOpacity>
+            {seamFixEnabled && (
+              <>
+                <View style={styles.sliderRow}>
+                  <Text style={styles.sliderLabel}>Edge margin</Text>
+                  <Text style={styles.sliderValue}>{seamFixMargin | 0} cm</Text>
+                </View>
+                <View style={styles.chipGrid}>
+                  {[0, 5, 10, 15, 20, 25].map(v => (
+                    <TouchableOpacity
+                      key={v}
+                      style={[styles.chip, seamFixMargin === v && styles.chipActive]}
+                      onPress={() => void saveSeamFix({ edgeMarginCm: v })}
+                    >
+                      <Text style={[styles.chipText, seamFixMargin === v && styles.chipTextActive]}>{v}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>

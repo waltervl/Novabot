@@ -3448,6 +3448,25 @@ dashboardRouter.put('/rain-settings/:sn', async (req: Request, res: Response) =>
   res.json(rainSettingsRepo.getEffective(req.params.sn));
 });
 
+// GET /api/dashboard/seam-fix/:sn — per-mower border seam-fix config (app)
+dashboardRouter.get('/seam-fix/:sn', async (req: Request, res: Response) => {
+  const { seamFixRepo } = await import('../db/repositories/index.js');
+  res.json(seamFixRepo.getEffective(req.params.sn));
+});
+
+// PUT /api/dashboard/seam-fix/:sn — update config + push it to the mower now
+dashboardRouter.put('/seam-fix/:sn', async (req: Request, res: Response) => {
+  const { seamFixRepo } = await import('../db/repositories/index.js');
+  const { republishSeamFix } = await import('../mqtt/mapSync.js');
+  const body = req.body as { enabled?: boolean; edgeMarginCm?: number };
+  seamFixRepo.set(req.params.sn, {
+    enabled: body.enabled,
+    edgeMarginCm: body.edgeMarginCm === undefined ? undefined : Math.max(0, Math.min(30, body.edgeMarginCm)),
+  });
+  await republishSeamFix(req.params.sn);   // set_seam_fix -> mower (writes /userdata/lfi/seam_fix.json)
+  res.json(seamFixRepo.getEffective(req.params.sn));
+});
+
 // GET /api/dashboard/rain-forecast/:sn — regen voorspelling voor een maaier
 //
 // GPS resolutie cascade — Open-Meteo grid is ~1km, dus iedere bron in de

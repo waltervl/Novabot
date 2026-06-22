@@ -1984,6 +1984,43 @@ def handle_write_map_files(params, respond):
         respond("write_map_files_respond", {"result": 1, "error": str(e)})
 
 
+SEAM_FIX_CONFIG = "/userdata/lfi/seam_fix.json"   # shared with seam_fix_daemon.py
+
+
+def _read_seam_fix_config():
+    """(enabled, edge_margin_cm) from SEAM_FIX_CONFIG. Absent/garbled -> (False, 0):
+    opt-in default, so a mower without the app toggle set keeps the legacy behaviour."""
+    try:
+        with open(SEAM_FIX_CONFIG) as fh:
+            c = json.load(fh)
+        return bool(c.get("enabled", False)), float(c.get("edge_margin_cm", 0))
+    except Exception:
+        return False, 0.0
+
+
+def handle_set_seam_fix(params, respond):
+    """App/server -> persist border seam-fix config to /userdata (survives firmware
+    upgrades). The seam_fix_daemon re-reads it live; regenerate reads it too."""
+    try:
+        enabled = bool(params.get("enabled", False))
+        margin = max(0.0, min(30.0, float(params.get("edge_margin_cm", 0))))  # clamp 0..30 cm
+        os.makedirs(os.path.dirname(SEAM_FIX_CONFIG), exist_ok=True)
+        tmp = SEAM_FIX_CONFIG + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"enabled": enabled, "edge_margin_cm": margin}, fh)
+        os.replace(tmp, SEAM_FIX_CONFIG)
+        log(f"set_seam_fix: enabled={enabled} edge_margin_cm={margin}")
+        respond("set_seam_fix_respond", {"result": 0, "enabled": enabled, "edge_margin_cm": margin})
+    except Exception as e:
+        log(f"set_seam_fix error: {e}")
+        respond("set_seam_fix_respond", {"result": 1, "error": str(e)})
+
+
+def handle_get_seam_fix(params, respond):
+    enabled, margin = _read_seam_fix_config()
+    respond("get_seam_fix_respond", {"result": 0, "enabled": enabled, "edge_margin_cm": margin})
+
+
 def handle_regenerate_per_map_files(params, respond):
     """Generate per-map occupancy grids map<N>.yaml/pgm/png by MASKING the
     whole-area map.pgm to each slot's own mowable region.
@@ -2148,6 +2185,8 @@ def handle_regenerate_per_map_files(params, respond):
                 dock_px = to_px(float(cm.group(1)), float(cm.group(2)))
 
         infl_px = max(1, int(round(INFLATE_M / res)))
+        _sf_enabled, _sf_margin_cm = _read_seam_fix_config()   # app-controlled edge behaviour
+        _edge_px = int(round((_sf_margin_cm / 100.0) / res))
         uni_w = max(2, int(round(UNICOM_W_M / res)))
         dock_r = max(2, int(round(DOCK_R_M / res)))
 
@@ -2160,7 +2199,15 @@ def handle_regenerate_per_map_files(params, respond):
             d = ImageDraw.Draw(mask)
             poly = [to_px(x, y) for (x, y) in wpts]
             d.polygon(poly, fill=255)                                  # the zone itself
-            d.line(poly + [poly[0]], fill=255, width=2 * infl_px, joint="curve")  # inflate the edge
+            # Edge behaviour is app-controlled (set_seam_fix). seam-fix ON -> ERODE
+            # inward by edge_margin so the mower BODY stays off tight borders;
+            # OFF -> keep the legacy +0.6 m outside halo so non-opted-in mowers are
+            # unchanged (that halo made coverage mow over the border on tight edges).
+            if _sf_enabled:
+                if _edge_px > 0:
+                    d.line(poly + [poly[0]], fill=0, width=2 * _edge_px, joint="curve")  # erode inward (edge margin)
+            else:
+                d.line(poly + [poly[0]], fill=255, width=2 * infl_px, joint="curve")  # legacy outside halo
             for up in unicoms_for(slot):                               # keep this slot's corridor(s) navigable
                 d.line(up, fill=255, width=uni_w, joint="curve")
             if dock_px is not None:                                    # keep the dock start cell free
@@ -3510,6 +3557,8 @@ COMMANDS = {
     "write_map_files": handle_write_map_files,
     "regenerate_per_map_files": handle_regenerate_per_map_files,
     "fix_lawn_seams": handle_fix_lawn_seams,
+    "set_seam_fix": handle_set_seam_fix,
+    "get_seam_fix": handle_get_seam_fix,
     "recalibrate_charging_pose": handle_recalibrate_charging_pose,
     "start_edge_cut": handle_start_edge_cut,
     "stop_boundary_follow": handle_stop_boundary_follow,
