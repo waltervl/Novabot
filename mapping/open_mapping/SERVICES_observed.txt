@@ -1,0 +1,4 @@
+# Mower verification attempt 2026-06-22
+# Status: mower unreachable (192.168.0.244 timeout or ros2 not sourced)
+# Using provisional SERVICES table from research/firmware RE work.
+# TODO: reconcile on next mower access window.
