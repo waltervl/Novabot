@@ -4,5 +4,6 @@
 # timing (no kill/restart). Mirrors mower/ robot_decision wrapper strategy.
 export ROS_LOCALHOST_ONLY=1
 DEPLOY_DIR=/userdata/open_mapping
+export PYTHONPATH=$DEPLOY_DIR:$PYTHONPATH
 source /root/novabot/install/setup.bash 2>/dev/null
 exec python3 -m open_mapping.node "$@" >>"$DEPLOY_DIR/mapping.log" 2>&1
