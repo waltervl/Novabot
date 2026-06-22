@@ -14,7 +14,7 @@ export SSHPASS=novabot
 SSH="sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no $MOWER_USER@$MOWER"
 SCP="sshpass -e scp -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 
-case "${1:-status}" in
+case "${1:---status}" in
   --status)
     $SSH "test -f $BACKUP && echo 'wrapper INSTALLED (open node active)' || echo 'stock binary active'"
     ;;
@@ -33,7 +33,7 @@ case "${1:-status}" in
     $SSH "mkdir -p $DEPLOY_DIR/open_mapping"
     $SCP -r "$SCRIPT_DIR/open_mapping/." "$MOWER_USER@$MOWER:$DEPLOY_DIR/open_mapping/"
     $SCP "$SCRIPT_DIR/wrapper.sh" "$MOWER_USER@$MOWER:$DEPLOY_DIR/wrapper.sh"
-    $SSH "test -f $BACKUP || cp $BINARY $BACKUP; cp $DEPLOY_DIR/wrapper.sh $BINARY; chmod +x $BINARY"
+    $SSH "(test -f $BACKUP || cp $BINARY $BACKUP) && cp $DEPLOY_DIR/wrapper.sh $BINARY && chmod +x $BINARY"
     echo ">>> Done. Reboot the mower so novabot_launch starts the wrapper."
     ;;
   *) echo "usage: deploy.sh [deploy|--hot|--rollback|--status]"; exit 1 ;;
