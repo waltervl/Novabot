@@ -46,6 +46,10 @@ def run_fixture(fixture_dir: Path, core_fn) -> DiffReport:
         _extract(fixture_dir / "input" / "mapdir_before.tar", in_dir)
         _extract(fixture_dir / "golden" / "mapdir_after.tar", golden_dir)
 
+        rb = fixture_dir / "input" / "recorded_boundary.csv"
+        if rb.exists():
+            (in_dir / "recorded_boundary.csv").write_bytes(rb.read_bytes())
+
         core_fn(in_dir, request, out_dir)
 
         golden_files = _rel_files(golden_dir)
