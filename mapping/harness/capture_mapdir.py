@@ -25,6 +25,7 @@ def mapdir_to_fixture(mapdir: Path, work_map: str, out_fixture: Path) -> None:
         # after: the full written output set (csv_file + rasters + json/yaml)
         shutil.copytree(mapdir, after, dirs_exist_ok=True)
         recorded = (mapdir / "x3_csv_file" / f"{work_map}_work.csv").read_bytes()
-        meta = {"source_mapdir": str(mapdir), "work_map": work_map}
-        request = {"service": "save_map", "type": 1, "resolution": 0.05, "main_id": 0}
+        meta = {"source": "mower home0", "work_map": work_map}
+        main_id = int("".join(c for c in work_map if c.isdigit()) or "0")
+        request = {"service": "save_map", "type": 1, "resolution": 0.05, "main_id": main_id}
         pack_fixture(before, after, request, recorded, meta, out_fixture)
