@@ -323,3 +323,17 @@ def render_per_map_pgm(
 def write_map_yaml(out_dir, image_name: str, origin_xy: tuple) -> None:
     p = Path(out_dir) / image_name.replace(".pgm", ".yaml")
     p.write_text(g.format_map_yaml(image_name, origin_xy))
+
+
+def write_png(out_dir, name: str, pixels: bytes, width: int, height: int) -> None:
+    """Write a grayscale PNG file from raw pixel bytes.
+
+    Args:
+        out_dir: output directory path
+        name:    filename (e.g. 'map0.png')
+        pixels:  H*W uint8 pixel data (same as pgm body from render_pgm etc.)
+        width:   image width in pixels
+        height:  image height in pixels
+    """
+    arr = np.frombuffer(pixels, dtype=np.uint8).reshape(height, width)
+    cv2.imwrite(str(Path(out_dir) / name), arr)
