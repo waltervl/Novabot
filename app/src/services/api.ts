@@ -554,6 +554,18 @@ export class ApiClient {
     return this.request('POST', `/api/dashboard/extended/${enc(sn)}`, { body: command });
   }
 
+  /** Read-only mapping preflight health gate (OpenNova firmware only). Returns
+   *  verdict ok|warn|block + per-check detail. Throws on stock firmware/timeout
+   *  (no extended_commands.py) — callers should treat that as "skip the gate". */
+  async mappingPreflight(sn: string): Promise<{
+    ok: boolean;
+    verdict: 'ok' | 'warn' | 'block';
+    checks: Record<string, { status: string; detail: string }>;
+    reasons: string[];
+  }> {
+    return this.request('POST', `/api/dashboard/mapping-preflight/${enc(sn)}`, { body: {} });
+  }
+
   /** Preview coverage path — what the mower WILL mow, gefetchte via onze
    *  broker intercept van get_preview_cover_path_respond. Veel nauwkeuriger
    *  dan gegenereerde rechte strepen omdat dit het ECHTE pad is dat de

@@ -83,7 +83,9 @@ type MappingMode = 'autonomous' | 'manual';
 //   unicom        → add_scan_map type:4     (channel between two work maps, e.g. map0tomap1_0_unicom)
 //   charge_unicom → add_scan_map type:8     (channel from a work map to the charger, e.g. map0tocharge_unicom)
 // The mower firmware generates the canonical CSV filename based on start/end position at scan time.
-type MapBuildType = 'work' | 'obstacle' | 'unicom' | 'charge_unicom';
+//   modify        → add_scan_map type:4 (MAPPING_EDIT_MODE: redraw a work-map
+//                   boundary; firmware decides expand vs retract by geometry)
+type MapBuildType = 'work' | 'obstacle' | 'unicom' | 'charge_unicom' | 'modify';
 
 function buildTypeToScanType(t: MapBuildType): number {
   // Verified against a successful Novabot-app session that produced
@@ -105,12 +107,29 @@ function buildTypeToScanType(t: MapBuildType): number {
     case 'unicom': return 2;        // verified: map-to-map channel
     case 'charge_unicom': return 8; // NOT verified — Novabot generates charge
                                     // unicom implicitly via save_recharge_pos
+    case 'modify': return 4;        // VERIFIED 2026-06-21 live (LFIN2230700238):
+                                    //   add_scan_map {mapName:"null", type:4}
+                                    //   = MAPPING_EDIT_MODE; firmware merges the
+                                    //   new boundary into the work map by geometry
   }
 }
 
 // NOTE: buildTypeToSaveMapType / buildTypeToStopScanValue were removed —
 // the save/stop flow now follows the verified Novabot two-save protocol
 // inline in handleStop (sub + total for work, single total for unicom).
+
+// What the user is recording, shown as a header badge in every mapping
+// sub-screen. Without this the calibrating/preMapping/mapping screens gave
+// no hint whether you picked Work / Obstacle / Channel — so an obstacle scan
+// silently recorded as a work map (Ramon 2026-06-21). Labels/icons mirror the
+// idle mode selector so the two screens agree.
+const BUILD_TYPE_META: Record<MapBuildType, { label: string; icon: string; color: string }> = {
+  work: { label: 'Work Area', icon: 'map', color: '#10b981' },
+  obstacle: { label: 'Obstacle', icon: 'warning', color: '#f59e0b' },
+  unicom: { label: 'Map Channel', icon: 'swap-horizontal', color: '#3b82f6' },
+  charge_unicom: { label: 'Charger Channel', icon: 'battery-charging', color: '#3b82f6' },
+  modify: { label: 'Modify Map', icon: 'create', color: '#a855f7' },
+};
 
 export default function MappingScreen() {
   const insets = useSafeAreaInsets();
@@ -261,7 +280,12 @@ export default function MappingScreen() {
       const api = new ApiClient(url);
       const res = await api.fetchMaps(sn);
       const loaded = (res.maps ?? [])
-        .filter((m: any) => m.mapArea?.length >= 3)
+        // Work/obstacle are polygons (≥3 pts); a unicom channel is a driven
+        // LINE and can be as few as 2 points. The old flat `>= 3` silently
+        // dropped short channels (e.g. map1tomap2 with 2 pts), so findMissing-
+        // Channels saw map2 as unreachable and demanded a channel that already
+        // existed (Ramon 2026-06-21, LFIN2230700238).
+        .filter((m: any) => (m.mapArea?.length ?? 0) >= (m.mapType === 'unicom' ? 2 : 3))
         .map((m: any) => ({
           mapId: m.mapId,
           mapType: m.mapType ?? 'work',
@@ -871,7 +895,11 @@ export default function MappingScreen() {
     // parent work-map name. Verified 2026-04-19 via live Novabot-app capture
     // on LFIN1231000211. Firmware derives the parent from the active context
     // and auto-indexes the obstacle CSV (e.g. map0_0_obstacle.csv).
-    const wireMapName = mapBuildType === 'obstacle' ? 'map' : mapName;
+    // Modify sends the literal "null" — firmware picks which work map to edit
+    // from the driven-loop geometry (live capture 2026-06-21, LFIN2230700238).
+    const wireMapName = mapBuildType === 'obstacle' ? 'map'
+      : mapBuildType === 'modify' ? 'null'
+      : mapName;
 
     const scanType = buildTypeToScanType(mapBuildType);
     if (existingWorkMapCount === 0) {
@@ -961,7 +989,14 @@ export default function MappingScreen() {
               // Work / obstacle: sub save FIRST, then total save.
               // Obstacle uses mapName:"map" (literal) — verified 2026-04-19 via
               // live Novabot-app capture. Work uses the real map name (map0/map1/...).
-              const saveMapName = mapBuildType === 'obstacle' ? 'map' : activeMapName;
+              // Modify saves the literal constant "map0" REGARDLESS of which map
+              // is edited — the official app always sends "map0" here and the
+              // firmware applies the edit to the geometry-selected map (live
+              // capture 2026-06-21: edited map1, wire said "map0"). Do NOT
+              // substitute the selected map name.
+              const saveMapName = mapBuildType === 'obstacle' ? 'map'
+                : mapBuildType === 'modify' ? 'map0'
+                : activeMapName;
               sendCommand(
                 { save_map: { mapName: saveMapName, type: 0, cmd_num: cmdNumRef.current++ } },
                 'save_map (sub)',
@@ -1009,7 +1044,10 @@ export default function MappingScreen() {
             // follow-up unicom screen can render both shapes immediately. The
             // real row takes ~5–15 s to reach the server DB (mower ZIP upload
             // → parse).
-            if (trailPoints.length >= 3) {
+            // Modify edits an EXISTING work map in place (firmware merges by
+            // geometry) — there's no new shape to stub, and the real edited
+            // polygon arrives via the refresh below. Skip the optimistic push.
+            if (trailPoints.length >= 3 && mapBuildType !== 'modify') {
               const optimisticMap = {
                 mapId: `optimistic-${activeMapName}-${Date.now()}`,
                 mapType: mapBuildType === 'obstacle' ? 'obstacle'
@@ -1247,8 +1285,26 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
           style: 'destructive',
           onPress: () => {
             if (joystickActiveRef.current) stopJoystick();
+            // Send the exit pair over BOTH transports. sendBleCommand is a
+            // silent no-op when BLE has dropped (e.g. after the mower crashes
+            // mid-mapping with error 120), which left the mower wedged in
+            // Mode:MAPPING. MQTT (server → broker → mower) is independent of
+            // BLE, so it lands even when the BLE link is gone — proven on
+            // LFIN2230700238 2026-06-21.
             sendCommand({ stop_erase_map: { cmd_num: cmdNumRef.current++ } }, 'stop_erase_map (cancel)');
             sendCommand({ quit_mapping_mode: { value: 1, cmd_num: cmdNumRef.current++ } }, 'quit_mapping_mode');
+            (async () => {
+              try {
+                const url = await getServerUrl();
+                if (url && sn) {
+                  const api = new ApiClient(url);
+                  await api.sendCommand(sn, { stop_erase_map: { cmd_num: cmdNumRef.current++ } });
+                  await api.sendCommand(sn, { quit_mapping_mode: { value: 1, cmd_num: cmdNumRef.current++ } });
+                }
+              } catch (e) {
+                console.log('[Mapping] MQTT quit_mapping_mode fallback failed', e);
+              }
+            })();
             setMappingState('cancelled');
             setTimeout(() => navigation.goBack(), 500);
           },
@@ -1305,24 +1361,34 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={[styles.container, { paddingTop: insets.top }]}>
-        {/* Header — back-button is disabled while a mandatory unicom is pending */}
+        {/* Header — back always leaves; a pending channel is a non-blocking
+            reminder (banner persists on the Map tab + idle mapping screen). */}
         <View style={styles.header}>
           <TouchableOpacity
-            onPress={() => {
-              if (mustCreateChannel) {
-                appAlertCompat.alert(
-                  'Channel required',
-                  `You have multiple work maps. Create the channel from ${missingMapChannels[0].from} to ${missingMapChannels[0].to} before leaving.`,
-                );
-                return;
-              }
-              navigation.goBack();
-            }}
-            style={[styles.backBtn, mustCreateChannel && { opacity: 0.4 }]}
+            onPress={() => navigation.goBack()}
+            style={styles.backBtn}
           >
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
-          <Text style={styles.title}>{t('createMap', undefined) || 'Create Map'}</Text>
+          <Text style={styles.title}>
+            {mapBuildType === 'modify'
+              ? (t('editMap', undefined) || 'Edit Map')
+              : (t('createMap', undefined) || 'Create Map')}
+          </Text>
+          {/* Recording-mode badge — what you're capturing right now. */}
+          {(['calibrating', 'preMapping', 'mapping', 'stopping'] as MappingState[]).includes(mappingState) && (() => {
+            const meta = BUILD_TYPE_META[mapBuildType];
+            return (
+              <View style={{
+                marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 6,
+                paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14,
+                backgroundColor: meta.color + '22', borderWidth: 1, borderColor: meta.color,
+              }}>
+                <Ionicons name={meta.icon as any} size={14} color={meta.color} />
+                <Text style={{ color: meta.color, fontSize: 12, fontWeight: '700' }}>{meta.label}</Text>
+              </View>
+            );
+          })()}
         </View>
 
         {/* ── Mower offline ── */}
@@ -1444,18 +1510,26 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
 
             {/* Mode selection */}
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>{t('mappingMode', undefined) || 'MAPPING MODE'}</Text>
+              <Text style={styles.cardTitle}>
+                {mapBuildType === 'modify'
+                  ? (t('editMap', undefined) || 'EDIT MAP')
+                  : (t('mappingMode', undefined) || 'MAPPING MODE')}
+              </Text>
 
-              {/* Map type selector.
-                  Obstacle and unicom require at least one existing work map.
-                  Charger channel is NOT exposed — the mower creates it implicitly
-                  from the map0 → charger positioning flow after the first work map save. */}
+              {/* Map type selector — hidden when deep-linked as 'modify' (the
+                  type is fixed; you came here from the Map tab's "Redraw
+                  boundary"). Obstacle/unicom require ≥1 existing work map. */}
+              {mapBuildType !== 'modify' && (
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
                 {(
                   [
                     { key: 'work' as MapBuildType, label: 'Work Area', icon: 'map', color: colors.emerald, needsWork: false },
                     { key: 'obstacle' as MapBuildType, label: 'Obstacle', icon: 'warning', color: '#f59e0b', needsWork: true },
                     { key: 'unicom' as MapBuildType, label: 'Map Channel', icon: 'swap-horizontal', color: '#3b82f6', needsWork: true },
+                    // 'modify' is intentionally NOT a create-map option — editing
+                    // an existing map is reached from the Map tab's edit menu
+                    // ("Redraw boundary"), which deep-links here with
+                    // buildType:'modify' and hides this selector.
                   ] as const
                 ).map(opt => {
                   const disabled = opt.needsWork && existingMaps.filter(m => m.mapType === 'work').length === 0;
@@ -1494,9 +1568,15 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
                   );
                 })}
               </View>
+              )}
               {mapBuildType === 'unicom' && (
                 <Text style={[styles.modeBtnSub, { marginBottom: 12, color: colors.textMuted }]}>
                   Drive from one work map to another. The mower records the path and names it mapXtomapY_N_unicom.
+                </Text>
+              )}
+              {mapBuildType === 'modify' && (
+                <Text style={[styles.modeBtnSub, { marginBottom: 12, color: colors.textMuted }]}>
+                  Drive a new boundary along the edge you want to change. Drive outward to enlarge the area, or inward to cut it away — the mower updates the map it belongs to.
                 </Text>
               )}
 
@@ -2037,7 +2117,9 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
               ? 'Channel saved'
               : lastSaved?.buildType === 'obstacle'
                 ? 'Obstacle saved'
-                : 'Map saved';
+                : lastSaved?.buildType === 'modify'
+                  ? 'Map updated'
+                  : 'Map saved';
             return (
               <View style={styles.centerBox}>
                 <Ionicons
@@ -2048,22 +2130,35 @@ sendCommand({ save_recharge_pos: { mapName: 'map0', cmd_num: cmdNumRef.current++
                 <Text style={styles.centerTitle}>{savedLabel}</Text>
                 <Text style={styles.centerSub}>
                   {mustCreateChannel
-                    ? `You now have multiple work maps. Before you can leave this screen, draw a channel from ${missingMapChannels[0].from} to ${missingMapChannels[0].to} so the mower can move between them.`
+                    ? `You now have multiple work maps. Draw a channel from ${missingMapChannels[0].from} to ${missingMapChannels[0].to} so the mower can move between them — or do it later (the reminder stays on the Map tab).`
                     : lastSaved?.buildType === 'work'
                       ? 'Your map has been uploaded.'
-                      : 'The mower stored the path.'}
+                      : lastSaved?.buildType === 'modify'
+                        ? 'The mower updated the map boundary.'
+                        : 'The mower stored the path.'}
                 </Text>
 
                 {mustCreateChannel ? (
-                  <TouchableOpacity
-                    style={[styles.doneBtn, { marginTop: 20, backgroundColor: '#3b82f6', width: '100%' }]}
-                    onPress={() => startChannelFlow(missingMapChannels[0].from)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.doneBtnText}>
-                      {t('createChannelArrow', { from: missingMapChannels[0].from, to: missingMapChannels[0].to })}
-                    </Text>
-                  </TouchableOpacity>
+                  <>
+                    <TouchableOpacity
+                      style={[styles.doneBtn, { marginTop: 20, backgroundColor: '#3b82f6', width: '100%' }]}
+                      onPress={() => startChannelFlow(missingMapChannels[0].from)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.doneBtnText}>
+                        {t('createChannelArrow', { from: missingMapChannels[0].from, to: missingMapChannels[0].to })}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={{ marginTop: 14, paddingVertical: 10, paddingHorizontal: 16 }}
+                      onPress={() => navigation.goBack()}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={{ color: colors.textDim, fontSize: 15, fontWeight: '600' }}>
+                        {t('later', undefined) || 'Later'}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
                 ) : (
                   <TouchableOpacity
                     style={[styles.doneBtn, { marginTop: 16 }]}

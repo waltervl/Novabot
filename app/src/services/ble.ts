@@ -143,13 +143,15 @@ export function scanForDevices(
       // Name matching is case-INSENSITIEF. Firmware broadcastet soms
       // "NOVABOT" (charger-bootloader), "Novabot" (mower AP-mode), of
       // "novabot" (custom-firmware build). Allemaal geldig als mower.
-      // Idem voor "CHARGER_PILE" / "Charger_Pile". De BLE-prefix check
-      // (LFIC/LFIN in de SN) is al case-sensitief want dat zijn vaste
-      // firmware-constanten.
+      // Idem voor "CHARGER_PILE" / "Charger_Pile". De SN-prefix (LFIC/LFIN)
+      // moet OOK case-insensitief: een maaier kan zijn BLE local-name als
+      // de SN in lowercase uitzenden (bevestigd 2026-06-21 op LFIN2230700238:
+      // BlueZ-alias "lfin2230700238" → de oude `startsWith('LFIN')` miste 'm,
+      // dus de app zag de maaier niet terwijl .100 als "Novabot" wél matchte).
       const nameUpper = (device.name ?? '').toUpperCase();
       let type: DeviceType | 'unknown' = 'unknown';
-      if (nameUpper === 'CHARGER_PILE' || device.name?.startsWith('LFIC')) type = 'charger';
-      if (nameUpper === 'NOVABOT' || device.name?.startsWith('LFIN')) type = 'mower';
+      if (nameUpper === 'CHARGER_PILE' || nameUpper.startsWith('LFIC')) type = 'charger';
+      if (nameUpper === 'NOVABOT' || nameUpper.startsWith('LFIN')) type = 'mower';
 
       // Android-only MAC filter — if the active mower's MAC is known and
       // doesn't match this advertisement, suppress the result so the

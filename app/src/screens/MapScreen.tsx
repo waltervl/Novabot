@@ -174,6 +174,33 @@ function isChargerUnicom(map: Pick<MapData, 'mapName'> & { fileName?: string | n
   return candidates.some(v => /tocharge_unicom/i.test(v));
 }
 
+// A map-to-map channel (mapXtomapY_N_unicom) belongs to BOTH endpoint zones.
+// getMapFamilyKey only sees the first prefix ("map0" for "map0tomap1..."), so
+// counting channels by family alone attributes each channel to one zone only —
+// that undercounts every higher-index zone (map1 lost map0tomap1). Match either
+// endpoint instead. Returns the obstacle + real-channel counts for one zone, the
+// single source of truth shared by the hero meta and the per-zone card so they
+// can never disagree (Ramon 2026-06-21).
+function countZoneFeatures(
+  zone: Pick<MapData, 'mapId' | 'mapName'>,
+  allMaps: MapData[],
+): { obstacles: number; channels: number } {
+  const fam = getMapFamilyKey(zone);
+  let obstacles = 0;
+  let channels = 0;
+  for (const m of allMaps) {
+    if (m.mapId === zone.mapId || m.mapType === 'work') continue;
+    if (m.mapType === 'obstacle') {
+      if (fam && getMapFamilyKey(m) === fam) obstacles++;
+    } else if (m.mapType === 'unicom' && !isChargerUnicom(m)) {
+      const name = m.canonicalName ?? (m as { fileName?: string | null }).fileName ?? m.mapName ?? '';
+      const pair = name.match(/(map\d+)to(map\d+)/i);
+      if (fam && pair && (pair[1].toLowerCase() === fam || pair[2].toLowerCase() === fam)) channels++;
+    }
+  }
+  return { obstacles, channels };
+}
+
 /**
  * Returns true if the mower-generated default obstacle name should be
  * considered "no meaningful name". Firmware's save_map generates file names
@@ -317,12 +344,50 @@ export default function MapScreen() {
 
   // Show ALL maps always — selected work map is green, others are greyed out
   const visibleMaps = useMemo(() => maps, [maps]);
-  const legendMaps = useMemo(
-    () => visibleMaps.filter((map) => map.mapId !== selectedWorkMap?.mapId),
-    [selectedWorkMap, visibleMaps],
-  );
 
   const { activeMower: mower } = useActiveMower();
+
+  // Read-only mapping preflight gate. Runs BEFORE navigating into any map
+  // action (create / edit-redraw / unicom) so a `block` popup shows here on
+  // MapScreen and simply prevents navigation — instead of appearing behind the
+  // Create-Map screen. block → stop; warn → confirm; stock fw / timeout → skip
+  // (never blocks non-OpenNova mowers). Returns true when it's OK to proceed.
+  const mappingPreflightGate = async (): Promise<boolean> => {
+    const sn = mower?.sn;
+    let pf: { verdict: 'ok' | 'warn' | 'block'; reasons: string[] } | null = null;
+    try {
+      const url = await getServerUrl();
+      if (!url || !sn) return true;
+      pf = await new ApiClient(url).mappingPreflight(sn);
+    } catch {
+      return true; // stock firmware / timeout — don't block the OpenNova-only gate
+    }
+    if (!pf || pf.verdict === 'ok') return true;
+    const reasons = (pf.reasons ?? []).map(r => `• ${r}`).join('\n');
+    if (pf.verdict === 'block') {
+      appAlertCompat.alert(
+        t('preflightBlockTitle') || 'Mower not ready to map',
+        (t('preflightBlockBody') || 'A known mapping blocker is present. Resolve it and try again:') + '\n\n' + reasons,
+      );
+      return false;
+    }
+    return await new Promise<boolean>((resolve) => {
+      appAlertCompat.alert(
+        t('preflightWarnTitle') || 'Mapping health warning',
+        (t('preflightWarnBody') || 'The mower reported issues that may affect mapping:') + '\n\n' + reasons,
+        [
+          { text: t('cancel') || 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          { text: t('proceedAnyway') || 'Proceed anyway', onPress: () => resolve(true) },
+        ],
+      );
+    });
+  };
+
+  // Run the preflight, then navigate to the mapping flow only if not blocked.
+  const gateThenNavigate = async (params?: Record<string, unknown>) => {
+    if (!(await mappingPreflightGate())) return;
+    (navigation as any).navigate('Mapping', params);
+  };
 
   // Mower position from ROS2 localization (map_position_x/y) — already in local meters, much more accurate than GPS
   const mowerLocal: LocalPoint | null = useMemo(() => {
@@ -1057,8 +1122,10 @@ export default function MapScreen() {
 
   const hasData = visibleMaps.length > 0 || trailLocal.length > 0 || mowerLocal;
   const selectedAreaSqMeters = selectedWorkMap ? polygonAreaSqMeters(selectedWorkMap.mapArea) : 0;
-  const relatedObstacleCount = legendMaps.filter((map) => map.mapType === 'obstacle').length;
-  const relatedChannelCount = legendMaps.filter((map) => map.mapType === 'unicom' && !isChargerUnicom(map)).length;
+  // Hero meta = the SELECTED zone's own obstacles + channels (either-endpoint),
+  // same counter the per-zone card uses, so the two lines always agree.
+  const { obstacles: relatedObstacleCount, channels: relatedChannelCount } =
+    selectedWorkMap ? countZoneFeatures(selectedWorkMap, maps) : { obstacles: 0, channels: 0 };
   // Adjacent work-map pairs with no inter-zone unicom between them. The mower
   // can't drive between unconnected zones, so we surface a one-tap entry to
   // record the missing channel (the actual recording happens in MappingScreen).
@@ -1096,7 +1163,22 @@ export default function MapScreen() {
             </TouchableOpacity>
             {selectedWorkMap && (
               <TouchableOpacity
-                onPress={() => (navigation as any).navigate('MapEdit', { sn: mower?.sn })}
+                onPress={() => setSheetState({
+                  visible: true,
+                  title: t('editMap') || 'Edit Map',
+                  actions: [
+                    {
+                      label: t('redrawBoundary') || 'Redraw boundary (drive)',
+                      icon: 'navigate-outline',
+                      onPress: () => gateThenNavigate({ buildType: 'modify' }),
+                    },
+                    {
+                      label: t('advancedEdit') || 'Advanced edit (in-app)',
+                      icon: 'create-outline',
+                      onPress: () => (navigation as any).navigate('MapEdit', { sn: mower?.sn }),
+                    },
+                  ],
+                })}
                 style={styles.toolbarMenuButton}
                 activeOpacity={0.82}
               >
@@ -1105,7 +1187,7 @@ export default function MapScreen() {
             )}
             <TouchableOpacity
               testID="map-create"
-              onPress={() => (navigation as any).navigate('Mapping')}
+              onPress={() => gateThenNavigate()}
               style={styles.addButton}
               activeOpacity={0.7}
             >
@@ -1116,7 +1198,7 @@ export default function MapScreen() {
 
         {missingChannels.length > 0 && !loading && (
           <TouchableOpacity
-            onPress={() => (navigation as any).navigate('Mapping', { buildType: 'unicom' })}
+            onPress={() => gateThenNavigate({ buildType: 'unicom' })}
             activeOpacity={0.8}
             style={{
               flexDirection: 'row',
@@ -1498,14 +1580,7 @@ export default function MapScreen() {
                       >
                         {workMaps.map((map, index) => {
                           const areaSqMeters = polygonAreaSqMeters(map.mapArea);
-                          const familyKey = getMapFamilyKey(map);
-                          const linkedMaps = maps.filter((candidate) => {
-                            if (candidate.mapId === map.mapId || candidate.mapType === 'work') return false;
-                            if (!familyKey) return workMaps.length === 1;
-                            return getMapFamilyKey(candidate) === familyKey;
-                          });
-                          const obstacleCount = linkedMaps.filter((candidate) => candidate.mapType === 'obstacle').length;
-                          const channelCount = linkedMaps.filter((candidate) => candidate.mapType === 'unicom' && !isChargerUnicom(candidate)).length;
+                          const { obstacles: obstacleCount, channels: channelCount } = countZoneFeatures(map, maps);
 
                           return (
                             <View key={map.mapId} style={[styles.zonePanelPage, { width: PANEL_PAGE_WIDTH }]}>

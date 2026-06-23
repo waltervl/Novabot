@@ -211,16 +211,25 @@ function LiveMapViewInner({ points, orientation, closed, height = 150, width, ex
           const mx = hasTrail ? cursorX : mowerSvg.sx;
           const my = hasTrail ? cursorY : mowerSvg.sy;
           const degHeading = -(orientation * 180 / Math.PI);
-          const mowerSize = 20;
+          // Standalone (e.g. "Drive to Start Point", no trail yet): the same
+          // Novabot mower icon as the recording screen, but bigger + a faint
+          // glow behind it so it doesn't vanish behind the existing-map
+          // polygons on a small map (Ramon 2026-06-21).
+          const mowerSize = hasTrail ? 20 : 34;
           return (
-            <G transform={`translate(${mx}, ${my}) rotate(${degHeading})`}>
-              <SvgImage
-                x={-mowerSize / 2}
-                y={-mowerSize * 0.35}
-                width={mowerSize}
-                height={mowerSize * 0.68}
-                href={require('../../assets/lawn_mower.png')}
-              />
+            <G>
+              {!hasTrail && (
+                <Circle cx={mx} cy={my} r={mowerSize * 0.55} fill={colors.emerald} opacity={0.18} />
+              )}
+              <G transform={`translate(${mx}, ${my}) rotate(${degHeading})`}>
+                <SvgImage
+                  x={-mowerSize / 2}
+                  y={-mowerSize * 0.35}
+                  width={mowerSize}
+                  height={mowerSize * 0.68}
+                  href={require('../../assets/lawn_mower.png')}
+                />
+              </G>
             </G>
           );
         })()}
