@@ -32,3 +32,15 @@ them up.
   single-line files.
 - `tarfile.extractall(..., filter="data")` once on Python ≥3.12 (silences the dev-box
   DeprecationWarning; not valid on the Py3.8 mower target, so guard by version).
+
+## Phase 2 follow-ups (from Phase 1 final review)
+
+Phase 1 delivered FUNCTIONAL 1:1 (byte-exact text outputs + clean csv offset + geometrically-correct rasters). These deferred to Phase 2 (the recording subsystem, which gives the in-memory geometry):
+
+- **True raster byte-exactness (the core deferral).** pgm/png can't be byte-reproduced from disk x3 (firmware rasterises from an in-memory polygon post-SimplifyPolygons/expandPolygon + morphology dilate + dock circles, differing ~4-11 cells; corpus map.pgm also had navfix). Validate raster byte-exactness via a RUNTIME open-vs-stock comparison once the open node does its own recording→offset→simplify (Phase 2).
+- **(Important) Orchestrator rasters not fidelity-checked end-to-end.** `save_map` derives canvas bounds from x3 (→375×246 vs golden 379×257), so `test_save_full.py`'s fidelity branch is dead code for the current corpus; the ~92-96% fidelity is only proven in `test_per_map_pgm`/`test_global_pgm` with hardcoded `CORPUS_BOUNDS`. In Phase 2, wire the post-simplify bounds and assert the orchestrator reaches the documented fidelity end-to-end.
+- **`render_per_map_pgm` + global obstacle scope + `raster.py` bounds-param footgun.** Refactor the raster API once Phase 2 supplies real bounds (the bounds-param footgun is the same root cause as the fidelity gap).
+- **overlap code 3 (CROSS_MULTI_MAPS).** Implement when a save path needs it (documented TODO).
+- **Strategy-C clean csv vs the fan.** csv_file is the clean offset (snapshot-validated), not the stock patched-ClipperLib fan — this is effectively the intended Phase-5 fan fix arriving early; keep as-is.
+- **Corpus diversity.** The 3 fixtures share one home0; add a second physical-map fixture (another mower / a Phase-2 runtime capture).
+- **Minor cleanups:** `parse_csv` malformed-line guard; `clipper` redundant float round-trip; inner imports.
