@@ -66,9 +66,40 @@ def _load_corpus(tmp_root: Path):
     golden = {}
     for pgm_path in sorted(out_dir.glob("*.pgm")):
         data = pgm_path.read_bytes()
+
+        # Parse P5 PGM header: magic, optional comments, width+height, maxval, then pixels.
+        # Real P5 headers can have variable comment lines (#...).
         pos = 0
-        for _ in range(4):
-            pos = data.index(b"\n", pos) + 1
+
+        # Read magic (P5)
+        newline_pos = data.index(b"\n", pos)
+        magic = data[pos:newline_pos].decode('ascii').strip()
+        assert magic == 'P5', f"Expected P5, got {magic}"
+        pos = newline_pos + 1
+
+        # Skip any comment lines and read width/height
+        width = None
+        height = None
+        while width is None:
+            newline_pos = data.index(b"\n", pos)
+            line = data[pos:newline_pos].decode('ascii').strip()
+            pos = newline_pos + 1
+
+            if line.startswith('#'):
+                continue  # Skip comment
+
+            # Parse width and height from "379 257"
+            parts = line.split()
+            width = int(parts[0])
+            height = int(parts[1])
+            break
+
+        # Read maxval (255)
+        newline_pos = data.index(b"\n", pos)
+        maxval = int(data[pos:newline_pos].decode('ascii').strip())
+        pos = newline_pos + 1
+
+        # Pixel body starts at pos
         golden[pgm_path.name] = np.frombuffer(data[pos:], dtype=np.uint8)
     return areas, golden
 
@@ -262,20 +293,20 @@ def test_render_per_map_pgm_corpus_correct_canvas():
     """With corpus bounds, render_per_map_pgm(1, ...) produces a 379x257 canvas."""
     with tempfile.TemporaryDirectory() as td:
         areas, _ = _load_corpus(Path(td))
-    w, h = raster.grid_size(CORPUS_BOUNDS)
-    body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
-    assert (w, h) == (379, 257), f"Expected 379x257 canvas, got {w}x{h}"
-    assert len(body) == 379 * 257, "Pixel body length mismatch"
+        w, h = raster.grid_size(CORPUS_BOUNDS)
+        body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
+        assert (w, h) == (379, 257), f"Expected 379x257 canvas, got {w}x{h}"
+        assert len(body) == 379 * 257, "Pixel body length mismatch"
 
 
 def test_render_per_map_pgm_corpus_binary_values_only():
     """With corpus bounds, all pixel values are FREE (254) or OCCUPIED (0)."""
     with tempfile.TemporaryDirectory() as td:
         areas, _ = _load_corpus(Path(td))
-    body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
-    arr = np.frombuffer(body, dtype=np.uint8)
-    unique = set(arr.tolist())
-    assert unique <= {0, 254}, f"Unexpected pixel values: {unique - {0, 254}}"
+        body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
+        arr = np.frombuffer(body, dtype=np.uint8)
+        unique = set(arr.tolist())
+        assert unique <= {0, 254}, f"Unexpected pixel values: {unique - {0, 254}}"
 
 
 def test_render_per_map_pgm_corpus_subset_of_golden_global():
@@ -288,17 +319,17 @@ def test_render_per_map_pgm_corpus_subset_of_golden_global():
     with tempfile.TemporaryDirectory() as td:
         areas, golden = _load_corpus(Path(td))
 
-    body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
-    our = np.frombuffer(body, dtype=np.uint8)
-    global_arr = golden["map.pgm"]
+        body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
+        our = np.frombuffer(body, dtype=np.uint8)
+        global_arr = golden["map.pgm"]
 
-    assert our.shape == global_arr.shape, f"Shape mismatch: {our.shape} vs {global_arr.shape}"
+        assert our.shape == global_arr.shape, f"Shape mismatch: {our.shape} vs {global_arr.shape}"
 
-    fp = int(((our == 254) & (global_arr == 0)).sum())
-    assert fp == 0, (
-        f"Our map1 render has {fp} FREE pixels not in the golden global map.pgm. "
-        f"FREE(mapN) ⊆ FREE(map) invariant violated."
-    )
+        fp = int(((our == 254) & (global_arr == 0)).sum())
+        assert fp == 0, (
+            f"Our map1 render has {fp} FREE pixels not in the golden global map.pgm. "
+            f"FREE(mapN) ⊆ FREE(map) invariant violated."
+        )
 
 
 def test_render_per_map_pgm_corpus_high_fidelity():
@@ -311,21 +342,24 @@ def test_render_per_map_pgm_corpus_high_fidelity():
     with tempfile.TemporaryDirectory() as td:
         areas, golden = _load_corpus(Path(td))
 
-    body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
-    our = np.frombuffer(body, dtype=np.uint8)
-    gold = golden["map1.pgm"]
+        body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
+        our = np.frombuffer(body, dtype=np.uint8)
+        gold = golden["map1.pgm"]
 
-    assert our.shape == gold.shape, f"Shape mismatch: {our.shape} vs {gold.shape}"
+        assert our.shape == gold.shape, f"Shape mismatch: {our.shape} vs {gold.shape}"
 
-    diff = int((our != gold).sum())
-    fp = int(((our == 254) & (gold == 0)).sum())
-    fidelity = 100 * (1 - diff / gold.size)
+        diff = int((our != gold).sum())
+        fp = int(((our == 254) & (gold == 0)).sum())
+        # Fidelity uses whole-canvas denominator (includes OCCUPIED agreement);
+        # ~87% baseline is all-black floor. Safety-relevant invariant is the
+        # separate corpus_subset_of_golden_global test (fp==0 vs firmware global).
+        fidelity = 100 * (1 - diff / gold.size)
 
-    assert fidelity >= 85.0, (
-        f"Pixel fidelity {fidelity:.2f}% < 85% threshold. "
-        f"{diff} pixels differ (FP={fp}, FN={diff - fp}). "
-        f"Our FREE={int((our == 254).sum())}, Golden FREE={int((gold == 254).sum())}."
-    )
+        assert fidelity >= 85.0, (
+            f"Pixel fidelity {fidelity:.2f}% < 85% threshold. "
+            f"{diff} pixels differ (FP={fp}, FN={diff - fp}). "
+            f"Our FREE={int((our == 254).sum())}, Golden FREE={int((gold == 254).sum())}."
+        )
 
 
 @pytest.mark.xfail(
@@ -346,20 +380,20 @@ def test_render_per_map_pgm_corpus_byte_exact():
     with tempfile.TemporaryDirectory() as td:
         areas, golden = _load_corpus(Path(td))
 
-    body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
-    our = np.frombuffer(body, dtype=np.uint8)
-    gold = golden["map1.pgm"]
+        body = raster.render_per_map_pgm(1, areas, CORPUS_BOUNDS)
+        our = np.frombuffer(body, dtype=np.uint8)
+        gold = golden["map1.pgm"]
 
-    assert our.shape == gold.shape
-    diff = int((our != gold).sum())
-    fp = int(((our == 254) & (gold == 0)).sum())
-    fn = int(((our == 0) & (gold == 254)).sum())
-    fidelity = 100 * (1 - diff / gold.size)
+        assert our.shape == gold.shape
+        diff = int((our != gold).sum())
+        fp = int(((our == 254) & (gold == 0)).sum())
+        fn = int(((our == 0) & (gold == 254)).sum())
+        fidelity = 100 * (1 - diff / gold.size)
 
-    assert body == golden["map1.pgm"].tobytes(), (
-        f"Pixel mismatch: {diff} pixels differ ({fidelity:.2f}% fidelity) "
-        f"FP={fp}, FN={fn}. "
-        f"Our FREE={int((our == 254).sum())}, Golden FREE={int((gold == 254).sum())}. "
-        f"Cause: firmware uses in-memory polygon (not x3 CSV) + navfix applied. "
-        f"Binary-replay required for byte-exact reproduction."
-    )
+        assert body == golden["map1.pgm"].tobytes(), (
+            f"Pixel mismatch: {diff} pixels differ ({fidelity:.2f}% fidelity) "
+            f"FP={fp}, FN={fn}. "
+            f"Our FREE={int((our == 254).sum())}, Golden FREE={int((gold == 254).sum())}. "
+            f"Cause: firmware uses in-memory polygon (not x3 CSV) + navfix applied. "
+            f"Binary-replay required for byte-exact reproduction."
+        )
