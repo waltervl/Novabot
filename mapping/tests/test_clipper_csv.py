@@ -8,6 +8,7 @@ The stock binary uses a patched ClipperLib with one extra arc point, producing
 551-pt main — correct and deterministic.  The snapshot pins our clean output
 for regression testing.
 """
+import os
 import tarfile
 import tempfile
 from pathlib import Path
@@ -43,7 +44,13 @@ def test_csv_file_map0_strategy_c_snapshot():
         produced, contours = _run(Path(td))
 
     if not GOLDEN.exists():
-        # First-run: write the snapshot and skip (caller must commit the file).
+        # Snapshot missing: CI guard or first-run.
+        if os.environ.get("CI"):
+            import pytest
+            pytest.fail(
+                f"clean snapshot missing in CI — regenerate locally and commit: {GOLDEN}"
+            )
+        # First-run (local): write the snapshot and skip (caller must commit the file).
         GOLDEN.parent.mkdir(parents=True, exist_ok=True)
         GOLDEN.write_bytes(produced)
         import pytest

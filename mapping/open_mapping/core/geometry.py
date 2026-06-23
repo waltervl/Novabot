@@ -3,7 +3,8 @@
 Float formats reverse-engineered from real mower files:
 - csv lines: 2 decimals, comma, LF.
 - map_info.json: jsoncpp StyledWriter — 3-space indent, ' : ' separator, floats
-  as Python repr (shortest round-trip, matches the doubles on disk).
+  formatted with %.17g (matches jsoncpp's double output; Python repr diverges
+  on some values).
 - map yaml: resolution/origin %.6f, fixed thresholds; trailing blank line (as
   written by the stock node, confirmed from real corpus mapN.yaml files).
 """
