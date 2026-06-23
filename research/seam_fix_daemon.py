@@ -246,6 +246,68 @@ def regen_one(base, np, Image, ImageDraw):
     _regenerate_per_slot(base, res, ox, oy, arr, cd, np, Image, ImageDraw)
 
 
+def enforce_obstacles_occupied(base, np, Image, ImageDraw):
+    """ALWAYS-ON invariant, independent of the seam-fix opt-in: a mapped obstacle
+    must be OCCUPIED in BOTH the nav map (map.pgm) and the per-slot coverage grids
+    (mapN.pgm). The firmware leaves obstacles FREE in map.pgm and rewrites it on
+    every task/monitor update, so nav2 drove through them (verified LFIN2231000633
+    2026-06-22: firebowl free in map.pgm). We punch obstacles occupied IN PLACE —
+    no re-masking — so a non-opted-in mower's free region is otherwise untouched.
+    Idempotent: writes only when a cell actually changes. Returns cells occupied."""
+    yaml_p = f"{base}/map.yaml"
+    csv_dir = f"{base}/csv_file"
+    if not (os.path.exists(yaml_p) and os.path.isdir(csv_dir)):
+        return 0
+    ro = _res_origin(open(yaml_p).read())
+    if not ro:
+        return 0
+    res, ox, oy = ro
+    obst_polys = []
+    for fname in os.listdir(csv_dir):
+        if re.match(r"^map\d+_\d+_obstacle\.csv$", fname):
+            p = _read_csv(f"{csv_dir}/{fname}")
+            if len(p) >= 3:
+                obst_polys.append(p)
+    if not obst_polys:
+        return 0
+    ow = max(1, 2 * int(round(OBSTACLE_INFLATE_M / res)))
+    total = 0
+    for pgm in [f"{base}/map.pgm"] + sorted(glob.glob(f"{base}/map[0-9]*.pgm")):
+        if not os.path.exists(pgm):
+            continue
+        arr = np.array(Image.open(pgm).convert("L"), dtype=np.uint8)
+        H, W = arr.shape
+
+        def to_px(x, y):
+            return (int((x - ox) / res), (H - 1) - int((y - oy) / res))
+
+        oimg = Image.new("L", (W, H), 0)
+        od = ImageDraw.Draw(oimg)
+        for p in obst_polys:
+            pp = [to_px(x, y) for (x, y) in p]
+            od.polygon(pp, fill=255, outline=255)
+            od.line(pp + [pp[0]], fill=255, width=ow, joint="curve")
+        need = (np.array(oimg) > 0) & (arr >= THRESH)
+        n = int(need.sum())
+        if n == 0:
+            continue
+        arr[need] = np.uint8(OCCUPIED)
+        tmp = pgm + ".obstmp"
+        with open(tmp, "wb") as fh:
+            fh.write(f"P5\n# CREATOR: map_generator.cpp {res:.3f} m/pix\n{W} {H}\n255\n".encode("ascii"))
+            fh.write(arr.tobytes())
+        os.replace(tmp, pgm)
+        try:
+            Image.fromarray(arr, mode="L").save(pgm[:-4] + ".png")
+        except Exception:
+            pass
+        total += n
+    if total:
+        print("[seam_fix] %s: enforced %d obstacle cell(s) OCCUPIED (always-on)"
+              % (base, total), flush=True)
+    return total
+
+
 _IN_CLOSE_WRITE = 0x00000008
 _IN_MOVED_TO = 0x00000080
 _IN_CREATE = 0x00000100
@@ -318,6 +380,15 @@ def main():
                 print("[seam_fix] %s: %s" % (base, e), flush=True)
         return total
 
+    def enforce_all():
+        total = 0
+        for base in glob.glob(MAPS_GLOB):
+            try:
+                total += enforce_obstacles_occupied(base, np, Image, ImageDraw)
+            except Exception as e:
+                print("[seam_fix] enforce %s: %s" % (base, e), flush=True)
+        return total
+
     ino = None
     try:
         ino = _InotifyWatch(sorted(glob.glob(MAPS_GLOB)))
@@ -329,6 +400,7 @@ def main():
 
     enabled, margin_cm = _read_config()
     EDGE_MARGIN_M = margin_cm / 100.0
+    enforce_all()                        # obstacle-occupied invariant: ALWAYS on (opt-in independent)
     if enabled:                          # force clean+regen at startup so a config change applies now
         sweep()
         for base in glob.glob(MAPS_GLOB):
@@ -343,13 +415,6 @@ def main():
         it += 1
         enabled, margin_cm = _read_config()   # re-read each loop -> app toggle/margin apply live
         EDGE_MARGIN_M = margin_cm / 100.0
-        if not enabled:                  # opt-in: idle (no cleaning, no regen) until enabled via the app
-            _heartbeat("iter=%d disabled" % it)
-            if ino is not None:
-                ino.wait(FALLBACK_POLL_SEC)
-            else:
-                time.sleep(POLL_SEC)
-            continue
         try:
             if ino is not None:
                 hit = ino.wait(FALLBACK_POLL_SEC)
@@ -362,14 +427,15 @@ def main():
             else:
                 reason = "poll"
                 time.sleep(POLL_SEC)
-            total = sweep()
+            occ = enforce_all()              # ALWAYS: obstacles occupied in nav + per-slot grids
+            total = sweep() if enabled else 0  # OPT-IN: seam-free inside lawn + edge margin + regen
             last_sweep = time.monotonic()
         except Exception as e:
             print("[seam_fix] loop error: %s" % e, flush=True)
             _heartbeat("looperr iter=%d %s" % (it, e))
             time.sleep(POLL_SEC)
             continue
-        _heartbeat("iter=%d %s last_freed=%d margin=%.2f" % (it, reason, total, EDGE_MARGIN_M))
+        _heartbeat("iter=%d %s enabled=%s occ=%d freed=%d margin=%.2f" % (it, reason, enabled, occ, total, EDGE_MARGIN_M))
 
 
 def _heartbeat(msg):

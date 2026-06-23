@@ -2145,6 +2145,27 @@ def handle_regenerate_per_map_files(params, respond):
             whole[_seam] = np.uint8(254)
             log(f"regenerate_per_map_files: seam-fix freed {_nseam} occupied cell(s) inside lawn before masking")
 
+        # An obstacle must ALWAYS be occupied — including in the NAV map
+        # (map.pgm), which nav2 loads as its global costmap. The per-slot loop
+        # below force-occupies each slot's OWN obstacles into mapN.pgm, but nav2
+        # navigates (recovery, go-to-charge, transit) on map.pgm — so an obstacle
+        # the firmware never baked there was driven straight through. Force EVERY
+        # mapped obstacle OCCUPIED in `whole` here, then write map.pgm back: it
+        # lands in both the nav map AND every per-slot grid (those derive from
+        # `whole`). Verified 2026-06-22 on LFIN2231000633: firebowl was free in
+        # map.pgm but occupied in mapN.pgm → nav2 drove through it.
+        _nobs = int(_obs_mask.sum())
+        if _nobs:
+            whole[_obs_mask] = np.uint8(OCCUPIED)
+            try:
+                with open(f"{base}/map.pgm", "wb") as fh:
+                    fh.write(f"P5\n# CREATOR: map_generator.cpp {res:.3f} m/pix\n{W} {H}\n255\n".encode("ascii"))
+                    fh.write(whole.tobytes())
+                Image.fromarray(whole, mode="L").save(f"{base}/map.png")
+                log(f"regenerate_per_map_files: baked {_nobs} obstacle cell(s) OCCUPIED into nav map.pgm")
+            except Exception as ex:
+                log(f"regenerate_per_map_files: map.pgm obstacle-bake write failed: {ex}")
+
         # Which unicoms connect to a given slot? `map<X>to<Y>_..._unicom`: the two
         # endpoints are map<X> and <Y> (<Y> = "map<M>" or "charge"). A slot owns a
         # unicom when it is either endpoint, so the slot keeps its own corridor(s)
@@ -3535,8 +3556,129 @@ def handle_set_coverage_planner_radius(params, respond):
         })
 
 
+# ── Mapping preflight (read-only health gate before map actions) ─────────────
+# Each _check_* returns {"status": ok|warn|block|na, "detail": str, ...}. The
+# checks are grounded in failures seen live on LFIN1231000241 (2026-06-22):
+# missing charging_station.yaml -> Error 140, crashed mapping node -> Error 120,
+# memory/shm pressure -> iceoryx chunk-leak crash-loop. NOTE: deliberately NO
+# localization check — a docked mower is "not aligned" until it drives off, so
+# that would false-warn on every healthy mower (see localization-not-initialized).
+
+def _check_charging_station():
+    """charging_station.yaml present+valid for every existing map home. For a
+    first-ever map (no homes yet) there is no charge pose to validate -> na."""
+    maps_root = "/userdata/lfi/maps"
+    try:
+        homes = [d for d in os.listdir(maps_root) if d.startswith("home") and "." not in d]
+    except OSError:
+        homes = []
+    if not homes:
+        return {"status": "na", "detail": "no map home yet (first map)"}
+    missing = [h for h in homes
+               if not _charging_pose_yaml_ok(os.path.join(
+                   maps_root, h, "charging_station_file", "charging_station.yaml"))]
+    if missing:
+        return {"status": "block",
+                "detail": "charging_station.yaml missing/invalid for %s "
+                          "(stock save_map type:1 -> Error 140)" % ",".join(missing)}
+    return {"status": "ok", "detail": "valid for %s" % ",".join(homes)}
+
+
+def _check_mapping_node():
+    """novabot_mapping alive and not freshly (re)started — a restart in the last
+    60s signals the iceoryx chunk-leak crash-loop (Error 120/140)."""
+    try:
+        pids = subprocess.run(
+            ["pgrep", "-f", "lib/novabot_mapping/novabot_mapping"],
+            capture_output=True, text=True, timeout=5).stdout.split()
+    except Exception as ex:
+        return {"status": "warn", "detail": "pgrep failed: %s" % ex}
+    if not pids:
+        return {"status": "block", "detail": "novabot_mapping not running (Error 120/140 likely; soft_restart)"}
+    try:
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        hz = os.sysconf("SC_CLK_TCK")
+        youngest = min(up - float(open("/proc/%s/stat" % p).read().split()[21]) / hz
+                       for p in pids)
+        if youngest < 60:
+            return {"status": "warn",
+                    "detail": "novabot_mapping (re)started %ds ago (crash-loop?)" % int(youngest)}
+    except Exception:
+        pass
+    return {"status": "ok", "detail": "running"}
+
+
+def _check_memory():
+    try:
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem[parts[0].rstrip(":")] = int(parts[1])
+        avail = mem.get("MemAvailable", mem.get("MemFree", 0)) // 1024
+    except Exception as ex:
+        return {"status": "warn", "detail": "meminfo failed: %s" % ex}
+    if avail < 400:
+        return {"status": "warn", "detail": "low memory: %dMB available" % avail, "mb": avail}
+    return {"status": "ok", "detail": "%dMB available" % avail, "mb": avail}
+
+
+def _check_shm():
+    """iceoryx maps its segments under /dev/shm; near-full is a proxy for the
+    chunk-pool leak that crash-loops novabot_mapping (Error 140).
+    ponytail: /dev/shm fill% is a coarse proxy, not real iceoryx mempool stats —
+    upgrade to `iox-introspection-client --mempool` if this proves too blunt."""
+    try:
+        st = os.statvfs("/dev/shm")
+        total = st.f_blocks * st.f_frsize
+        used_pct = round(100 * (total - st.f_bavail * st.f_frsize) / total) if total else 0
+    except Exception as ex:
+        return {"status": "warn", "detail": "statvfs /dev/shm failed: %s" % ex}
+    if used_pct >= 80:
+        return {"status": "warn",
+                "detail": "/dev/shm %d%% full (chunk-leak? soft_restart resets it)" % used_pct,
+                "pct": used_pct}
+    return {"status": "ok", "detail": "/dev/shm %d%% full" % used_pct, "pct": used_pct}
+
+
+def _check_disk():
+    try:
+        st = os.statvfs("/userdata")
+        free = (st.f_bavail * st.f_frsize) // (1024 * 1024)
+    except Exception as ex:
+        return {"status": "warn", "detail": "statvfs /userdata failed: %s" % ex}
+    if free < 500:
+        return {"status": "warn", "detail": "low disk: %dMB free on /userdata" % free, "mb": free}
+    return {"status": "ok", "detail": "%dMB free" % free, "mb": free}
+
+
+def handle_mapping_preflight(params, respond):
+    """Read-only health gate to run BEFORE map actions (create/edit/edge-cut).
+    Returns per-check status + one overall verdict:
+      block = a known mapping blocker present (Error 120/140 / dock failure)
+      warn  = degraded but the user may proceed
+      ok    = clear
+    `na` checks (e.g. first-ever map) do not affect the verdict."""
+    checks = {
+        "charging_station_yaml": _check_charging_station(),
+        "mapping_node": _check_mapping_node(),
+        "memory": _check_memory(),
+        "shm_pool": _check_shm(),
+        "disk": _check_disk(),
+    }
+    statuses = [c.get("status") for c in checks.values()]
+    verdict = "block" if "block" in statuses else "warn" if "warn" in statuses else "ok"
+    reasons = [c["detail"] for c in checks.values() if c.get("status") in ("block", "warn")]
+    log("mapping_preflight: verdict=%s (%s)" % (verdict, "; ".join(reasons) or "all ok"))
+    respond("mapping_preflight_respond",
+            {"result": 0, "verdict": verdict, "checks": checks, "reasons": reasons})
+
+
 COMMANDS = {
     "is_opennova": handle_is_opennova,
+    "mapping_preflight": handle_mapping_preflight,
     "reanchor_pos": handle_reanchor_pos,
     "set_robot_reboot": handle_reboot,
     "soft_restart": handle_soft_restart,
@@ -4313,7 +4455,12 @@ def _ensure_charging_station_yaml():
 
 def start_charging_station_guard():
     """Background guard: keep charging_station_file/charging_station.yaml present so
-    stock save_map type:1 can never crash on a missing file (Error 140)."""
+    stock save_map type:1 can never crash on a missing file (Error 140).
+    Set OPENNOVA_DISABLE_CHG_GUARD=1 to suppress it (diagnostics / preflight
+    testing — lets a deliberately-removed charging_station.yaml stay removed)."""
+    if os.environ.get("OPENNOVA_DISABLE_CHG_GUARD") == "1":
+        log("[chg-guard] disabled via OPENNOVA_DISABLE_CHG_GUARD=1")
+        return
     def _loop():
         while True:
             try:

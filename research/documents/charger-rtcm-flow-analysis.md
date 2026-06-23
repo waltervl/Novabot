@@ -1,5 +1,7 @@
 # Charger RTCM Flow Analysis — Stock vs OpenNova
 
+> **⚠️ DEPLOYMENT STATUS (read first):** The **OpenNova charger firmware is UNRELEASED and runs on NO charger anywhere** (not finished, not even on the maintainer's own charger). Every charger in the field runs **stock firmware v0.4.0**, which forwards RTCM correctly so the mower DOES get a real RTK fix. The "OpenNova v0.1.0 RTK bug" described below is a finding about the unreleased build only. **Never diagnose a real user's RTK/GPS dropout as the OpenNova charger RTCM gap** — they are on stock. Look at environment, base placement, and actual fix quality instead.
+
 **Status:** Investigation complete, OpenNova fix + walker tap design ready.
 **Date:** 2026-05-02
 **Context:** Building handheld RTK perimeter walker (LC29HDA + ESP32-S3 + WiFi). Need RTCM correction source. Investigated whether mower-side NTRIP relay possible — answer: no, RTCM never reaches mower Linux. Pivoted to charger-side MQTT publish.

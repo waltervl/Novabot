@@ -3701,6 +3701,40 @@ dashboardRouter.post('/extended/:sn', (req: Request, res: Response) => {
   res.json({ ok: true, command: Object.keys(command)[0] });
 });
 
+// POST /api/dashboard/mapping-preflight/:sn — read-only health gate before map
+// actions. Sends mapping_preflight to extended_commands.py and waits for the
+// respond, returning { verdict: ok|warn|block, checks, reasons }. Consumed by
+// the app's Create-Map flow (block hard-stops, warn is advisory).
+dashboardRouter.post('/mapping-preflight/:sn', async (req: Request, res: Response) => {
+  const { sn } = req.params;
+  if (!isDeviceOnline(sn)) {
+    res.status(503).json({ ok: false, error: 'device offline' });
+    return;
+  }
+  try {
+    const { publishToExtended, onExtendedResponse, offExtendedResponse } =
+      await import('../mqtt/mapSync.js');
+    const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const onResp = (data: Record<string, unknown>) => {
+        if (data.mapping_preflight_respond) {
+          offExtendedResponse(sn, onResp);
+          clearTimeout(timer);
+          resolve(data.mapping_preflight_respond as Record<string, unknown>);
+        }
+      };
+      const timer = setTimeout(() => {
+        offExtendedResponse(sn, onResp);
+        reject(new Error('timeout waiting for mapping_preflight_respond (stock firmware?)'));
+      }, 8000);
+      onExtendedResponse(sn, onResp);
+      publishToExtended(sn, { mapping_preflight: {} });
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(504).json({ ok: false, error: (e as Error)?.message ?? String(e) });
+  }
+});
+
 // ── Static firmware file serving ────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import express from 'express';
