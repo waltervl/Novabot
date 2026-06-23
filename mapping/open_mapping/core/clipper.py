@@ -84,6 +84,34 @@ def expand_polygon(work_pts, obstacle_polys, unicom_polys, charge_polys, scale=S
     return contours
 
 
+def offset_meters(pts, delta, scale=SCALE):
+    """Offset a polygon by *delta* metres using JT_ROUND (for pgm rasterisation).
+
+    This is the per-map pgm variant of the offset: it uses JT_ROUND with the
+    same ClipperOffset parameters as expand_polygon, but returns only the main
+    contour (sol[0]) as float (x, y) tuples in metres.
+
+    The offset is applied before cv2.fillPoly in render_pgm to reproduce the
+    firmware's ~0.2m inward-shrunk FREE region behaviour (RE doc §3).
+
+    Args:
+        pts:   list of (x, y) float tuples (metres)
+        delta: offset distance in metres (positive = expand, negative = shrink)
+        scale: integer scale factor (default SCALE=10000)
+
+    Returns:
+        list of (x, y) float tuples for the main offset contour, or [] if empty.
+    """
+    co = pyclipper.PyclipperOffset(miter_limit=MITER_LIMIT, arc_tolerance=ARC_TOLERANCE)
+    co.AddPath(
+        [(round(x * scale), round(y * scale)) for x, y in pts],
+        pyclipper.JT_ROUND,
+        pyclipper.ET_CLOSEDPOLYGON,
+    )
+    sol = co.Execute(delta * scale)
+    return [(x / scale, y / scale) for x, y in (sol[0] if sol else [])]
+
+
 def write_csv_file(out_dir, work_name, contours, others):
     """Write csv_file/work_name using the fan accumulation pattern.
 
