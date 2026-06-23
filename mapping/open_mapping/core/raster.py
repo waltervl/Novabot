@@ -209,9 +209,9 @@ def render_global_pgm(all_areas: dict, bounds: tuple, resolution: float = _RESOL
                 poly = np.array([pix], dtype=np.int32)
                 cv2.fillPoly(grid, poly, FREE, lineType=4)
 
-    # 3. Fill unicom / corridor polygons as FREE
+    # 3. Fill unicom / corridor polygons as FREE (explicit unicom match; unknown keys skipped)
     for key, pts in all_areas.items():
-        if not key.endswith("_work.csv") and "obstacle" not in key:
+        if "unicom" in key:
             if pts:
                 pix = _pts_to_pixels(pts, origin_x, origin_y, h, resolution)
                 poly = np.array([pix], dtype=np.int32)

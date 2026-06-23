@@ -192,35 +192,32 @@ def test_render_global_pgm_corpus_bounds_correct_canvas():
     """With corpus bounds, render_global_pgm produces a 379x257 canvas."""
     with tempfile.TemporaryDirectory() as td:
         areas = _load_x3_areas(Path(td))
-
-    w, h = raster.grid_size(CORPUS_BOUNDS)
-    body = raster.render_global_pgm(areas, CORPUS_BOUNDS)
-    assert (w, h) == (379, 257), f"Expected 379x257 canvas, got {w}x{h}"
-    assert len(body) == 379 * 257, f"Pixel body length mismatch"
+        w, h = raster.grid_size(CORPUS_BOUNDS)
+        body = raster.render_global_pgm(areas, CORPUS_BOUNDS)
+        assert (w, h) == (379, 257), f"Expected 379x257 canvas, got {w}x{h}"
+        assert len(body) == 379 * 257, f"Pixel body length mismatch"
 
 
 def test_render_global_pgm_corpus_pgm_header():
     """With corpus bounds, the wrapped PGM has the exact firmware header."""
     with tempfile.TemporaryDirectory() as td:
         areas = _load_x3_areas(Path(td))
-
-    w, h = raster.grid_size(CORPUS_BOUNDS)
-    body = raster.render_global_pgm(areas, CORPUS_BOUNDS)
-    pgm = raster.pgm_bytes(w, h, body)
-    assert pgm.startswith(
-        b"P5\n# CREATOR: map_generator.cpp 0.050 m/pix\n379 257\n255\n"
-    )
+        w, h = raster.grid_size(CORPUS_BOUNDS)
+        body = raster.render_global_pgm(areas, CORPUS_BOUNDS)
+        pgm = raster.pgm_bytes(w, h, body)
+        assert pgm.startswith(
+            b"P5\n# CREATOR: map_generator.cpp 0.050 m/pix\n379 257\n255\n"
+        )
 
 
 def test_render_global_pgm_corpus_binary_values():
     """With corpus bounds, all pixel values are FREE (254) or OCCUPIED (0)."""
     with tempfile.TemporaryDirectory() as td:
         areas = _load_x3_areas(Path(td))
-
-    body = raster.render_global_pgm(areas, CORPUS_BOUNDS)
-    arr = np.frombuffer(body, dtype=np.uint8)
-    unique = set(arr.tolist())
-    assert unique <= {0, 254}, f"Unexpected pixel values in corpus render: {unique - {0, 254}}"
+        body = raster.render_global_pgm(areas, CORPUS_BOUNDS)
+        arr = np.frombuffer(body, dtype=np.uint8)
+        unique = set(arr.tolist())
+        assert unique <= {0, 254}, f"Unexpected pixel values in corpus render: {unique - {0, 254}}"
 
 
 @pytest.mark.xfail(
