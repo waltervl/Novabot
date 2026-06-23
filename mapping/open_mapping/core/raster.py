@@ -227,6 +227,99 @@ def render_global_pgm(all_areas: dict, bounds: tuple, resolution: float = _RESOL
     return grid.tobytes()
 
 
+def render_per_map_pgm(
+    map_index: int,
+    all_areas: dict,
+    bounds: tuple,
+    resolution: float = _RESOLUTION,
+) -> bytes:
+    """Render a per-map occupancy grid (mapN.pgm) for a single work zone.
+
+    The per-map pgm shares the SAME canvas (same origin, width, height) as the
+    global map.pgm but only marks as FREE the pixels belonging to zone N and its
+    connected unicom corridors. Obstacles are carved as OCCUPIED. Outside pixels
+    are OCCUPIED.
+
+    Algorithm (mirrors render_global_pgm but filtered to mapN):
+      1. Allocate H×W grid, all OCCUPIED (0). Same grid_size as global.
+      2. Inflate mapN_work polygon by 0.20 m (ClipperLib JT_ROUND, sol[0]).
+         fillPoly as FREE (254), lineType=4.
+      3. For each unicom whose filename contains f'map{map_index}':
+         fillPoly as FREE (254), lineType=4 (raw polygon, no inflation).
+      4. For each obstacle polygon: fillPoly as OCCUPIED (0), lineType=4.
+      5. Return raw grid bytes (row-major, uint8).
+
+    Unicom connection rule:
+      A unicom file (key contains 'unicom') is connected to zone N if
+      f'map{map_index}' appears anywhere in its filename. This matches:
+        - map0tomap1_0_unicom.csv   → connects to map0 AND map1
+        - map1tomap2_0_unicom.csv   → connects to map1 AND map2
+        - map0tocharge_unicom.csv   → connects to map0
+
+    Canvas note:
+      The firmware renders per-map pgm on the full multi-zone canvas (all bounds
+      from all zones), not on a per-zone canvas. Pass the global canvas bounds
+      (from grid_bounds(all_works) or the known-correct corpus bounds) to reproduce
+      the correct shape. Passing per-zone bounds gives the wrong canvas size.
+
+    Fidelity note:
+      Like render_global_pgm, byte-exact reproduction of the corpus golden is not
+      achievable from x3 CSV inputs because the firmware rasterises in-memory
+      polygons (see RE doc section 8). Expected fidelity from x3 CSVs: ~95-97%.
+      All differences are FN (we miss free pixels the firmware has via in-memory
+      polygon); FP count is near zero (we never mark a cell FREE that the firmware
+      marks OCCUPIED from the same polygon set).
+
+    Args:
+        map_index:  Integer zone index N (for map0.pgm pass 0, map1.pgm pass 1, …).
+        all_areas:  dict mapping filename to list of (x, y) float tuples.
+                    Keys ending in f'map{map_index}_work.csv' are the work boundary;
+                    keys containing 'unicom' are unicom corridors (filtered by rule);
+                    keys containing 'obstacle' are obstacle polygons.
+        bounds:     (xmin, ymin, xmax, ymax) canvas bounds in metres.
+                    Should be the GLOBAL canvas bounds (spanning all zones), not
+                    the per-zone bounds — same as passed to render_global_pgm.
+        resolution: metres per pixel (default 0.05).
+
+    Returns:
+        bytes — H*W uint8 pixel data (no PGM header; use pgm_bytes() to wrap).
+    """
+    from open_mapping.core.clipper import offset_meters
+
+    w, h = grid_size(bounds, resolution)
+    origin_x, origin_y = grid_origin(bounds, resolution)
+
+    # 1. Start with all OCCUPIED
+    grid = np.zeros((h, w), dtype=np.uint8)
+
+    # 2. Inflate zone N's work polygon and fill as FREE
+    work_key = f"map{map_index}_work.csv"
+    work = all_areas.get(work_key, [])
+    if work:
+        inflated = offset_meters(work, 0.20)
+        if inflated:
+            pix = _pts_to_pixels(inflated, origin_x, origin_y, h, resolution)
+            poly = np.array([pix], dtype=np.int32)
+            cv2.fillPoly(grid, poly, FREE, lineType=4)
+
+    # 3. Fill connected unicom corridors as FREE (connection = mapN in filename)
+    tag = f"map{map_index}"
+    for key, pts in all_areas.items():
+        if "unicom" in key and tag in key and pts:
+            pix = _pts_to_pixels(pts, origin_x, origin_y, h, resolution)
+            poly = np.array([pix], dtype=np.int32)
+            cv2.fillPoly(grid, poly, FREE, lineType=4)
+
+    # 4. Fill obstacle polygons as OCCUPIED (carve into free areas)
+    for key, pts in all_areas.items():
+        if "obstacle" in key and pts:
+            pix = _pts_to_pixels(pts, origin_x, origin_y, h, resolution)
+            poly = np.array([pix], dtype=np.int32)
+            cv2.fillPoly(grid, poly, OCCUPIED, lineType=4)
+
+    return grid.tobytes()
+
+
 def write_map_yaml(out_dir, image_name: str, origin_xy: tuple) -> None:
     p = Path(out_dir) / image_name.replace(".pgm", ".yaml")
     p.write_text(g.format_map_yaml(image_name, origin_xy))
