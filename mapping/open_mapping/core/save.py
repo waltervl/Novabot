@@ -23,6 +23,8 @@ import json
 from pathlib import Path
 
 from open_mapping.core import mapfiles, clipper, raster
+from open_mapping.core.overlap import check_overlap
+from open_mapping.core.geometry import parse_csv
 
 
 def _read_map_info(input_dir: Path):
@@ -71,6 +73,22 @@ def save_map(input_dir, request: dict, out_dir) -> None:
     works = {k: v for k, v in areas.items() if k.endswith("_work.csv")}
     obstacles = {k: v for k, v in areas.items() if "obstacle" in k}
     unicoms = {k: v for k, v in areas.items() if "unicom" in k}
+
+    # 1b. Overlap self-guard: read the recorded_boundary and gate against
+    #     existing works (excluding the work being saved) + existing unicoms.
+    rb_path = input_dir / "recorded_boundary.csv"
+    if rb_path.exists():
+        recorded_boundary_points = parse_csv(rb_path.read_text())
+        main_id = request.get("main_id")
+        map_slot = f"map{main_id}" if main_id is not None else None
+        # Exclude the work polygon being saved and any unicom whose filename
+        # references this map slot (a corridor touching this map's boundary
+        # by design should not trigger a false overlap).
+        other_works = [v for k, v in works.items() if k != f"{map_slot}_work.csv"]
+        other_unicoms = [v for k, v in unicoms.items() if map_slot not in k]
+        code = check_overlap(recorded_boundary_points, other_works, other_unicoms)
+        if code != 0:
+            return
 
     # 2. Write x3 (byte-exact copy)
     mapfiles.write_x3(out_dir, areas)

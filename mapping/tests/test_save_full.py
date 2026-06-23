@@ -43,7 +43,7 @@ SKIP_PATTERNS = (
     ".bak_navfix",
 )
 
-_SHAPE_TOLERANCE = 20   # cells; known corpus gap is ~4/11
+_SHAPE_TOLERANCE = 15   # cells; known corpus gap is ~4/11
 
 
 def _is_non_work_csv(name: str) -> bool:
@@ -84,15 +84,42 @@ def _should_skip(name: str) -> bool:
 
 
 def _parse_pgm(data: bytes):
-    """Parse PGM P5 header; return (width, height, pixel_bytes)."""
+    """Parse a P5 PGM file; return (width, height, pixel_bytes).
+
+    Proper parser: reads magic, skips whitespace/comment lines, then reads
+    width height maxval tokens, then treats the rest as raw pixel bytes.
+    """
     pos = 0
-    for _ in range(4):
-        end = data.index(b"\n", pos)
-        pos = end + 1
-    # Line 3 (index 2, after P5 + comment) has dims
-    lines = data[:pos].decode("ascii").splitlines()
-    dims = lines[2].split()
-    return int(dims[0]), int(dims[1]), data[pos:]
+
+    def _skip_ws():
+        nonlocal pos
+        while pos < len(data) and data[pos:pos+1] in (b' ', b'\t', b'\r', b'\n'):
+            pos += 1
+
+    def _skip_comments():
+        nonlocal pos
+        while pos < len(data) and data[pos:pos+1] == b'#':
+            end = data.index(b'\n', pos)
+            pos = end + 1
+            _skip_ws()
+
+    def _read_token() -> str:
+        nonlocal pos
+        _skip_ws()
+        _skip_comments()
+        start = pos
+        while pos < len(data) and data[pos:pos+1] not in (b' ', b'\t', b'\r', b'\n'):
+            pos += 1
+        return data[start:pos].decode('ascii')
+
+    magic = _read_token()
+    assert magic == 'P5', f"Not a P5 PGM file (got {magic!r})"
+    width = int(_read_token())
+    height = int(_read_token())
+    _read_token()  # maxval — consumed but not used
+    # After maxval token, exactly one whitespace byte precedes pixel data
+    pos += 1
+    return width, height, data[pos:]
 
 
 def _fixtures():
