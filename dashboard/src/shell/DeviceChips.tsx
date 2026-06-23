@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   BatteryMedium, BatteryCharging, Satellite, Wifi, Thermometer,
-  Activity, ChevronDown, Gauge,
+  Activity, ChevronDown, Gauge, Zap, Radio,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Drawer } from './Drawer';
@@ -12,6 +12,7 @@ import { deriveMowerActivity } from '../utils/mowerActivity';
 
 interface Props {
   mower: DeviceState | null;
+  charger?: DeviceState | null;
   knownMowers: DeviceState[];
   onSelectMower: (sn: string) => void;
   /** Which half to render. Lets the shell place the mower switcher and the live
@@ -189,71 +190,162 @@ function SensorDetailPanel({ mower, openedAt }: { mower: DeviceState; openedAt: 
 
 // ── Summary panel (rendered inside Drawer — default view) ────────────────────
 
+// ── Nice tone-coloured chip for the drawer (icon + label + value) ────────────
+type ChipTone = 'emerald' | 'amber' | 'sky' | 'red' | 'zinc';
+const CHIP_TONE: Record<ChipTone, { box: string; icon: string }> = {
+  emerald: { box: 'border-emerald-700/40 bg-emerald-900/15 text-emerald-200', icon: 'text-emerald-400' },
+  amber:   { box: 'border-amber-700/40 bg-amber-900/15 text-amber-200',       icon: 'text-amber-400' },
+  sky:     { box: 'border-sky-700/40 bg-sky-900/15 text-sky-200',             icon: 'text-sky-400' },
+  red:     { box: 'border-red-700/40 bg-red-900/15 text-red-200',             icon: 'text-red-400' },
+  zinc:    { box: 'border-zinc-700/60 bg-zinc-900/60 text-zinc-200',          icon: 'text-zinc-400' },
+};
+
+type ChipDef = { icon: React.ComponentType<{ className?: string }>; label: string; value: string | number; tone: ChipTone };
+
+function DrawerChip({ icon: Icon, label, value, tone }: ChipDef) {
+  const c = CHIP_TONE[tone];
+  return (
+    <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-xl border ${c.box}`}>
+      <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${c.icon}`} />
+      <div className="min-w-0 leading-tight">
+        <p className="text-[9px] uppercase tracking-wide text-zinc-500">{label}</p>
+        <p className="text-xs font-semibold font-mono tabular-nums truncate">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function ChipRow({ chips }: { chips: ChipDef[] }) {
+  if (chips.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {chips.map((c, i) => <DrawerChip key={`${c.label}-${i}`} {...c} />)}
+    </div>
+  );
+}
+
+function mowerChips(m: DeviceState): ChipDef[] {
+  const s = m.sensors;
+  const out: ChipDef[] = [
+    { icon: Activity, label: 'Status', value: m.online ? 'Online' : 'Offline', tone: m.online ? 'emerald' : 'zinc' },
+  ];
+  if (s.rtk_fix_quality) {
+    const f = s.rtk_fix_quality;
+    out.push({ icon: Satellite, label: 'RTK', value: f, tone: f === 'RTK Fixed' ? 'emerald' : f === 'RTK Float' ? 'amber' : 'zinc' });
+  }
+  const sats = parseInt(s.rtk_sat ?? '', 10);
+  if (isFinite(sats) && sats > 0) out.push({ icon: Satellite, label: 'Sats', value: sats, tone: sats >= 15 ? 'sky' : sats >= 8 ? 'amber' : 'red' });
+  const bat = parseInt(s.battery_power ?? s.battery_capacity ?? '', 10);
+  if (isFinite(bat) && bat > 0) out.push({ icon: BatteryMedium, label: 'Battery', value: `${bat}%`, tone: bat >= 20 ? 'emerald' : 'red' });
+  const temp = parseInt(s.cpu_temperature ?? '', 10);
+  if (isFinite(temp) && temp > 0) out.push({ icon: Thermometer, label: 'Temp', value: `${temp}°`, tone: temp >= 85 ? 'red' : 'zinc' });
+  return out;
+}
+
+function chargerChips(c: DeviceState): ChipDef[] {
+  const s = c.sensors;
+  const out: ChipDef[] = [];
+  if (s.charger_status) {
+    const st = s.charger_status;
+    out.push({ icon: Zap, label: 'Charger', value: st, tone: st === 'Operational' ? 'emerald' : st === 'Idle' ? 'amber' : 'zinc' });
+  }
+  if (s.rtk_ok != null && s.rtk_ok !== '') {
+    out.push({ icon: Satellite, label: 'RTK', value: s.rtk_ok === '1' ? 'OK' : 'Not OK', tone: s.rtk_ok === '1' ? 'emerald' : 'red' });
+  }
+  const sats = parseInt(s.gps_satellites ?? '', 10);
+  if (isFinite(sats)) out.push({ icon: Satellite, label: 'GPS Sat', value: sats, tone: sats >= 15 ? 'sky' : sats >= 8 ? 'amber' : 'red' });
+  if (s.mower_status) out.push({ icon: Radio, label: 'Mower seen', value: s.mower_status, tone: 'zinc' });
+  return out;
+}
+
+function DeviceIdentity({ device, online, version }: { device: DeviceState; online: boolean; version?: string }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-1">
+      <p className="text-[10px] font-mono text-zinc-300">{device.sn}</p>
+      {isDisplayableMac(device.macAddress) && (
+        <p className="text-[10px] font-mono text-zinc-600">{device.macAddress}</p>
+      )}
+      <div className="flex items-center gap-3 text-xs">
+        <span className={online ? 'text-emerald-400' : 'text-zinc-500'}>
+          {online ? `● ${t('drawer.summary.online')}` : `● ${t('drawer.summary.offline')}`}
+        </span>
+        {version && <span className="font-mono text-purple-400">{version}</span>}
+      </div>
+      {device.lastSeen && (
+        <p className="text-[10px] text-zinc-500">
+          {t('drawer.summary.lastSeen')}: {new Date(device.lastSeen).toLocaleString()}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SummaryPanel({
   mower,
+  charger,
   lora,
   setMode,
 }: {
   mower: DeviceState;
+  charger: DeviceState | null;
   lora: LoraStatus | null;
   setMode: (m: 'summary' | 'advanced') => void;
 }) {
   const { t } = useTranslation();
+  const chCh = charger ? chargerChips(charger) : [];
   return (
-    <div className="space-y-3">
-      {/* Identity */}
-      <div className="space-y-1">
-        <p className="text-[10px] font-mono text-zinc-300">{mower.sn}</p>
-        {isDisplayableMac(mower.macAddress) && (
-          <p className="text-[10px] font-mono text-zinc-600">{mower.macAddress}</p>
-        )}
-        <div className="flex items-center gap-3 text-xs">
-          <span className={mower.online ? 'text-emerald-400' : 'text-zinc-500'}>
-            {mower.online ? `● ${t('drawer.summary.online')}` : `● ${t('drawer.summary.offline')}`}
-          </span>
-          {mower.sensors.sw_version && (
-            <span className="font-mono text-purple-400">{mower.sensors.sw_version}</span>
-          )}
-        </div>
-        {mower.lastSeen && (
-          <p className="text-[10px] text-zinc-500">
-            {t('drawer.summary.lastSeen')}: {new Date(mower.lastSeen).toLocaleString()}
-          </p>
+    <div className="space-y-4">
+      {/* ── MOWER group ── */}
+      <div className="space-y-2">
+        <p className="text-[10px] font-semibold text-emerald-400/80 uppercase tracking-wider">Mower</p>
+        <DeviceIdentity device={mower} online={mower.online} version={mower.sensors.sw_version} />
+        <ChipRow chips={mowerChips(mower)} />
+
+        {/* Configuration */}
+        {lora && (
+          <div className="space-y-2 pt-1">
+            <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">
+              {t('drawer.summary.configuration')}
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
+                <p className="text-[10px] text-zinc-500">{t('drawer.summary.loraAddress')}</p>
+                <p className="text-sm font-mono text-zinc-100">{lora.pair.address ?? '–'}</p>
+              </div>
+              <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
+                <p className="text-[10px] text-zinc-500">{t('drawer.summary.loraChannel')}</p>
+                <p className="text-sm font-mono text-zinc-100">{lora.pair.channel ?? '–'}</p>
+              </div>
+            </div>
+            <span
+              className={`inline-block text-[10px] px-2 py-0.5 rounded-full ${
+                lora.drift
+                  ? 'bg-amber-900/40 text-amber-300'
+                  : 'bg-emerald-900/30 text-emerald-300'
+              }`}
+            >
+              {lora.drift ? t('drawer.summary.pairDrift') : t('drawer.summary.pairSync')}
+            </span>
+          </div>
         )}
       </div>
 
-      {/* Configuration */}
-      {lora && (
-        <div className="space-y-2">
-          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">
-            {t('drawer.summary.configuration')}
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
-              <p className="text-[10px] text-zinc-500">{t('drawer.summary.loraAddress')}</p>
-              <p className="text-sm font-mono text-zinc-100">{lora.pair.address ?? '—'}</p>
-            </div>
-            <div className="bg-zinc-900 rounded border border-zinc-800 p-2">
-              <p className="text-[10px] text-zinc-500">{t('drawer.summary.loraChannel')}</p>
-              <p className="text-sm font-mono text-zinc-100">{lora.pair.channel ?? '—'}</p>
-            </div>
-          </div>
-          <span
-            className={`inline-block text-[10px] px-2 py-0.5 rounded-full ${
-              lora.drift
-                ? 'bg-amber-900/40 text-amber-300'
-                : 'bg-emerald-900/30 text-emerald-300'
-            }`}
-          >
-            {lora.drift ? t('drawer.summary.pairDrift') : t('drawer.summary.pairSync')}
-          </span>
+      {/* ── CHARGER group ── */}
+      {charger && (
+        <div className="space-y-2 pt-3 border-t border-zinc-800">
+          <p className="text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider">Charger</p>
+          <DeviceIdentity device={charger} online={charger.online} version={charger.sensors.version} />
+          {chCh.length > 0
+            ? <ChipRow chips={chCh} />
+            : <p className="text-[10px] text-zinc-600 italic">No charger telemetry yet.</p>}
         </div>
       )}
 
       {/* Advanced button */}
       <button
         onClick={() => setMode('advanced')}
-        className="w-full mt-4 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-sm text-zinc-200"
+        className="w-full mt-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-sm text-zinc-200"
       >
         {t('drawer.summary.showAdvanced')}
       </button>
@@ -263,7 +355,7 @@ function SummaryPanel({
 
 // ── Main DeviceChips component ───────────────────────────────────────────────
 
-export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props): React.JSX.Element | null {
+export function DeviceChips({ mower, charger, knownMowers, onSelectMower, part }: Props): React.JSX.Element | null {
   const { t } = useTranslation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openedAt, setOpenedAt] = useState<number>(0);
@@ -326,7 +418,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
                 <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
               </button>
               {switcherOpen && (
-                <div className="absolute top-full left-0 mt-1.5 z-[100] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[200px] p-1">
+                <div className="absolute top-full left-0 mt-1.5 z-[2000] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[200px] p-1">
                   {knownMowers.map(m => (
                     <button
                       key={m.sn}
@@ -418,7 +510,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
                 <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${switcherOpen ? 'rotate-180' : ''}`} />
               </button>
               {switcherOpen && (
-                <div className="absolute top-full left-0 mt-1.5 z-[100] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[200px] p-1">
+                <div className="absolute top-full left-0 mt-1.5 z-[2000] bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl min-w-[200px] p-1">
                   {knownMowers.map(m => (
                     <button
                       key={m.sn}
@@ -541,7 +633,7 @@ export function DeviceChips({ mower, knownMowers, onSelectMower, part }: Props):
   const drawerEl = (
     <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title={t('drawer.title.sensors')}>
         {mode === 'summary' ? (
-          <SummaryPanel mower={mower} lora={lora} setMode={setMode} />
+          <SummaryPanel mower={mower} charger={charger ?? null} lora={lora} setMode={setMode} />
         ) : (
           <div className="space-y-3">
             <button

@@ -32,6 +32,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
 function ShellInner() {
   const { devices, loading, connected, otaProgress, liveOutlines, coveredLanes } = useDevices();
   const { activeMower, activeMowerSn, setActiveMowerSn, knownMowers } = useActiveMower(devices);
+  const charger = [...devices.values()].find(d => d.deviceType === 'charger') ?? null;
   const [tab, setTab] = useState<Tab>('map');
   const [drawerOpen, setDrawerOpen] = useState(false);
   // The enlarged server-log lives here (not in the drawer) so it stays open
@@ -160,6 +161,7 @@ function ShellInner() {
           <DeviceChips
             part="telemetry"
             mower={activeMower}
+            charger={charger}
             knownMowers={knownMowers}
             onSelectMower={setActiveMowerSn}
           />

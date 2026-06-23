@@ -2458,8 +2458,21 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
   // Begin a stroke: seed the working ring from the LATEST geometry (prior draft
   // if present) so successive strokes stack, then apply one op at the down point.
   const handlePaintDown = useCallback((m: XY) => {
-    if (!paintTarget || !chargerGps) return false;
-    const canonical = paintTarget.canonicalName!;
+    if (!chargerGps) return false;
+    // Auto-target the work/obstacle map whose polygon is UNDER the brush, so you
+    // edit the lobe you're pointing at — not a previously-selected map elsewhere.
+    // Tested against each map's live LOCAL ring (same frame as the brush point).
+    // Falls back to the selected map when the brush starts outside every polygon
+    // (e.g. painting/extending an edge from just outside it).
+    const under = maps.find(p => {
+      if ((p.mapType !== 'work' && p.mapType !== 'obstacle') || !p.canonicalName) return false;
+      const pts = latestLocalPoints(p.canonicalName);
+      return !!pts && pts.length >= 3 && pointInPolygonXY(m, pts);
+    });
+    const target = under ?? paintTarget;
+    if (!target || !target.canonicalName) return false;
+    if (target.mapId !== selectedMapId) setSelectedMapId(target.mapId);  // select the lobe you're editing
+    const canonical = target.canonicalName;
     const localPts = latestLocalPoints(canonical);
     if (!localPts || localPts.length < 3) return false;
     const next = (paintTool === 'paint' ? paintCircle : eraseCircle)(localPts, m, paintRadius);
@@ -2467,7 +2480,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
     paintWorkingRef.current = next;
     setPaintWorking(next);
     return true;
-  }, [paintTarget, chargerGps, paintTool, paintRadius, latestLocalPoints]);
+  }, [maps, paintTarget, selectedMapId, chargerGps, paintTool, paintRadius, latestLocalPoints]);
 
   // During a stroke: accumulate the op onto the working ring.
   const handlePaintMove = useCallback((m: XY) => {
