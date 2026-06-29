@@ -13,6 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useStyles, useTheme, type Colors } from '../theme';
+import { useI18n } from '../i18n';
 import { useActiveMower } from '../hooks/useActiveMower';
 import { ApiClient, type WorkRecord } from '../services/api';
 import { getServerUrl } from '../services/auth';
@@ -23,6 +24,7 @@ import { formatTime as fmtTime, formatDate as fmtDate } from '../lib/format';
 export default function HistoryScreen() {
   const styles = useStyles(makeStyles);
   const { colors } = useTheme();
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const [records, setRecords] = useState<WorkRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -120,7 +122,7 @@ export default function HistoryScreen() {
                 <View style={[styles.statusDot, { backgroundColor: statusColor(status, colors) }]} />
                 <Text style={styles.recordDate}>{formatDate(tsRaw)}</Text>
                 <Text style={[styles.recordStatus, { color: statusColor(status, colors) }]}>
-                  {status || '—'}
+                  {statusLabel(t, status, areaM2)}
                 </Text>
               </View>
 
@@ -154,17 +156,41 @@ function StatChip({ icon, value }: { icon: React.ComponentProps<typeof Ionicons>
   );
 }
 
+// Map the mower's raw work-record status into a human-readable, translated
+// reason. The firmware only reports three outcomes: "finished",
+// "interrupted artificially" (an intentional stop — user pressed stop, schedule
+// end-time, or a rain go_to_charge) and "interrupted abnormally" (an error).
+// We refine "abnormally" by progress: 0 m² means it failed at/just-after the
+// start, any coverage means it aborted mid-mow. The rain-vs-manual distinction
+// for "artificially" needs server data (the mower can't tell them apart), so it
+// defaults to "stopped manually" here; the server can override via reason='rain'.
+function statusLabel(t: (k: string) => string, status: string | null | undefined, areaM2: number): string {
+  switch ((status ?? '').toLowerCase()) {
+    case 'completed':
+    case 'finished':
+      return t('wrCompleted');
+    case 'interrupted artificially':
+      return t('wrStoppedManually');
+    case 'interrupted abnormally':
+      return areaM2 > 0 ? t('wrMidway') : t('wrError');
+    case 'interrupted':
+      return t('wrInterrupted');
+    default:
+      return status || '—';
+  }
+}
+
 function statusColor(status: string | null | undefined, c: Colors): string {
   switch ((status ?? '').toLowerCase()) {
     case 'completed':
     case 'finished':
       return c.green;
-    case 'interrupted':
-    case 'interrupted artificially':
     case 'interrupted abnormally':
-      return c.amber;
     case 'error':
       return c.red;
+    case 'interrupted':
+    case 'interrupted artificially':
+      return c.amber;
     default:
       return c.textDim;
   }

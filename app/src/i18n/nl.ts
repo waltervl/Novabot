@@ -19,6 +19,13 @@ export default {
   confirm: 'Bevestigen',
   error: 'Fout',
   ok: 'OK',
+  // Work-record (history) outcome labels — see HistoryScreen.statusLabel.
+  wrCompleted: 'Voltooid',
+  wrStoppedManually: 'Handmatig gestopt',
+  wrMidway: 'Halverwege afgebroken',
+  wrError: 'Afgebroken door een fout',
+  wrInterrupted: 'Onderbroken',
+  wrRain: 'Onderbroken door regen',
   later: 'Later',
   editMap: 'Kaart bewerken',
   redrawBoundary: 'Grens opnieuw rijden',

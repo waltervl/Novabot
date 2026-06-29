@@ -19,6 +19,13 @@ export default {
   confirm: 'Confirm',
   error: 'Error',
   ok: 'OK',
+  // Work-record (history) outcome labels — see HistoryScreen.statusLabel.
+  wrCompleted: 'Completed',
+  wrStoppedManually: 'Stopped manually',
+  wrMidway: 'Stopped midway',
+  wrError: 'Aborted (error)',
+  wrInterrupted: 'Interrupted',
+  wrRain: 'Paused for rain',
   later: 'Later',
   editMap: 'Edit Map',
   redrawBoundary: 'Redraw boundary (drive)',
