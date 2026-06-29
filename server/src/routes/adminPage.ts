@@ -1028,6 +1028,9 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
     <div class="card">
       <h2>Cloud Import</h2>
       <p style="font-size:12px;color:#aaa;margin-bottom:12px">Import devices from the Novabot cloud using your Novabot app credentials.</p>
+      <div style="font-size:12px;line-height:1.5;color:#f0b860;background:rgba(240,184,96,.08);border:1px solid rgba(240,184,96,.3);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+        ⚠️ <b>Cloud import does not include inter-map channels.</b> The cloud stores the channel connectors between work areas as empty (0-byte) files, so there is nothing to restore. If you have multiple zones connected by channels, do <b>not</b> overwrite your mower with a cloud restore, or you will lose the channels. To preserve channels across a wipe/restore, use a <b>portable snapshot</b> (Map Backups) instead.
+      </div>
       <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
         <input type="email" id="cloud_email" placeholder="Novabot email" style="flex:1;min-width:200px">
         <input type="password" id="cloud_pass" placeholder="Novabot password" style="flex:1;min-width:200px">

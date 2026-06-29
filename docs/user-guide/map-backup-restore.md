@@ -168,6 +168,32 @@ caches without bouncing the process.
 
 ## Known issues
 
+### A cloud import/restore does NOT preserve inter-map channels
+
+Inter-map channels (the `mapXtomapY_..._unicom.csv` connectors between work
+areas) are stored as metadata-only / 0-byte files. When two zones touch the
+firmware writes the connector with no geometry; it only records that the zones
+are connected (no driveable corridor is needed when they touch). See
+`portableBackup.ts` ("legitimately metadata-only (0-byte)... regeneration needs
+every unicom file present to connect the zones").
+
+The LFI cloud does not carry these empty connector files across an export, so a
+**cloud import + push to the mower loses every inter-map channel**. The app then
+reports a missing channel and the mower cannot route between zones. There is no
+way to recover the channels from the cloud, because they were never stored there
+with any content to restore.
+
+What works:
+
+- The channels are intact in the mower's **original** files. As long as you do
+  not overwrite the mower with a cloud restore, multi-zone mowing keeps working.
+- To preserve channels across a wipe/restore, use an OpenNova **portable
+  snapshot**. The portable backup keeps every connector file present (including
+  the 0-byte ones), which is what the regeneration needs to reconnect the zones.
+  A cloud import does not.
+
+This is a cloud-storage limitation, not an OpenNova restore bug. (GitHub #81.)
+
 ### Apply-exact does not ship raster
 
 Apply-exact pushes only CSVs (Δ-transformed). It expects `save_map type:1`
