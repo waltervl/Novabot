@@ -49,9 +49,23 @@ describe('isMowerBusy', () => {
     expect(isMowerBusy(sn)).toBe(false);
   });
 
-  it('returns true while mowing (work_status 1)', () => {
+  it('returns true when the msg shows an active state, even for a terminal work_status', () => {
     setSensors({ work_status: '1', msg: 'Mode:COVERAGE Work:MOVING Recharge: WAIT' });
     expect(isMowerBusy(sn)).toBe(true);
+  });
+
+  // Regression: a mow that aborted parks the mower at work_status=1 (FAILED).
+  // The old guard ({0,2,9} only) wrongly treated that as "busy", so EVERY
+  // scheduled startMowing was rejected for days while manual starts (which skip
+  // this guard) still worked. FAILED + a non-active msg must be NOT busy.
+  it('returns false for a parked FAILED mower (work_status 1, no active msg)', () => {
+    setSensors({ work_status: '1', msg: 'Mode:COVERAGE Work:FAILED Prev work:QUIT_PILE_INIT Recharge: FINISHED' });
+    expect(isMowerBusy(sn)).toBe(false);
+  });
+
+  it('returns false for terminal stop codes (ERROR_STOP 13)', () => {
+    setSensors({ work_status: '13', msg: 'Mode:COVERAGE Work:ERROR_STOP Recharge: FINISHED' });
+    expect(isMowerBusy(sn)).toBe(false);
   });
 
   it('returns true while covering (work_status 92)', () => {

@@ -11,12 +11,38 @@ import { isDeviceOnline } from '../mqtt/broker.js';
 import { publishToDevice } from '../mqtt/mapSync.js';
 import { startMowing } from './mowingService.js';
 import { getWeatherForecast, shouldPauseForRain } from './weatherService.js';
-import { emitScheduleEvent } from '../dashboard/socketHandler.js';
+import { emitScheduleEvent, pushMqttLog } from '../dashboard/socketHandler.js';
 import type { ScheduleRow } from '../db/repositories/schedules.js';
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
 const CHECK_INTERVAL_MS = 30_000;
 const TRIGGER_WINDOW_MS = 5 * 60_000; // 5 minuten window — ruim genoeg voor restarts
+
+// Visible per-schedule decision log: writes to the console (→ proxy log file +
+// stdout) AND the dashboard MQTT-log stream (pushMqttLog), so you can actually
+// SEE whether a scheduled run started and, if not, exactly why (offline / rain /
+// mower busy / start error). Deduped per (day, outcome) so the 30s retry ticks
+// inside the 5-minute window log each distinct outcome ONCE, not every tick.
+const lastLoggedDecision = new Map<string, string>();
+function logScheduleDecision(row: ScheduleRow, ok: boolean, outcome: string, detail?: string): void {
+  const dayKey = new Date().toISOString().slice(0, 10);
+  const dedupeKey = `${dayKey}:${outcome}:${detail ?? ''}`;
+  if (lastLoggedDecision.get(row.schedule_id) === dedupeKey) return;
+  lastLoggedDecision.set(row.schedule_id, dedupeKey);
+  const text = `${outcome}${detail ? ` — ${detail}` : ''}`;
+  console.log(`[ScheduleRunner] ${row.schedule_id} (${row.mower_sn}) @${row.start_time}: ${text}`);
+  pushMqttLog({
+    ts: Date.now(),
+    type: ok ? 'forward' : 'error',
+    clientId: 'ScheduleRunner',
+    clientType: '?',
+    sn: row.mower_sn,
+    direction: '',
+    topic: `schedule/${row.start_time}`,
+    payload: text,
+    encrypted: false,
+  });
+}
 
 /** Haal charger GPS coördinaten op voor een maaier SN */
 function getChargerGps(mowerSn: string): { lat: number; lng: number } | null {
@@ -99,7 +125,7 @@ function checkSchedules() {
 
     // Check of maaier online is
     if (!isDeviceOnline(row.mower_sn)) {
-      console.log(`[ScheduleRunner] ${row.schedule_id}: maaier ${row.mower_sn} is offline, skip`);
+      logScheduleDecision(row, false, 'SKIPPED', 'mower offline');
       continue;
     }
 
@@ -134,7 +160,7 @@ async function checkWeatherAndTrigger(
   );
 
   if (shouldPause) {
-    console.log(`[ScheduleRunner] ${row.schedule_id}: regen verwacht, pauzeer`);
+    logScheduleDecision(row, false, 'SKIPPED', 'rain expected (pre-start weather check)');
     emitScheduleEvent('weather:paused', {
       scheduleId: row.schedule_id,
       mowerSn: row.mower_sn,
@@ -205,7 +231,13 @@ function triggerSchedule(row: ScheduleRow) {
     pathDirection: effectiveDirection,
     area,
   });
-  console.log(`[ScheduleRunner] ${row.schedule_id}: ${result.ok ? 'started' : 'FAILED: ' + result.error} (height=${row.cutting_height}, dir=${effectiveDirection}, area=${area})`);
+  if (result.ok) {
+    logScheduleDecision(row, true, 'STARTED', `area=${area} height=${row.cutting_height ?? 5}cm dir=${effectiveDirection}°`);
+  } else {
+    // Most common cause: startMowing's isMowerBusy guard rejected the start
+    // because the mower is in an active task (or was wrongly parked as "busy").
+    logScheduleDecision(row, false, 'NOT STARTED', `${result.error} (area=${area} height=${row.cutting_height ?? 5}cm)`);
+  }
 
   // Update last_triggered_at
   scheduleRepo.updateLastTriggered(row.schedule_id);

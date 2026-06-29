@@ -16,17 +16,34 @@ import { deviceCache } from '../mqtt/sensorData.js';
 
 /**
  * Returns true when the mower is already executing a task (mowing, edge,
- * mapping, returning, init/startup transitions). Idle states are
- * work_status 0 (WAIT), 2 (CANCELLED/DONE), 9 (on dock). Anything else
- * indicates an active task and accepting another start_navigation will
- * trigger Error 2 "Already in running task" on the firmware side
- * (issue #13).
+ * mapping, returning, init/startup transitions). Accepting another
+ * start_navigation during an active task triggers Error 2 "Already in running
+ * task" on the firmware (issue #13), so the scheduler skips those.
+ *
+ * deviceCache holds the RAW numeric work_status (the dashboard translates only
+ * at display time), so we compare raw codes here.
+ *
+ * IDLE/TERMINAL codes (NOT busy — a fresh start is allowed): WAIT(0), FAILED(1),
+ * CANCELLED(2), FAILED_ONCE(7), FINISHED(8/9) and the stop codes USER_STOP(10),
+ * USER_RECHARGE_STOP(11), LOWER_POWER_STOP(12), ERROR_STOP(13),
+ * TIME_LIMIT_STOP(14), RECOVER_ERROR_STOP(15).
+ *
+ * CRITICAL FIX: the old set was only {0,2,9}, so FAILED(1) and the stop codes
+ * counted as "busy". After ONE aborted scheduled mow the mower parked at
+ * work_status=1 (FAILED) and EVERY later scheduled startMowing was silently
+ * rejected with "mower busy" — forever — until a manual app-start (which does
+ * NOT go through this guard) reset the state. That is exactly the "schedule
+ * stopped firing for days while manual still works" symptom.
  */
+const IDLE_WORK_STATUS = new Set([
+  '', '0', '1', '2', '7', '8', '9', '10', '11', '12', '13', '14', '15',
+]);
+
 export function isMowerBusy(sn: string): boolean {
   const raw = deviceCache.get(sn);
   if (!raw) return false;
   const ws = raw.get('work_status') ?? '';
-  if (ws !== '' && ws !== '0' && ws !== '2' && ws !== '9') return true;
+  if (!IDLE_WORK_STATUS.has(ws)) return true;
   const msg = raw.get('msg') ?? '';
   return /Work:(MOVING|COVERING|REQUEST_START|INIT_|RUNNING|MAPPING)/.test(msg)
     || /Recharge:(MOVING|RUNNING|GOING)/.test(msg);
