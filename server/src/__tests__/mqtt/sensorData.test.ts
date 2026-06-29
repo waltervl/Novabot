@@ -29,6 +29,25 @@ describe('translateValue rtk_fix_quality', () => {
   });
 });
 
+describe('translateValue mower_status (charger LoRa relay uint32)', () => {
+  it('decodes the work_status byte (bits 16-23) from the packed uint32 LE', () => {
+    // 0x00090001 → work_status byte = 0x09 = Finished
+    expect(translateValue('mower_status', '589825')).toBe('Finished');
+    // work_status = 90 (0x5a) → Mowing:  90<<16 = 0x005a0000 = 5898240
+    expect(translateValue('mower_status', String(90 << 16))).toBe('Mowing');
+    // work_status = 50 → Return to charger
+    expect(translateValue('mower_status', String(50 << 16))).toBe('Return to charger');
+  });
+  it('falls back to derived_mode (byte 0) when work_status is unmapped', () => {
+    // work_status 0 (Wait is mapped) — use an unmapped work_status (200) with derived_mode=2 (Mowing)
+    expect(translateValue('mower_status', String((200 << 16) | 2))).toBe('Mowing');
+  });
+  it('keeps the legacy string status map and passes through truly unknown values', () => {
+    expect(translateValue('mower_status', 'startMowing')).toBe('Mowing');
+    expect(translateValue('mower_status', 'totally-unknown')).toBe('totally-unknown');
+  });
+});
+
 describe('updateDeviceData null/non-object payloads (crash guard)', () => {
   // JSON.parse accepts these WITHOUT throwing — `parsed` becomes null or a
   // non-object, and Object.keys(null) used to crash the broker handler. Must

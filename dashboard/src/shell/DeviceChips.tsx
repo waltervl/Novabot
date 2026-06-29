@@ -254,7 +254,7 @@ function chargerChips(c: DeviceState): ChipDef[] {
   }
   const sats = parseInt(s.gps_satellites ?? '', 10);
   if (isFinite(sats)) out.push({ icon: Satellite, label: 'GPS Sat', value: sats, tone: sats >= 15 ? 'sky' : sats >= 8 ? 'amber' : 'red' });
-  if (s.mower_status) out.push({ icon: Radio, label: 'Mower seen', value: s.mower_status, tone: 'zinc' });
+  if (s.mower_status) out.push({ icon: Radio, label: 'Mower (LoRa)', value: s.mower_status, tone: 'zinc' });
   return out;
 }
 

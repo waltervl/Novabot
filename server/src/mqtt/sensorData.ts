@@ -148,6 +148,37 @@ const MOWER_STATUS_MAP: Record<string, string> = {
   'noMowingUncharged': 'Low battery',
 };
 
+// The charger relays the mower's status over LoRa as a uint32 LE that packs four
+// bytes: derived_mode | task_mode<<8 | work_status<<16 | recharge_status<<24
+// (mower chassis_control_node robot_status_cb → STM32 → LoRa bytes 7-10, copied
+// verbatim by the charger). work_status (byte 2) is the informative one. These
+// numeric values are from the robot_decision binary's WorkStatusString() jump
+// table (Ghidra-verified) — NOT the wrong values in mower/state_machine.py.
+const WORK_STATUS_NUM: Record<number, string> = {
+  0: 'Wait', 1: 'Failed', 2: 'Cancelled', 7: 'Failed', 8: 'Finished', 9: 'Finished',
+  10: 'User stop', 11: 'Sent to charge', 12: 'Low-battery stop', 13: 'Error stop',
+  14: 'Time-limit stop', 15: 'Recover error', 49: 'Resuming', 50: 'Return to charger',
+  51: 'Aligning dock', 53: 'Sensor init', 54: 'UTM init', 55: 'Localization init',
+  56: 'Undocking', 57: 'System check', 59: 'Init done', 61: 'Loc-error recover',
+  62: 'LoRa-error recover', 63: 'Slip recover', 64: 'Out-of-map recover',
+  90: 'Mowing', 91: 'Avoiding', 92: 'Moving', 93: 'Edge cutting', 94: 'Coverage gap',
+  130: 'Mapping zone', 131: 'Mapping obstacle', 132: 'Mapping corridor',
+  133: 'Mapping corridor→dock', 134: 'Setting dock', 135: 'Deleting sub-map',
+  136: 'Deleting obstacle', 137: 'Deleting corridor', 138: 'Auto-erase',
+  139: 'Auto-erase failed', 140: 'Auto-erase done', 141: 'Assisted mapping zone',
+  142: 'Assisted mapping obstacle', 143: 'Map edit', 169: 'Stop recording',
+  191: 'Return to charger', 192: 'Visual docking', 193: 'Aligning dock',
+};
+const DERIVED_MODE_NUM: Record<number, string> = {
+  0: 'Idle', 1: 'Mapping', 2: 'Mowing', 5: 'Recharging', 7: 'Fault',
+};
+
+function translateMowerStatus(raw: number): string {
+  const work = (raw >>> 16) & 0xff;
+  const mode = raw & 0xff;
+  return WORK_STATUS_NUM[work] ?? DERIVED_MODE_NUM[mode] ?? String(raw);
+}
+
 function translateChargerStatus(raw: number): string {
   if (raw === 0) return 'Idle';
   if ((raw & 0x0101) === 0x0101) return 'Operational';
@@ -302,8 +333,12 @@ export function translateValue(field: string, rawValue: string): string {
       const n = parseInt(rawValue, 10);
       return isNaN(n) ? rawValue : translateChargerStatus(n);
     }
-    case 'mower_status':
-      return MOWER_STATUS_MAP[rawValue] ?? rawValue;
+    case 'mower_status': {
+      const mapped = MOWER_STATUS_MAP[rawValue];
+      if (mapped) return mapped;
+      const n = parseInt(rawValue, 10);
+      return isNaN(n) ? rawValue : translateMowerStatus(n);
+    }
     case 'mower_error': {
       const n = parseInt(rawValue, 10);
       return isNaN(n) ? rawValue : translateMowerError(n);
