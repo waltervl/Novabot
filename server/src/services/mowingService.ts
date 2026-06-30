@@ -13,6 +13,13 @@
 import { publishToDevice } from '../mqtt/mapSync.js';
 import { isDeviceOnline } from '../mqtt/broker.js';
 import { deviceCache } from '../mqtt/sensorData.js';
+import { deviceSettingsRepo } from '../db/repositories/deviceSettings.js';
+import { selectParaRepush } from '../mqtt/paraRepush.js';
+
+/** Settle time (ms) between re-applying the saved para and start_navigation, so
+ *  the mower has processed set_para_info before it captures perception_level /
+ *  path_direction at task start. */
+export const MOW_PARA_SETTLE_MS = 1500;
 
 /**
  * Returns true when the mower is already executing a task (mowing, edge,
@@ -109,7 +116,8 @@ function sendCommand(sn: string, command: Record<string, unknown>): void {
  * Stuurt start_navigation, exact als de Novabot app en het HomeScreen.
  */
 export function startMowing(params: MowingParams): MowingResult {
-  const { sn, cuttingHeight = 5, pathDirection = 120, area = 1 } = params;
+  const { sn, cuttingHeight = 5, area = 1 } = params;
+  const pathDirection = params.pathDirection;
 
   if (!sn) return { ok: false, error: 'sn required' };
   if (!isDeviceOnline(sn)) return { ok: false, error: 'mower offline' };
@@ -121,18 +129,31 @@ export function startMowing(params: MowingParams): MowingResult {
   // Normalise the stored cutting height (cm from the app, mm from the dashboard)
   // to the firmware wire enum. See cuttingHeightToWire.
   const cutterhigh = cuttingHeightToWire(cuttingHeight);
-
   const cmdNum = Date.now() % 100000;
-  sendCommand(sn, {
-    start_navigation: {
-      mapName: 'test',
-      cutterhigh,
-      area,
-      cmd_num: cmdNum,
-    },
-  });
 
-  console.log(`[MowingService] Started: sn=${sn} cutterhigh=${cutterhigh} (=${cutterhigh + 2}cm) dir=${pathDirection}° area=${area}`);
+  // Re-apply the user's saved para (mow direction + obstacle avoidance + lights/
+  // sound/joystick) RIGHT BEFORE the mow. The mower does NOT persist set_para_info
+  // over a reconnect, so without this a task can start with reset defaults: most
+  // critically perception_level 0 = camera obstacle-avoidance OFF, and direction
+  // 0°. Both perception_level and path_direction are captured at task START, so we
+  // send the FULL saved block first (selectParaRepush — partial would reset the
+  // omitted fields to 0), let it settle, then start_navigation. Only when there
+  // are saved settings; otherwise mow as-is (never send a partial block).
+  const para = selectParaRepush(deviceSettingsRepo.findBySn(sn));
+  if (para) {
+    if (typeof pathDirection === 'number') para.path_direction = pathDirection;
+    sendCommand(sn, { set_para_info: para });
+  }
+
+  const fireStart = (): void => {
+    sendCommand(sn, {
+      start_navigation: { mapName: 'test', cutterhigh, area, cmd_num: cmdNum },
+    });
+    console.log(`[MowingService] Started: sn=${sn} cutterhigh=${cutterhigh} (=${cutterhigh + 2}cm) dir=${pathDirection ?? '(saved)'}° area=${area} reapplied_para=${para ? 'yes' : 'none'}`);
+  };
+  if (para) setTimeout(fireStart, MOW_PARA_SETTLE_MS);
+  else fireStart();
+
   return { ok: true };
 }
 

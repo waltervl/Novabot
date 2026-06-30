@@ -15,6 +15,7 @@ vi.mock('../../mqtt/mapSync.js', () => ({
 import { isMowerBusy, startMowing, cuttingHeightToWire } from '../../services/mowingService.js';
 import { deviceCache } from '../../mqtt/sensorData.js';
 import { publishToDevice } from '../../mqtt/mapSync.js';
+import { deviceSettingsRepo } from '../../db/repositories/deviceSettings.js';
 
 const sn = 'LFIN1234567890';
 
@@ -152,5 +153,40 @@ describe('startMowing busy guard', () => {
     expect(vi.mocked(publishToDevice).mock.calls[0][1]).toMatchObject({
       start_navigation: { cutterhigh: 7 },
     });
+  });
+});
+
+describe('startMowing re-applies saved para before the mow', () => {
+  // A fresh SN with no deviceCache entry (so not busy) but with saved settings —
+  // the mower resets para over a reconnect, so every mow must re-send them first.
+  const psn = 'LFINPARAREAPPLY';
+  beforeEach(() => {
+    deviceCache.delete(psn);
+    vi.clearAllMocks();
+  });
+
+  it('sends the full saved para block (with the mow direction) before start_navigation', () => {
+    deviceSettingsRepo.upsert(psn, 'obstacle_avoidance_sensitivity', '3');
+    deviceSettingsRepo.upsert(psn, 'path_direction', '0');
+    deviceSettingsRepo.upsert(psn, 'sound', '0');
+    const result = startMowing({ sn: psn, cuttingHeight: 3, pathDirection: 60 });
+    expect(result.ok).toBe(true);
+    // set_para_info is sent synchronously (start_navigation is delayed); it must
+    // carry the saved obstacle level (so perception_level != 0) and THIS mow's
+    // direction (60), not the saved 0.
+    const paraCall = vi.mocked(publishToDevice).mock.calls
+      .find((c) => c[1] && typeof c[1] === 'object' && 'set_para_info' in (c[1] as object));
+    expect(paraCall).toBeTruthy();
+    const para = (paraCall![1] as { set_para_info: Record<string, unknown> }).set_para_info;
+    expect(para.obstacle_avoidance_sensitivity).toBe(3);
+    expect(para.path_direction).toBe(60);
+  });
+
+  it('does not send a partial para block when nothing is saved (avoids resetting fields to 0)', () => {
+    const result = startMowing({ sn: 'LFINNOSAVED', cuttingHeight: 5 });
+    expect(result.ok).toBe(true);
+    const paraCall = vi.mocked(publishToDevice).mock.calls
+      .find((c) => c[1] && typeof c[1] === 'object' && 'set_para_info' in (c[1] as object));
+    expect(paraCall).toBeUndefined();
   });
 });
