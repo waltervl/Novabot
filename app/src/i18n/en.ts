@@ -359,6 +359,7 @@ export default {
   // Live server progress/result — server sends a stable msgKey, translated here
   reanchorMsgCheck: 'Checking: mower on the dock and RTK Fixed?',
   reanchorMsgStarted: 'Re-anchor started...',
+  reanchorMsgStability: 'Checking RTK stability on the dock...',
   reanchorMsgAnchor: 'Saving the dock position...',
   reanchorMsgRelockBack: 'Driving back a little so the mower can re-find its position...',
   reanchorMsgWaitRelock: 'Waiting for the mower to re-find its position...',
@@ -373,6 +374,7 @@ export default {
   reanchorMsgErrNotFixed: 'No RTK Fixed yet. Wait until the fix is Fixed and try again.',
   reanchorMsgErrNoGps: 'No valid GPS coordinates from the mower.',
   reanchorMsgErrAnchorFailed: 'The mower did not confirm the new dock position in time. This usually works on the next try. Press Try again.',
+  reanchorMsgErrUnstable: 'RTK too unstable on the dock (wandering ±{{dist}} m). Wait for a calm Fixed and try again.',
   reanchorMsgErrRelockTimeout: 'Still no lock after backing up further. Drive the mower back to the dock manually with the joystick and start the automatic re-anchor again.',
   reanchorMsgErrDockTimeout: 'Docking took too long. Dock manually with the joystick and press Verify.',
   reanchorMsgErrVerifyFailed: 'Out of tolerance: docked at ({{x}}, {{y}}) m, {{dist}} m from where the dock should be. Try again.',

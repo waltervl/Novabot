@@ -357,6 +357,7 @@ export default {
   // Live server progress/result — server sends a stable msgKey, translated here
   reanchorMsgCheck: 'Controle: maaier op de dock en RTK Fixed?',
   reanchorMsgStarted: 'Re-anchor gestart...',
+  reanchorMsgStability: 'RTK-stabiliteit controleren op de dock...',
   reanchorMsgAnchor: 'Dockpositie opslaan...',
   reanchorMsgRelockBack: 'Een stukje terugrijden zodat de maaier zijn positie terugvindt...',
   reanchorMsgWaitRelock: 'Wachten tot de maaier zijn positie terugvindt...',
@@ -371,6 +372,7 @@ export default {
   reanchorMsgErrNotFixed: 'Nog geen RTK Fixed. Wacht tot de fix Fixed is en probeer opnieuw.',
   reanchorMsgErrNoGps: 'Geen geldige GPS-coordinaten van de maaier.',
   reanchorMsgErrAnchorFailed: 'De maaier bevestigde de nieuwe dockpositie niet op tijd. Dit lukt meestal de volgende poging. Druk op Opnieuw proberen.',
+  reanchorMsgErrUnstable: 'RTK te onrustig op de dock (zwabbert ±{{dist}} m). Wacht op een rustige Fixed en probeer opnieuw.',
   reanchorMsgErrRelockTimeout: 'Nog steeds geen lock na extra achteruit rijden. Rij handmatig met de joystick terug naar de dock en start de automatische re-anchor opnieuw.',
   reanchorMsgErrDockTimeout: 'Docken duurde te lang. Dok handmatig met de joystick en druk Verifieer.',
   reanchorMsgErrVerifyFailed: 'Buiten tolerantie: gedockt op ({{x}}, {{y}}) m, {{dist}} m van waar de dock zou moeten zijn. Probeer opnieuw.',

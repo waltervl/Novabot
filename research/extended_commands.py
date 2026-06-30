@@ -3460,25 +3460,39 @@ def handle_reanchor_pos(params, respond):
         respond("reanchor_pos_respond", {"result": 1, "error": f"write failed: {e}"})
         return
 
-    try:
-        r = ros2_run(
-            ["ros2", "service", "call", "/load_utm_origin_info",
-             "localization_msgs/srv/LoadUtmOriginInfo", "'{utm_info_path: /userdata/pos.json}'"],
-            timeout=15,
-        )
-        ok = r.returncode == 0 and ("result=True" in r.stdout or "Load success" in r.stdout)
-        log(f"reanchor_pos: utm=({x:.2f},{y:.2f}) zone={zone} load rc={r.returncode} out={r.stdout.strip()[:150]}")
-        respond("reanchor_pos_respond", {
-            "result": 0 if ok else 1,
-            "utm_origin": {"x": x, "y": y, "utm_zone": zone},
-            "wgs84_origin": {"latitude": float(lat), "longitude": float(lng)},
-            "load_stdout": r.stdout.strip()[:250],
-        })
-    except subprocess.TimeoutExpired:
-        respond("reanchor_pos_respond", {"result": 1, "error": "load_utm_origin_info timeout"})
-    except Exception as e:
-        log(f"reanchor_pos load error: {e}")
-        respond("reanchor_pos_respond", {"result": 1, "error": f"load failed: {e}"})
+    # Retry the localization reload. pos.json is already written; only this ROS
+    # service call is flaky (it times out when the localization node is busy right
+    # after docking). Retry a few times so a transient timeout does not fail the
+    # whole re-anchor. Succeeds and returns as soon as any attempt loads.
+    last_err = "load_utm_origin_info timeout"
+    for attempt in range(1, 4):
+        try:
+            r = ros2_run(
+                ["ros2", "service", "call", "/load_utm_origin_info",
+                 "localization_msgs/srv/LoadUtmOriginInfo", "'{utm_info_path: /userdata/pos.json}'"],
+                timeout=15,
+            )
+            ok = r.returncode == 0 and ("result=True" in r.stdout or "Load success" in r.stdout)
+            log(f"reanchor_pos: utm=({x:.2f},{y:.2f}) zone={zone} attempt={attempt} load rc={r.returncode} out={r.stdout.strip()[:150]}")
+            if ok:
+                respond("reanchor_pos_respond", {
+                    "result": 0,
+                    "utm_origin": {"x": x, "y": y, "utm_zone": zone},
+                    "wgs84_origin": {"latitude": float(lat), "longitude": float(lng)},
+                    "load_stdout": r.stdout.strip()[:250],
+                    "attempts": attempt,
+                })
+                return
+            last_err = f"load rc={r.returncode}: {r.stdout.strip()[:120]}"
+        except subprocess.TimeoutExpired:
+            last_err = "load_utm_origin_info timeout"
+            log(f"reanchor_pos: attempt={attempt} load timeout")
+        except Exception as e:
+            last_err = f"load failed: {e}"
+            log(f"reanchor_pos load error (attempt {attempt}): {e}")
+        if attempt < 3:
+            time.sleep(2)
+    respond("reanchor_pos_respond", {"result": 1, "error": last_err, "attempts": 3})
 
 
 def _coverage_planner_params_yaml_path():

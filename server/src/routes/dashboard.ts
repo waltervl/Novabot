@@ -22,6 +22,7 @@ import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice,
 import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
 import { isFrameUnvalidated, markFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
+import { gpsSpreadMeters, medianGps, type LatLng } from '../services/reanchorGps.js';
 import { compareMapRowsByCanonical } from '../utils/mapOrder.js';
 import crypto from 'crypto';
 import { generateMapZipFromDb, gpsToLocal, localToGps, parseMapZip, type GpsPoint, type LocalPoint } from '../mqtt/mapConverter.js';
@@ -2417,6 +2418,16 @@ function reanchorMapPos(sn: string): { x: number; y: number } {
   return { x: parseFloat(s?.get('map_position_x') ?? 'NaN'), y: parseFloat(s?.get('map_position_y') ?? 'NaN') };
 }
 const REANCHOR_TOLERANCE_M = 0.4; // docked map_position must land this close to origin
+// Stability gate: the origin GPS must SETTLE before we anchor on it. A single
+// instantaneous reading can be mid-wander, which puts the dock in the wrong
+// place. We require a window of consecutive Fixed readings that agree within the
+// spread threshold and anchor on their median; if it never settles we refuse
+// (clear error) rather than anchor on a wandering fix.
+const REANCHOR_STABLE_SPREAD_M = 0.10;     // window must agree within this (m)
+const REANCHOR_STABLE_WINDOW = 8;          // consecutive Fixed samples that must agree
+const REANCHOR_STABLE_TIMEOUT_MS = 30000;  // give up waiting for a stable fix
+const REANCHOR_STABLE_STEP_MS = 1000;      // sample cadence
+const REANCHOR_ANCHOR_RETRIES = 3;         // resend reanchor_pos on a failed/timed-out load
 
 // Self-verify the docked frame: if map_position is within tolerance of the origin
 // the re-anchor took, clear frame_unvalidated; otherwise leave it set.
@@ -2426,6 +2437,43 @@ function reanchorVerifyAndClear(sn: string): { ok: boolean; pose: { x: number; y
   const ok = Number.isFinite(dist) && dist <= REANCHOR_TOLERANCE_M;
   if (ok) clearFrameUnvalidated(sn);
   return { ok, pose, dist };
+}
+
+// Wait for the docked RTK to SETTLE, then return the median lat/lng of a stable
+// window to anchor on. Returns an error instead when the fix never settles
+// within the timeout (anchoring on a wandering RTK is what puts the dock in the
+// wrong place). The window resets whenever the fix drops or leaves Fixed, so we
+// never average across a gap. Emits live 'anchor' progress with the live spread.
+async function reanchorStableGps(
+  sn: string,
+  sleep: (ms: number) => Promise<unknown>,
+): Promise<LatLng | { error: 'no_gps' | 'unstable'; spread: number }> {
+  const win: LatLng[] = [];
+  const t0 = Date.now();
+  let sawGps = false;
+  let lastSpread = NaN;
+  while (Date.now() - t0 < REANCHOR_STABLE_TIMEOUT_MS) {
+    const s = deviceCache.get(sn);
+    const lat = parseFloat(s?.get('latitude') ?? s?.get('gps_latitude') ?? 'NaN');
+    const lng = parseFloat(s?.get('longitude') ?? s?.get('gps_longitude') ?? 'NaN');
+    if (Number.isFinite(lat) && Number.isFinite(lng) && reanchorRtkFixed(sn)) {
+      sawGps = true;
+      win.push({ lat, lng });
+      if (win.length > REANCHOR_STABLE_WINDOW) win.shift();
+      if (win.length === REANCHOR_STABLE_WINDOW) {
+        lastSpread = gpsSpreadMeters(win);
+        setReanchor(sn, 'anchor', `Stabiliteit controleren op de dock (±${(lastSpread * 100).toFixed(0)} cm)...`, { msgKey: 'reanchorMsgStability', dist: lastSpread });
+        if (lastSpread <= REANCHOR_STABLE_SPREAD_M) return medianGps(win);
+      } else {
+        setReanchor(sn, 'anchor', 'Stabiliteit controleren op de dock...', { msgKey: 'reanchorMsgStability' });
+      }
+    } else {
+      win.length = 0; // fix dropped or not Fixed — don't average across the gap
+    }
+    await sleep(REANCHOR_STABLE_STEP_MS);
+  }
+  if (!sawGps) return { error: 'no_gps', spread: NaN };
+  return { error: 'unstable', spread: Number.isFinite(lastSpread) ? lastSpread : NaN };
 }
 
 // Full server-side orchestration for action:'auto'. Fire-and-forget; the wizard
@@ -2453,35 +2501,50 @@ async function runAutoReanchor(sn: string): Promise<void> {
     // the new origin to be re-locked (off-dock -> RUNNING + Fixed -> re-docked).
     setReanchorRelocked(sn, false);
 
-    // 2. reanchor_pos — origin = the docked Fixed GPS, loaded live (no restart)
-    setReanchor(sn, 'anchor', 'Origin op de dock zetten (pos.json herschrijven)...', { msgKey: 'reanchorMsgAnchor' });
-    // The live RTK position is cached under 'latitude'/'longitude' (set from the
-    // mower's location report). 'gps_latitude' is not populated in production but
-    // kept as a defensive fallback. When docked + Fixed this is the dock's WGS84,
-    // which the mower-side reanchor_pos converts to UTM for the new origin.
-    const s0 = deviceCache.get(sn);
-    const lat = parseFloat((s0?.get('latitude') ?? s0?.get('gps_latitude') ?? 'NaN'));
-    const lng = parseFloat((s0?.get('longitude') ?? s0?.get('gps_longitude') ?? 'NaN'));
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      setReanchor(sn, 'error', 'Geen geldige GPS-coordinaten van de maaier.', { error: 'no_gps', msgKey: 'reanchorMsgErrNoGps' });
+    // 2. reanchor_pos — origin = the docked Fixed GPS, loaded live (no restart).
+    // First WAIT for the RTK to settle (a single reading can be mid-wander), then
+    // anchor on the median of a stable window. The live RTK position is cached
+    // under 'latitude'/'longitude' (from the mower's location report); the
+    // mower-side reanchor_pos converts the WGS84 origin to UTM.
+    setReanchor(sn, 'anchor', 'Stabiliteit controleren op de dock...', { msgKey: 'reanchorMsgStability' });
+    const stable = await reanchorStableGps(sn, sleep);
+    if ('error' in stable) {
+      if (stable.error === 'no_gps') {
+        setReanchor(sn, 'error', 'Geen geldige GPS-coordinaten van de maaier.', { error: 'no_gps', msgKey: 'reanchorMsgErrNoGps' });
+      } else {
+        const cm = Number.isFinite(stable.spread) ? (stable.spread * 100).toFixed(0) : '?';
+        setReanchor(sn, 'error', `RTK te onrustig op de dock (zwabbert ±${cm} cm). Wacht op een rustige Fixed en probeer opnieuw.`, { error: 'rtk_unstable', dist: stable.spread, msgKey: 'reanchorMsgErrUnstable' });
+      }
       return;
     }
+    const { lat, lng } = stable;
+    setReanchor(sn, 'anchor', 'Dockpositie opslaan...', { msgKey: 'reanchorMsgAnchor' });
     const { publishToExtended, onExtendedResponse, offExtendedResponse } = await import('../mqtt/mapSync.js');
-    const anchored = await new Promise<boolean>((resolve) => {
-      let settled = false;
-      const handler = (data: Record<string, unknown>): void => {
-        const resp = data.reanchor_pos_respond as { result?: number } | undefined;
-        if (!resp || settled) return;
-        settled = true;
-        offExtendedResponse(sn, handler);
-        resolve(resp.result === 0);
-      };
-      onExtendedResponse(sn, handler);
-      publishToExtended(sn, { reanchor_pos: { lat, lng } });
-      setTimeout(() => { if (!settled) { settled = true; offExtendedResponse(sn, handler); resolve(false); } }, 15000);
-    });
+    // Resend on a failed/timed-out load: pos.json is (re)written each attempt with
+    // the SAME stable origin, only the load_utm_origin_info reload is flaky. The
+    // mower retries that ROS call itself too; this is the outer safety net.
+    let anchored = false;
+    for (let attempt = 1; attempt <= REANCHOR_ANCHOR_RETRIES && !anchored; attempt++) {
+      anchored = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const handler = (data: Record<string, unknown>): void => {
+          const resp = data.reanchor_pos_respond as { result?: number } | undefined;
+          if (!resp || settled) return;
+          settled = true;
+          offExtendedResponse(sn, handler);
+          resolve(resp.result === 0);
+        };
+        onExtendedResponse(sn, handler);
+        publishToExtended(sn, { reanchor_pos: { lat, lng } });
+        setTimeout(() => { if (!settled) { settled = true; offExtendedResponse(sn, handler); resolve(false); } }, 15000);
+      });
+      if (!anchored && attempt < REANCHOR_ANCHOR_RETRIES) {
+        setReanchor(sn, 'anchor', `Dockpositie opslaan (poging ${attempt + 1})...`, { msgKey: 'reanchorMsgAnchor' });
+        await sleep(2000);
+      }
+    }
     if (!anchored) {
-      setReanchor(sn, 'error', 'Origin schrijven faalde (geen of negatieve reactie van de maaier).', { error: 'reanchor_failed', msgKey: 'reanchorMsgErrAnchorFailed' });
+      setReanchor(sn, 'error', 'De maaier bevestigde de nieuwe dockpositie niet op tijd. Probeer opnieuw.', { error: 'reanchor_failed', msgKey: 'reanchorMsgErrAnchorFailed' });
       return;
     }
 
