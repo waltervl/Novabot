@@ -1826,9 +1826,40 @@ def handle_write_map_files(params, respond):
         except Exception as e:
             log(f"write_map_files: pre-wipe snapshot failed (continuing): {e}")
 
+        # Inter-map / dock connectors (`mapXtomapY_..._unicom.csv`,
+        # `mapXtocharge_unicom.csv`) record zone CONNECTIVITY. For touching zones
+        # they are tiny / metadata-only and are NOT in the server's DB-sourced set,
+        # so the bare wipe below silently dropped them on every restore/sync and
+        # disconnected the zones — root cause of "the channels keep disappearing"
+        # (2026-06-29; the stock firmware / Novabot app never wipe like this). Keep
+        # any connector the caller didn't provide AS LONG AS both maps it links
+        # still exist after the write (else it's orphaned -> let it go).
+        surviving_slots = set()
+        for k in csv_files:
+            mm = re.match(r"^map(\d+)_work\.csv$", k)
+            if mm:
+                surviving_slots.add(mm.group(1))
+
+        def _connector_survives(fname):
+            m = re.match(r"^map(\d+)to(?:map(\d+)|charge)", fname)
+            if not m or m.group(1) not in surviving_slots:
+                return False
+            return m.group(2) is None or m.group(2) in surviving_slots
+
         for sub in ("csv_file", "x3_csv_file"):
             d = f"{base}/{sub}"
             os.makedirs(d, exist_ok=True)
+            # Capture connectors to preserve BEFORE wiping.
+            preserved = {}
+            for old in os.listdir(d):
+                op = os.path.join(d, old)
+                if (os.path.isfile(op) and old.endswith("_unicom.csv")
+                        and old not in csv_files and _connector_survives(old)):
+                    try:
+                        with open(op) as fh:
+                            preserved[old] = fh.read()
+                    except OSError:
+                        pass
             # Wipe existing files in this dir so old polygon data doesn't
             # bleed into new state (e.g. obsolete obstacles staying behind).
             for old in os.listdir(d):
@@ -1840,6 +1871,13 @@ def handle_write_map_files(params, respond):
                 with open(full, "w") as f:
                     f.write(content)
                 written.append(full)
+            # Restore the connectors the caller didn't include.
+            for fname, content in preserved.items():
+                full = os.path.join(d, fname)
+                with open(full, "w") as f:
+                    f.write(content)
+                written.append(full)
+                log(f"write_map_files: preserved connector {sub}/{fname} (not in provided set)")
 
         if isinstance(cs_yaml, str) and cs_yaml.strip():
             yaml_dir = "/userdata/lfi/charging_station_file"
@@ -3564,8 +3602,20 @@ def handle_set_coverage_planner_radius(params, respond):
 # localization check — a docked mower is "not aligned" until it drives off, so
 # that would false-warn on every healthy mower (see localization-not-initialized).
 
+# The STOCK firmware (save_map type:1 / auto_recharge_server) reads the dock pose
+# ONLY from this TOP-LEVEL path — NOT from maps/home<N>/charging_station_file/.
+# A stock map-delete transiently empties it, and that is the file that actually
+# crashes the firmware with Error 120 -> 140. Both the preflight check below and
+# the chg-guard MUST therefore guard THIS file, not just the per-home copies
+# (the original code only looked at maps/home<N>/..., so it false-OK'd while the
+# firmware crashed on the empty top-level file — root-caused 2026-06-29).
+_FW_CS_YAML = "/userdata/lfi/charging_station_file/charging_station.yaml"
+_FW_CS_BAK = _FW_CS_YAML + ".guardbak"
+
+
 def _check_charging_station():
-    """charging_station.yaml present+valid for every existing map home. For a
+    """charging_station.yaml present+valid for the TOP-LEVEL firmware file (the one
+    stock save_map type:1 actually reads) AND for every existing map home. For a
     first-ever map (no homes yet) there is no charge pose to validate -> na."""
     maps_root = "/userdata/lfi/maps"
     try:
@@ -3574,6 +3624,11 @@ def _check_charging_station():
         homes = []
     if not homes:
         return {"status": "na", "detail": "no map home yet (first map)"}
+    # The file the firmware actually crashes on — check it FIRST.
+    if not _charging_pose_yaml_ok(_FW_CS_YAML):
+        return {"status": "block",
+                "detail": "firmware charging_station.yaml missing/empty (%s) -> "
+                          "stock save_map type:1 Error 120/140" % _FW_CS_YAML}
     missing = [h for h in homes
                if not _charging_pose_yaml_ok(os.path.join(
                    maps_root, h, "charging_station_file", "charging_station.yaml"))]
@@ -3581,7 +3636,7 @@ def _check_charging_station():
         return {"status": "block",
                 "detail": "charging_station.yaml missing/invalid for %s "
                           "(stock save_map type:1 -> Error 140)" % ",".join(missing)}
-    return {"status": "ok", "detail": "valid for %s" % ",".join(homes)}
+    return {"status": "ok", "detail": "valid (firmware + %s)" % ",".join(homes)}
 
 
 def _check_mapping_node():
@@ -4427,7 +4482,42 @@ def _charging_pose_source(base):
     return None
 
 
+def _guard_firmware_charging_station():
+    """Keep the TOP-LEVEL /userdata/lfi/charging_station_file/charging_station.yaml
+    valid — the file the stock firmware (save_map type:1 / auto_recharge) reads and
+    transiently empties on a map-delete (Error 120/140). Snapshot it while valid and
+    restore the EXACT pose when it goes empty/missing. We restore from a last-known-
+    good backup of THIS file, never from a per-home [0,0] copy, so we can't dock the
+    robot at the wrong spot."""
+    try:
+        if _charging_pose_yaml_ok(_FW_CS_YAML):
+            with open(_FW_CS_YAML) as f:
+                cur = f.read()
+            try:
+                with open(_FW_CS_BAK) as f:
+                    if f.read() == cur:
+                        return
+            except OSError:
+                pass
+            tmp = _FW_CS_BAK + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(cur)
+            os.replace(tmp, _FW_CS_BAK)
+        elif _charging_pose_yaml_ok(_FW_CS_BAK):
+            os.makedirs(os.path.dirname(_FW_CS_YAML), exist_ok=True)
+            with open(_FW_CS_BAK) as f:
+                body = f.read()
+            tmp = _FW_CS_YAML + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(body)
+            os.replace(tmp, _FW_CS_YAML)
+            log("[chg-guard] restored firmware charging_station.yaml from last-known-good backup")
+    except OSError as ex:
+        log("[chg-guard] firmware-yaml guard error: %s" % ex)
+
+
 def _ensure_charging_station_yaml():
+    _guard_firmware_charging_station()   # the top-level file the firmware actually reads
     maps_root = "/userdata/lfi/maps"
     try:
         # active map homes only (home0, home1, ...) — skip home0.bak.<ts> backups
