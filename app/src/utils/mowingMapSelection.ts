@@ -29,30 +29,38 @@ function parseFiniteInt(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Standard positional bitmask: map0=1, map1=10, map2=100, map3=1000, … (10^slot).
+// A single covered zone reports exactly one power of 10, so slot = log10(value).
+// CRITICAL: the old code hardcoded only 1/10/100 (map0/1/2), so map3+ (1000, …)
+// fell through to null and the UI wrongly showed map0 while mowing map3 — the
+// "wrong active map" regression that kept coming back. Generalised here so any
+// zone works. The Math.pow round-trip guards float error and rejects non-powers.
+function slotFromPositionalBitmask(parsed: number): number | null {
+  if (parsed <= 0) return null;
+  const slot = Math.round(Math.log10(parsed));
+  return Math.pow(10, slot) === parsed ? slot : null;
+}
+
 function slotFromCoverMapId(value: unknown): number | null {
   const parsed = parseFiniteInt(value);
   if (parsed === null) return null;
-  // Telemetry → slot. The `area` COMMAND is a decimal positional bitmask
-  // (map0=1, map1=10, map2=100); cover_map_id reports the single zone being
-  // covered now. cover_map_id=1 is map0, NOT slot index 1 — the old
-  // `0..2 -> that slot` rule wrongly mapped 1 to map1, surfacing the false
-  // "Started map0, mower reports map1" banner. map2 has been observed reported
-  // as BOTH 100 and 200 across firmwares, so accept either.
-  if (parsed === 1) return 0;
-  if (parsed === 10) return 1;
-  if (parsed === 100 || parsed === 200) return 2;
-  // Some builds emit a raw 0/2 slot index for map0/map2.
+  // cover_map_id reports the single zone being covered now. cover_map_id=1 is
+  // map0, NOT slot index 1 — the bitmask interpretation wins.
+  const slot = slotFromPositionalBitmask(parsed);
+  if (slot !== null) return slot;
+  // Legacy/observed quirks: map2 has been seen reported as 200; some builds emit
+  // a raw 0/2 slot index for map0/map2.
+  if (parsed === 200 || parsed === 2) return 2;
   if (parsed === 0) return 0;
-  if (parsed === 2) return 2;
   return null;
 }
 
 function slotFromCurrentMapIds(value: unknown): number | null {
   const parsed = parseFiniteInt(value);
   if (parsed === null) return null;
-  if (parsed === 1) return 0;
-  if (parsed === 10) return 1;
-  if (parsed === 100 || parsed === 200) return 2;
+  const slot = slotFromPositionalBitmask(parsed);
+  if (slot !== null) return slot;
+  if (parsed === 200) return 2;
   return null;
 }
 
