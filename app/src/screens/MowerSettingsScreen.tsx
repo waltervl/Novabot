@@ -567,6 +567,38 @@ export default function MowerSettingsScreen() {
     );
   }, [mowerSn]);
 
+  // Re-anchor (danger): mark the localization frame invalid so the Home re-anchor
+  // wizard appears and a fresh re-anchor can run. In-process server flag, no
+  // restart. For when the mower's position has drifted off the dock.
+  const handleReanchorInvalidate = useCallback(() => {
+    if (!mowerSn) return;
+    appAlertCompat.alert(
+      'Re-anchor frame?',
+      'Marks the localization frame as INVALID so you can re-anchor it. Use only when the mower is mis-localized (its position drifts off the dock). After confirming, open the Home screen and tap the re-anchor prompt to run the wizard.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Invalidate',
+          style: 'destructive',
+          onPress: async () => {
+            const url = await getServerUrl();
+            if (!url) return;
+            try {
+              const r = await new ApiClient(url).reanchor(mowerSn, 'invalidate');
+              if (r.ok) {
+                appAlertCompat.alert('Frame invalidated', 'Open the Home screen and tap the re-anchor prompt to re-anchor.');
+              } else {
+                appAlertCompat.alert('Failed', r.error ?? 'unknown error');
+              }
+            } catch (e) {
+              appAlertCompat.alert('Failed', e instanceof Error ? e.message : String(e));
+            }
+          },
+        },
+      ],
+    );
+  }, [mowerSn]);
+
   if (!mowerSn) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -999,6 +1031,20 @@ export default function MowerSettingsScreen() {
                 <Text style={styles.optionLabel}>Restart Mower</Text>
                 <Text style={styles.optionSub}>
                   Restarts the mower software (not a reboot). Clears stuck states like Error 140. Only when idle or charging.
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.optionRow}
+              onPress={() => handleReanchorInvalidate()}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="navigate-circle-outline" size={20} color={colors.red} />
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.optionLabel}>Re-anchor Frame</Text>
+                <Text style={styles.optionSub}>
+                  Marks the localization frame invalid so you can re-anchor it. Use when the mower's position drifts off the dock — then re-anchor from the Home prompt.
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />

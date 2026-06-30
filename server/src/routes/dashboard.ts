@@ -20,7 +20,7 @@ import { isDeviceOnline, writeRawPublish, getBrokerDiagnostics } from '../mqtt/b
 import { getRecentLogs, forwardToDashboard, onLogEntry, emitMapsChanged } from '../dashboard/socketHandler.js';
 import { requestMapList, requestMapOutline, publishToDevice, publishRawToDevice, publishEncryptedOnTopic, publishToTopic, goToChargePayload, getNextCmdNum, patchLatestZipChargingPose, republishObstacleDetection } from '../mqtt/mapSync.js';
 import { publishExtendedCommand } from '../mqtt/extendedCommands.js';
-import { isFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
+import { isFrameUnvalidated, markFrameUnvalidated, clearFrameUnvalidated, setReanchorRelocked, isReanchorRelocked } from '../services/frameValidation.js';
 import { softRestartBlockedReason, sendSoftRestart } from '../services/softRestart.js';
 import { compareMapRowsByCanonical } from '../utils/mapOrder.js';
 import crypto from 'crypto';
@@ -2628,6 +2628,20 @@ dashboardRouter.get('/reanchor/:sn/status', (req: Request, res: Response) => {
 dashboardRouter.post('/reanchor/:sn', (req: Request, res: Response) => {
   const { sn } = req.params;
   const action = ((req.body as { action?: string })?.action) ?? 'auto';
+
+  // 'invalidate' — operator-triggered frame invalidation. Marks the frame
+  // unvalidated IN-PROCESS (no DB write + restart needed) so the app's re-anchor
+  // wizard opens and a fresh re-anchor can run. Intentionally works regardless
+  // of the current flag: the whole point is to let the user re-invalidate and
+  // redo the re-anchor when the previous one didn't hold. Must run BEFORE the
+  // "already validated" guard below.
+  if (action === 'invalidate') {
+    markFrameUnvalidated(sn);
+    console.log(`[reanchor] ${sn}: frame marked unvalidated by operator (manual invalidate)`);
+    res.json({ ok: true, action, message: 'frame marked unvalidated — open the re-anchor wizard' });
+    return;
+  }
+
   if (!isFrameUnvalidated(sn)) {
     res.status(409).json({ ok: false, error: 'frame is already validated; no re-anchor needed' });
     return;

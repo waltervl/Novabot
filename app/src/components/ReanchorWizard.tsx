@@ -149,11 +149,16 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
     }
   }
 
+  // Prefer the server's strict on-dock determination (battery-FULL/charging
+  // lingering excluded) once a flow is running; fall back to the local heuristic
+  // only for the idle pre-start screen where there is no status yet. The loose
+  // local check wrongly showed "On the dock" off the dock during the flow.
+  const onDockNow = status?.onDock ?? docked;
   const StatusBlock = (
     <View style={{ gap: 4 }}>
       <Text style={{ color: rtk.color, fontWeight: '700' }}>RTK: {rtk.label}</Text>
-      <Text style={{ color: docked ? '#22c55e' : '#f59e0b', fontSize: 13, fontWeight: '700' }}>
-        {docked ? t('reanchorOnDock') : t('reanchorOffDock')}
+      <Text style={{ color: onDockNow ? '#22c55e' : '#f59e0b', fontSize: 13, fontWeight: '700' }}>
+        {onDockNow ? t('reanchorOnDock') : t('reanchorOffDock')}
       </Text>
     </View>
   );
@@ -174,8 +179,16 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
 
   const phaseRunning = status != null && PHASES_RUNNING.includes(status.phase);
 
+  // Fully UNMOUNT when closed. A React Native Modal keeps its children mounted
+  // while visible=false (it only hides them), and a GestureHandlerRootView left
+  // mounted inside a closed Modal leaves an invisible touch-capturing layer over
+  // the WHOLE app — touches stop working everywhere after the wizard auto-closes
+  // on 'done' (the joystick gesture root is the culprit; see the comment below).
+  // Returning null tears the modal + gesture root down cleanly instead.
+  if (!visible) return null;
+
   return (
-    <Modal visible={visible} transparent animationType="fade">
+    <Modal visible transparent animationType="fade">
       {/* A React Native Modal renders in its own native view tree, OUTSIDE the
           app-root GestureHandlerRootView, so the joystick gesture needs a gesture
           root here. Exactly ONE root, filling the modal (flex:1), is the correct
@@ -219,7 +232,7 @@ export default function ReanchorWizard({ visible, sn, sensors, onClose }: Props)
                 <ActivityIndicator color="#22c55e" />
                 <Text style={{ color: '#cbd5e1', flex: 1 }}>{liveMessage(status)}</Text>
               </View>
-              <Text style={{ color: '#64748b', fontSize: 12 }}>{t('reanchorRunningHint')}</Text>
+              {StatusBlock}
             </>
           ) : status?.phase === 'done' && status.ok ? (
             <Text style={{ color: '#22c55e', fontWeight: '700' }}>{liveMessage(status)}</Text>

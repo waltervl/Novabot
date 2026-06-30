@@ -402,7 +402,7 @@ export class ApiClient {
    * - 'drive'/'spin'/'dock': legacy single-step diagnostics. */
   async reanchor(
     sn: string,
-    action: 'auto' | 'verify' | 'drive' | 'spin' | 'dock' | 'continue_dock' = 'auto',
+    action: 'auto' | 'verify' | 'drive' | 'spin' | 'dock' | 'continue_dock' | 'invalidate' = 'auto',
   ): Promise<{ ok: boolean; error?: string; message?: string }> {
     return this.request<{ ok: boolean; error?: string; message?: string }>(
       'POST',
