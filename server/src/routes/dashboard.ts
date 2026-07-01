@@ -53,6 +53,7 @@ import {
 } from '../services/coveragePlannerRadius.js';
 import { ensureBetaFlashSafe } from '../services/firmwareSafety.js';
 import { getMowerFileCapability } from '../services/mowerFileCapability.js';
+import { getPolygonAnchor } from '../services/anchor.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -2417,7 +2418,7 @@ function reanchorMapPos(sn: string): { x: number; y: number } {
   const s = deviceCache.get(sn);
   return { x: parseFloat(s?.get('map_position_x') ?? 'NaN'), y: parseFloat(s?.get('map_position_y') ?? 'NaN') };
 }
-const REANCHOR_TOLERANCE_M = 0.4; // docked map_position must land this close to origin
+const REANCHOR_TOLERANCE_M = 0.4; // docked map_position must land this close to the dock anchor
 // Stability gate: the origin GPS must SETTLE before we anchor on it. A single
 // instantaneous reading can be mid-wander, which puts the dock in the wrong
 // place. We require a window of consecutive Fixed readings that agree within the
@@ -2429,11 +2430,19 @@ const REANCHOR_STABLE_TIMEOUT_MS = 30000;  // give up waiting for a stable fix
 const REANCHOR_STABLE_STEP_MS = 1000;      // sample cadence
 const REANCHOR_ANCHOR_RETRIES = 3;         // resend reanchor_pos on a failed/timed-out load
 
-// Self-verify the docked frame: if map_position is within tolerance of the origin
-// the re-anchor took, clear frame_unvalidated; otherwise leave it set.
+// Self-verify the docked frame: if map_position is within tolerance of the DOCK
+// ANCHOR (first point of map0tocharge_unicom — the charger's position in the
+// polygon frame), clear frame_unvalidated; otherwise leave it set.
+//
+// NOT (0,0): reanchor_pos subtracts the anchor from the origin so a docked
+// mower lands ON the anchor. Measuring against (0,0) rejected every correctly
+// anchored frame whose anchor is >0.4m from origin — including the known-good
+// LFIN1231000211 (anchor (0.13,-0.52), docked (0.09,-0.51) = 4cm from anchor
+// but 0.52m from origin).
 function reanchorVerifyAndClear(sn: string): { ok: boolean; pose: { x: number; y: number }; dist: number } {
   const pose = reanchorMapPos(sn);
-  const dist = Math.hypot(pose.x, pose.y);
+  const anchor = getPolygonAnchor(sn, deviceCache.get(sn));
+  const dist = Math.hypot(pose.x - (anchor?.x ?? 0), pose.y - (anchor?.y ?? 0));
   const ok = Number.isFinite(dist) && dist <= REANCHOR_TOLERANCE_M;
   if (ok) clearFrameUnvalidated(sn);
   return { ok, pose, dist };

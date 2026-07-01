@@ -256,6 +256,39 @@ describe('POST /reanchor/:sn action:verify — manual backup (lifecycle-gated)',
     expect(s.body.status.error).toBe('verify_failed');
   });
 
+  it('verifies against the DOCK ANCHOR, not (0,0) — known-good LFIN1231000211 frame', async () => {
+    // reanchor_pos subtracts the anchor from the origin, so a correctly anchored
+    // mower docks ON the anchor. The old verify measured hypot(pose) against
+    // (0,0) and rejected every frame whose anchor is >0.4m out — including the
+    // known-good .100 (anchor (0.13,-0.52), docked (0.09,-0.51) = 4cm off the
+    // anchor but 0.52m from origin).
+    const ASN = 'LFINANCHORVERIFY';
+    const { mapRepo } = await import('../../db/repositories/maps.js');
+    mapRepo.create({
+      map_id: 'test_anchor_unicom',
+      mower_sn: ASN,
+      map_name: 'map0tocharge_unicom',
+      canonical_name: 'map0tocharge_unicom',
+      map_type: 'unicom',
+      map_area: JSON.stringify([{ x: 0.13, y: -0.52 }, { x: 0.1, y: -0.3 }]),
+    });
+    vi.useFakeTimers();
+    try {
+      markFrameUnvalidated(ASN);
+      setReanchorRelocked(ASN, true);
+      deviceCache.set(ASN, new Map(Object.entries({
+        ...DOCKED_FIXED, map_position_x: '0.09', map_position_y: '-0.51',
+      })));
+      const r = await request(app).post(`/api/dashboard/reanchor/${ASN}`).send({ action: 'verify' });
+      expect(r.status).toBe(200);
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(isFrameUnvalidated(ASN)).toBe(false); // 4cm from anchor → valid
+    } finally {
+      vi.useRealTimers();
+      mapRepo.deleteById('test_anchor_unicom');
+    }
+  });
+
   it('409 when verify is requested but the mower never re-locked (cycle incomplete)', async () => {
     markFrameUnvalidated(SN); // resets the relock latch to false
     setCache(DOCKED_FIXED); // on the dock + Fixed, but no off-dock relock happened
