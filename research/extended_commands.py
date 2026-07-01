@@ -3401,11 +3401,20 @@ def handle_reanchor_pos(params, respond):
     the in-memory origin x/y directly), so we write a PRECISE UTM here, not a
     coarse seed.
 
+    The origin is shifted by the DOCK ANCHOR (first point of
+    map0tocharge_unicom.csv = the charger's position in the polygon/map frame) so
+    a docked mower lands on that anchor, NOT on (0,0). Writing the raw GPS as
+    origin put the charger at (0,0) while the polygons expect it at the anchor,
+    shifting the whole map ~2m (mis-anchor bug, LIVE-fixed 2026-07-01 on .244:
+    docked 2.14 -> 0.06m from anchor). Same approach as the server's
+    generatePosJson (dashboard.ts ~1780: xCharger - anchor.x). ~10cm residual
+    from the antenna lever-arm is corrected by the visual docker.
+
     After this the localization goes "Not initialized"; drive ~1m on a CLEAN RTK
-    Fixed to re-lock, then the docked position lands on ~(0,0) = the charger.
+    Fixed to re-lock, then the docked position lands on the dock anchor.
     Full analysis: research/documents/reanchor-polygon-charging-pose-diagnosis.md
 
-    Payload: {"lat": float, "lng": float}
+    Payload: {"lat": float, "lng": float, "anchor_x"?: float, "anchor_y"?: float}
     """
     import json as _json, math as _math, os as _os
     lat = params.get("lat")
@@ -3435,7 +3444,51 @@ def handle_reanchor_pos(params, respond):
                   + (61 - 58 * T + T ** 2 + 600 * C - 330 * ep2) * A ** 6 / 720))
         return zone, x, y
 
+    # UTM -> WGS84 inverse (Snyder), so wgs84_origin stays consistent with the
+    # anchor-shifted utm_origin below.
+    def _u2g(xx, yy, zn):
+        a = 6378137.0; f = 1 / 298.257223563; k0 = 0.9996
+        e2 = f * (2 - f); e1 = (1 - _math.sqrt(1 - e2)) / (1 + _math.sqrt(1 - e2))
+        xx -= 500000.0; M = yy / k0
+        mu = M / (a * (1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256))
+        phi1 = (mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * _math.sin(2 * mu)
+                + (21 * e1 ** 2 / 16 - 55 * e1 ** 4 / 32) * _math.sin(4 * mu)
+                + (151 * e1 ** 3 / 96) * _math.sin(6 * mu))
+        ep2 = e2 / (1 - e2); C1 = ep2 * _math.cos(phi1) ** 2; T1 = _math.tan(phi1) ** 2
+        N1 = a / _math.sqrt(1 - e2 * _math.sin(phi1) ** 2)
+        R1 = a * (1 - e2) / (1 - e2 * _math.sin(phi1) ** 2) ** 1.5
+        D = xx / (N1 * k0)
+        lat_o = phi1 - (N1 * _math.tan(phi1) / R1) * (D ** 2 / 2
+                - (5 + 3 * T1 + 10 * C1 - 4 * C1 ** 2 - 9 * ep2) * D ** 4 / 24
+                + (61 + 90 * T1 + 298 * C1 + 45 * T1 ** 2 - 252 * ep2 - 3 * C1 ** 2) * D ** 6 / 720)
+        lon0 = _math.radians(6 * zn - 183)
+        lon_o = lon0 + (D - (1 + 2 * T1 + C1) * D ** 3 / 6
+                + (5 - 2 * C1 + 28 * T1 - 3 * C1 ** 2 + 8 * ep2 + 24 * T1 ** 2) * D ** 5 / 120) / _math.cos(phi1)
+        return _math.degrees(lat_o), _math.degrees(lon_o)
+
+    # Dock anchor = first point of map0tocharge_unicom.csv (charger position in the
+    # polygon/map frame). The polygons are drawn around THIS point, so the origin
+    # must be shifted so a docked mower reads this anchor, not (0,0).
+    # ponytail: read map0 unicom; falls back to (0,0) if absent (pre-2026-07 behaviour)
+    def _dock_anchor():
+        ax = params.get("anchor_x"); ay = params.get("anchor_y")
+        if isinstance(ax, (int, float)) and isinstance(ay, (int, float)):
+            return float(ax), float(ay)
+        for p in ("/userdata/lfi/maps/home0/csv_file/map0tocharge_unicom.csv",
+                  "/userdata/lfi/maps/home0/x3_csv_file/map0tocharge_unicom.csv"):
+            try:
+                with open(p) as f:
+                    parts = f.readline().strip().split(",")
+                return float(parts[0]), float(parts[1])
+            except Exception:
+                continue
+        return 0.0, 0.0
+
     zone, x, y = _g2u(float(lat), float(lng))
+    anchor_x, anchor_y = _dock_anchor()
+    x -= anchor_x
+    y -= anchor_y
+    olat, olon = _u2g(x, y, zone)
     ts = 0
     try:
         with open("/userdata/pos.json") as f:
@@ -3445,7 +3498,7 @@ def handle_reanchor_pos(params, respond):
     payload = {
         "time_stamp": ts,
         "utm_origin": {"utm_zone": zone, "x": x, "y": y, "z": 0},
-        "wgs84_origin": {"latitude": float(lat), "longitude": float(lng)},
+        "wgs84_origin": {"latitude": olat, "longitude": olon},
     }
     try:
         try:
@@ -3473,12 +3526,13 @@ def handle_reanchor_pos(params, respond):
                 timeout=15,
             )
             ok = r.returncode == 0 and ("result=True" in r.stdout or "Load success" in r.stdout)
-            log(f"reanchor_pos: utm=({x:.2f},{y:.2f}) zone={zone} attempt={attempt} load rc={r.returncode} out={r.stdout.strip()[:150]}")
+            log(f"reanchor_pos: utm=({x:.2f},{y:.2f}) anchor=({anchor_x:.2f},{anchor_y:.2f}) zone={zone} attempt={attempt} load rc={r.returncode} out={r.stdout.strip()[:150]}")
             if ok:
                 respond("reanchor_pos_respond", {
                     "result": 0,
                     "utm_origin": {"x": x, "y": y, "utm_zone": zone},
-                    "wgs84_origin": {"latitude": float(lat), "longitude": float(lng)},
+                    "wgs84_origin": {"latitude": olat, "longitude": olon},
+                    "anchor": {"x": anchor_x, "y": anchor_y},
                     "load_stdout": r.stdout.strip()[:250],
                     "attempts": attempt,
                 })
