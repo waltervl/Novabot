@@ -395,10 +395,39 @@ export function StartMowSheet({
       // 0. Clear old trail from previous session
       await api.clearTrail(sn).catch(() => {});
 
-      // Note: set_para_info (path_direction etc.) is sent when the user CHANGES the
-      // direction in the compass picker below — not here at start time.
-      // This matches the official Novabot app where set_para_info is sent from
-      // Advanced Settings (separate screen), not during the start mowing flow.
+      // Re-apply the user's saved para (mow direction + obstacle avoidance + lights/
+      // sound/joystick) RIGHT BEFORE the mow. Mirrors mowingService.startMowing:
+      // the mower does NOT persist set_para_info over a reconnect, so without this a
+      // MANUAL start can begin with reset defaults — most critically perception_level
+      // 0 (camera obstacle-avoidance OFF) and direction 0°. Both perception_level and
+      // path_direction are captured at task START, so we send the FULL saved block
+      // first (a partial block would reset the omitted fields to 0), let it settle
+      // ~1500ms, then start_navigation. Only when the saved para is available —
+      // otherwise start as before (never send a partial block).
+      let paraSettled = false;
+      try {
+        const { settings } = await api.getDeviceSettings(sn);
+        const para: Record<string, number> = {};
+        const PARA_KEYS = ['headlight', 'sound', 'obstacle_avoidance_sensitivity', 'path_direction', 'manual_controller_v', 'manual_controller_w'];
+        for (const k of PARA_KEYS) {
+          const raw = settings[k];
+          if (raw == null) continue;
+          const n = Number(raw);
+          if (Number.isFinite(n)) para[k] = n;
+        }
+        // The compass picker in this sheet is the live direction the user just chose;
+        // it overrides the saved path_direction for this mow.
+        if (typeof pathDirection === 'number') para.path_direction = pathDirection;
+        if (Object.keys(para).length > 0) {
+          await api.sendCommand(sn, { set_para_info: para });
+          paraSettled = true;
+        }
+      } catch (e) {
+        console.log('[StartMow] para re-apply skipped:', e);
+      }
+      if (paraSettled) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
 
       // Start mowing — Flutter v2.4.0 stuurt start_navigation direct
       const cmdNum = Date.now() % 100000;
