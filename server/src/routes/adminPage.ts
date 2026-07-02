@@ -856,6 +856,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
 
     <div class="card">
       <h2>Update Device</h2>
+      <div style="margin-bottom:12px;padding:8px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px;font-size:12px;color:#fbbf24">Custom / OpenNova firmware is experimental. Flashing it can make the mower unusable (brick it) or lose your maps. A fresh backup is made first, but only continue if you understand the risk.</div>
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
         <select id="otaDeviceSelect" onchange="onOtaDeviceChange()" style="flex:1;min-width:180px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
           <option value="">Select device...</option>
