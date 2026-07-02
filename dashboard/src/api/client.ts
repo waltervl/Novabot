@@ -222,6 +222,22 @@ export async function sendCommand(sn: string, command: Record<string, unknown>):
   return res.json();
 }
 
+/**
+ * Re-apply the saved para block (obstacle avoidance, direction, sound, …) and
+ * wait for the mower to settle. Call this right before start_navigation so a
+ * dashboard-started mow matches the app/scheduler (which always re-send para,
+ * because the mower drops set_para_info over a reconnect). Best-effort: resolves
+ * even on error so a failed re-apply never blocks the actual start.
+ */
+export async function reapplyPara(sn: string): Promise<{ ok: boolean; applied?: boolean }> {
+  try {
+    const res = await post(`${BASE}/reapply-para/${encodeURIComponent(sn)}`);
+    return await res.json();
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ── Demo/simulatie modus ────────────────────────────────────────
 
 export interface DemoStatus {

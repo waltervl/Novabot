@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 import type { MapData, GpsPoint, LocalPoint } from '../../types';
 import {
   sendCommand, sendExtendedCommand, fetchMaps,
-  getDemoMode,
+  getDemoMode, reapplyPara,
   fetchRainForecast, findIncomingRain, setRainIgnoreSession,
 } from '../../api/client';
 import { localToGps } from '../../utils/coords';
@@ -351,10 +351,13 @@ export function MowerControls({
       // Rain gate: if rain is forecast within ~3h, confirm first (mirrors app).
       if (!(await checkRainGate())) { setExpanded(false); return; }
 
-      // Note: set_para_info (path_direction) is sent only when the user CHANGES the
-      // direction slider below — not here at start time. This matches the official
-      // Novabot app where set_para_info is sent from the direction picker, not during
-      // the start mowing flow (app/src/components/StartMowSheet.tsx lines 295-298).
+      // Re-apply the saved para block (obstacle avoidance, direction, sound, …)
+      // before starting — the mower drops set_para_info over a reconnect, so
+      // without this a dashboard-started mow could run with obstacle avoidance
+      // OFF. The app (StartMowSheet) and scheduler (mowingService) already do
+      // this; the server settles MOW_PARA_SETTLE_MS before returning. Best-effort
+      // so a failed re-apply never blocks the start. Covers all start paths below.
+      await reapplyPara(sn);
 
       // Convert mm UI value to firmware wire enum: cutterhigh = mm/10 - 2
       const wireHeight = mmToCutterhigh(cuttingHeight);
