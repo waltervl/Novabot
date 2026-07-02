@@ -84,10 +84,10 @@ const DEMO_SCHEDULES: Schedule[] = [
 
 const isoNow = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString();
 const DEMO_HISTORY: WorkRecord[] = [
-  { recordId: '801', dateTime: isoNow(-3600000),         workTime: 57, workArea: 245, cutGrassHeight: 1, mapNames: 'Front Yard',   workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-3600000) },
-  { recordId: '802', dateTime: isoNow(-86400000),        workTime: 88, workArea: 380, cutGrassHeight: 1, mapNames: 'Back Garden',  workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-86400000) },
-  { recordId: '803', dateTime: isoNow(-86400000 * 2),    workTime: 29, workArea: 120, cutGrassHeight: 2, mapNames: 'Front Yard',   workStatus: 'interrupted artificially', startWay: 'app', workRecordDate: isoNow(-86400000 * 2) },
-  { recordId: '804', dateTime: isoNow(-86400000 * 4),    workTime: 118, workArea: 510, cutGrassHeight: 1, mapNames: 'Full Property',workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-86400000 * 4) },
+  { recordId: '801', dateTime: isoNow(-3600000),         workTime: 57, workArea: 245, cutGrassHeight: 1, pathDirection: 90,  mapNames: 'Front Yard',   workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-3600000) },
+  { recordId: '802', dateTime: isoNow(-86400000),        workTime: 88, workArea: 380, cutGrassHeight: 1, pathDirection: 45,  mapNames: 'Back Garden',  workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-86400000) },
+  { recordId: '803', dateTime: isoNow(-86400000 * 2),    workTime: 29, workArea: 120, cutGrassHeight: 2, pathDirection: 120, mapNames: 'Front Yard',   workStatus: 'interrupted artificially', startWay: 'app', workRecordDate: isoNow(-86400000 * 2) },
+  { recordId: '804', dateTime: isoNow(-86400000 * 4),    workTime: 118, workArea: 510, cutGrassHeight: 1, pathDirection: 0,   mapNames: 'Full Property',workStatus: 'finished',                startWay: 'app', workRecordDate: isoNow(-86400000 * 4) },
 ];
 
 const DemoContext = createContext<DemoState>({

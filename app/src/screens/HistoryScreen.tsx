@@ -116,6 +116,13 @@ export default function HistoryScreen() {
           const minutes = r.workTime ?? 0;
           const areaM2 = r.workArea ?? 0;
           const status = r.workStatus ?? '';
+          // cutGrassHeight is the wire enum (cutterhigh 0-7) → display + 2 cm.
+          // Guard legacy rows that stored mm (>= 20) by dividing instead.
+          const wireH = r.cutGrassHeight;
+          const heightCm = wireH == null || wireH <= 0
+            ? null
+            : (wireH >= 20 ? Math.round(wireH / 10) : wireH + 2);
+          const dir = r.pathDirection;
           return (
             <View key={r.recordId} style={styles.recordCard}>
               <View style={styles.recordHeader}>
@@ -129,6 +136,12 @@ export default function HistoryScreen() {
               <View style={styles.recordStats}>
                 <StatChip icon="time-outline" value={`${minutes} min`} />
                 <StatChip icon="resize-outline" value={`${areaM2.toFixed(2)} m²`} />
+                {heightCm != null && (
+                  <StatChip icon="cut-outline" value={`${heightCm} cm`} />
+                )}
+                {dir != null && (
+                  <StatChip icon="compass-outline" value={`${dir}°`} />
+                )}
                 {r.mapNames && (
                   <StatChip icon="map-outline" value={r.mapNames} />
                 )}

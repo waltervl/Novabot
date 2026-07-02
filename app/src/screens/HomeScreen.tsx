@@ -75,6 +75,9 @@ interface MowerDerived {
    *  motor never engaged. Warning prompts the user to power-cycle
    *  before the mower drives the whole lawn without cutting. */
   bladeStuckWarning: boolean;
+  /** Server-translated work_status label (e.g. "Mowing", "Avoiding obstacle").
+   *  Finer-grained than `activity`; shown as a chip during active mowing. */
+  workStatusLabel: string | null;
   wifiRssi: string | undefined;
   rtkSat: string | undefined;
   errorStatus: string | undefined;
@@ -302,6 +305,7 @@ function deriveMower(mower: DeviceState | null): MowerDerived | null {
       && s.blade_speed != null
       && s.blade_speed !== ''
       && parseInt(s.blade_speed, 10) === 0,
+    workStatusLabel: s.work_status ?? null,
     wifiRssi: s.wifi_rssi,
     rtkSat: s.rtk_sat,
     errorStatus: s.error_status,
@@ -1766,6 +1770,14 @@ export default function HomeScreen() {
   const displayActivity = activityOverride ?? mower.activity;
   const activityColor = getActivityColor(displayActivity, colors);
   const batteryGlowColor = getBatteryGlowColor(mower.battery);
+  // The hero shows the progress MAP (not the big battery ring) only while an
+  // active task has a drawable polygon. Used both for the ternary below and to
+  // gate the small battery chip — the chip only appears when the ring doesn't,
+  // so the percentage is never shown twice.
+  const mapShown =
+    (displayActivity === 'mowing' || displayActivity === 'edge_cutting'
+      || displayActivity === 'mapping' || displayActivity === 'returning')
+    && activeMapPolygon.length >= 3;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -1907,8 +1919,11 @@ export default function HomeScreen() {
           {/* Mowing/mapping/returning: show progress map instead of battery ring.
               Returning gebruikt dezelfde kaart zodat je ziet waar de maaier geweest
               is (finished_area blijft in de cover_path state van de maaier zolang
-              task_mode=1) en waar hij nu naartoe rijdt. */}
-          {(displayActivity === 'mowing' || displayActivity === 'edge_cutting' || displayActivity === 'mapping' || displayActivity === 'returning') && activeMapPolygon.length >= 3 ? (
+              task_mode=1) en waar hij nu naartoe rijdt.
+              mapShown gates the battery chip too: it only appears when the map
+              (not the big battery ring) is on screen, so we don't show the
+              percentage twice. */}
+          {mapShown ? (
             <View style={styles.mowingMapPanel}>
               {mapSelectionMismatch && (
                 <View style={styles.mapMismatchBanner}>
@@ -1996,6 +2011,25 @@ export default function HomeScreen() {
                 </View>
               );
             })()}
+            {(() => {
+              // Fine-grained firmware state (Mowing / Avoiding obstacle /
+              // Re-covering missed spots / Driving) during active mowing — same
+              // info as the dashboard's status chip. work_status arrives already
+              // translated from the server; skip raw numeric codes and non-active
+              // states (the hero + map convey those).
+              const active =
+                displayActivity === 'mowing' ||
+                displayActivity === 'edge_cutting' ||
+                displayActivity === 'returning';
+              const label = mower.workStatusLabel;
+              if (!active || !label || Number.isFinite(Number(label))) return null;
+              return (
+                <View style={[styles.chip, styles.chipHighlight]}>
+                  <Ionicons name="pulse" size={13} color="#4ade80" />
+                  <Text style={styles.chipHighlightText}>{label}</Text>
+                </View>
+              );
+            })()}
             {/* ETA chip — shown during active mowing. cov_estimate_time is
                 in minutes (firmware convention, verified 2026-04-20). We also
                 show elapsed cov_work_time so the user has both numbers.
@@ -2039,6 +2073,22 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.chipsRow}>
+              {mower.battery > 0 && mapShown && (() => {
+                // Battery level chip — glanceable full/empty during mowing.
+                // Only shown when the map (not the big battery ring) is on screen,
+                // so the percentage never appears twice.
+                // Colour matches BatteryRing: green >=65, amber 35-64, red <35.
+                const batColor = mower.battery >= 65 ? '#4ade80' : mower.battery >= 35 ? '#fbbf24' : colors.red;
+                const batIcon = mower.batteryCharging
+                  ? 'battery-charging'
+                  : mower.battery >= 65 ? 'battery-full' : mower.battery >= 35 ? 'battery-half' : 'battery-dead';
+                return (
+                  <View style={styles.chip}>
+                    <Ionicons name={batIcon} size={12} color={batColor} />
+                    <Text style={[styles.chipText, { color: batColor }]}>{mower.battery}%</Text>
+                  </View>
+                );
+              })()}
               {mower.wifiRssi != null && (
                 <View style={styles.chip}>
                   <Ionicons name="wifi" size={11} color={colors.textDim} />

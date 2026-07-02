@@ -125,7 +125,10 @@ export interface WorkRecord {
   /** Coverage minutes — server uses #17 round 6 jsonBody parse. */
   workTime: number | null;
   workArea: number | null;
+  /** Wire enum (cutterhigh 0-7); display = value + 2 cm. Legacy rows may be mm. */
   cutGrassHeight: number | null;
+  /** Mow direction in degrees (0-359), frozen at record time. */
+  pathDirection: number | null;
   mapNames: string | null;
   workStatus: string | null;
   startWay: string | null;
@@ -848,6 +851,20 @@ export class ApiClient {
   }
 
   // ── Advanced Settings ────────────────────────────────────────────────
+
+  /** Read the user's SAVED mower settings from the server (device_settings
+   *  table). These are the source of truth the Mower Settings screen displays,
+   *  because the mower firmware does NOT persist set_para_info over a reconnect
+   *  (it reverts to provisioning defaults). Returns a flat key->value map; keys
+   *  match the sensor-override keys (path_direction, obstacle_avoidance_sensitivity,
+   *  headlight, sound, manual_controller_v/w, defaultCuttingHeight, ...). */
+  async getDeviceSettings(sn: string): Promise<{ settings: Record<string, string> }> {
+    const res = await this.request<{ ok: boolean; settings?: Record<string, string> }>(
+      'GET',
+      `/api/dashboard/device-settings/${enc(sn)}`,
+    );
+    return { settings: res.settings ?? {} };
+  }
 
   async getParaInfo(sn: string): Promise<CommandResult> {
     return this.sendCommand(sn, { get_para_info: {} });
