@@ -2,6 +2,15 @@
 
 Format: most-recent first. Each entry is dated and names the endpoint(s) affected.
 
+## 2026-07-02 — saveCutGrassRecord: capture + return mow direction
+
+- `routes/equipmentState.ts`: capture `path_direction` (mow direction, degrees)
+  and freeze it on the work record. The mower doesn't report direction in the
+  record, so we read `device_settings.path_direction` (re-applied to the mower
+  before every mow) at record time. Also passes it through `createWorkRecordFull`.
+- `routes/message.ts`: `getWorkRecordList` now returns `pathDirection` so the app
+  history can show the direction chip next to cutting height.
+
 ## 2026-06-05 — queryEquipmentMap: serve metadata-only inter-map unicoms as empty CSV (issues #89, #81)
 
 - `routes/map.ts`: a `mapNtomapM_*_unicom` row imported without a download URL

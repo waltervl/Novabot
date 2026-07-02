@@ -392,6 +392,7 @@ export function initDb(): void {
     'schedule_id TEXT',
     'week TEXT',
     'date_time TEXT',
+    'path_direction INTEGER',   // mow direction in degrees, captured from device_settings at record time
   ]) {
     try { db.exec(`ALTER TABLE work_records ADD COLUMN ${col}`); }
     catch { /* kolom bestaat al */ }

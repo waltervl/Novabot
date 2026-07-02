@@ -224,6 +224,7 @@ messageRouter.post('/queryCutGrassRecordPageByUserId', authMiddleware, (req: Aut
     selectMap: formatSelectMap(r.map_names, resolveSn(r.equipment_id)),
     startWay: r.start_way ?? '',
     cutGrassHeight: r.cut_grass_height ?? 0,
+    pathDirection: r.path_direction ?? null,
     week: r.week ?? '',
     scheduleId: r.schedule_id ?? '',
     unread: r.work_record_unread === 1,

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { equipmentRepo, messageRepo } from '../../db/repositories/index.js';
+import { deviceSettingsRepo } from '../../db/repositories/deviceSettings.js';
 import { deviceCache, getMowingSession, clearMowingSession } from '../../mqtt/sensorData.js';
 import { ok } from '../../types/index.js';
 
@@ -178,6 +179,17 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
   const scheduleId = pickStr('scheduleId', 'schedule_id');
   const week = pickJson('week', 'weekArray', 'weekDay');
 
+  // Mow direction (degrees). The mower does not report it in the record, but we
+  // re-apply device_settings.path_direction to the mower before every mow, so at
+  // record time it still reflects the direction this session ran with. Frozen on
+  // the record so later direction changes don't rewrite past history.
+  let pathDirection = pickNum('pathDirection', 'path_direction', 'direction', 'cutDirection');
+  if (pathDirection === null) {
+    const saved = deviceSettingsRepo.findBySn(sn).find((r) => r.key === 'path_direction');
+    const deg = saved ? parseInt(saved.value, 10) : NaN;
+    if (Number.isFinite(deg)) pathDirection = deg;
+  }
+
   // Fallback to live sensor cache when the mower's POST omitted the
   // detail fields (observed on interrupted sessions where the
   // firmware posts only sn + dateTime). Better an approximation
@@ -285,6 +297,7 @@ equipmentStateRouter.post('/saveCutGrassRecord', upload.none(), (req: Request, r
     workStatus,
     scheduleId,
     week,
+    pathDirection,
   );
 
   console.log(`[STATE] Werkrecord opgeslagen: ${recordId} voor ${sn}`);

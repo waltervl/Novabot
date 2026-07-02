@@ -54,6 +54,8 @@ import {
 import { ensureBetaFlashSafe } from '../services/firmwareSafety.js';
 import { getMowerFileCapability } from '../services/mowerFileCapability.js';
 import { getPolygonAnchor } from '../services/anchor.js';
+import { selectParaRepush } from '../mqtt/paraRepush.js';
+import { MOW_PARA_SETTLE_MS } from '../services/mowingService.js';
 
 interface DeviceRegistryRow {
   mqtt_client_id: string;
@@ -1247,6 +1249,20 @@ dashboardRouter.post('/sensor-override/:sn', (req: Request, res: Response) => {
     deviceSettingsRepo.upsert(sn, k, String(v));
   }
   res.json({ ok: true });
+});
+
+// GET /api/dashboard/device-settings/:sn — read the user's SAVED settings
+// (device_settings table, written by the sensor-override POST above). The app's
+// Mower Settings screen reads these as the source of truth because the mower
+// firmware does NOT persist set_para_info over a reconnect — it reverts to
+// provisioning defaults, so the LIVE sensor frame can't be trusted to reflect
+// what the user actually chose. Returns a flat key->value map.
+dashboardRouter.get('/device-settings/:sn', (req: Request, res: Response) => {
+  const { sn } = req.params;
+  const rows = deviceSettingsRepo.findBySn(sn);
+  const settings: Record<string, string> = {};
+  for (const r of rows) settings[r.key] = r.value;
+  res.json({ ok: true, settings });
 });
 
 // GET /api/dashboard/logs — recente MQTT log entries
@@ -2973,6 +2989,33 @@ dashboardRouter.post('/command/:sn', (req: Request, res: Response) => {
   }
 });
 
+// POST /api/dashboard/reapply-para/:sn — re-send the saved para block before a mow.
+//
+// The mower does NOT persist set_para_info over a reconnect, so a task can start
+// with reset defaults (most critically perception_level 0 = obstacle avoidance
+// OFF, and path_direction 0). The app (StartMowSheet) and the scheduler
+// (mowingService) already re-apply the full saved block right before every mow;
+// the dashboard's start_navigation went out raw and skipped this. This endpoint
+// closes that gap so a dashboard-initiated mow behaves identically: it re-sends
+// the FULL saved block (selectParaRepush — a partial block would reset the
+// omitted fields to 0), then waits MOW_PARA_SETTLE_MS so the mower has processed
+// it before the caller fires start_navigation. No-op when nothing is saved.
+dashboardRouter.post('/reapply-para/:sn', async (req: Request, res: Response) => {
+  const { sn } = req.params;
+  if (!isDemoMode(sn) && !isDeviceOnline(sn)) {
+    res.status(404).json({ ok: false, error: 'Device is offline' });
+    return;
+  }
+  const para = selectParaRepush(deviceSettingsRepo.findBySn(sn));
+  if (!para) {
+    res.json({ ok: true, applied: false });
+    return;
+  }
+  publishToDevice(sn, { set_para_info: para });
+  await new Promise((r) => setTimeout(r, MOW_PARA_SETTLE_MS));
+  res.json({ ok: true, applied: true, para });
+});
+
 // ── Direct TCP debug endpoint ───────────────────────────────────
 
 // POST /api/dashboard/raw-tcp/:sn — stuur encrypted commando direct via TCP (bypass aedes)
@@ -3023,6 +3066,7 @@ interface WorkRecordRow {
   schedule_id: string | null;
   week: string | null;
   date_time: string | null;
+  path_direction: number | null;
 }
 
 // GET /api/dashboard/work-records/:sn — maaigeschiedenis
@@ -3104,6 +3148,7 @@ dashboardRouter.get('/work-records/:sn', (req: Request, res: Response) => {
       workTime: r.work_time,
       workArea: r.work_area_m2,
       cutGrassHeight: r.cut_grass_height,
+      pathDirection: r.path_direction,
       mapNames: resolveMapNames(r.map_names),
       workStatus: r.work_status,
       startWay: r.start_way,
@@ -5466,19 +5511,43 @@ dashboardRouter.get('/camera/:sn/snapshot', async (req: Request, res: Response) 
   }
 
   const topic = req.query.topic as string || 'front';
-  http.get(`http://${ip}:${port}/snapshot?topic=${encodeURIComponent(topic)}`, (proxyRes) => {
+  const upstream = http.get(`http://${ip}:${port}/snapshot?topic=${encodeURIComponent(topic)}`, (proxyRes) => {
+    const ctype = proxyRes.headers['content-type'] ?? '';
+    // The mower activates cameras on-demand; during cold-start / topic-not-ready
+    // it can answer 200 with an HTML error page. Passing that through as
+    // image/jpeg gave the browser a broken blob it set as <img> and never
+    // recovered from (black tile + broken icon). Only forward a real image;
+    // anything else → 502 so the client's retry / "unavailable" path engages
+    // and self-heals once the camera is warm.
+    const isImage = proxyRes.statusCode === 200 && /^image\//i.test(ctype);
+    if (!isImage) {
+      proxyRes.resume(); // drain
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'Camera niet gereed', upstreamStatus: proxyRes.statusCode ?? 0, upstreamType: ctype });
+      }
+      return;
+    }
     const chunks: Buffer[] = [];
     proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
     proxyRes.on('end', () => {
       const body = Buffer.concat(chunks);
+      // Guard against a 200 with an empty/garbage body (also breaks <img>).
+      if (body.length < 100 && !res.headersSent) {
+        res.status(502).json({ error: 'Camera lege frame' });
+        return;
+      }
       res.writeHead(200, {
-        'Content-Type': proxyRes.headers['content-type'] ?? 'image/jpeg',
+        'Content-Type': ctype || 'image/jpeg',
         'Content-Length': body.length,
         'Cache-Control': 'no-cache',
       });
       res.end(body);
     });
-  }).on('error', (err) => {
+  });
+  upstream.setTimeout(8000, () => {
+    upstream.destroy(new Error('camera timeout'));
+  });
+  upstream.on('error', (err) => {
     if (!res.headersSent) {
       res.status(502).json({ error: 'Camera niet bereikbaar', details: err.message });
     }

@@ -30,6 +30,7 @@ export interface WorkRecordRow {
   schedule_id: string | null;
   week: string | null;
   date_time: string | null;
+  path_direction: number | null;
 }
 
 export class MessageRepository {
@@ -87,8 +88,8 @@ export class MessageRepository {
     INSERT INTO work_records
       (record_id, user_id, equipment_id, date_time, work_time, work_area_m2,
        cut_grass_height, map_names, start_way, work_status, schedule_id, week,
-       work_record_date)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+       path_direction, work_record_date)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
   `);
   private _countWorkRecordsBySchedule = db.prepare(
     'SELECT COUNT(*) as cnt FROM work_records WHERE schedule_id = ?'
@@ -179,12 +180,14 @@ export class MessageRepository {
     dateTime: string | null, workTime: number | null, workAreaM2: number | null,
     cutGrassHeight: number | null, mapNames: string | null, startWay: string | null,
     workStatus: string | null, scheduleId: string | null, week: string | null,
+    pathDirection: number | null = null,
   ): void {
     this._createWorkRecordFull.run(
       recordId, userId, equipmentId,
       dateTime, workTime, workAreaM2,
       cutGrassHeight, mapNames, startWay,
       workStatus, scheduleId, week,
+      pathDirection,
     );
   }
 
