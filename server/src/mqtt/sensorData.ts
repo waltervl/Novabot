@@ -11,7 +11,6 @@ import { db } from '../db/database.js';
 import { equipmentRepo } from '../db/repositories/equipment.js';
 import { scheduleRepo } from '../db/repositories/schedules.js';
 import { detectAndDispatch, resetEventState } from '../notifications/eventDetector.js';
-import { checkAutoResume, resetAutoResumeState } from '../services/autoResume.js';
 import { isFrameUnvalidated, noteDockState } from '../services/frameValidation.js';
 import { resolveMowerIp } from '../services/mowerIpDiscovery.js';
 import { emitDebugPosJson } from '../dashboard/socketHandler.js';
@@ -527,7 +526,6 @@ export function clearDeviceData(sn: string): void {
   // empty msg ('') against a stale prev=Work:COVERING and emits a
   // bogus mowing_started → mowing_finished pair on every disconnect.
   resetEventState(sn);
-  resetAutoResumeState(sn);
 }
 
 // ── Signal history sampling ──────────────────────────────────────
@@ -1210,15 +1208,11 @@ export function updateDeviceData(sn: string, payload: Buffer): Map<string, strin
     } catch (err) {
       console.warn('[NOTIFY] detectAndDispatch failed:', err);
     }
-    // Issue #30: auto-resume coverage after low-battery dock cycle. Watcher
-    // tracks per-SN state and sends resume_navigation when battery climbs
-    // back through the configured threshold while the work_status string
-    // is still in a paused-for-low-battery state.
-    try {
-      checkAutoResume(sn, snValues);
-    } catch (err) {
-      console.warn('[AUTO-RESUME] checkAutoResume failed:', err);
-    }
+    // Issue #30: the FIRMWARE auto-resumes coverage itself after a proper
+    // AutoCharging dock (RobotDecision::coverContinueDeal, battery-gated on
+    // full_battery_power). No server-side resume is needed — see
+    // research/documents/firmware-auto-continue-after-recharge.md. The former
+    // autoResume.ts was a redundant re-implementation and has been removed.
   }
 
   // Post-restore re-anchor lifecycle: the flag clears only after the mower

@@ -478,6 +478,21 @@ if [ -f "$LOG_YAML" ]; then
     echo "  log_manager.yaml: URL → ${HTTP_BASE}"
 fi
 
+# 5a-bis. Night-docking fix: full-brightness ArUco dock-approach LED.
+# The stock value (1) leaves the dock marker invisible to the camera in the dark,
+# so auto-docking fails at night. That in turn breaks the FIRMWARE's own
+# auto-continue-after-recharge (RobotDecision::coverContinueDeal only fires after
+# a proper AutoCharging dock via rechargeFinishedDeal) — see docs/reference/
+# NIGHT-DOCKING.md and MOWER-INTERNALS.md. Baking 255 into every custom build makes
+# the fix survive OTA (the stock LED patch kept reverting). Drop the stale .pyc so
+# the launch is re-read from source.
+RECHARGE_LAUNCH="$NOVABOT_ROOT/install/automatic_recharge/share/automatic_recharge/launch/automatic_recharge_launch.py"
+if [ -f "$RECHARGE_LAUNCH" ]; then
+    sed -i '' 's/"brightness_adjustment_value": 1,/"brightness_adjustment_value": 255,/g' "$RECHARGE_LAUNCH"
+    rm -f "$NOVABOT_ROOT/install/automatic_recharge/share/automatic_recharge/launch/__pycache__/"*.pyc 2>/dev/null || true
+    echo "  automatic_recharge_launch.py: LED brightness 1 → 255 (night-docking)"
+fi
+
 # 5b. Voeg script toe dat http_address.txt correct zet bij elke boot
 # Dit overrulet de hardcoded app.lfibot.com fallback in mqtt_node
 # NB: Firmware prepends "http://" zelf, dus ALLEEN host:port opslaan (geen http:// prefix!)
