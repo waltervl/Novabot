@@ -749,5 +749,25 @@
     "longPause": {
       "banner": "Tondeuse en pause depuis {{minutes}} minutes. Reprendre, arrêter ou retour à la base ?"
     }
-  }
+  },
+  "reanchorMsgAnchor": "Définition de l’origine sur la station (réécriture de pos.json)...",
+  "reanchorMsgCheck": "Vérification : tondeuse sur la station et RTK Fixed ?",
+  "reanchorMsgDock": "Amarrage (ArUco visuel)...",
+  "reanchorMsgDone": "Réussi. Amarré à ({{x}}, {{y}}) m.",
+  "reanchorMsgErrAnchorFailed": "L’écriture de l’origine a échoué (réponse absente ou négative de la tondeuse).",
+  "reanchorMsgErrDockTimeout": "L’amarrage a pris trop de temps. Amarrez manuellement avec le joystick et appuyez sur Vérifier.",
+  "reanchorMsgErrException": "Erreur inattendue. Réessayez.",
+  "reanchorMsgErrNoGps": "Aucune coordonnée GPS valide de la tondeuse.",
+  "reanchorMsgErrNotDocked": "La tondeuse n’est pas sur la station (en charge). Amarrez-la d’abord, puis réessayez.",
+  "reanchorMsgErrNotFixed": "Pas encore de RTK Fixed. Attendez d’obtenir un RTK Fixed, puis réessayez.",
+  "reanchorMsgErrRelockTimeout": "Toujours pas de verrouillage après un recul supplémentaire. Ramenez la tondeuse à la station manuellement avec le joystick et relancez le re-ancrage automatique.",
+  "reanchorMsgErrVerifyFailed": "Hors tolérance : amarré à ({{x}}, {{y}}) m, {{dist}} m de l’origine. Réessayez.",
+  "reanchorMsgNeedsDrive": "Pas encore verrouillé. Reculez d’environ 1 m de plus en ligne droite avec le joystick ; je continue automatiquement dès que la localisation se verrouille.",
+  "reanchorMsgNeedsPosition": "Reverrouillage réussi. Placez maintenant la tondeuse vous-même à environ 50 cm droit devant la station, puis appuyez sur \"Démarrer l’amarrage\".",
+  "reanchorMsgRelockBack": "Recul pour se reverrouiller...",
+  "reanchorMsgStarted": "Réancrage démarré...",
+  "reanchorMsgVerify": "Vérification : amarré sur l’origine ?",
+  "reanchorMsgWaitRelock": "Attente du reverrouillage (RUNNING + Fixed)...",
+  "reanchorMsgErrUnstable": "RTK trop instable sur la station (oscille de ±{{dist}} m). Attendez un Fixed stable et réessayez.",
+  "reanchorMsgStability": "Vérification de la stabilité RTK sur la station..."
 }

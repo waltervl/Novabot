@@ -749,5 +749,25 @@
     "longPause": {
       "banner": "Mäher pausiert seit {{minutes}} Minuten. Fortsetzen, stoppen oder zur Ladestation?"
     }
-  }
+  },
+  "reanchorMsgAnchor": "Ursprung an der Ladestation setzen (pos.json neu schreiben)...",
+  "reanchorMsgCheck": "Prüfung: Mäher an der Ladestation und RTK Fixed?",
+  "reanchorMsgDock": "Andocken (visuelles ArUco)...",
+  "reanchorMsgDone": "Erfolgreich. Angedockt bei ({{x}}, {{y}}) m.",
+  "reanchorMsgErrAnchorFailed": "Schreiben des Ursprungs fehlgeschlagen (keine oder negative Antwort vom Mäher).",
+  "reanchorMsgErrDockTimeout": "Andocken hat zu lange gedauert. Docken Sie manuell mit dem Joystick an und drücken Sie Überprüfen.",
+  "reanchorMsgErrException": "Unerwarteter Fehler. Versuchen Sie es erneut.",
+  "reanchorMsgErrNoGps": "Keine gültigen GPS-Koordinaten vom Mäher.",
+  "reanchorMsgErrNotDocked": "Der Mäher ist nicht an der Ladestation (lädt). Erst andocken, dann erneut versuchen.",
+  "reanchorMsgErrNotFixed": "Noch kein RTK Fixed. Warten Sie, bis RTK Fixed erreicht ist, und versuchen Sie es erneut.",
+  "reanchorMsgErrRelockTimeout": "Immer noch kein Einrasten nach weiterem Zurückfahren. Fahren Sie den Mäher mit dem Joystick manuell zurück zur Ladestation und starten Sie den automatischen Re-Anchor erneut.",
+  "reanchorMsgErrVerifyFailed": "Außerhalb der Toleranz: angedockt bei ({{x}}, {{y}}) m, {{dist}} m vom Ursprung. Versuchen Sie es erneut.",
+  "reanchorMsgNeedsDrive": "Noch nicht eingerastet. Fahren Sie mit dem Joystick noch etwa 1 m gerade zurück; ich fahre automatisch fort, sobald die Lokalisierung einrastet.",
+  "reanchorMsgNeedsPosition": "Neu-Einrasten erfolgreich. Fahren Sie den Mäher jetzt selbst auf etwa 50 cm gerade vor die Ladestation und drücken Sie dann \"Andocken starten\".",
+  "reanchorMsgRelockBack": "Rückwärtsfahren zum Neu-Einrasten...",
+  "reanchorMsgStarted": "Neu verankern gestartet...",
+  "reanchorMsgVerify": "Prüfung: an der Ursprungsposition angedockt?",
+  "reanchorMsgWaitRelock": "Warten auf Neu-Einrasten (RUNNING + Fixed)...",
+  "reanchorMsgErrUnstable": "RTK auf der Ladestation zu instabil (schwankt ±{{dist}} m). Warten Sie auf ein ruhiges Fixed und versuchen Sie es erneut.",
+  "reanchorMsgStability": "RTK-Stabilität auf der Ladestation wird geprüft..."
 }

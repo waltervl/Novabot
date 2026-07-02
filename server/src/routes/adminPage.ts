@@ -662,10 +662,10 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;font-size:12px;color:#cbd5e1">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Toon de occupancy-grid die de maaier gebruikt: groen = bereikbaar vanaf de dock, blauw = afgesneden, rood = bezet">
           <input type="checkbox" id="maskToggle" onchange="onMaskToggle()" style="width:15px;height:15px;cursor:pointer">
-          <span>Toon wat de maaier "ziet"</span>
+          <span>Show what the mower "sees"</span>
         </label>
         <select id="maskLayer" onchange="refreshMaskOverlay()" disabled style="padding:4px 8px;background:#0d0d20;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px">
-          <option value="whole">Hele kaart (navigatie)</option>
+          <option value="whole">Whole map (navigation)</option>
         </select>
         <label style="display:flex;align-items:center;gap:6px">opacity
           <input type="range" id="maskOpacity" min="0.2" max="1" step="0.05" value="0.8" oninput="onMaskOpacity()" disabled style="width:90px">
@@ -678,7 +678,7 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
         <span id="maskStatus" style="color:#9ca3af;font-size:11px"></span>
       </div>
       <div id="mapEditBar" style="display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap">
-        <button class="btn" id="mapEditToggle" onclick="enterMapEdit()" style="background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.4)">&#9998; Bewerken</button>
+        <button class="btn" id="mapEditToggle" onclick="enterMapEdit()" style="background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.4)">&#9998; Edit</button>
         <span id="mapEditTools" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;flex:1">
           <button class="btn" id="toolVertex" onclick="setEditTool('vertex')" style="background:#374151;color:#fff">Vertex</button>
           <button class="btn" id="toolBrush" onclick="setEditTool('brush')" style="background:#374151;color:#fff">Duwen/trekken</button>
@@ -6589,7 +6589,7 @@ function _populateMaskLayers(layers, keep) {
     var v = String(layers[i]);
     var opt = document.createElement('option');
     opt.value = v;
-    opt.textContent = (v === 'whole') ? 'Hele kaart (navigatie)' : (v + ' (zone)');
+    opt.textContent = (v === 'whole') ? 'Whole map (navigation)' : (v + ' (zone)');
     sel.appendChild(opt);
   }
   if (keep && layers.indexOf(keep) >= 0) sel.value = keep;
