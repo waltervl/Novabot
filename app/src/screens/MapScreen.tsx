@@ -298,7 +298,7 @@ export default function MapScreen() {
   const demo = useDemo();
   const { t } = useI18n();
   const styles = useStyles(makeStyles);
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
   const [maps, setMaps] = useState<MapData[]>([]);
   const [chargerGpsOrigin, setChargerGpsOrigin] = useState<ChargerGps | null>(null);
   const [trail, setTrail] = useState<TrailPoint[]>([]);
@@ -1320,8 +1320,13 @@ export default function MapScreen() {
                     // Selected work map = green, other work maps = grey, obstacles = red
                     const isSelected = selectedWorkMap && m.mapId === selectedWorkMap.mapId;
                     const isUnselectedWork = m.mapType === 'work' && !isSelected;
+                    // Unselected work zones are drawn dimmed. The dark-mode grey was
+                    // hard-coded white-translucent, which vanished on the light-mode
+                    // card (#98) — pick a dark grey-green in light mode instead.
                     const c = isUnselectedWork
-                      ? { fill: 'rgba(255,255,255,0.12)', stroke: 'rgba(255,255,255,0.4)' }
+                      ? (colorScheme === 'dark'
+                          ? { fill: 'rgba(255,255,255,0.12)', stroke: 'rgba(255,255,255,0.4)' }
+                          : { fill: 'rgba(60,80,60,0.14)', stroke: 'rgba(45,80,45,0.60)' })
                       : (MAP_COLORS[m.mapType] ?? MAP_COLORS.work);
                     const svgPts = m.mapArea.map((p) => localToSvg(p, bounds, MAP_SIZE, INNER_PADDING));
                     const pts = svgPts.map((p) => `${p.x},${p.y}`).join(' ');
@@ -2021,7 +2026,7 @@ const makeStyles = (c: Colors) => StyleSheet.create({
   mapHeroTitle: {
     fontSize: 22,
     fontWeight: '800',
-    color: c.white,
+    color: c.text,
   },
   mapHeroMeta: {
     marginTop: 4,

@@ -43,6 +43,13 @@ const MAP_PALETTE: Record<MapScheme, {
   obstacleFill: string;
   obstacleStroke: string;
   progressTextColor: string;
+  // Dimmed "other maps" (inactive polygons, #14) + area sub-labels. These were
+  // hard-coded light-grey and vanished on a light background (#98) — now themed.
+  inactiveFill: string;
+  inactiveStroke: string;
+  inactiveLabel: string;
+  areaLabel: string;
+  obstacleLabel: string;
 }> = {
   dark: {
     polygonFill: 'rgba(34,197,94,0.12)',
@@ -59,6 +66,11 @@ const MAP_PALETTE: Record<MapScheme, {
     obstacleFill: 'rgba(239,68,68,0.25)',
     obstacleStroke: '#ef4444',
     progressTextColor: '#ffffff',
+    inactiveFill: 'rgba(120,120,120,0.10)',
+    inactiveStroke: 'rgba(160,160,160,0.55)',
+    inactiveLabel: 'rgba(220,220,220,0.85)',
+    areaLabel: 'rgba(200,200,200,0.75)',
+    obstacleLabel: 'rgba(252,165,165,0.95)',
   },
   light: {
     polygonFill: 'rgba(34,197,94,0.25)',
@@ -75,6 +87,11 @@ const MAP_PALETTE: Record<MapScheme, {
     obstacleFill: 'rgba(239,68,68,0.25)',
     obstacleStroke: '#ef4444',
     progressTextColor: '#14532d',
+    inactiveFill: 'rgba(60,80,60,0.14)',
+    inactiveStroke: 'rgba(45,80,45,0.60)',
+    inactiveLabel: 'rgba(20,50,20,0.9)',
+    areaLabel: 'rgba(30,60,30,0.8)',
+    obstacleLabel: 'rgba(153,27,27,0.95)',
   },
 };
 
@@ -405,18 +422,18 @@ export function MowingProgressMap({
           <G key={`inactive-${poly.id}`}>
             <SvgPolygon
               points={ipSvg.map(p => `${p.x},${p.y}`).join(' ')}
-              fill="rgba(120,120,120,0.10)"
-              stroke="rgba(160,160,160,0.55)"
+              fill={mapPalette.inactiveFill}
+              stroke={mapPalette.inactiveStroke}
               strokeWidth={1}
               strokeLinejoin="round"
               strokeDasharray="4,3"
             />
             {centroidSvg && poly.label && (
               <>
-                <SvgText x={centroidSvg.x} y={centroidSvg.y - 1} fill="rgba(220,220,220,0.85)"
+                <SvgText x={centroidSvg.x} y={centroidSvg.y - 1} fill={mapPalette.inactiveLabel}
                   fontSize={10} fontWeight="600" textAnchor="middle">{poly.label}</SvgText>
                 {area > 0 && (
-                  <SvgText x={centroidSvg.x} y={centroidSvg.y + 9} fill="rgba(180,180,180,0.7)"
+                  <SvgText x={centroidSvg.x} y={centroidSvg.y + 9} fill={mapPalette.areaLabel}
                     fontSize={8} textAnchor="middle">{area.toFixed(1)} m²</SvgText>
                 )}
               </>
@@ -577,10 +594,10 @@ export function MowingProgressMap({
             />
             {centroidSvg && obs.label && (
               <>
-                <SvgText x={centroidSvg.x} y={centroidSvg.y - 1} fill="rgba(252,165,165,0.95)"
+                <SvgText x={centroidSvg.x} y={centroidSvg.y - 1} fill={mapPalette.obstacleLabel}
                   fontSize={9} fontWeight="600" textAnchor="middle">{obs.label}</SvgText>
                 {area > 0 && (
-                  <SvgText x={centroidSvg.x} y={centroidSvg.y + 8} fill="rgba(200,160,160,0.8)"
+                  <SvgText x={centroidSvg.x} y={centroidSvg.y + 8} fill={mapPalette.areaLabel}
                     fontSize={7} textAnchor="middle">{area.toFixed(1)} m²</SvgText>
                 )}
               </>
@@ -603,7 +620,7 @@ export function MowingProgressMap({
             <SvgText x={cSvg.x} y={cSvg.y - 1} fill={mapPalette.progressTextColor}
               fontSize={11} fontWeight="700" textAnchor="middle">{activeLabel}</SvgText>
             {area > 0 && (
-              <SvgText x={cSvg.x} y={cSvg.y + 11} fill="rgba(200,200,200,0.75)"
+              <SvgText x={cSvg.x} y={cSvg.y + 11} fill={mapPalette.areaLabel}
                 fontSize={9} textAnchor="middle">{area.toFixed(1)} m²</SvgText>
             )}
           </>
