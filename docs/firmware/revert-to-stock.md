@@ -35,8 +35,7 @@ shipped on that line, but match the base your custom build came from.
 
 ## Method 1 — OTA to stock (recommended, no physical access)
 
-This is the safest path (it does not need SSH afterwards) and matches the
-"OTA over MQTT, not SSH" rule.
+This is the safest path: it does not need SSH afterwards.
 
 1. **Place the stock `.deb` in the server's firmware directory** (the same place
    as the custom builds; `FIRMWARE_PATH`, default `<server>/firmware/`):
@@ -78,8 +77,7 @@ This is the safest path (it does not need SSH afterwards) and matches the
 
 ## Method 2 — Manual via SSH / `dpkg` (fallback, while still on custom)
 
-Only possible while you still have SSH (i.e. still on custom firmware). One user
-(#90) used this to roll back.
+Only possible while you still have SSH (i.e. still on custom firmware).
 
 ```bash
 # on the mower (custom fw has SSH):
