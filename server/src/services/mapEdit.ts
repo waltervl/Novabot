@@ -12,7 +12,10 @@ import { isDeviceOnline } from '../mqtt/broker.js';
 import { db } from '../db/database.js';
 
 const TAG = '[MAP-EDIT]';
-const SIMPLIFY_TOL_M = 0.05;
+// 5mm RDP: removes duplicates + straight-run redundancy but keeps every real
+// curve (a small circle's arc deviates far more than 5mm from its chords, so its
+// vertices survive). The old 0.05 (5cm) flattened small circles — #91.
+const SIMPLIFY_TOL_M = 0.005;
 const PENDING_KEY = 'map_edit_pending_sync';
 const VERSIONS_KEEP = 10;
 

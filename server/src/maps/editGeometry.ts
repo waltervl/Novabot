@@ -70,20 +70,43 @@ function rdp(pts: XY[], eps: number): XY[] {
 }
 
 /**
+ * Verwijder opeenvolgende (bijna-)duplicaten binnen `eps` meter, inclusief het
+ * sluitpunt dat gelijk is aan het startpunt. Losstaand van RDP zodat exacte
+ * dubbele punten (#91) altijd weg zijn, ook als de tolerance 0 is.
+ */
+function dedupe(pts: XY[], eps: number): XY[] {
+  if (pts.length < 2) return pts.slice();
+  const out: XY[] = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    if (Math.hypot(pts[i].x - out[out.length - 1].x, pts[i].y - out[out.length - 1].y) > eps) {
+      out.push(pts[i]);
+    }
+  }
+  // sluitpunt == startpunt: laat de ring impliciet gesloten (verwijder de dup)
+  if (out.length > 1 && Math.hypot(out[0].x - out[out.length - 1].x, out[0].y - out[out.length - 1].y) <= eps) {
+    out.pop();
+  }
+  return out;
+}
+
+/**
  * Ramer-Douglas-Peucker voor GESLOTEN polygon: splits op het verste puntenpaar
- * zodat het sluitsegment correct behandeld wordt.
+ * zodat het sluitsegment correct behandeld wordt. Een dedupe-voorpas (1mm) haalt
+ * eerst exacte duplicaten + GPS-trapjes weg; de RDP-tolerance is de gegarandeerde
+ * max vorm-afwijking (klein = curve-veilig, kleine cirkels blijven intact). Zie #91.
  */
 export function simplifyPolygon(pts: XY[], tolerance: number): XY[] {
-  if (pts.length < 4) return pts.slice();
+  const cleaned = dedupe(pts, 0.001);
+  if (cleaned.length < 4) return cleaned;
   let far = 1, maxD = 0;
-  for (let i = 1; i < pts.length; i++) {
-    const d = Math.hypot(pts[i].x - pts[0].x, pts[i].y - pts[0].y);
+  for (let i = 1; i < cleaned.length; i++) {
+    const d = Math.hypot(cleaned[i].x - cleaned[0].x, cleaned[i].y - cleaned[0].y);
     if (d > maxD) { maxD = d; far = i; }
   }
-  const half1 = rdp(pts.slice(0, far + 1), tolerance);
-  const half2 = rdp(pts.slice(far).concat([pts[0]]), tolerance);
+  const half1 = rdp(cleaned.slice(0, far + 1), tolerance);
+  const half2 = rdp(cleaned.slice(far).concat([cleaned[0]]), tolerance);
   const out = half1.slice(0, -1).concat(half2.slice(0, -1));
-  return out.length >= 3 ? out : pts.slice();
+  return out.length >= 3 ? out : cleaned;
 }
 
 /**

@@ -47,6 +47,32 @@ describe('editGeometry basics', () => {
   it('simplifyPolygon: safety fallback — resultaat altijd ≥ 3 punten', () => {
     expect(simplifyPolygon(densifyPolygon(square, 0.5), 1000).length).toBeGreaterThanOrEqual(3);
   });
+
+  it('simplifyPolygon: dedupe verwijdert exacte + bijna-duplicaten (#91)', () => {
+    const dupes = [
+      { x: 0, y: 0 }, { x: 0, y: 0 },            // exacte dup
+      { x: 5, y: 0 }, { x: 5.0005, y: 0 },       // <1mm dup
+      { x: 5, y: 5 }, { x: 0, y: 5 },
+    ];
+    const out = simplifyPolygon(dupes, 0.005);
+    expect(out.length).toBe(4);                  // 4 echte hoeken over
+    expect(polygonArea(out)).toBeCloseTo(25, 1);
+  });
+
+  it('simplifyPolygon: 5mm behoudt een kleine cirkel (#91 — geen curve-collapse)', () => {
+    // Kleine cirkel r=0.3m, fijn bemonsterd (120 punten) — precies het geval dat
+    // de oude 5cm-tolerance platsloeg. Met 5mm moeten ~alle punten blijven.
+    const R = 0.3, N = 120;
+    const circle = Array.from({ length: N }, (_, i) => ({
+      x: R * Math.cos((2 * Math.PI * i) / N),
+      y: R * Math.sin((2 * Math.PI * i) / N),
+    }));
+    const at5mm = simplifyPolygon(circle, 0.005);
+    const at5cm = simplifyPolygon(circle, 0.05);
+    expect(at5mm.length).toBeGreaterThan(18);    // ~24 pts: blijft rond
+    expect(at5cm.length).toBeLessThan(12);        // ~8 pts: oude waarde sloopt 'm (bewijs)
+    expect(polygonArea(at5mm)).toBeCloseTo(Math.PI * R * R, 2); // area binnen ~1%
+  });
 });
 
 describe('editGeometry validatie', () => {
