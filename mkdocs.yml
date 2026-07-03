@@ -125,6 +125,7 @@ nav:
     - AI Perception: firmware/ai-perception.md
     - Security Analysis: firmware/security.md
     - Custom Firmware: firmware/custom-firmware.md
+    - Revert to Stock: firmware/revert-to-stock.md
   - Flows:
     - Charger Provisioning: flows/charger-provisioning.md
     - Mower Provisioning: flows/mower-provisioning.md
