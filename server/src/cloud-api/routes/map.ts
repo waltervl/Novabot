@@ -174,15 +174,21 @@ function parsedAreaName(area: { mapIndex: number; type: 'work' | 'obstacle' | 'u
   }
 }
 
-function matchesParsedArea(
-  row: { map_type: string; map_name: string | null },
+export function matchesParsedArea(
+  row: { map_type: string; map_name: string | null; canonical_name?: string | null },
   area: { mapIndex: number; type: 'work' | 'obstacle' | 'unicom'; subIndex?: number; target?: string },
 ): boolean {
   if (row.map_type !== area.type) return false;
 
   if (area.type === 'work') {
     const expected = `map${area.mapIndex}`;
-    const canonical = canonicalWorkMapName(row.map_name);
+    // Match on the STABLE canonical slot, never the user alias. A renamed map
+    // (map_name "test", canonical_name "map2") must still match its map2 area
+    // on the mower's re-upload after mowing — otherwise the row is treated as
+    // new, the alias is reset to the default label and a duplicate row is
+    // created while the renamed row is deleted as stale (#66). Fall back to
+    // deriving from map_name only for legacy rows that predate canonical_name.
+    const canonical = canonicalWorkMapName(row.canonical_name) ?? canonicalWorkMapName(row.map_name);
     return canonical === expected;
   }
 
