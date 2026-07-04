@@ -39,6 +39,32 @@ Most common cause by far. The mower's `mqtt_node` can't reach your MQTT broker.
    ```
    Re-running the script clears the stuck state without rebooting.
 
+## Reconnect the mower to WiFi (re-provision with the app)
+
+Use this when the mower lost its WiFi (shows offline, changed router/password, or the app still thinks it is working and won't let you delete it).
+
+**Do NOT delete the mower or the station to fix this.** Deleting wipes the saved map and forces a full remap. The map lives on the mower itself and does not depend on WiFi or the app binding, so re-sending the WiFi settings over Bluetooth brings it back online with everything intact. No reset, no remap.
+
+**Before you start**
+
+1. Put the mower on (or right next to) its charging station so it is within Bluetooth range of your phone.
+2. Make sure the mower is powered on.
+3. On your phone, turn on Bluetooth and allow the OpenNova app to use it.
+
+**Steps**
+
+1. Open the **OpenNova app**.
+2. Go to **Settings** → **Add device**.
+3. Confirm your OpenNova **server address** if it is asked (usually already filled in), then continue.
+4. On "What would you like to provision?", choose **Mower**.
+5. Enter your **WiFi network name (SSID)** and **WiFi password**, then tap **Next**.
+     - Use the 2.4 GHz network. Double-check the password — a wrong password is the most common cause of a failed reconnect.
+6. The app scans over Bluetooth and finds the mower. Select it and tap **Start Provisioning**.
+7. On the next screen tap **Start provisioning** and wait while it sends the settings ("Configuring WiFi").
+8. When it finishes the mower reconnects and comes back **online** in the app within a minute. Your map and settings are still there.
+
+**If the app doesn't find the mower in step 6:** make sure it is close enough (next to the dock), then power-cycle the mower and scan again.
+
 ## The app shows "No map!" even though I made a map
 
 The map upload completed on the mower side, but `queryEquipmentMap` returned an empty array.
