@@ -58,7 +58,7 @@ Use this when the mower lost its WiFi (shows offline, changed router/password, o
 3. Confirm your OpenNova **server address** if it is asked (usually already filled in), then continue.
 4. On "What would you like to provision?", choose **Mower**.
 5. Enter your **WiFi network name (SSID)** and **WiFi password**, then tap **Next**.
-     - Use the 2.4 GHz network. Double-check the password — a wrong password is the most common cause of a failed reconnect.
+     - Use the 2.4 GHz network. Double-check the password. A wrong password is the most common cause of a failed reconnect.
 6. The app scans over Bluetooth and finds the mower. Select it and tap **Start Provisioning**.
 7. On the next screen tap **Start provisioning** and wait while it sends the settings ("Configuring WiFi").
 8. When it finishes the mower reconnects and comes back **online** in the app within a minute. Your map and settings are still there.
