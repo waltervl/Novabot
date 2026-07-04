@@ -33,9 +33,32 @@ shipped on that line, but match the base your custom build came from.
 
 ---
 
-## Method 1 — OTA to stock (recommended, no physical access)
+## Method 0 — Admin page button (easiest)
 
-This is the safest path: it does not need SSH afterwards.
+The OpenNova admin page has a one-click revert. This is the recommended path for
+most users: it downloads the stock firmware, registers it, and flashes it for
+you, no CLI needed.
+
+1. Open the OpenNova **admin page** → **Firmware** tab.
+2. Under **Update Device**, select your mower and make sure it is **on the
+   charger**.
+3. In the **Revert to Stock Firmware** card, pick the stock version
+   (**v6.0.2** recommended, it matches the custom base; **v5.7.1** for the older
+   line) and press **Revert to stock**.
+4. Confirm the warning (you lose SSH, WiFi may need BLE re-provisioning, maps are
+   kept). The server downloads the stock `.deb` from
+   `downloads.ramonvanbruggen.nl`, verifies it, and flashes the mower.
+
+Under the hood this is exactly Method 1 (a force OTA of a stock `.deb`), just
+wrapped in a button. The manual methods below stay available if you prefer them
+or need to recover without the admin page.
+
+---
+
+## Method 1 — OTA to stock (manual force-flash)
+
+This is what the admin button does under the hood. It does not need SSH
+afterwards.
 
 1. **Place the stock `.deb` in the server's firmware directory** (the same place
    as the custom builds; `FIRMWARE_PATH`, default `<server>/firmware/`):

@@ -876,6 +876,21 @@ window.__ADMIN_I18N__ = ${JSON.stringify(ADMIN_I18N).replace(/</g, '\\u003c')};
         <div class="ota-progress-bar"><div class="ota-progress-fill" id="otaProgressFill" style="width:0%"></div></div>
       </div>
     </div>
+
+    <div class="card">
+      <h2>Revert to Stock Firmware</h2>
+      <div style="margin-bottom:12px;padding:8px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px;font-size:12px;color:#fbbf24">
+        Flashes the OEM stock firmware back onto the mower. <b>You will lose SSH access</b> and all custom features (edge-cut, camera stream, mapping preflight). Maps are kept; WiFi may need BLE re-provisioning. Select the mower above in <b>Update Device</b>, then pick a stock version. The mower must be on the charger.
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="stockVersionSelect" style="flex:1;min-width:220px;padding:8px 12px;background:#0d0d20;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px">
+          <option value="v6.0.2">Stock v6.0.2 (recommended, matches custom base)</option>
+          <option value="v5.7.1">Stock v5.7.1 (older line)</option>
+        </select>
+        <button class="btn" onclick="revertToStock()" style="padding:8px 20px;background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3)">Revert to stock</button>
+      </div>
+      <div id="stockRevertStatus" style="display:none;margin-top:10px;font-size:12px"></div>
+    </div>
   </div>
 
   <!-- Tab: Settings -->
@@ -6847,6 +6862,64 @@ async function startOtaUpdate() {
     statusText.textContent = 'Failed: ' + e.message;
     statusText.style.color = '#ef4444';
     fill.style.background = '#ef4444';
+  }
+}
+
+// ── Revert to stock firmware ────────────────────────────────────
+// Wraps the existing firmware-download + ota/trigger (force) endpoints. Stock
+// .debs are published on downloads.ramonvanbruggen.nl; we download → register →
+// force-flash. One-shot (no version-rename trick, no reflash loop).
+var STOCK_FW = {
+  'v6.0.2': { version: 'v6.0.2', device_type: 'mower', filename: 'mower_firmware_v6.0.2.deb', url: 'https://downloads.ramonvanbruggen.nl/mower_firmware_v6.0.2.deb', md5: '66e9210a56952bdf3dddbdef3f9bebc3', description: 'Stock (OEM) firmware. Revert target.' },
+  'v5.7.1': { version: 'v5.7.1', device_type: 'mower', filename: 'mower_firmware_v5.7.1.deb', url: 'https://downloads.ramonvanbruggen.nl/mower_firmware_v5.7.1.deb', md5: '83c2741d05c9a40ff351332af2082d7c', description: 'Stock (OEM) firmware. Revert target.' }
+};
+
+async function revertToStock() {
+  var sn = document.getElementById('otaDeviceSelect').value;
+  if (!sn) { modalAlert('No Device', 'Select a mower in "Update Device" above first.'); return; }
+  if (sn.indexOf('LFIC') === 0) { modalAlert('Mower only', 'Reverting stock firmware applies to the mower, not the charger.'); return; }
+  var ver = document.getElementById('stockVersionSelect').value;
+  var fw = STOCK_FW[ver];
+  if (!fw) { modalAlert('No Version', 'Select a stock version.'); return; }
+
+  var ok = await modalConfirm('Revert to stock firmware',
+    'Flash <b>' + sn + '</b> back to <b>stock ' + ver + '</b>?<br><br>'
+    + '&bull; You will <b>lose SSH access</b> (stock firmware has no SSH).<br>'
+    + '&bull; Custom features (edge-cut, camera, mapping preflight) are removed.<br>'
+    + '&bull; Maps are kept; WiFi may need re-provisioning via BLE.<br>'
+    + '&bull; The mower must be on the charger. It reboots during the update.');
+  if (!ok) return;
+
+  var st = document.getElementById('stockRevertStatus');
+  st.style.display = 'block'; st.style.color = '#aaa';
+  st.textContent = 'Downloading stock ' + ver + ' to the server...';
+  try {
+    var dl = await fetch('/api/dashboard/firmware-download', {
+      method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(fw)
+    });
+    if (!dl.ok) { var e1 = await dl.json().catch(function() { return {}; }); throw new Error(e1.error || ('download HTTP ' + dl.status)); }
+
+    st.textContent = 'Resolving version...';
+    var vs = await fetch('/api/dashboard/ota/versions', { headers: { 'Authorization': token } });
+    var vd = await vs.json();
+    var rows = (vd && vd.versions) || [];
+    var row = null;
+    for (var i = 0; i < rows.length; i++) { if (rows[i].version === ver && rows[i].device_type === 'mower') { row = rows[i]; break; } }
+    if (!row) throw new Error('Stock version not registered after download');
+
+    st.textContent = 'Sending flash command...';
+    var tr = await fetch('/api/dashboard/ota/trigger/' + encodeURIComponent(sn), {
+      method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_id: row.id, force: true })
+    });
+    if (!tr.ok) { var e2 = await tr.json().catch(function() { return {}; }); throw new Error(e2.error || ('trigger HTTP ' + tr.status)); }
+
+    st.style.color = '#00d4aa';
+    st.textContent = 'Stock ' + ver + ' flash command sent. The mower will download, verify (MD5), and reboot. SSH is gone after this.';
+  } catch (err) {
+    st.style.color = '#ef4444';
+    st.textContent = 'Failed: ' + (err && err.message ? err.message : err);
   }
 }
 
