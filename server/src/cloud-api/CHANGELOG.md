@@ -4,13 +4,21 @@ Format: most-recent first. Each entry is dated and names the endpoint(s) affecte
 
 ## 2026-07-04 — uploadEquipmentMap: preserve map alias on re-upload (#66)
 
-- `routes/map.ts`: `matchesParsedArea` now resolves a work map to its area by
-  the stable `canonical_name` slot (map0/map1/…), not by the user alias in
-  `map_name`. Previously a renamed map ("test") failed to match its map2 area
-  when the mower re-uploaded after mowing, so the alias was reset to the default
-  label and a duplicate row was created while the renamed row was deleted as
-  stale. Falls back to deriving from `map_name` for legacy rows without
-  `canonical_name`.
+Two coupled fixes — either alone still lost the alias on the second mow:
+
+- `matchesParsedArea` now resolves a work map to its area by the stable
+  `canonical_name` slot (map0/map1/…), not by the user alias in `map_name`. A
+  renamed map ("test") failed to match its map2 area on the mower's post-mow
+  re-upload, so the row was treated as new: alias reset + duplicate row created
+  while the renamed row was deleted as stale.
+- The re-upload `mapRepo.upsert` now persists `canonical_name` explicitly.
+  `deriveCanonicalName()` can't recover the slot from the ZIP file_name (skipped)
+  + a user alias, so it was stored as NULL — which made the NEXT mow's re-upload
+  fail the (now canonical-based) match and lose the alias anyway. This is why
+  earlier single-layer fixes appeared to work once, then broke on the next mow.
+
+Verified end-to-end (`map.uploadPreservesAlias.test.ts`) by running the real
+upload endpoint TWICE; the test fails if either fix is reverted.
 
 ## 2026-07-02 — saveCutGrassRecord: capture + return mow direction
 

@@ -819,6 +819,12 @@ mapRouter.post('/uploadEquipmentMap', upload.any(), (req: Request, res: Response
         const existingRow = existingRows.find(row => matchesParsedArea(row, area));
         if (existingRow) staleIds.delete(existingRow.map_id);
         const canonicalName = parsedAreaName(area, area.type === 'work' ? workNameOverride : null);
+        // The STABLE slot label (`map0`, `mapN_N_obstacle`, …), never the alias.
+        // Must be persisted explicitly: deriveCanonicalName() can't recover it
+        // from the ZIP file_name (skipped) + a user alias ("test"), so without
+        // this the upsert stored canonical_name = NULL and the NEXT mow's
+        // re-upload failed to match → alias lost on the second mow (#66).
+        const stableCanonical = parsedAreaName(area);
         // Preserve user alias on re-upload: parsedAreaName() always returns
         // a canonical slot label (`map0`, `mapN_N_obstacle`, ...). If the
         // existing row already carries a user alias (e.g. "achter", "zij"),
@@ -833,6 +839,7 @@ mapRouter.post('/uploadEquipmentMap', upload.any(), (req: Request, res: Response
           map_id: nextMapId,
           mower_sn: sn,
           map_name: nextName,
+          canonical_name: stableCanonical,
           map_area: JSON.stringify(area.points),
           map_max_min: nextBounds,
           file_name: finalFileName,
