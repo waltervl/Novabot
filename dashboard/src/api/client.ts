@@ -326,8 +326,15 @@ export async function fetchSchedules(sn: string): Promise<Schedule[]> {
   return data.schedules ?? [];
 }
 
+// Browser-tijdzone meesturen zodat de server-side runner start_time in de
+// zone van de gebruiker vuurt i.p.v. de container-TZ. Laatste bewerker wint.
+function browserTimezone(): string | undefined {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; }
+  catch { return undefined; }
+}
+
 export async function createSchedule(sn: string, schedule: Omit<Schedule, 'scheduleId' | 'mowerSn' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'>): Promise<Schedule> {
-  const data = await (await post(`${BASE}/schedules/${encodeURIComponent(sn)}`, schedule)).json();
+  const data = await (await post(`${BASE}/schedules/${encodeURIComponent(sn)}`, { timezone: browserTimezone(), ...schedule })).json();
   return data.schedule;
 }
 
@@ -335,7 +342,7 @@ export async function updateSchedule(sn: string, scheduleId: string, updates: Pa
   const res = await apiFetch(`${BASE}/schedules/${encodeURIComponent(sn)}/${encodeURIComponent(scheduleId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(updates),
+    body: JSON.stringify({ timezone: browserTimezone(), ...updates }),
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const data = await res.json();

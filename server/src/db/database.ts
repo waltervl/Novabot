@@ -661,6 +661,18 @@ export function initDb(): void {
     catch { /* kolom bestaat al */ }
   }
 
+  // Per-schedule IANA timezone (bv. "America/Toronto"). Gezet door de
+  // dashboard-browser of de app bij aanmaken/wijzigen. NULL = val terug op
+  // de server-lokale tijd (container TZ) — gedrag van vóór deze kolom.
+  try { db.exec(`ALTER TABLE dashboard_schedules ADD COLUMN timezone TEXT`); }
+  catch { /* kolom bestaat al */ }
+
+  // Teller voor alternate_direction rotatie. Telde eerst work_records op
+  // schedule_id, maar de maaier stuurt geen scheduleId in saveCutGrassRecord
+  // bij runner-gestarte mows → count bleef 0 → richting roteerde nooit.
+  try { db.exec(`ALTER TABLE dashboard_schedules ADD COLUMN trigger_count INTEGER DEFAULT 0`); }
+  catch { /* kolom bestaat al */ }
+
   // Feature #51: "every N days" schedule mode. interval_days > 0 takes
   // precedence over weekdays — the schedule fires when
   // (today_local - interval_anchor_date) is a multiple of interval_days.

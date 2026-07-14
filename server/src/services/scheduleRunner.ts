@@ -6,7 +6,7 @@
  * controleert het weer via Open-Meteo, en stuurt start_run als het droog is.
  */
 
-import { scheduleRepo, mapRepo, messageRepo } from '../db/repositories/index.js';
+import { scheduleRepo, mapRepo } from '../db/repositories/index.js';
 import { isDeviceOnline } from '../mqtt/broker.js';
 import { publishToDevice } from '../mqtt/mapSync.js';
 import { startMowing } from './mowingService.js';
@@ -49,31 +49,52 @@ function getChargerGps(mowerSn: string): { lat: number; lng: number } | null {
   return mapRepo.getChargerGps(mowerSn);
 }
 
-function isIntervalDayMatch(row: ScheduleRow, now: Date): boolean {
-  // Issue #51: "every N days" mode. Anchor + interval define which calendar
-  // days trigger; weekdays array is ignored when interval_days > 0. Compare
-  // local-midnight dates so DST changes / timezone offsets don't shift the
-  // count by ±1 day.
-  if (!row.interval_days || row.interval_days <= 0) return false;
-  if (!row.interval_anchor_date) return false;
-  const [anchorY, anchorM, anchorD] = row.interval_anchor_date.split('-').map(Number);
-  if (!Number.isFinite(anchorY) || !Number.isFinite(anchorM) || !Number.isFinite(anchorD)) return false;
-  const anchorMidnight = new Date(anchorY, anchorM - 1, anchorD).getTime();
-  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const daysSince = Math.round((todayMidnight - anchorMidnight) / 86_400_000);
-  if (daysSince < 0) return false;
-  return daysSince % row.interval_days === 0;
+// Wall-clock componenten van `now` in de tijdzone van het schema.
+// row.timezone komt van de browser/app die het schema aanmaakte; NULL of
+// ongeldig (bv. "Canada/Toronto" — bestaat niet) valt terug op de
+// server-lokale tijd (container TZ), het gedrag van vóór de kolom.
+const warnedInvalidTz = new Set<string>();
+function wallClock(now: Date, tz: string | null) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz ?? undefined,
+      weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).formatToParts(now);
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
+    return {
+      year: Number(get('year')), month: Number(get('month')), day: Number(get('day')),
+      weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday')),
+      minutesIntoDay: Number(get('hour')) * 60 + Number(get('minute')),
+      seconds: Number(get('second')),
+    };
+  } catch {
+    if (tz && !warnedInvalidTz.has(tz)) {
+      warnedInvalidTz.add(tz);
+      console.warn(`[ScheduleRunner] Ongeldige timezone "${tz}" op schema — val terug op server-TZ (${process.env.TZ ?? 'UTC'})`);
+    }
+    return wallClock(now, null);
+  }
 }
 
-function getScheduleOccurrence(row: ScheduleRow, now: Date): Date | null {
+export function getScheduleOccurrence(row: ScheduleRow, now: Date): Date | null {
+  const wc = wallClock(now, row.timezone ?? null);
+
   // Match today against either the interval-days rule (preferred when set)
   // or the legacy weekdays array.
   if (row.interval_days && row.interval_days > 0) {
-    if (!isIntervalDayMatch(row, now)) return null;
+    // Issue #51: "every N days" mode. Kalenderdag-verschil via UTC-proxies
+    // zodat DST de telling niet ±1 dag verschuift.
+    if (!row.interval_anchor_date) return null;
+    const [anchorY, anchorM, anchorD] = row.interval_anchor_date.split('-').map(Number);
+    if (!Number.isFinite(anchorY) || !Number.isFinite(anchorM) || !Number.isFinite(anchorD)) return null;
+    const daysSince = Math.round(
+      (Date.UTC(wc.year, wc.month - 1, wc.day) - Date.UTC(anchorY, anchorM - 1, anchorD)) / 86_400_000,
+    );
+    if (daysSince < 0 || daysSince % row.interval_days !== 0) return null;
   } else {
     const weekdays: number[] = JSON.parse(row.weekdays);
-    const currentDay = now.getDay(); // 0=Sunday
-    if (!weekdays.includes(currentDay)) return null;
+    if (!weekdays.includes(wc.weekday)) return null; // 0=Sunday
   }
 
   const [hourText = '0', minuteText = '0'] = row.start_time.split(':');
@@ -81,9 +102,12 @@ function getScheduleOccurrence(row: ScheduleRow, now: Date): Date | null {
   const minute = Number(minuteText);
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
 
-  const occurrence = new Date(now);
-  occurrence.setHours(hour, minute, 0, 0);
-  return occurrence;
+  // Epoch van de occurrence van vandaag = now minus hoe ver de wandklok in
+  // de schema-zone er al voorbij is.
+  // ponytail: tijdens een DST-sprong die precies in het 5-min window valt is
+  // dit de shift ernaast — twee keer per jaar om 02:00-03:00, negeren.
+  const sinceMs = ((wc.minutesIntoDay - (hour * 60 + minute)) * 60 + wc.seconds) * 1000;
+  return new Date(now.getTime() - sinceMs);
 }
 
 function checkSchedules() {
@@ -212,10 +236,13 @@ export function computeScheduleArea(
 }
 
 function triggerSchedule(row: ScheduleRow) {
-  // Bereken effectieve richting (met alternerende rotatie)
+  // Bereken effectieve richting (met alternerende rotatie).
+  // Rotatie draait op trigger_count, NIET op work_records: de maaier stuurt
+  // geen scheduleId mee in saveCutGrassRecord bij runner-gestarte mows, dus
+  // die count bleef altijd 0 en de richting roteerde nooit.
   let effectiveDirection = row.path_direction;
   if (row.alternate_direction === 1) {
-    const count = messageRepo.countWorkRecordsBySchedule(row.schedule_id);
+    const count = row.trigger_count ?? 0;
     effectiveDirection = (row.path_direction + count * (row.alternate_step ?? 90)) % 360;
   }
 
@@ -232,6 +259,9 @@ function triggerSchedule(row: ScheduleRow) {
     area,
   });
   if (result.ok) {
+    // Alleen bij een geslaagde start doorschuiven — een regen-skip of busy-
+    // afwijzing mag de volgende richting niet opschuiven.
+    scheduleRepo.incrementTriggerCount(row.schedule_id);
     logScheduleDecision(row, true, 'STARTED', `area=${area} height=${row.cutting_height ?? 5}cm dir=${effectiveDirection}°`);
   } else {
     // Most common cause: startMowing's isMowerBusy guard rejected the start
@@ -251,6 +281,13 @@ function triggerSchedule(row: ScheduleRow) {
 
 export function startScheduleRunner(): void {
   if (intervalId) return;
+  // Maak de effectieve tijdzone zichtbaar: schema's zonder eigen timezone
+  // vuren in DEZE zone. Een ongeldige TZ env valt stil terug op UTC — dat
+  // zie je hier dan meteen aan de lokale tijd.
+  console.log(
+    `[ScheduleRunner] Server-TZ: ${process.env.TZ ?? '(niet gezet — UTC)'} — lokale tijd nu: ${new Date().toLocaleString('en-CA', { hour12: false })}. ` +
+    `Schema's met eigen timezone (browser/app) vuren in hun eigen zone.`,
+  );
   checkSchedules();
   intervalId = setInterval(checkSchedules, CHECK_INTERVAL_MS);
   console.log(`[ScheduleRunner] Started, checking every ${CHECK_INTERVAL_MS / 1000}s`);

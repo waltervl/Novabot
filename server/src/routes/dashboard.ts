@@ -3208,6 +3208,8 @@ interface ScheduleRow {
   last_triggered_at: string | null;
   interval_days: number;
   interval_anchor_date: string | null;
+  timezone: string | null;
+  trigger_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -3237,6 +3239,7 @@ function scheduleRowToDto(r: ScheduleRow) {
     lastTriggeredAt: r.last_triggered_at,
     intervalDays: r.interval_days ?? 0,
     intervalAnchorDate: r.interval_anchor_date,
+    timezone: r.timezone ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -3324,6 +3327,9 @@ dashboardRouter.post('/schedules/:sn', (req: Request, res: Response) => {
     // scheduleRunner (rain_pause=true path).
     intervalDays?: number;
     intervalAnchorDate?: string;
+    // IANA zone van de browser/app die het schema aanmaakt. De server-side
+    // runner vuurt start_time in DEZE zone; null = container-TZ (legacy).
+    timezone?: string;
   };
 
   if (!body.startTime) {
@@ -3355,6 +3361,7 @@ dashboardRouter.post('/schedules/:sn', (req: Request, res: Response) => {
     rain_check_hours: body.rainCheckHours ?? 2,
     interval_days: body.intervalDays ?? 0,
     interval_anchor_date: body.intervalAnchorDate ?? null,
+    timezone: body.timezone ?? null,
   });
 
   // Stuur timer_task naar maaier als die online is — maar NIET als rain_pause
@@ -3424,6 +3431,7 @@ dashboardRouter.patch('/schedules/:sn/:scheduleId', (req: Request, res: Response
     rain_check_hours: body.rainCheckHours as number | undefined,
     interval_days: body.intervalDays as number | undefined,
     interval_anchor_date: body.intervalAnchorDate as string | undefined,
+    timezone: body.timezone as string | undefined,
   });
 
   const row = scheduleRepo.findById(scheduleId) as ScheduleRow;
@@ -3452,11 +3460,12 @@ dashboardRouter.post('/schedules/:sn/:scheduleId/send', (req: Request, res: Resp
     return;
   }
 
-  // Bereken effectieve richting (met alternerende rotatie)
+  // Bereken effectieve richting (met alternerende rotatie). trigger_count,
+  // niet work_records: de maaier stuurt geen scheduleId in zijn records,
+  // dus die count was altijd 0 (richting roteerde nooit).
   let effectiveDirection = row.path_direction;
   if (row.alternate_direction === 1) {
-    // Tel hoeveel keer dit schema al getriggerd is (via last_triggered_at count)
-    const count = messageRepo.countWorkRecordsBySchedule(row.schedule_id);
+    const count = row.trigger_count ?? 0;
     effectiveDirection = (row.path_direction + count * (row.alternate_step ?? 90)) % 360;
   }
 

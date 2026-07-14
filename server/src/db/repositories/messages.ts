@@ -91,9 +91,6 @@ export class MessageRepository {
        path_direction, work_record_date)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
   `);
-  private _countWorkRecordsBySchedule = db.prepare(
-    'SELECT COUNT(*) as cnt FROM work_records WHERE schedule_id = ?'
-  );
   private _findWorkRecordsByEquipmentId = db.prepare(
     'SELECT * FROM work_records WHERE equipment_id = ? ORDER BY work_record_date DESC LIMIT ? OFFSET ?'
   );
@@ -189,10 +186,6 @@ export class MessageRepository {
       workStatus, scheduleId, week,
       pathDirection,
     );
-  }
-
-  countWorkRecordsBySchedule(scheduleId: string): number {
-    return (this._countWorkRecordsBySchedule.get(scheduleId) as { cnt: number }).cnt;
   }
 
   findWorkRecordsByEquipmentId(equipmentId: string, limit: number, offset: number): WorkRecordRow[] {

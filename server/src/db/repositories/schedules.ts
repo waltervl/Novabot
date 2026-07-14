@@ -32,6 +32,11 @@ export interface ScheduleRow {
   /** YYYY-MM-DD anchor date when interval_days > 0; first day the
    *  schedule fires. */
   interval_anchor_date: string | null;
+  /** IANA timezone the start_time is expressed in (e.g. "America/Toronto").
+   *  NULL = server-local time (container TZ) — legacy behaviour. */
+  timezone: string | null;
+  /** Aantal geslaagde runner-starts; drijft de alternate_direction rotatie. */
+  trigger_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -87,6 +92,9 @@ export class ScheduleRepository {
   );
   private _updateLastTriggered = db.prepare(
     "UPDATE dashboard_schedules SET last_triggered_at = datetime('now') WHERE schedule_id = ?"
+  );
+  private _incrementTriggerCount = db.prepare(
+    'UPDATE dashboard_schedules SET trigger_count = COALESCE(trigger_count, 0) + 1 WHERE schedule_id = ?'
   );
   private _delete = db.prepare(
     'DELETE FROM dashboard_schedules WHERE schedule_id = ?'
@@ -172,8 +180,8 @@ export class ScheduleRepository {
         map_id, map_name, cutting_height, path_direction, work_mode, task_mode,
         edge_offset, rain_pause, rain_threshold_mm, rain_threshold_probability,
         rain_check_hours, alternate_direction, alternate_step,
-        interval_days, interval_anchor_date
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        interval_days, interval_anchor_date, timezone
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.schedule_id, data.mower_sn, data.schedule_name ?? null,
       data.start_time, data.end_time ?? null, data.weekdays ?? '[]', data.enabled ?? 1,
@@ -183,6 +191,7 @@ export class ScheduleRepository {
       data.rain_threshold_probability ?? 50, data.rain_check_hours ?? 2,
       data.alternate_direction ?? 0, data.alternate_step ?? 90,
       data.interval_days ?? 0, data.interval_anchor_date ?? null,
+      data.timezone ?? null,
     );
   }
 
@@ -211,6 +220,7 @@ export class ScheduleRepository {
       ['alternate_step', data.alternate_step],
       ['interval_days', data.interval_days],
       ['interval_anchor_date', data.interval_anchor_date],
+      ['timezone', data.timezone],
     ];
 
     for (const [key, value] of updatable) {
@@ -253,6 +263,7 @@ export class ScheduleRepository {
       ['alternate_step', data.alternate_step],
       ['interval_days', data.interval_days],
       ['interval_anchor_date', data.interval_anchor_date],
+      ['timezone', data.timezone],
     ];
 
     for (const [key, value] of updatable) {
@@ -281,6 +292,10 @@ export class ScheduleRepository {
 
   updateLastTriggered(scheduleId: string): void {
     this._updateLastTriggered.run(scheduleId);
+  }
+
+  incrementTriggerCount(scheduleId: string): void {
+    this._incrementTriggerCount.run(scheduleId);
   }
 
   // ── Rain sessions — methods ──
