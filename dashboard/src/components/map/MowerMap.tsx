@@ -2749,6 +2749,28 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
   })();
   const trailPositions: [number, number][] = trailSegments.flat();
 
+  // Missed points — local meter coordinates from sensors.missed_points
+  // Format: "x1 y1;x2 y2;..." (semicolon-separated, space-delimited x y pairs)
+  // Uses the same localToGps + calibration transform as the GPS trail.
+  const missedPointsGps: [number, number][] = (() => {
+    const raw = mowingSensors.missed_points;
+    if (!raw || !isUsableChargerGps(chargerGps)) return [];
+    const offLat = Number.isFinite(activeCal.offsetLat) ? activeCal.offsetLat : 0;
+    const offLng = Number.isFinite(activeCal.offsetLng) ? activeCal.offsetLng : 0;
+    const result: [number, number][] = [];
+    for (const part of raw.split(';')) {
+      const [xs, ys] = part.trim().split(/\s+/);
+      const x = parseFloat(xs);
+      const y = parseFloat(ys);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const g = localToGps({ x: x - (chargingPose?.x ?? 0), y: y - (chargingPose?.y ?? 0) }, chargerGps);
+      const lat = g.lat + offLat;
+      const lng = g.lng + offLng;
+      if (Number.isFinite(lat) && Number.isFinite(lng)) result.push([lat, lng]);
+    }
+    return result;
+  })();
+
   // Mower heading icon — `heading` carries the firmware `theta` field in
   // radians using the ENU convention (0 = East, π/2 = North). The icon
   // helper expects compass degrees (0 = North, 90 = East), so we have to
@@ -3237,6 +3259,24 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
               );
             });
           })()}
+          {/* Missed points — orange circles for positions the mower skipped
+              during coverage. Shown together with the GPS trail toggle so they
+              appear / disappear alongside the session-progress overlay. */}
+          {showTrail && missedPointsGps.map((pos, i) => (
+            <CircleMarker
+              key={`missed-${i}`}
+              center={pos}
+              radius={5}
+              pathOptions={{
+                color: '#f97316',
+                fillColor: '#f97316',
+                fillOpacity: 0.85,
+                weight: 1.5,
+              }}
+            >
+              <Tooltip sticky>{t('map.missedPoint', 'Missed point')}</Tooltip>
+            </CircleMarker>
+          ))}
           {/* Live outline during autonomous mapping (report_state_map_outline) */}
           {liveOutline && liveOutline.length >= 3 && (
             <Polygon
