@@ -2034,9 +2034,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
       toast(detail || t('map.edit.coverageNone'), 'error');
     } finally {
       if (coverageRequestTokenRef.current === requestToken) {
-        setCoverageLoading(false);
         if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
+          pendingCoverageRefreshRef.current = false;
           void refreshCoverage();
+        } else {
+          setCoverageLoading(false);
         }
       }
     }
@@ -2160,10 +2162,12 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
       toast(`✗ ${t('map.edit.coverageNone')}`, 'error');
     } finally {
       if (coverageRequestTokenRef.current === requestToken) {
-        setCoverageLoading(false);
         onPreviewLoading?.(false);
         if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
+          pendingCoverageRefreshRef.current = false;
           void refreshCoverage();
+        } else {
+          setCoverageLoading(false);
         }
       }
     }
