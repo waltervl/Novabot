@@ -1162,6 +1162,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
   const requestedPreviewMapIdRef = useRef<string | null>(null);
   const pendingCoverageRefreshRef = useRef(false);
   const coverageRefreshModeRef = useRef<'selection' | 'explicit'>('selection');
+  const [pendingCoverageRefresh, setPendingCoverageRefresh] = useState(false);
+  const queueCoverageRefresh = useCallback((queued: boolean) => {
+    pendingCoverageRefreshRef.current = queued;
+    setPendingCoverageRefresh(queued);
+  }, []);
   const [coverageRadiusDraft, setCoverageRadiusDraft] = useState(() => {
     const fromSensors = Number(sensors?.coverage_planner_radius);
     return Number.isFinite(fromSensors) ? fromSensors.toString() : DEFAULT_COVERAGE_RADIUS.toString();
@@ -1997,7 +2002,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
     const { canonicals, previewedMapId } = buildIdlePreviewCanonicals();
     const requestToken = ++coverageRequestTokenRef.current;
     requestedPreviewMapIdRef.current = previewedMapId;
-    pendingCoverageRefreshRef.current = false;
+    queueCoverageRefresh(false);
     coverageRefreshModeRef.current = 'selection';
     setCoverageLive(false);
     stopCoveragePoll();
@@ -2034,15 +2039,10 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
       toast(detail || t('map.edit.coverageNone'), 'error');
     } finally {
       if (coverageRequestTokenRef.current === requestToken) {
-        if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
-          pendingCoverageRefreshRef.current = false;
-          void refreshCoverage();
-        } else {
-          setCoverageLoading(false);
-        }
+        setCoverageLoading(false);
       }
     }
-  }, [sn, inLiveCoverage, buildIdlePreviewCanonicals, mowingSensors.path_direction, t, toast, showLiveCoverage, stopCoveragePoll, showCoverage]);
+  }, [sn, inLiveCoverage, buildIdlePreviewCanonicals, queueCoverageRefresh, mowingSensors.path_direction, t, toast, showLiveCoverage, stopCoveragePoll]);
 
   // Toggle handler: hide is pure visibility; show triggers the right mower
   // source. Idle uses a fresh stock preview, live mowing uses the live plan.
@@ -2089,15 +2089,26 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
   useEffect(() => {
     if (!showCoverage || inLiveCoverage) return;
     if (!selectedWorkMapId || selectedWorkMapId === previewedMapIdRef.current) return;
+    if (pendingCoverageRefreshRef.current) return;
     if (coverageLoading) {
       if (coverageRefreshModeRef.current === 'selection'
         && selectedWorkMapId === requestedPreviewMapIdRef.current) return;
-      pendingCoverageRefreshRef.current = true;
+      queueCoverageRefresh(true);
       return;
     }
     void refreshCoverage();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWorkMapId, showCoverage, inLiveCoverage, coverageLoading]);
+
+  useEffect(() => {
+    if (!pendingCoverageRefresh || coverageLoading || !showCoverage || inLiveCoverage) return;
+    if (!selectedWorkMapId || selectedWorkMapId === previewedMapIdRef.current) {
+      queueCoverageRefresh(false);
+      return;
+    }
+    queueCoverageRefresh(false);
+    void refreshCoverage();
+  }, [pendingCoverageRefresh, coverageLoading, showCoverage, inLiveCoverage, selectedWorkMapId, refreshCoverage, queueCoverageRefresh]);
 
   // Auto-toon het maaipad zodra de maaier gaat maaien — geen knop-druk nodig.
   // Vuurt op de start van een live sessie; sluit de gebruiker de overlay
@@ -2118,7 +2129,7 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
     const requestToken = ++coverageRequestTokenRef.current;
     lastPreviewParamsRef.current = { canonicals, covDirection, polygonArea };
     requestedPreviewMapIdRef.current = null;
-    pendingCoverageRefreshRef.current = false;
+    queueCoverageRefresh(false);
     coverageRefreshModeRef.current = 'explicit';
     setShowCoverage(true);
     setCoverageLive(false);
@@ -2162,16 +2173,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
       toast(`✗ ${t('map.edit.coverageNone')}`, 'error');
     } finally {
       if (coverageRequestTokenRef.current === requestToken) {
+        setCoverageLoading(false);
         onPreviewLoading?.(false);
-        if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
-          pendingCoverageRefreshRef.current = false;
-          void refreshCoverage();
-        } else {
-          setCoverageLoading(false);
-        }
       }
     }
-  }, [sn, t, toast, stopCoveragePoll, onPreviewLoading, showCoverage, inLiveCoverage, refreshCoverage]);
+  }, [sn, t, toast, stopCoveragePoll, onPreviewLoading, refreshCoverage, queueCoverageRefresh]);
 
   // Start-sheet "Preview" knop → verse coverage-preview met de gekozen richting
   // en de geselecteerde werkgebieden (alle of één).
