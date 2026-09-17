@@ -2033,10 +2033,11 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
       setCoverageStatus(detail || t('map.edit.coverageNone'));
       toast(detail || t('map.edit.coverageNone'), 'error');
     } finally {
-      if (coverageRequestTokenRef.current !== requestToken) return;
-      setCoverageLoading(false);
-      if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
-        void refreshCoverage();
+      if (coverageRequestTokenRef.current === requestToken) {
+        setCoverageLoading(false);
+        if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
+          void refreshCoverage();
+        }
       }
     }
   }, [sn, inLiveCoverage, buildIdlePreviewCanonicals, mowingSensors.path_direction, t, toast, showLiveCoverage, stopCoveragePoll, showCoverage]);
@@ -2158,11 +2159,12 @@ export function MowerMap({ sn, lat, lng, mapX, mapY, heading, mowingActive, prog
       setCoverageStatus(detail || t('map.edit.coverageNone'));
       toast(`✗ ${t('map.edit.coverageNone')}`, 'error');
     } finally {
-      if (coverageRequestTokenRef.current !== requestToken) return;
-      setCoverageLoading(false);
-      onPreviewLoading?.(false);
-      if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
-        void refreshCoverage();
+      if (coverageRequestTokenRef.current === requestToken) {
+        setCoverageLoading(false);
+        onPreviewLoading?.(false);
+        if (pendingCoverageRefreshRef.current && showCoverage && !inLiveCoverage) {
+          void refreshCoverage();
+        }
       }
     }
   }, [sn, t, toast, stopCoveragePoll, onPreviewLoading, showCoverage, inLiveCoverage, refreshCoverage]);
