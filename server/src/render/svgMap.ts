@@ -156,7 +156,7 @@ const STYLE = `
   .obstacle-fill { fill: rgba(239,68,68,0.20); stroke: #ef4444; stroke-width: 2; stroke-dasharray: 6 4; stroke-linejoin: round; }
   .unicom-fill { fill: none; stroke: #3b82f6; stroke-width: 2; stroke-dasharray: 4 3; }
   .trail { fill: none; stroke: rgba(34,197,94,0.7); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
-  .missed-point { fill: #f97316; fill-opacity: 0.85; stroke: #9a3412; stroke-width: 1.5; }
+  .missed-point { fill: #f97316; fill-opacity: 0.4; stroke: none; }
   .charger-base { fill: rgba(245,158,11,0.25); stroke: #f59e0b; stroke-width: 2; }
   .charger-bolt { fill: #f59e0b; }
   .mower { fill: #ffffff; stroke: #0f172a; stroke-width: 1.5; }
@@ -206,7 +206,7 @@ export function renderMowerMapSvg(sn: string): string {
     : '';
   const missedPointsSvg = missedPoints.map(p => {
     const q = project(p);
-    return `<circle class="missed-point" cx="${q.x.toFixed(2)}" cy="${q.y.toFixed(2)}" r="5" />`;
+    return `<circle class="missed-point" cx="${q.x.toFixed(2)}" cy="${q.y.toFixed(2)}" r="2.5" />`;
   }).join('\n');
 
   const cp = project(charger);

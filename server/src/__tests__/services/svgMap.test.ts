@@ -125,8 +125,10 @@ describe('renderMowerMapSvg', () => {
     const out = renderMowerMapSvg(SN);
     const markers = [...out.matchAll(/<circle class="missed-point" /g)];
     expect(out).toContain('.missed-point { fill: #f97316;');
+    expect(out).toContain('fill-opacity: 0.4;');
+    expect(out).toContain('stroke: none;');
     expect(markers).toHaveLength(2);
-    expect(out).toContain('r="5"');
+    expect(out).toContain('r="2.5"');
   });
 
   it('ignores malformed missed_points entries and keeps valid points in bounds', () => {
